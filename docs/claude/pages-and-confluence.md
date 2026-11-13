@@ -397,3 +397,14 @@ both legs of the one keyword statement, so every fuzzy hit satisfies every
 active filter. Both legs keep the visibility and trash predicates, and
 `cp.title % $1` stays the fuzzy leg's index condition. Facet counts are
 narrowed only by the AI-policy filter.
+
+## Content Analytics (#1744)
+
+`GET /api/analytics/trending` and `/api/analytics/content-quality` remain
+admin-only, cross-corpus reports. Both exclude `pages.deleted_at IS NOT NULL`
+in SQL before applying the report limit. Keep the existing authentication and
+admin guards; these aggregates do not acquire normal page-list visibility rules.
+Soft trash preserves the page's views and feedback. Restoring it makes it
+eligible again using those same records, subject to the report's existing
+activity windows, ordering and limit.
+

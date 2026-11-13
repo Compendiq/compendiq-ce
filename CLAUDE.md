@@ -10,6 +10,10 @@ Trash distinguishes a failed read from a successful empty list. A failed
 refresh retains cached results with a stale warning; retry keeps its control
 mounted and focusable until the request settles, then rehomes orphaned focus.
 
+Trending and content-quality analytics remain admin-only across the corpus.
+Both exclude trashed pages in SQL; restoration makes the same historical
+activity eligible again. See `docs/claude/pages-and-confluence.md`.
+
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.
@@ -75,6 +79,12 @@ cd backend && npx vitest run <file> # single file
 npx playwright test                 # local E2E against an already-running stack; CI recipe below
 docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
+
+Independent backend test runs can set `TEST_DATABASE_NAMESPACE` and use
+`--maxWorkers=1 --no-file-parallelism` for one namespaced worker database.
+The default database names, Redis slots and pub/sub prefixes are unchanged;
+serialize runs sharing Redis. See `docs/claude/testing-and-retrieval-eval.md`
+for the namespace grammar and active-worker CREATE guard.
 
 ## Architecture
 

@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate. The original-query leg keeps the caller's pin setting. Identifier
   queries the detector recognises still skip expansion and pin as before. The
   identifier page can still appear in the results at its ordinary merged rank.
+- **Content reports exclude trashed articles (#1744):** Trending and
+  content-quality reports now omit trash before applying their limits. Restored
+  pages are eligible again with their existing views and feedback; both reports
+  remain admin-only.
 - **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
   `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
   files included) now imports as page labels; previously the list was dropped
