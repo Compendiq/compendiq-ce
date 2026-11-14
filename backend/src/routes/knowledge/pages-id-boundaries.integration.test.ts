@@ -21,7 +21,6 @@ import { invalidateRbacCache, userHasGlobalPermission } from '../../core/service
 import { buildPng, REAL_PNG_40x30_BASE64 } from '../../core/services/test-image-fixtures.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import { buildKnowledgeTestApp, insertUser, insertLocalSpace } from './pages.test-helpers.js';
-import { cachedAttachmentPath } from '../../core/services/attachment-store.js';
 import { pagesCrudRoutes } from './pages-crud.js';
 import { pagesTagRoutes } from './pages-tags.js';
 import { verificationRoutes } from './verification.js';
@@ -325,11 +324,11 @@ describe('#1739 real page-ID route boundaries', () => {
   }
 
   async function seedCacheFile(page: Page, bytes: Buffer) {
-    const file = cachedAttachmentPath(attachmentKey(page), 'id-boundary.png');
-    expect(file).not.toBeNull();
-    expect(relative(attachmentsDir, file!)).not.toMatch(/^\.\./);
-    await mkdir(dirname(file!), { recursive: true });
-    await writeFile(file!, bytes);
+    const file = join(attachmentsDir, attachmentKey(page), 'id-boundary.png');
+    expect(relative(attachmentsDir, dirname(file))).toBe(attachmentKey(page));
+    expect(relative(attachmentsDir, file)).not.toMatch(/^\.\./);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, bytes);
   }
 
   async function fileState(directory = attachmentsDir): Promise<Record<string, string>> {
@@ -569,9 +568,10 @@ describe('#1739 real page-ID route boundaries', () => {
         expect(url.startsWith(`/api/attachments/${encodeURIComponent(attachmentKey(page))}/`)).toBe(true);
         const filename = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
         if (operation.code === 'L20') expect(filename).toBe('id-boundary.png');
-        const file = cachedAttachmentPath(attachmentKey(page), filename);
-        expect(file).not.toBeNull();
-        expect(await readFile(file!)).toEqual(PNG);
+        const file = join(attachmentsDir, attachmentKey(page), filename);
+        expect(relative(attachmentsDir, dirname(file))).toBe(attachmentKey(page));
+        expect(relative(attachmentsDir, file)).not.toMatch(/^\.\./);
+        expect(await readFile(file)).toEqual(PNG);
         body = { attachmentKey: '$target-attachment-key', bytes: PNG.toString('base64') };
         expect(imageFetches.length - fetchCount).toBe(operation.code === 'L21' ? 1 : 0);
         break;
@@ -886,12 +886,16 @@ describe('#1739 real page-ID route boundaries', () => {
     expect(selected.rows.find((row) => row.id === older.id)?.older_stamp).toBe(true);
     expect(selected.rows.find((row) => row.id === foreign.id)?.same_stamp).toBe(true);
     expect(selected.rows.find((row) => row.id === synced.id)?.same_stamp).toBe(true);
-    const audits = await query<{ metadata: { restoredCount: number } }>("SELECT metadata FROM audit_log WHERE action = 'PAGE_RESTORED'");
+    const audits = await query<{ resource_id: string; metadata: { restoredCount: number } }>(
+      "SELECT resource_id, metadata FROM audit_log WHERE action = 'PAGE_RESTORED'",
+    );
     expect(audits.rows.map((row) => row.metadata.restoredCount)).toEqual([3]);
     const after = await observableState();
     const repeat = await app.inject({ method: 'POST', url: `/api/pages/${root.id}/restore` });
+    expect(repeat.statusCode, repeat.body).toBe(200);
     expect(repeat.json()).toEqual({ id: root.id, title: 'Trash root', restored: false });
     expect(await observableState()).toEqual(after);
+    expect(audits.rows[0]?.resource_id).toBe(`000${root.id}`);
   });
 
   for (const refusal of ['confluence', 'ancestor'] as const) {

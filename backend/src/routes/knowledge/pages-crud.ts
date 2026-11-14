@@ -1873,8 +1873,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/:id/restore - restore a soft-deleted standalone article from trash
-  fastify.post('/pages/:id/restore', async (request, reply) => {
+  fastify.post<{ Params: { id: string } }>('/pages/:id/restore', async (request, reply) => {
     const { id } = PrimaryKeyParamSchema.parse(request.params);
+    const rawId = request.params.id;
     const userId = request.userId;
 
     const restored = await withHierarchyCascadeTransaction(async (client) => {
@@ -2000,7 +2001,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     } else {
       await cache.invalidate(userId, 'pages');
     }
-    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id), {
+    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', rawId, {
       source: 'standalone',
       title: restored.page.title,
       restoredCount: restored.restoredCount,
