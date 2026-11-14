@@ -76,6 +76,12 @@ npx playwright test                 # local E2E against an already-running stack
 docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
 
+Independent backend test runs can set `TEST_DATABASE_NAMESPACE` and use
+`--maxWorkers=1 --no-file-parallelism` for one namespaced worker database.
+The default database names, Redis slots and pub/sub prefixes are unchanged;
+serialize runs sharing Redis. See `docs/claude/testing-and-retrieval-eval.md`
+for the namespace grammar and active-worker CREATE guard.
+
 ## Architecture
 
 Domain-based backend with ESLint-enforced import boundaries (`eslint-plugin-boundaries`):
@@ -96,6 +102,14 @@ Layout: `backend/src/{core,domains/{confluence,llm,knowledge},routes/{foundation
 The sidebar's space-home projection detaches the configured homepage from its
 actual parent before promoting its children to roots. Keep the original page
 IDs for keyboard navigation, and retain the sole-homepage fallback (#1815).
+
+Standalone creation stores the resolved parent's source-aware `parentKeyFor`
+key, not raw request text (#1743). Parent resolution compares identifiers as
+text; only the PK arm normalizes padding, never the Confluence content arm.
+Reject explicit empty parent text before lookup; omission remains a NULL root.
+Parent validation stays ownership-agnostic; `page-subtree.ts` retains its
+separate source/owner guards. Existing padded parent rows are not repaired.
+See `docs/claude/pages-and-confluence.md`.
 
 ## Tech Stack (highlights, not a manifest)
 

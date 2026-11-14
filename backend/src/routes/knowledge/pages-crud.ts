@@ -67,6 +67,11 @@ import {
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import {
+  parentKeyFor,
+  assertIdentifierUnambiguous,
+  RelocateError,
+} from '../../domains/knowledge/services/page-relocate-service.js';
+import {
   getUserAccessibleSpaces,
   userCanAccessPage,
 } from '../../core/services/rbac-service.js';
@@ -2106,19 +2111,40 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // resolve the parent and reject a pending destructive component.
       const newPage = await withPageWriteTransaction([], async (client) => {
         let parentPath: string | null = null;
-        if (body.parentId) {
+        let parentKey: string | null = null;
+        if (body.parentId !== undefined) {
+          const rawParentId = body.parentId;
+          if (rawParentId === '') throw fastify.httpErrors.badRequest('Parent page not found');
+          const lookupId = /^\d+$/.test(rawParentId) ? toPageIdText(rawParentId) : rawParentId;
           const parentResult = await client.query<{
             id: number;
             path: string | null;
             space_key: string | null;
+            source: string;
+            confluence_id: string | null;
+            deleted_at: Date | null;
           }>(
-            'SELECT id, path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
-            [body.parentId],
+            `SELECT id, path, space_key, source, confluence_id, deleted_at
+               FROM pages
+              WHERE id::text = $1 OR confluence_id = $2
+              ORDER BY id`,
+            [lookupId, rawParentId],
           );
           const parent = parentResult.rows[0];
-          if (!parent) throw fastify.httpErrors.badRequest('Parent page not found');
+          if (parentResult.rows.length !== 1 || !parent || parent.deleted_at !== null) {
+            throw fastify.httpErrors.badRequest('Parent page not found');
+          }
           if (spaceKey && parent.space_key !== spaceKey) {
             throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
+          }
+          parentKey = parentKeyFor(parent.source, parent.id, parent.confluence_id);
+          try {
+            await assertIdentifierUnambiguous(parentKey, parent.id, 'stored parent', client);
+          } catch (error) {
+            if (error instanceof RelocateError) {
+              throw fastify.httpErrors.badRequest('Parent page not found');
+            }
+            throw error;
           }
           await assertPageHierarchyParentsAvailable(client, [parent.id]);
           parentPath = parent.path;
@@ -2137,7 +2163,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                    $8, $9, $9, 'not_embedded', NOW(), $10, $11)
            RETURNING id, title, version`,
           [body.title, effectiveBodyHtml, bodyText, userId,
-           visibility, spaceKey, body.parentId ?? null,
+           visibility, spaceKey, parentKey,
            pageType, !isFolder, initialLabels, initialPolicy],
         );
         const created = result.rows[0]!;
