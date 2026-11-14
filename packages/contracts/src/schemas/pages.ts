@@ -352,6 +352,8 @@ export const TrashItemSchema = z.object({
   title: z.string(),
   source: PageSourceEnum,
   visibility: PageVisibilityEnum,
+  spaceKey: z.string().nullable(),
+  spaceMissing: z.boolean(),
   deletedAt: z.string(),
   createdAt: z.string(),
   deletedBy: z.string(),
@@ -365,6 +367,12 @@ export const TrashListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 export type TrashListResponse = z.infer<typeof TrashListResponseSchema>;
+
+/** Optional caller-chosen destination when a trashed page's stored space is gone. */
+export const RestorePageBodySchema = z.object({
+  targetSpaceKey: z.string().min(1).optional(),
+});
+export type RestorePageBody = z.infer<typeof RestorePageBodySchema>;
 
 // -- Relocate between a local space and Confluence (Issue #1123) --
 

@@ -195,9 +195,9 @@ resolved selection lands in exactly one of the two (#1745).
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their
 own standalone row. Both halves matter. Direct, because the invariant is a
-statement about `parent_id` alone: a live parent means the page reappears
-beneath it and orphans nothing, whatever is trashed further up, so refusing on
-the nearest trashed ancestor at any depth refused safe restores. Actionable,
+statement about `parent_id` alone: on ordinary restore, a live parent means
+the page reappears beneath it, whatever is trashed further up. Refusing the
+nearest trashed ancestor at any depth refused safe restores. Actionable,
 because nothing else is restorable through this route — a Confluence-sourced row
 is rejected outright and another user's row is not the caller's — so refusing
 there traded a visible orphan for silent data loss at the retention deadline.
@@ -208,6 +208,40 @@ row and a cascade batch spans several of them. The 409 carries
 `reason: 'restore_ancestor_trashed'`, which is what `TrashPage` retries; the
 route's other refusals (a live import already exists, an ambiguous parent) are
 permanent, so the status code alone cannot be the classifier.
+
+If the stored real space is gone, restore returns409 `restore_space_missing`
+with `missingSpaceKey` and REQUIRED `canChooseTarget`. Only current true
+(missing root, no target) offers the exact server message plus an unchosen
+local-space/`__local__` picker. A missing retained batch key returns false and
+an honest batch refusal: choosing a target for this root cannot fix it. Never
+infer the remedy from cached Trash fields, message text or a prior key; another
+client may restore, rehome and retrash between attempts. Bulk treats all these
+space refusals as permanent, not ancestor retry rounds. See `docs/API.md` for
+the exact envelopes/messages; the three new reasons do not replace old errors.
+
+Only a deleted, owner-authorized standalone root whose real key M is absent
+may rehome to an existing local space or explicit `__local__` (stored NULL).
+NULL and historical `__local__` are valid virtual roots, never missing spaces.
+Existing containers (including Confluence containers) allow ordinary/same-key
+restore, not a general move. Use the authoritative `trashBatchIds`: untrash
+and rewrite ONLY its M rows in ONE UPDATE. A distinct, uniquely resolved LIVE
+direct parent detaches ONLY the root on actual rehome; equal-space, unresolved
+and non-actionable trashed parents stay linked. Leave paths/depths, child links,
+other stamps, sources and owners unchanged. Existing ancestor/import/ambiguity,
+frozen and pending-write refusals still win before semantic target checks.
+
+Inside the existing runtime/hierarchy/lifecycle transaction, lock the real
+root space FOR SHARE first, then all remaining existing retained spaces and
+an applicable real target in database C order FOR SHARE. Every nonvirtual
+final batch key must exist; never rehome a second missing key. Local space
+deletion uses one dedicated transaction and FOR UPDATE BEFORE its plain live
+count/delete, so either restore keeps its final spaces or deletion wins and
+restore refuses. No new advisory lock or trash-based deletion block. Local
+targets are not restricted by container creator; nonlocal/unknown targets
+share one generic refusal. No already-live orphan, purge or Confluence-row
+repair. Restore alone adopts the shared positive-int4 PK boundary; the audit
+keeps raw padded URL identity and adds target/missing keys only for actual
+rehome, with restoredCount from returned rows.
 
 Cache scope is read off the ROWS the cascade touched, never off the target:
 `visibility` is per page, so a private parent can hold a shared sub-article, and

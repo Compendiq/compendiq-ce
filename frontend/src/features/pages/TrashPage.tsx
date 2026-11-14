@@ -1,9 +1,12 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect, useId, type RefObject } from 'react';
 import { useNavigate } from 'react-router-dom';
+import * as Dialog from '@radix-ui/react-dialog';
+import { useQueryClient } from '@tanstack/react-query';
+import type { RestorePageBody } from '@compendiq/contracts';
 import { m, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, RotateCcw, Trash2, Search, X, CheckSquare, Square } from 'lucide-react';
+import { ArrowLeft, RotateCcw, Trash2, Search, X, CheckSquare, Square, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useTrash, useRestorePage } from '../../shared/hooks/use-standalone';
+import { useTrash, useRestorePage, useLocalSpaces } from '../../shared/hooks/use-standalone';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { Button, IconButton } from '../../shared/components/Button';
 import { ApiError } from '../../shared/lib/api';
@@ -26,11 +29,9 @@ function restoreFailureMessage(error: unknown): string {
  * bulk restore that ancestor is usually part of the same selection, so the
  * refusal is transient, not a failure.
  *
- * The route's OTHER 409 is a permanent refusal — a live import of the same page
- * already exists — and re-firing it would report the same decision twice. Two
- * different problems sharing one status code means the status cannot be the
- * classifier: the server marks the transient one with a `reason` slug, and that
- * is what is matched here.
+ * Only an ancestor refusal can be resolved by another selected restore. Missing
+ * spaces, import conflicts and ambiguity remain permanent bulk failures; a
+ * missing space requires a separate, deliberate single-page recovery.
  */
 const ANCESTOR_TRASHED_REASON = 'restore_ancestor_trashed';
 
@@ -38,18 +39,194 @@ function isAncestorConflict(error: unknown): boolean {
   return error instanceof ApiError && error.reason === ANCESTOR_TRASHED_REASON;
 }
 
+interface RestoreTargetRequest {
+  pageId: string;
+  title: string;
+  message: string;
+  targetSpaceKey: string;
+}
+
+function canChooseRestoreTarget(error: unknown): boolean {
+  if (!(error instanceof ApiError)
+    || error.statusCode !== 409
+    || error.reason !== 'restore_space_missing') return false;
+  const body = error.body;
+  return typeof body === 'object'
+    && body !== null
+    && !Array.isArray(body)
+    && 'canChooseTarget' in body
+    && body.canChooseTarget === true;
+}
+
+function RestoreTargetDialog({
+  request,
+  busy,
+  contentRef,
+  onTargetChange,
+  onRestore,
+  onCancel,
+  onCloseAutoFocus,
+}: {
+  request: RestoreTargetRequest;
+  busy: boolean;
+  contentRef: RefObject<HTMLDivElement | null>;
+  onTargetChange: (targetSpaceKey: string) => void;
+  onRestore: (targetSpaceKey: string) => void;
+  onCancel: () => void;
+  onCloseAutoFocus: (event: Event) => void;
+}) {
+  const { data: spaces, isPending, isError, refetch } = useLocalSpaces();
+  const helpRef = useRef<HTMLParagraphElement>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const { retryInFlight, onRetry } = useNoticeRetry(refetch, isError, helpRef);
+  const selectId = useId();
+  const messageId = useId();
+  const helpId = useId();
+  const localSpaces = useMemo(
+    () => (spaces ?? []).filter((space) => space.source === 'local' && space.key !== '__local__'),
+    [spaces],
+  );
+  const selectedTarget = request.targetSpaceKey === '__local__'
+    || localSpaces.some((space) => space.key === request.targetSpaceKey)
+    ? request.targetSpaceKey
+    : '';
+
+  return (
+    <Dialog.Root open onOpenChange={(open) => { if (!open && !busy) onCancel(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50" />
+        <Dialog.Content
+          ref={contentRef}
+          className="nm-card-elevated fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col p-5 outline-none"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            selectRef.current?.focus();
+          }}
+          onCloseAutoFocus={onCloseAutoFocus}
+          onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+          onPointerDownOutside={(event) => { if (busy) event.preventDefault(); }}
+        >
+          <div className="min-h-0 space-y-4 overflow-y-auto">
+            <div className="space-y-2">
+              <Dialog.Title className="text-base font-semibold">Restore article</Dialog.Title>
+              <p className="break-words text-sm font-medium">{request.title}</p>
+              <Dialog.Description
+                className="text-sm text-muted-foreground"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <span id={messageId}>{request.message}</span>
+              </Dialog.Description>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor={selectId} className="block text-sm font-medium">Local space</label>
+              <select
+                ref={selectRef}
+                id={selectId}
+                value={selectedTarget}
+                aria-describedby={`${messageId} ${helpId}`}
+                aria-disabled={busy}
+                onChange={(event) => { if (!busy) onTargetChange(event.currentTarget.value); }}
+                className="nm-select-md w-full"
+              >
+                <option value="">Choose a space…</option>
+                <option value="__local__">No space — a personal article</option>
+                {localSpaces.map((space) => (
+                  <option key={space.key} value={space.key}>{space.name} ({space.key})</option>
+                ))}
+              </select>
+              <p ref={helpRef} id={helpId} tabIndex={-1} className="text-xs text-muted-foreground">
+                Choose a local space or no space, then retry restore.
+              </p>
+            </div>
+
+            {(isError || retryInFlight) ? (
+              <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <span>
+                  {spaces
+                    ? 'Could not refresh local spaces. Showing the last loaded spaces, which may be out of date.'
+                    : 'Could not load local spaces. Please try again.'}
+                </span>
+                <button
+                  type="button"
+                  className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+                  aria-disabled={retryInFlight}
+                  onClick={onRetry}
+                >
+                  {retryInFlight ? 'Retrying…' : 'Retry'}
+                </button>
+              </div>
+            ) : isPending ? (
+              <p role="status" className="text-sm text-muted-foreground">Loading local spaces…</p>
+            ) : localSpaces.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No local spaces are available. You can choose no space.</p>
+            ) : null}
+            {busy && <p role="status" className="text-sm text-muted-foreground">Restoring article…</p>}
+          </div>
+
+          <div className="mt-5 flex shrink-0 justify-end gap-2">
+            <Button
+              variant="secondary"
+              aria-disabled={busy}
+              onClick={() => { if (!busy) onCancel(); }}
+            >
+              Cancel
+            </Button>
+            <Button
+              aria-disabled={busy || !selectedTarget}
+              aria-busy={busy || undefined}
+              className="aria-disabled:cursor-default aria-disabled:opacity-70"
+              leftIcon={busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : undefined}
+              onClick={() => { if (!busy && selectedTarget) onRestore(selectedTarget); }}
+            >
+              Retry restore
+            </Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 export function TrashPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data: trashData, isLoading, isError, refetch } = useTrash();
   const descriptionRef = useRef<HTMLParagraphElement>(null);
   const { retryInFlight, onRetry } = useNoticeRetry(refetch, isError, descriptionRef);
   const restoreMutation = useRestorePage();
+  const busyRef = useRef(false);
+  const aliveRef = useRef(true);
+  const restoreControlsRef = useRef(new Map<string, HTMLButtonElement>());
+  const bulkRestoreRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const dialogOriginRef = useRef<string | null>(null);
+  const focusRecoveryRef = useRef<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkRestoring, setIsBulkRestoring] = useState(false);
+  const [restoringPageId, setRestoringPageId] = useState<string | null>(null);
+  const [rehomeRequest, setRehomeRequest] = useState<RestoreTargetRequest | null>(null);
+  const selectionRef = useRef(selectedIds);
+  const restoreBusy = restoringPageId !== null || isBulkRestoring;
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+
+  useEffect(() => { selectionRef.current = selectedIds; }, [selectedIds]);
 
   const items = useMemo(() => trashData?.items ?? [], [trashData?.items]);
+
+  useEffect(() => {
+    const pageId = focusRecoveryRef.current;
+    if (!pageId || items.some((item) => item.id === pageId)) return;
+    focusRecoveryRef.current = null;
+    if (document.activeElement === document.body) descriptionRef.current?.focus();
+  }, [items, rehomeRequest, restoringPageId]);
 
   const filteredItems = useMemo(() => {
     if (!searchQuery.trim()) return items;
@@ -57,22 +234,46 @@ export function TrashPage() {
     return items.filter((item) => item.title.toLowerCase().includes(query));
   }, [items, searchQuery]);
 
-  const handleRestore = async (pageId: string) => {
+  const handleRestore = async (pageId: string, title: string, body?: RestorePageBody) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setRestoringPageId(pageId);
+    const active = document.activeElement;
+    const ownedFocus = active === restoreControlsRef.current.get(pageId)
+      || (active !== null && dialogRef.current?.contains(active) === true);
     try {
-      await restoreMutation.mutateAsync(pageId);
+      await restoreMutation.mutateAsync({ pageId, body });
+      if (ownedFocus) focusRecoveryRef.current = pageId;
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(pageId);
         return next;
       });
+      setRehomeRequest(null);
       toast.success('Page restored');
     } catch (error) {
-      toast.error(restoreFailureMessage(error));
+      const message = restoreFailureMessage(error);
+      if (canChooseRestoreTarget(error)) {
+        dialogOriginRef.current = pageId;
+        setRehomeRequest({ pageId, title, message, targetSpaceKey: '' });
+      } else if (body && rehomeRequest?.pageId === pageId
+        && error instanceof ApiError && error.statusCode === 409
+        && error.reason === 'restore_target_space_invalid') {
+        setRehomeRequest({ pageId, title, message, targetSpaceKey: '' });
+        void queryClient.invalidateQueries({ queryKey: ['local-spaces'] });
+      } else {
+        setRehomeRequest(null);
+        toast.error(message);
+      }
+    } finally {
+      busyRef.current = false;
+      setRestoringPageId(null);
     }
   };
 
   const handleBulkRestore = async () => {
-    if (selectedIds.size === 0) return;
+    if (selectedIds.size === 0 || busyRef.current) return;
+    busyRef.current = true;
     setIsBulkRestoring(true);
     const ids = Array.from(selectedIds);
     try {
@@ -100,7 +301,9 @@ export function TrashPage() {
       // loop, so the number of passes is bounded by the selection size.
       let pending = ids;
       while (pending.length > 0) {
-        const results = await Promise.allSettled(pending.map((id) => restoreMutation.mutateAsync(id)));
+        const results = await Promise.allSettled(
+          pending.map((pageId) => restoreMutation.mutateAsync({ pageId })),
+        );
         const refused: string[] = [];
         pending.forEach((id, index) => {
           const result = results[index]!;
@@ -128,6 +331,12 @@ export function TrashPage() {
       // `restored: false` — under a toast that claimed a fresh restore. The
       // failed ids stay selected on purpose: they are exactly what a retry is.
       if (restoredIds.size > 0) {
+        const currentSelection = selectionRef.current;
+        if (document.activeElement === bulkRestoreRef.current
+          && currentSelection.size > 0
+          && Array.from(currentSelection).every((id) => restoredIds.has(id))) {
+          descriptionRef.current?.focus();
+        }
         setSelectedIds((prev) => {
           const next = new Set(prev);
           for (const id of restoredIds) next.delete(id);
@@ -148,6 +357,7 @@ export function TrashPage() {
         );
       }
     } finally {
+      busyRef.current = false;
       setIsBulkRestoring(false);
     }
   };
@@ -315,19 +525,29 @@ export function TrashPage() {
                           {daysUntilPurge(item.autoPurgeAt)} days until auto-purge
                         </span>
                       </div>
+                      {item.spaceMissing && (
+                        <p className="mt-1 text-xs text-muted-foreground">Original space no longer exists</p>
+                      )}
                     </div>
 
                     <div className="flex shrink-0 gap-2">
                       <Button
-                        onClick={() => handleRestore(item.id)}
-                        disabled={restoreMutation.isPending || isBulkRestoring}
-                        isLoading={restoreMutation.isPending && !isBulkRestoring}
+                        ref={(node) => {
+                          if (node) restoreControlsRef.current.set(item.id, node);
+                          else restoreControlsRef.current.delete(item.id);
+                        }}
+                        onClick={() => handleRestore(item.id, item.title)}
+                        aria-label={`Restore ${item.title}`}
+                        aria-disabled={restoreBusy}
+                        aria-busy={restoringPageId === item.id || undefined}
                         variant="secondary"
                         size="sm"
-                        leftIcon={!restoreMutation.isPending ? <RotateCcw size={14} /> : undefined}
+                        leftIcon={restoringPageId === item.id
+                          ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                          : <RotateCcw size={14} aria-hidden="true" />}
                         data-testid={`restore-btn-${item.id}`}
                       >
-                        Restore
+                        {restoringPageId === item.id ? 'Restoring…' : 'Restore'}
                       </Button>
                     </div>
                   </div>
@@ -355,12 +575,15 @@ export function TrashPage() {
               <div className="h-4 w-px bg-border" />
 
               <Button
+                ref={bulkRestoreRef}
                 onClick={handleBulkRestore}
-                disabled={isBulkRestoring}
-                isLoading={isBulkRestoring}
+                aria-disabled={restoreBusy}
+                aria-busy={isBulkRestoring || undefined}
                 variant="primary"
                 size="sm"
-                leftIcon={!isBulkRestoring ? <RotateCcw size={14} /> : undefined}
+                leftIcon={isBulkRestoring
+                  ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                  : <RotateCcw size={14} aria-hidden="true" />}
                 data-testid="trash-bulk-restore-btn"
               >
                 Restore Selected
@@ -378,6 +601,28 @@ export function TrashPage() {
           </m.div>
         )}
       </AnimatePresence>
+      {rehomeRequest && (
+        <RestoreTargetDialog
+          request={rehomeRequest}
+          busy={restoreBusy}
+          contentRef={dialogRef}
+          onTargetChange={(targetSpaceKey) => {
+            setRehomeRequest((current) => current ? { ...current, targetSpaceKey } : null);
+          }}
+          onRestore={(targetSpaceKey) => {
+            void handleRestore(rehomeRequest.pageId, rehomeRequest.title, { targetSpaceKey });
+          }}
+          onCancel={() => { if (!busyRef.current) setRehomeRequest(null); }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (!aliveRef.current || document.activeElement !== document.body) return;
+            const origin = dialogOriginRef.current;
+            dialogOriginRef.current = null;
+            (origin ? restoreControlsRef.current.get(origin) : null)?.focus();
+            if (document.activeElement === document.body) descriptionRef.current?.focus();
+          }}
+        />
+      )}
     </div>
   );
 }

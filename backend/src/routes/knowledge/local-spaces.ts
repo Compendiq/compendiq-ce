@@ -311,31 +311,46 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const { key } = KeyParamSchema.parse(request.params);
 
-    const existing = await query<{ source: string }>(
-      'SELECT source FROM spaces WHERE space_key = $1',
-      [key],
-    );
-    if (existing.rows.length === 0) {
-      throw fastify.httpErrors.notFound('Space not found');
-    }
-    if (existing.rows[0]!.source !== 'local') {
-      throw fastify.httpErrors.badRequest('Cannot delete a Confluence-synced space');
-    }
-
-    // Check if space has pages — require cascade or empty
-    const pageCount = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
-      [key],
-    );
-    const pageCountRow = pageCount.rows[0];
-    if (!pageCountRow) throw new Error('Expected a row from COUNT query');
-    if (parseInt(pageCountRow.count, 10) > 0) {
-      throw fastify.httpErrors.conflict(
-        'Space still has pages. Delete or move all pages first.',
+    const txClient = await getPool().connect();
+    let releaseError: Error | undefined;
+    try {
+      await txClient.query('BEGIN');
+      // Restore holds final spaces FOR SHARE; lock before the live-page count.
+      const existing = await txClient.query<{ source: string }>(
+        'SELECT source FROM spaces WHERE space_key = $1 FOR UPDATE',
+        [key],
       );
-    }
+      if (existing.rows.length === 0) {
+        throw fastify.httpErrors.notFound('Space not found');
+      }
+      if (existing.rows[0]!.source !== 'local') {
+        throw fastify.httpErrors.badRequest('Cannot delete a Confluence-synced space');
+      }
 
-    await query('DELETE FROM spaces WHERE space_key = $1', [key]);
+      const pageCount = await txClient.query<{ count: string }>(
+        'SELECT COUNT(*) as count FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
+        [key],
+      );
+      const pageCountRow = pageCount.rows[0];
+      if (!pageCountRow) throw new Error('Expected a row from COUNT query');
+      if (parseInt(pageCountRow.count, 10) > 0) {
+        throw fastify.httpErrors.conflict(
+          'Space still has pages. Delete or move all pages first.',
+        );
+      }
+
+      await txClient.query('DELETE FROM spaces WHERE space_key = $1', [key]);
+      await txClient.query('COMMIT');
+    } catch (error) {
+      try {
+        await txClient.query('ROLLBACK');
+      } catch (rollbackError) {
+        releaseError = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+      }
+      throw error;
+    } finally {
+      txClient.release(releaseError);
+    }
 
     // Cross-user on purpose — see the POST handler above (#352 pattern).
     await cache.invalidateAcrossUsers('spaces');
