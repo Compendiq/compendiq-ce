@@ -30,6 +30,36 @@ are read directly from the current URL, including on Back/Forward while
 clear-focus and picker selection push entries. Keep unrelated URL parameters
 when editing filters, and keep the local graph request keyed on restored filters.
 
+## Page identifier boundaries (#1739)
+
+`PagePrimaryKeySchema` in `packages/contracts/src/schemas/page-id.ts` is the
+single local page-PK boundary: positive ASCII-decimal IDs in1–2147483647,
+normalizing decimal padding to a number and retaining numeric body inputs.
+PK-only routes (drafts, trash restore, PDF export, pins, move/reorder/breadcrumb
+and page-ID inputs to comments, analytics, connections, attachments, relocation,
+baselines and AI policy) validate before SQL or effects. Invalid inputs are400,
+except collab's existing HTTP404 / upgraded WS4404 `not_found` mapping.
+
+Legacy detail/CRUD, tags, verification, icon, presence, versions and pasted-image
+routes use `toPageIdInt4` from `backend/src/core/utils/page-id-text.ts` only to
+choose their PK arm. An in-range decimal ID keeps PK precedence, with no
+Confluence fallback after a PK miss or denial. Otherwise bind the original
+Confluence string verbatim, including huge IDs and their literal zero padding;
+never round, trim or int4-cap that arm. Tag routes hand the resolved PK to the
+existing services so a second lookup cannot reinterpret the raw identifier.
+
+Existing true-dual hierarchy/parent/bulk lookups retain textual PK comparisons,
+unbounded `toPageIdText` normalization on only that arm, and their visibility
+and ambiguity guards. `CreatePageSchema.parentId` stays dual/unbounded.
+Only Notion import's local destination `parentId` is bounded; external Notion,
+Confluence, comment/template and attachment resource IDs are not page PKs.
+
+Keep existing response contracts: an unresolved/inaccessible versions list is
+200 `{ versions: [], pageId: raw }`; presence DELETE is a204 no-op, while
+presence GET resolves and authorizes before SSE headers. Missing valid PKs
+retain each route's normal refusal. Validation grants no authority and changes
+none of the hierarchy, owner, trash-batch or writer fences below.
+
 ## Standalone Trash Cascade (#1636)
 
 Trashing a standalone article takes its WHOLE subtree, so the delete, the

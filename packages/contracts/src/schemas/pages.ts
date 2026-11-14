@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PageIconSchema } from './page-icon.js';
+import { PagePrimaryKeySchema } from './page-id.js';
 import {
   PageFreezeDetailFieldsSchema,
   PageFreezeSummaryFieldsSchema,
@@ -80,7 +81,8 @@ const ConnectionVisitSchema = z.object({
 const ConnectionClickSchema = z.object({
   event: z.literal('connection_click'),
   visitId: z.string().uuid(),
-  targetPageId: z.string().regex(/^[1-9]\d*$/),
+  targetPageId: z.string().regex(/^[1-9]\d*$/)
+    .refine((id) => PagePrimaryKeySchema.safeParse(id).success, 'Invalid page ID'),
   group: z.enum(['linked', 'section', 'related']),
 }).strict();
 
@@ -192,8 +194,8 @@ export const CreatePageSchema = z.object({
    * Labels to apply at creation (#1133). Carried here rather than applied by a
    * follow-up `PUT /pages/:id/labels` because the id this route returns is
    * ambiguous: for a Confluence create it is the *Confluence content id*, which
-   * is numeric, and the labels route reads a numeric id as a database primary
-   * key — so the follow-up would silently label a different page.
+   * may be numeric, and the labels route treats an in-range numeric id as a
+   * database primary key — so the follow-up could silently label a different page.
    *
    * Bounds mirror the Markdown-import route the front-matter comes from.
    */
@@ -552,7 +554,7 @@ export const AdminDuplicatesQuerySchema = z.object({
 });
 
 export const BatchExportBodySchema = z.object({
-  pageIds: z.array(z.coerce.number().int().positive()).min(1).max(50),
+  pageIds: z.array(PagePrimaryKeySchema).min(1).max(50),
 });
 
 export type DuplicatesQuery = z.infer<typeof DuplicatesQuerySchema>;

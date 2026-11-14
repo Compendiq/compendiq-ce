@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Page and draft identifier boundaries (#1739):** invalid local page IDs are
+  rejected before integer SQL casts or side effects. Legacy dual-capable routes
+  retain valid local-PK precedence and resolve large Confluence IDs as exact
+  text, preserving their access, ambiguity and missing-page responses.
 - **Deep search pins only identifiers found in the user's own question (#1718):**
   the paraphrase legs of a deep search now pass `pinIdentifiers: false`, so
   deep search pins only what the #1107 detector finds in the question itself,

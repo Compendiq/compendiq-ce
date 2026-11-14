@@ -30,7 +30,7 @@ import { materializeDrawioPreviews } from '../../core/services/drawio-previews.j
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
-import { toPageIdText } from '../../core/utils/page-id-text.js';
+import { toPageIdInt4, toPageIdText } from '../../core/utils/page-id-text.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   startBulkJob,
@@ -73,7 +73,7 @@ import {
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { pageAiPolicyRoutes } from './page-ai-policy.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
-import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, type PageLifecycleState } from '@compendiq/contracts';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, PagePrimaryKeySchema, type PageLifecycleState } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
@@ -274,6 +274,7 @@ const BulkReplaceTagsSchema = z
     },
   );
 const IdParamSchema = z.object({ id: z.string().min(1) });
+const PrimaryKeyParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 const ImageUploadSchema = z.object({
   dataUri: z.string().max(15_000_000), // ~10MB in base64
@@ -1328,10 +1329,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    // Determine lookup strategy: numeric ids use the integer PK, strings use confluence_id
+    // In-range decimal ids use the PK; other identifiers keep their raw Confluence text.
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
 
     const result = await query<{
       id: number;
@@ -1424,10 +1425,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.verified_at, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
               cp.baseline_id, cp.frozen_version
        FROM pages cp
-       WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
+       WHERE ${primaryKey !== null ? 'cp.id = $1' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL
          AND ${visiblePagesPredicate(3, 2, 'cp')}`,
-      [isNumericId ? parseInt(id, 10) : id, userId, accessibleSpaces],
+      [primaryKey ?? id, userId, accessibleSpaces],
     );
 
     if (result.rows.length === 0) {
@@ -1872,8 +1873,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/:id/restore - restore a soft-deleted standalone article from trash
-  fastify.post('/pages/:id/restore', async (request, reply) => {
-    const { id } = IdParamSchema.parse(request.params);
+  fastify.post<{ Params: { id: string } }>('/pages/:id/restore', async (request, reply) => {
+    const { id } = PrimaryKeyParamSchema.parse(request.params);
+    const rawId = request.params.id;
     const userId = request.userId;
 
     const restored = await withHierarchyCascadeTransaction(async (client) => {
@@ -1999,7 +2001,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     } else {
       await cache.invalidate(userId, 'pages');
     }
-    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id), {
+    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', rawId, {
       source: 'standalone',
       title: restored.page.title,
       restoredCount: restored.restoredCount,
@@ -2410,7 +2412,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (unpaired) return unpaired;
     const userId = request.userId;
 
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
 
     // Load the page to determine source
     const existing = await query<{
@@ -2424,8 +2426,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `SELECT id, version, space_key, source, created_by_user_id, visibility,
               confluence_id, deleted_at, page_type, content_revision::text,
               lifecycle_revision::text, body_storage, body_html
-         FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
-      [isNumericId ? parseInt(id, 10) : id],
+         FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
+      [primaryKey ?? id],
     );
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
@@ -2934,7 +2936,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Parse query for permanent flag
     const queryParams = z.object({ permanent: z.string().optional() }).parse(request.query);
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
 
     // Load the page to determine source
     const existing = await query<{
@@ -2944,8 +2946,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT id, source, created_by_user_id, confluence_id, space_key, visibility,
               content_revision::text, lifecycle_revision::text
-         FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
-      [isNumericId ? parseInt(id, 10) : id],
+         FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
+      [primaryKey ?? id],
     );
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
@@ -3365,10 +3367,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // PUT /api/pages/:id/draft — save draft (does not affect live content)
   fastify.put('/pages/:id/draft', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const body = SaveDraftSchema.parse(request.body);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
@@ -3414,9 +3415,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // GET /api/pages/:id/draft — get draft content
   fastify.get('/pages/:id/draft', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     // Same caller-bound read rule as GET /pages/:id (space access, standalone
     // visibility and page restrictions). An unreadable page is 404 exactly
@@ -3450,9 +3450,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // POST /api/pages/:id/draft/publish — atomically publish draft to live
   fastify.post('/pages/:id/draft/publish', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     const existing = await query<{
       id: number; version: number; title: string;
@@ -3660,9 +3659,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // DELETE /api/pages/:id/draft — discard draft
   fastify.delete('/pages/:id/draft', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
@@ -4836,15 +4834,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Verify the page exists and the user has access
     // Support both integer PK (standalone pages) and confluence_id (Confluence pages)
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
     const pageResult = await query<ImageUploadPage>(
       `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id,
               p.space_key, p.visibility, p.content_revision::text,
               p.lifecycle_revision::text
        FROM pages p
-       WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
+       WHERE ${primaryKey !== null ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
-      [isNumericId ? Number(id) : id],
+      [primaryKey ?? id],
     );
 
     if (pageResult.rows.length === 0) {
@@ -4937,15 +4935,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Verify the page exists and the user has access. Mirrors the inline
     // upload route's logic exactly so the two stay aligned.
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
     const pageResult = await query<ImageUploadPage>(
       `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id,
               p.space_key, p.visibility, p.content_revision::text,
               p.lifecycle_revision::text
        FROM pages p
-       WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
+       WHERE ${primaryKey !== null ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
-      [isNumericId ? Number(id) : id],
+      [primaryKey ?? id],
     );
     if (pageResult.rows.length === 0) {
       return reply.status(404).send({

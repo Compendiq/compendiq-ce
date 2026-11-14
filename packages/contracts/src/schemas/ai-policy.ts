@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PagePrimaryKeySchema } from './page-id.js';
 
 /**
  * Article AI policy (SPEC-CORE-001/002). Ordered from least to most strict:
@@ -119,7 +120,6 @@ export type AiPolicyAdmissionBlockReason = (typeof AI_POLICY_ADMISSION_BLOCK_REA
 /** Current provenance schema version written with exchanges and caches. */
 export const AI_POLICY_PROVENANCE_VERSION = 1;
 
-const PageIdSchema = z.coerce.number().int().positive();
 const RevisionSchema = z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 /** PUT /api/pages/:id/ai-policy */
@@ -133,7 +133,7 @@ export type UpdatePageAiPolicyInput = z.infer<typeof UpdatePageAiPolicySchema>;
 export const BulkUpdatePageAiPolicySchema = z.object({
   aiPolicy: AiPolicyInputSchema,
   items: z.array(z.object({
-    pageId: PageIdSchema,
+    pageId: PagePrimaryKeySchema,
     expectedRevision: RevisionSchema,
   }).strict()).min(1).max(1000),
 }).strict().superRefine((value, ctx) => {
