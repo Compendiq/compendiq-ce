@@ -30,6 +30,36 @@ are read directly from the current URL, including on Back/Forward while
 clear-focus and picker selection push entries. Keep unrelated URL parameters
 when editing filters, and keep the local graph request keyed on restored filters.
 
+## Page identifier boundaries (#1739)
+
+`PagePrimaryKeySchema` in `packages/contracts/src/schemas/page-id.ts` is the
+single local page-PK boundary: positive ASCII-decimal IDs in1–2147483647,
+normalizing decimal padding to a number and retaining numeric body inputs.
+PK-only routes (drafts, trash restore, PDF export, pins, move/reorder/breadcrumb
+and page-ID inputs to comments, analytics, connections, attachments, relocation,
+baselines and AI policy) validate before SQL or effects. Invalid inputs are400,
+except collab's existing HTTP404 / upgraded WS4404 `not_found` mapping.
+
+Legacy detail/CRUD, tags, verification, icon, presence, versions and pasted-image
+routes use `toPageIdInt4` from `backend/src/core/utils/page-id-text.ts` only to
+choose their PK arm. An in-range decimal ID keeps PK precedence, with no
+Confluence fallback after a PK miss or denial. Otherwise bind the original
+Confluence string verbatim, including huge IDs and their literal zero padding;
+never round, trim or int4-cap that arm. Tag routes hand the resolved PK to the
+existing services so a second lookup cannot reinterpret the raw identifier.
+
+Existing true-dual hierarchy/parent/bulk lookups retain textual PK comparisons,
+unbounded `toPageIdText` normalization on only that arm, and their visibility
+and ambiguity guards. `CreatePageSchema.parentId` stays dual/unbounded.
+Only Notion import's local destination `parentId` is bounded; external Notion,
+Confluence, comment/template and attachment resource IDs are not page PKs.
+
+Keep existing response contracts: an unresolved/inaccessible versions list is
+200 `{ versions: [], pageId: raw }`; presence DELETE is a204 no-op, while
+presence GET resolves and authorizes before SSE headers. Missing valid PKs
+retain each route's normal refusal. Validation grants no authority and changes
+none of the hierarchy, owner, trash-batch or writer fences below.
+
 ## Standalone Trash Cascade (#1636)
 
 Trashing a standalone article takes its WHOLE subtree, so the delete, the
@@ -66,6 +96,19 @@ detects it and the delete, bulk delete and restore all answer 409
 enforces for `/move` and `/relocate` (#1166) and `resolveBulkSelection` for the
 bulk routes (#1167). Picking a winner is not available: the stored key stays
 ambiguous, so one reader follows one candidate and the next reader the other.
+
+Standalone creation (`POST /api/pages`, #1743) resolves a supplied parent by
+numeric PK text or exact Confluence content ID, then stores
+`parentKeyFor(source, id, confluence_id)` from that resolved row: a standalone
+parent's PK as text, or a Confluence parent's content ID. Normalize padding
+only on the PK lookup arm; a standalone row's historical Confluence metadata
+must not become its stored parent key. Reject empty parent text before lookup,
+even if an existing row has an empty Confluence ID. Missing, deleted or
+ambiguous parents receive the same generic 400 without collision metadata;
+omission still creates a NULL-parent root and explicit JSON null is still a
+schema error. Keep the existing same-local-space check and ownership-agnostic
+parent validation: cascade authorization remains separate below. This fixes
+new creations only; existing padded `parent_id` rows are not repaired.
 
 **A cascade may only touch rows its caller may act on.** Both cascades, the
 bulk cascade and `descendantCount` all carry TWO guards: `source =
@@ -135,6 +178,15 @@ the row's visibility, including Confluence rows. The list, count and ILIKE
 fallback share the predicate; the cache identity includes visibility and is
 versioned when its shape changes. Filter-mode bulk selection uses the same
 visibility test. This is a filter, not a replacement for the access predicate.
+
+**Page date filters (#1738).** Page lists, search validation and filter-mode
+bulk boundaries share `PageDateFilterSchema` from contracts; do not add a
+second parser or normalize its string output. The exact supported profile and
+compatibility restrictions are in [API date filters](../API.md#page-date-filters).
+Keep caller visibility/trash predicates and raw inclusive timestamp bounds:
+date-only `dateTo` includes midnight itself, but excludes later that day in the
+PostgreSQL session TimeZone. Search validates dates before mode dispatch without
+adding date filtering to semantic/hybrid retrieval.
 
 Local-space and shared space lists remain uncached because their mutable space
 metadata and caller-visible page count/home page belong to independent

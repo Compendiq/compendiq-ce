@@ -107,6 +107,14 @@ The sidebar's space-home projection detaches the configured homepage from its
 actual parent before promoting its children to roots. Keep the original page
 IDs for keyboard navigation, and retain the sole-homepage fallback (#1815).
 
+Standalone creation stores the resolved parent's source-aware `parentKeyFor`
+key, not raw request text (#1743). Parent resolution compares identifiers as
+text; only the PK arm normalizes padding, never the Confluence content arm.
+Reject explicit empty parent text before lookup; omission remains a NULL root.
+Parent validation stays ownership-agnostic; `page-subtree.ts` retains its
+separate source/owner guards. Existing padded parent rows are not repaired.
+See `docs/claude/pages-and-confluence.md`.
+
 ## Tech Stack (highlights, not a manifest)
 
 Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-dim `halfvec` measured/recommended — #1114) · BullMQ (toggleable via `USE_BULLMQ`) · jose / bcrypt · React 19 · TailwindCSS 4 · Radix · TanStack Query · TipTap v3 · Zustand · `turndown` + `jsdom` for content conversion · `pdf-lib` · `nodemailer`. Full deps in `package.json`.
@@ -117,8 +125,19 @@ Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-
 2. **Zero default secrets** — `NODE_ENV=production` MUST fail to start if `JWT_SECRET` or `PAT_ENCRYPTION_KEY` is default or < 32 chars.
 3. **LLM safety** — sanitize user content before sending (prompt-injection guard in `core/utils/sanitize-llm-input.ts`); sanitize output before rendering.
 4. **Validation** — Zod schemas from `@compendiq/contracts` on every API boundary. Parameterized SQL only.
+   Page PK inputs use `PagePrimaryKeySchema`; legacy numeric-PK/Confluence routes
+   use `toPageIdInt4` without changing the raw Confluence arm. Preserve each
+   route's missing/denied response and existing ambiguity rules. Never int4-cap
+   Confluence resource IDs or `CreatePageSchema.parentId`; see *Page identifier
+   boundaries* in `docs/claude/pages-and-confluence.md`.
 5. **Auth** — `fastify.authenticate` on every protected route. Public exceptions: `/api/health`, `/api/auth/*`. Access and refresh JWTs share `JWT_SECRET` and issuer, so purpose lives in the signed `typ` header: access `at+jwt`, refresh `rt+jwt`. `verifyToken()` is the only bearer verifier (HTTP, collab socket, logout) and requires `at+jwt`; the refresh decoder requires `rt+jwt` plus `jti` + `family`, with no exception for unmarked tokens (#1683). A new token kind signed with `JWT_SECRET` needs its own `typ` and verifier.
 6. **Infra isolation** — Postgres / Redis / Ollama must not bind `0.0.0.0` in production. Use Docker internal networks.
+
+**Page date filters (#1738).** Lists, search and bulk filters use the shared
+contracts `PageDateFilterSchema`; invalid/out-of-profile dates return400 before
+filter SQL. Keep raw strings, inclusive bounds and date-only `dateTo` at session
+midnight, not end-of-day. Exact formats and compatibility restrictions:
+`docs/API.md#page-date-filters`.
 
 **First-administrator bootstrap (#1661).** Migration 032's `__system__` admin
 owns built-in templates but is never a real operator. Registration policy,

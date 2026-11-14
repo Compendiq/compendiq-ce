@@ -22,6 +22,7 @@ import {
   RelocateError,
 } from '../../domains/knowledge/services/page-relocate-service.js';
 import { z } from 'zod';
+import { PagePrimaryKeySchema } from '@compendiq/contracts';
 
 const CreateLocalSpaceSchema = z.object({
   key: z.string().min(1).max(50).regex(/^[A-Z0-9_]+$/, 'Space key must be uppercase alphanumeric with underscores'),
@@ -37,9 +38,6 @@ const UpdateLocalSpaceSchema = z.object({
 });
 
 const KeyParamSchema = z.object({ key: z.string().min(1) });
-
-/** Largest value `pages.id` can hold — the column is SERIAL, i.e. int4. */
-const MAX_PAGE_ID = 2147483647;
 
 /**
  * `:id` for the three routes below is the moved/reordered page's own
@@ -62,12 +60,7 @@ const MAX_PAGE_ID = 2147483647;
  * local row by its primary key, the frontend sends exactly that, and widening
  * them would change which pages they can reach rather than fix an error.
  */
-const IdParamSchema = z.object({
-  id: z
-    .string()
-    .min(1)
-    .refine((v) => /^\d+$/.test(v) && Number(v) <= MAX_PAGE_ID, 'Invalid page ID'),
-});
+const IdParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 const MovePageSchema = z.object({
   parentId: z.union([z.string(), z.number()]).nullable(),
@@ -478,9 +471,10 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
   });
 
   // PUT /api/pages/:id/move - move page to different parent/space
-  fastify.put('/pages/:id/move', async (request) => {
+  fastify.put<{ Params: { id: string } }>('/pages/:id/move', async (request) => {
     const userId = request.userId;
     const { id } = IdParamSchema.parse(request.params);
+    const rawId = request.params.id;
     const body = MovePageSchema.parse(request.body);
 
     // Look up the page. Only `id` and `space_key` are needed here: the
@@ -758,21 +752,22 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     // Moving one page can move a mixed-visibility subtree and changes hierarchy
     // for every reader who can see any affected row.
     await cache.invalidateAcrossUsers('pages');
-    await logAuditEvent(userId, 'PAGE_MOVED', 'page', String(id),
+    await logAuditEvent(userId, 'PAGE_MOVED', 'page', rawId,
       { parentId: moved.parentId, spaceKey: moved.spaceKey }, request);
 
     return moved;
   });
 
   // PUT /api/pages/:id/reorder - reorder page within siblings
-  fastify.put('/pages/:id/reorder', async (request) => {
+  fastify.put<{ Params: { id: string } }>('/pages/:id/reorder', async (request) => {
     const userId = request.userId;
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = IdParamSchema.parse(request.params);
+    const rawId = request.params.id;
     const body = ReorderPageSchema.parse(request.body);
 
     const existing = await query<{ id: number }>(
       'SELECT id FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [id],
+      [pageId],
     );
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
@@ -792,7 +787,6 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     // splice the dragged id in at the requested drop index, then persist each
     // row's new position. Runs on a dedicated client inside a transaction so
     // the multi-row renumber commits atomically.
-    const pageId = parseInt(String(id), 10);
     let newIndex = body.sortOrder;
     const txClient = await getPool().connect();
     try {
@@ -854,7 +848,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     // Reordering a shared/Confluence sibling changes every authorized reader's
     // tree, so the per-user cache namespace must be invalidated globally.
     await cache.invalidateAcrossUsers('pages');
-    await logAuditEvent(userId, 'PAGE_REORDERED', 'page', String(id),
+    await logAuditEvent(userId, 'PAGE_REORDERED', 'page', rawId,
       { sortOrder: newIndex }, request);
 
     return { id: pageId, sortOrder: newIndex };

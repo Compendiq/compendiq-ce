@@ -301,3 +301,76 @@ describe('NotionImportStatusSchema', () => {
     expect(() => NotionImportStatusSchema.parse({ status: 'idle', token: 'secret' })).toThrow();
   });
 });
+
+describe('#1739 existing Notion local-parent contract', () => {
+  const accepted = [
+    { name: 'one-number', input: 1, value: '1', red: false },
+    { name: 'max-number', input: 2_147_483_647, value: '2147483647', red: false },
+    { name: 'one-string', input: '1', value: '1', red: false },
+    { name: 'max-string', input: '2147483647', value: '2147483647', red: false },
+    { name: 'padded-one', input: '0001', value: '1', red: true },
+    { name: 'padded-max', input: '0002147483647', value: '2147483647', red: true },
+    { name: 'long-padded-one', input: `${'0'.repeat(256)}1`, value: '1', red: true },
+    { name: 'long-padded-max', input: `${'0'.repeat(256)}2147483647`, value: '2147483647', red: true },
+  ];
+  const rejected: Array<{ name: string; input: unknown; red?: boolean }> = [
+    { name: 'zero-number', input: 0, red: true },
+    { name: 'zero-string', input: '0', red: true },
+    { name: 'negative-number', input: -1, red: true },
+    { name: 'negative-string', input: '-1', red: true },
+    { name: 'overbound-number', input: 2_147_483_648, red: true },
+    { name: 'overbound-string', input: '2147483648', red: true },
+    { name: 'unsafe-number', input: 9_007_199_254_740_992, red: true },
+    { name: 'unsafe-string', input: '9007199254740993', red: true },
+    { name: 'fraction-number', input: 1.5, red: true },
+    { name: 'nan', input: NaN },
+    { name: 'positive-infinity', input: Infinity },
+    { name: 'negative-infinity', input: -Infinity },
+    { name: 'rounded-fraction-string', input: '2147483647.00000001', red: true },
+    { name: 'decimal-string', input: '1.0', red: true },
+    { name: 'exponent-string', input: '1e3', red: true },
+    { name: 'hex-string', input: '0x10', red: true },
+    { name: 'plus-sign', input: '+1', red: true },
+    { name: 'surrounding-space', input: ' 1 ', red: true },
+    { name: 'trailing-newline', input: '1\n', red: true },
+    { name: 'alphabetic', input: 'abc', red: true },
+    { name: 'empty', input: '', red: true },
+    { name: 'unicode-digit', input: '١', red: true },
+    { name: 'true', input: true },
+    { name: 'false', input: false },
+    { name: 'null', input: null },
+    { name: 'object', input: {} },
+    { name: 'empty-array', input: [] },
+    { name: 'singleton-array', input: [1] },
+    { name: 'overbound-decimal', input: '2147483648.0', red: true },
+    { name: 'negative-zero-string', input: '-0', red: true },
+    { name: 'leading-tab', input: '\t1', red: true },
+    { name: 'padded-zero', input: '000', red: true },
+    { name: 'infinity-string', input: 'Infinity', red: true },
+  ];
+  for (const entry of accepted) {
+    it(`#1739 ${entry.red ? 'RED' : 'CONTROL'} Notion parent normalizes ${entry.name}`, () => {
+      const parsed = NotionImportRequestSchema.parse({ pageIds: ['notes'], parentId: entry.input });
+      expect(parsed.parentId).toBe(entry.value);
+      expect(typeof parsed.parentId).toBe('string');
+      expect(parsed.pageIds).toEqual(['notes']);
+      expect(parsed.visibility).toBe('shared');
+    });
+  }
+  for (const entry of rejected) {
+    it(`#1739 ${entry.red ? 'RED' : 'CONTROL'} Notion parent rejects ${entry.name}`, () => {
+      expect(NotionImportRequestSchema.safeParse({ pageIds: ['notes'], parentId: entry.input }).success).toBe(false);
+    });
+  }
+  it('#1739 CONTROL Notion parent omission remains optional', () => {
+    expect(NotionImportRequestSchema.parse({ pageIds: ['notes'] })).not.toHaveProperty('parentId');
+  });
+  it('#1739 CONTROL explicit undefined Notion parent remains optional', () => {
+    expect(NotionImportRequestSchema.parse({ pageIds: ['notes'], parentId: undefined }).parentId).toBeUndefined();
+  });
+  for (const pageIds of [['notes', 'crm'], ['9007199254740993']]) {
+    it(`#1739 CONTROL Notion external resource IDs remain literal (${pageIds.join(',')})`, () => {
+      expect(NotionImportRequestSchema.parse({ pageIds, parentId: '1' }).pageIds).toEqual(pageIds);
+    });
+  }
+});
