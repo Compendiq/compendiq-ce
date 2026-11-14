@@ -9,6 +9,13 @@ Guidance for Claude Code working in this repo. Codex and other AI tools also rea
 Trash distinguishes a failed read from a successful empty list. A failed
 refresh retains cached results with a stale warning; retry keeps its control
 mounted and focusable until the request settles, then rehomes orphaned focus.
+Ordinary Restore is bodyless. Only the CURRENT `restore_space_missing`409
+with `canChooseTarget === true` permits an explicit local-space/`__local__`
+choice; false/missing/nonboolean means show the current refusal without a
+picker. Trash `spaceKey`/`spaceMissing`, messages and previous refusal keys
+are not authority. Rehome only the missing root key within its exact trash
+batch; a different missing batch key fails closed. Never auto-retry or repair
+already-live orphans; preserve the existing owner/source/ancestor guards.
 
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
