@@ -458,32 +458,46 @@ export async function fetchNotionWorkspaceTree(
   await classifyBoardLayouts(client, nodes, rawByKey);
   await classifyDatabases(client, nodes);
 
+  const roots = [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
   if (options.userId) {
     try {
-      const existing = await query<{ id: number; notion_page_id: string }>(
-        `SELECT id, lower(replace(notion_page_id, '-', '')) AS notion_page_id
-         FROM pages
-         WHERE created_by_user_id = $1
-           AND notion_page_id IS NOT NULL
-           AND deleted_at IS NULL`,
-        [options.userId],
-      );
-      const existingByNotionId = new Map<string, number>();
-      for (const row of existing.rows) {
-        existingByNotionId.set(row.notion_page_id, row.id);
-      }
-      for (const [key, node] of nodes) {
-        if ((node.type === 'page' || node.type === 'database') && existingByNotionId.has(key)) {
-          node.alreadyImported = true;
-          node.localPageId = existingByNotionId.get(key);
-        }
-      }
+      await refreshNotionImportedMarkers(roots, options.userId);
     } catch {
       // Graceful fallback if database is not reachable (e.g. mock unit tests)
     }
   }
 
-  return [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
+  return roots;
+}
+
+/** Apply current imported markers without changing unmatched nodes. */
+export async function refreshNotionImportedMarkers(nodes: NotionTreeNode[], userId: string): Promise<void> {
+  const existing = await query<{ id: number; notion_page_id: string }>(
+    `SELECT id, lower(replace(notion_page_id, '-', '')) AS notion_page_id
+         FROM pages
+         WHERE created_by_user_id = $1
+           AND notion_page_id IS NOT NULL
+           AND deleted_at IS NULL`,
+    [userId],
+  );
+  const existingByNotionId = new Map<string, number>();
+  for (const row of existing.rows) {
+    existingByNotionId.set(row.notion_page_id, row.id);
+  }
+
+  function markImported(treeNodes: NotionTreeNode[]): void {
+    for (const node of treeNodes) {
+      if (node.type === 'page' || node.type === 'database') {
+        const key = normalizeId(node.id);
+        if (existingByNotionId.has(key)) {
+          node.alreadyImported = true;
+          node.localPageId = existingByNotionId.get(key);
+        }
+      }
+      if (node.children.length > 0) markImported(node.children);
+    }
+  }
+  markImported(nodes);
 }
 
 /**
