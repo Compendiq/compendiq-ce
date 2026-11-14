@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { PagePrimaryKeySchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { logger } from '../../core/utils/logger.js';
@@ -7,7 +8,7 @@ import { logger } from '../../core/utils/logger.js';
 // --- Zod schemas ---
 
 const PageIdParamSchema = z.object({
-  pageId: z.coerce.number().int().positive(),
+  pageId: PagePrimaryKeySchema,
 });
 
 const CommentIdParamSchema = z.object({

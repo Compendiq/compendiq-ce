@@ -9,6 +9,8 @@
  * Redis ships 16 logical DBs (0–15). Isolation keys off
  * `VITEST_POOL_ID` (the reusable 1..maxWorkers slot), never
  * `VITEST_WORKER_ID` (that one increments per file).
+ * `TEST_DATABASE_NAMESPACE` optionally scopes Postgres database names;
+ * Redis logical DBs and pub/sub prefixes stay worker-scoped.
  */
 
 export const MAX_TEST_WORKERS = 8;
@@ -35,8 +37,14 @@ export function workerIdFromEnv(
   return id;
 }
 
-export function workerDatabaseName(workerId: number): string {
-  return `${TEST_DATABASE_STEM}_w${workerId}`;
+export function workerDatabaseName(workerId: number, namespace?: string): string {
+  if (namespace === undefined) return `${TEST_DATABASE_STEM}_w${workerId}`;
+  if (!/^[a-z][a-z0-9_]{0,31}$/.test(namespace)) {
+    throw new Error(
+      `TEST_DATABASE_NAMESPACE must match /^[a-z][a-z0-9_]{0,31}$/, got ${JSON.stringify(namespace)}`,
+    );
+  }
+  return `${TEST_DATABASE_STEM}_${namespace}_w${workerId}`;
 }
 
 function withPathname(url: string, pathname: string): string {
@@ -45,8 +53,8 @@ function withPathname(url: string, pathname: string): string {
   return parsed.toString().replace(/\/$/, '');
 }
 
-export function workerPostgresUrl(baseUrl: string, workerId: number): string {
-  return withPathname(baseUrl, workerDatabaseName(workerId));
+export function workerPostgresUrl(baseUrl: string, workerId: number, namespace?: string): string {
+  return withPathname(baseUrl, workerDatabaseName(workerId, namespace));
 }
 
 export function maintenancePostgresUrl(postgresUrl: string): string {
@@ -67,18 +75,29 @@ export function applyWorkerIsolation(
   const id = workerIdFromEnv(env);
   const postgresBase = env.POSTGRES_TEST_URL ?? env.POSTGRES_URL ?? DEFAULT_POSTGRES_URL;
   const redisBase = env.REDIS_URL ?? DEFAULT_REDIS_URL;
-  const postgresUrl = workerPostgresUrl(postgresBase, id);
+  const postgresUrl = workerPostgresUrl(postgresBase, id, env.TEST_DATABASE_NAMESPACE);
   env.POSTGRES_URL = postgresUrl;
   env.POSTGRES_TEST_URL = postgresUrl;
   env.REDIS_URL = workerRedisUrl(redisBase, id);
 }
 
-export async function ensureWorkerDatabase(postgresUrl: string): Promise<void> {
+export async function ensureWorkerDatabase(
+  postgresUrl: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): Promise<void> {
+  const namespace = env.TEST_DATABASE_NAMESPACE;
+  const expectedName =
+    namespace === undefined ? undefined : workerDatabaseName(workerIdFromEnv(env), namespace);
   const dbName = new URL(postgresUrl).pathname.replace(/^\//, '');
-  if (!new RegExp(`^${TEST_DATABASE_STEM}_w\\d+$`).test(dbName)) {
+  if (
+    namespace === undefined
+      ? !new RegExp(`^${TEST_DATABASE_STEM}_w\\d+$`).test(dbName)
+      : dbName !== expectedName
+  ) {
     throw new Error(`Refusing to CREATE DATABASE ${JSON.stringify(dbName)}`);
   }
 
+  // Static pg import would cross the setup-free guard boundary before unsafe targets are refused.
   const { default: pg } = await import('pg');
   const client = new pg.Client({ connectionString: maintenancePostgresUrl(postgresUrl) });
   await client.connect();

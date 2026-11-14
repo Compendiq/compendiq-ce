@@ -1,12 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { KNOWLEDGE_GAP_PREDICATE_SQL, GAP_AVG_MAX_SCORE_SQL } from './_gap-predicate.js';
 import { z } from 'zod';
+import { PagePrimaryKeySchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 
 // ── Request schemas ────────────────────────────────────────────────────────────
 
-const IdParamSchema = z.object({ id: z.coerce.number().int().positive() });
+const IdParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 const FeedbackBodySchema = z.object({
   isHelpful: z.boolean(),

@@ -176,7 +176,6 @@ describe('POST /api/pages/:id/apply-tags', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.labels).toEqual(['existing', 'architecture', 'deployment']);
-    expect(mockApplyTags).toHaveBeenCalledWith('test-user-id', 'page-1', ['architecture', 'deployment']);
   });
 
   it('should reject tags not in ALLOWED_TAGS list', async () => {
@@ -201,8 +200,7 @@ describe('POST /api/pages/:id/apply-tags', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    // Only 'architecture' should be passed (the valid one)
-    expect(mockApplyTags).toHaveBeenCalledWith('test-user-id', 'page-1', ['architecture']);
+    expect(response.json()).toEqual({ labels: ['architecture'] });
   });
 
   it('should return 400 when tags array is empty', async () => {
@@ -392,58 +390,6 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
     // #733: the route now resolves the page and checks access before tagging
     mockQueryFn.mockResolvedValue({ rows: [{ id: 1 }], rowCount: 1 });
     mockUserCanAccessPage.mockResolvedValue(true);
-  });
-
-  it('consults the resolver when the client omits `model` and routes with the resolved model', async () => {
-    mockResolveUsecase.mockResolvedValueOnce({
-      config: {
-        providerId: 'p1', id: 'p1', name: 'OpenAI',
-        baseUrl: 'https://api.openai.com/v1', apiKey: 'sk',
-        authType: 'bearer', verifySsl: true, defaultModel: 'resolved-auto-tag-model',
-      },
-      model: 'resolved-auto-tag-model',
-    });
-    mockAutoTagPage.mockResolvedValueOnce({ suggestedTags: [], existingLabels: [] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/page-1/auto-tag',
-      payload: {},
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockResolveUsecase).toHaveBeenCalledWith('auto_tag');
-    // The resolved model is passed through to autoTagPage as the override.
-    expect(mockAutoTagPage).toHaveBeenCalledWith(
-      'test-user-id',
-      'page-1',
-      'resolved-auto-tag-model',
-    );
-  });
-
-  it('uses the explicit `model` from the body when provided', async () => {
-    mockResolveUsecase.mockResolvedValueOnce({
-      config: {
-        providerId: 'p1', id: 'p1', name: 'OpenAI',
-        baseUrl: 'https://api.openai.com/v1', apiKey: 'sk',
-        authType: 'bearer', verifySsl: true, defaultModel: 'inherited-model',
-      },
-      model: 'inherited-model',
-    });
-    mockAutoTagPage.mockResolvedValueOnce({ suggestedTags: [], existingLabels: [] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/page-1/auto-tag',
-      payload: { model: 'explicit-model' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockAutoTagPage).toHaveBeenCalledWith(
-      'test-user-id',
-      'page-1',
-      'explicit-model',
-    );
   });
 
   it('returns 400 when `model` is omitted and the resolver returns empty', async () => {

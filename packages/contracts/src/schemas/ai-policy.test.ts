@@ -169,3 +169,80 @@ describe('ai-policy contracts', () => {
     expect(PageAiPolicyWorkerFieldsSchema.safeParse({ aiPolicyBlockedStages: ['vision'] }).success).toBe(false);
   });
 });
+
+describe('#1739 existing bulk AI-policy page-ID consumer', () => {
+  const accepted = [
+    { name: 'one-number', input: 1, value: 1 },
+    { name: 'max-number', input: 2_147_483_647, value: 2_147_483_647 },
+    { name: 'one-string', input: '1', value: 1 },
+    { name: 'max-string', input: '2147483647', value: 2_147_483_647 },
+    { name: 'padded-one', input: '0001', value: 1 },
+    { name: 'padded-max', input: '0002147483647', value: 2_147_483_647 },
+    { name: 'long-padded-one', input: `${'0'.repeat(256)}1`, value: 1 },
+    { name: 'long-padded-max', input: `${'0'.repeat(256)}2147483647`, value: 2_147_483_647 },
+  ];
+  const rejected: Array<{ name: string; input: unknown; red?: boolean }> = [
+    { name: 'zero-number', input: 0 },
+    { name: 'zero-string', input: '0' },
+    { name: 'negative-number', input: -1 },
+    { name: 'negative-string', input: '-1' },
+    { name: 'overbound-number', input: 2_147_483_648, red: true },
+    { name: 'overbound-string', input: '2147483648', red: true },
+    { name: 'unsafe-number', input: 9_007_199_254_740_992 },
+    { name: 'unsafe-string', input: '9007199254740993' },
+    { name: 'fraction-number', input: 1.5 },
+    { name: 'nan', input: NaN },
+    { name: 'positive-infinity', input: Infinity },
+    { name: 'negative-infinity', input: -Infinity },
+    { name: 'rounded-fraction-string', input: '2147483647.00000001', red: true },
+    { name: 'decimal-string', input: '1.0', red: true },
+    { name: 'exponent-string', input: '1e3', red: true },
+    { name: 'hex-string', input: '0x10', red: true },
+    { name: 'plus-sign', input: '+1', red: true },
+    { name: 'surrounding-space', input: ' 1 ', red: true },
+    { name: 'trailing-newline', input: '1\n', red: true },
+    { name: 'alphabetic', input: 'abc' },
+    { name: 'empty', input: '' },
+    { name: 'unicode-digit', input: '١' },
+    { name: 'true', input: true, red: true },
+    { name: 'false', input: false },
+    { name: 'null', input: null },
+    { name: 'object', input: {} },
+    { name: 'empty-array', input: [] },
+    { name: 'singleton-array', input: [1], red: true },
+    { name: 'undefined', input: undefined },
+    { name: 'overbound-decimal', input: '2147483648.0', red: true },
+    { name: 'negative-zero-string', input: '-0' },
+    { name: 'leading-tab', input: '\t1', red: true },
+    { name: 'padded-zero', input: '000' },
+    { name: 'infinity-string', input: 'Infinity' },
+  ];
+  for (const entry of accepted) {
+    it(`#1739 CONTROL bulk-policy ${entry.name} keeps numeric output and revision`, () => {
+      const parsed = BulkUpdatePageAiPolicySchema.safeParse({
+        aiPolicy: 'all', items: [{ pageId: entry.input, expectedRevision: 0 }],
+      });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data).toEqual({
+          aiPolicy: 'all', items: [{ pageId: entry.value, expectedRevision: 0 }],
+        });
+      }
+    });
+  }
+  for (const entry of rejected) {
+    it(`#1739 ${entry.red ? 'RED' : 'CONTROL'} bulk-policy rejects ${entry.name}`, () => {
+      expect(BulkUpdatePageAiPolicySchema.safeParse({
+        aiPolicy: 'all', items: [{ pageId: entry.input, expectedRevision: 0 }],
+      }).success).toBe(false);
+    });
+  }
+  for (const invalid of [2_147_483_648, '2147483648']) {
+    it(`#1739 RED bulk-policy rejects the entire mixed list (${typeof invalid})`, () => {
+      expect(BulkUpdatePageAiPolicySchema.safeParse({
+        aiPolicy: 'all',
+        items: [{ pageId: 1, expectedRevision: 0 }, { pageId: invalid, expectedRevision: 0 }],
+      }).success).toBe(false);
+    });
+  }
+});

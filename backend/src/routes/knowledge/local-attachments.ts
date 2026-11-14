@@ -12,6 +12,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { PagePrimaryKeySchema } from '@compendiq/contracts';
 import {
   putLocalAttachments,
   getLocalAttachment,
@@ -57,11 +58,11 @@ const INLINE_SAFE_MIME_TYPES = new Set([
 ]);
 
 const PageIdParamSchema = z.object({
-  pageId: z.coerce.number().int().positive(),
+  pageId: PagePrimaryKeySchema,
 });
 
 const PageIdAndFilenameParamSchema = z.object({
-  pageId: z.coerce.number().int().positive(),
+  pageId: PagePrimaryKeySchema,
   filename: z.string().min(1).max(255),
 });
 

@@ -4,6 +4,7 @@ import { query } from '../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { logger } from '../../core/utils/logger.js';
+import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
@@ -21,14 +22,14 @@ export async function verificationRoutes(fastify: FastifyInstance) {
 
   /** Check that a page exists and the user has access to it. Accepts integer id or confluence_id string. */
   async function assertPageAccess(pageId: string, userId: string): Promise<number> {
-    const isNumeric = /^\d+$/.test(pageId);
+    const primaryKey = toPageIdInt4(pageId);
     const verifySpaces = await getUserAccessibleSpaces(userId);
     const check = await query<{ id: number }>(
       `SELECT p.id FROM pages p
-       WHERE ${isNumeric ? 'p.id = $2' : 'p.confluence_id = $2'}
+       WHERE ${primaryKey !== null ? 'p.id = $2' : 'p.confluence_id = $2'}
          AND p.deleted_at IS NULL
          AND ${visiblePagesPredicate(1, 3, 'p')}`,
-      [verifySpaces, isNumeric ? parseInt(pageId, 10) : pageId, userId],
+      [verifySpaces, primaryKey ?? pageId, userId],
     );
     if (check.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
@@ -109,7 +110,7 @@ export async function verificationRoutes(fastify: FastifyInstance) {
       `UPDATE pages SET
         review_interval_days = $1,
         next_review_at = CASE
-          WHEN verified_at IS NOT NULL THEN verified_at + ($1 || ' days')::INTERVAL
+          WHEN verified_at IS NOT NULL THEN verified_at + ($1::int || ' days')::INTERVAL
           ELSE next_review_at
         END
        WHERE id = $2
