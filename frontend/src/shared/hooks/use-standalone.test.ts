@@ -25,10 +25,9 @@ import {
   useMovePage,
 } from './use-standalone';
 
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+function createWrapper(queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+})) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return createElement(QueryClientProvider, { client: queryClient }, children);
   };
@@ -163,10 +162,69 @@ describe('use-standalone hooks', () => {
     it('posts restore request', async () => {
       const mock = mockFetch({ message: 'restored' });
       const { result } = renderHook(() => useRestorePage(), { wrapper: createWrapper() });
-      await result.current.mutateAsync('7');
+      await result.current.mutateAsync({ pageId: '7' });
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
       expect(url).toContain('/pages/7/restore');
       expect(opts.method).toBe('POST');
+      expect(opts.body).toBeUndefined();
+    });
+
+    // Post-delta hook controls; not part of the accepted original-code red proof.
+    it.each(['TARGET', '__local__'])('[H01] posts an explicitly chosen target %s', async (targetSpaceKey) => {
+      const mock = mockFetch({ restored: true });
+      const { result } = renderHook(() => useRestorePage(), { wrapper: createWrapper() });
+      await result.current.mutateAsync({ pageId: '7', body: { targetSpaceKey } });
+      const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/pages/7/restore');
+      expect(opts.method).toBe('POST');
+      expect(JSON.parse(String(opts.body))).toEqual({ targetSpaceKey });
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+
+    it('[H02] returns a missing-space refusal once even under retrying mutation defaults', async () => {
+      const client = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+          mutations: { retry: 2, retryDelay: 0 },
+        },
+      });
+      const message = 'The space "GONE" no longer exists. Choose a space to restore into.';
+      const mock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        statusCode: 409,
+        error: 'Conflict',
+        reason: 'restore_space_missing',
+        message,
+        missingSpaceKey: 'GONE',
+        canChooseTarget: true,
+      }), { status: 409, headers: { 'Content-Type': 'application/json' } }));
+      client.setQueryData(['trash'], { items: [], total: 0 });
+      client.setQueryData(['pages', 'tree', { spaceKey: 'TARGET' }], []);
+      const { result } = renderHook(() => useRestorePage(), { wrapper: createWrapper(client) });
+
+      await expect(result.current.mutateAsync({ pageId: '7' })).rejects.toMatchObject({
+        statusCode: 409,
+        reason: 'restore_space_missing',
+        message,
+        body: { missingSpaceKey: 'GONE', canChooseTarget: true },
+      });
+      expect(mock).toHaveBeenCalledTimes(1);
+      expect(client.getQueryState(['trash'])?.isInvalidated).toBe(false);
+      expect(client.getQueryState(['pages', 'tree', { spaceKey: 'TARGET' }])?.isInvalidated).toBe(false);
+    });
+
+    it('[H03] invalidates trash and page trees after a successful targeted restore', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(['trash'], { items: [], total: 0 });
+      client.setQueryData(['pages'], []);
+      client.setQueryData(['pages', 'tree', { spaceKey: 'TARGET' }], []);
+      const mock = mockFetch({ restored: true });
+      const { result } = renderHook(() => useRestorePage(), { wrapper: createWrapper(client) });
+
+      await result.current.mutateAsync({ pageId: '7', body: { targetSpaceKey: 'TARGET' } });
+      expect(client.getQueryState(['trash'])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(['pages'])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(['pages', 'tree', { spaceKey: 'TARGET' }])?.isInvalidated).toBe(true);
+      expect(mock).toHaveBeenCalledTimes(1);
     });
   });
 

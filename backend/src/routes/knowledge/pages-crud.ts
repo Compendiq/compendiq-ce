@@ -30,7 +30,7 @@ import { materializeDrawioPreviews } from '../../core/services/drawio-previews.j
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
-import { toPageIdText } from '../../core/utils/page-id-text.js';
+import { toPageIdInt4, toPageIdText } from '../../core/utils/page-id-text.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   startBulkJob,
@@ -67,13 +67,18 @@ import {
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import {
+  parentKeyFor,
+  assertIdentifierUnambiguous,
+  RelocateError,
+} from '../../domains/knowledge/services/page-relocate-service.js';
+import {
   getUserAccessibleSpaces,
   userCanAccessPage,
 } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { pageAiPolicyRoutes } from './page-ai-policy.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
-import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, type PageLifecycleState } from '@compendiq/contracts';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, RestorePageBodySchema, PagePrimaryKeySchema, type PageLifecycleState } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
@@ -274,6 +279,7 @@ const BulkReplaceTagsSchema = z
     },
   );
 const IdParamSchema = z.object({ id: z.string().min(1) });
+const PrimaryKeyParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 const ImageUploadSchema = z.object({
   dataUri: z.string().max(15_000_000), // ~10MB in base64
@@ -1293,11 +1299,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const result = await query<{
       id: number; title: string; source: string; visibility: string;
       deleted_at: Date; last_synced: Date; deleted_by: string;
+      space_key: string | null; space_missing: boolean;
     }>(
       `SELECT p.id, p.title, p.source, p.visibility, p.deleted_at, p.last_synced,
-              u.username AS deleted_by
+              u.username AS deleted_by, p.space_key,
+              (p.space_key IS NOT NULL AND p.space_key <> '__local__'
+               AND s.space_key IS NULL) AS space_missing
        FROM pages p
        JOIN users u ON u.id = p.created_by_user_id
+       LEFT JOIN spaces s ON s.space_key = p.space_key
        WHERE p.source = 'standalone' AND p.deleted_at IS NOT NULL AND p.created_by_user_id = $1
        ORDER BY p.deleted_at DESC`,
       [userId],
@@ -1309,6 +1319,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         title: row.title,
         source: row.source,
         visibility: row.visibility,
+        spaceKey: row.space_key,
+        spaceMissing: row.space_missing,
         deletedAt: row.deleted_at.toISOString(),
         createdAt: row.last_synced.toISOString(),
         deletedBy: row.deleted_by,
@@ -1328,10 +1340,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    // Determine lookup strategy: numeric ids use the integer PK, strings use confluence_id
+    // In-range decimal ids use the PK; other identifiers keep their raw Confluence text.
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
 
     const result = await query<{
       id: number;
@@ -1424,10 +1436,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.verified_at, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
               cp.baseline_id, cp.frozen_version
        FROM pages cp
-       WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
+       WHERE ${primaryKey !== null ? 'cp.id = $1' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL
          AND ${visiblePagesPredicate(3, 2, 'cp')}`,
-      [isNumericId ? parseInt(id, 10) : id, userId, accessibleSpaces],
+      [primaryKey ?? id, userId, accessibleSpaces],
     );
 
     if (result.rows.length === 0) {
@@ -1872,18 +1884,20 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/:id/restore - restore a soft-deleted standalone article from trash
-  fastify.post('/pages/:id/restore', async (request, reply) => {
-    const { id } = IdParamSchema.parse(request.params);
+  fastify.post<{ Params: { id: string } }>('/pages/:id/restore', async (request, reply) => {
+    const { id } = PrimaryKeyParamSchema.parse(request.params);
+    const rawId = request.params.id;
+    const body = RestorePageBodySchema.parse(request.body === undefined ? {} : request.body);
     const userId = request.userId;
 
     const restored = await withHierarchyCascadeTransaction(async (client) => {
       const existing = await client.query<{
         id: number; title: string; source: string; parent_id: string | null;
         created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
-        notion_page_id: string | null;
+        notion_page_id: string | null; space_key: string | null;
       }>(
         `SELECT id, title, source, parent_id, created_by_user_id, deleted_at, visibility,
-                notion_page_id
+                notion_page_id, space_key
            FROM pages WHERE id = $1`,
         [id],
       );
@@ -1965,11 +1979,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         id: number;
         visibility: string;
         baseline_id: string | null;
+        space_key: string | null;
       }>(
-        `SELECT id, visibility, baseline_id
+        `SELECT id, visibility, baseline_id, space_key
            FROM pages
           WHERE id = ANY($1::int[])
-          ORDER BY id`,
+          ORDER BY space_key COLLATE "C", id`,
         [batchIds],
       );
       const component: AuthorizedSubtreeComponent = {
@@ -2002,11 +2017,120 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       if (batchClash.rows.length > 0) {
         throw new PageWriteError(409, 'restore_import_conflict', 'A live import of this page already exists');
       }
+
+      const rootSpaceKey = page.space_key === '__local__' ? null : page.space_key;
+      const targetSpaceKey = body.targetSpaceKey === '__local__' ? null : body.targetSpaceKey ?? null;
+      // Probe the root first; retain every existing final space through commit.
+      const rootSpace = rootSpaceKey === null ? undefined : (await client.query<{
+        space_key: string; source: string;
+      }>(
+        'SELECT space_key, source FROM spaces WHERE space_key = $1 FOR SHARE',
+        [rootSpaceKey],
+      )).rows[0];
+      let rehome: { targetSpaceKey: string; missingSpaceKey: string } | undefined;
+      if (rootSpaceKey === null || rootSpace) {
+        if (body.targetSpaceKey !== undefined && targetSpaceKey !== rootSpaceKey) {
+          return {
+            refusal: {
+              statusCode: 400,
+              error: 'ValidationError',
+              reason: 'restore_target_not_applicable',
+              message: 'A restore target can only be chosen when the stored space no longer exists.',
+            },
+          };
+        }
+      } else {
+        if (body.targetSpaceKey === undefined) {
+          return {
+            refusal: {
+              statusCode: 409,
+              error: 'Conflict',
+              reason: 'restore_space_missing',
+              message: `The space "${rootSpaceKey}" no longer exists. Choose a space to restore into.`,
+              missingSpaceKey: rootSpaceKey,
+              canChooseTarget: true,
+            },
+          };
+        }
+        rehome = { targetSpaceKey: body.targetSpaceKey, missingSpaceKey: rootSpaceKey };
+      }
+
+      const remainingSpaceKeys = new Set<string>();
+      for (const row of batch.rows) {
+        if (row.space_key !== null && row.space_key !== '__local__' && row.space_key !== page.space_key) {
+          remainingSpaceKeys.add(row.space_key);
+        }
+      }
+      if (rehome && targetSpaceKey !== null) remainingSpaceKeys.add(targetSpaceKey);
+      const lockedSpaces = new Map<string, string>();
+      if (rootSpace) lockedSpaces.set(rootSpace.space_key, rootSpace.source);
+      if (remainingSpaceKeys.size > 0) {
+        const spaces = await client.query<{ space_key: string; source: string }>(
+          `SELECT space_key, source FROM spaces
+            WHERE space_key = ANY($1::text[])
+            ORDER BY space_key COLLATE "C"
+            FOR SHARE`,
+          [[...remainingSpaceKeys]],
+        );
+        for (const space of spaces.rows) lockedSpaces.set(space.space_key, space.source);
+      }
+      if (rehome && (
+        rehome.targetSpaceKey === rehome.missingSpaceKey ||
+        (targetSpaceKey !== null && lockedSpaces.get(targetSpaceKey) !== 'local')
+      )) {
+        return {
+          refusal: {
+            statusCode: 409,
+            error: 'Conflict',
+            reason: 'restore_target_space_invalid',
+            message: 'The selected restore space is unavailable. Choose an existing local space.',
+          },
+        };
+      }
+      // The nonlocking batch read is C-ordered for deterministic missing-key refusal.
+      const missingRetainedSpaceKey = batch.rows.find((row) =>
+        row.space_key !== null && row.space_key !== '__local__' &&
+        row.space_key !== rehome?.missingSpaceKey && !lockedSpaces.has(row.space_key),
+      )?.space_key;
+      if (missingRetainedSpaceKey !== undefined && missingRetainedSpaceKey !== null) {
+        return {
+          refusal: {
+            statusCode: 409,
+            error: 'Conflict',
+            reason: 'restore_space_missing',
+            message: `The space "${missingRetainedSpaceKey}" for another page in this trash batch no longer exists. This batch cannot be restored by choosing a target for this page.`,
+            missingSpaceKey: missingRetainedSpaceKey,
+            canChooseTarget: false,
+          },
+        };
+      }
+
+      let detachRoot = false;
+      if (rehome && parentResolution.kind === 'resolved' && parentResolution.parent.deletedAt === null) {
+        const parentSpace = (await client.query<{ space_key: string | null }>(
+          'SELECT space_key FROM pages WHERE id = $1',
+          [parentResolution.parent.id],
+        )).rows[0];
+        if (parentSpace) {
+          detachRoot = (parentSpace.space_key === '__local__' ? null : parentSpace.space_key) !== targetSpaceKey;
+        }
+      }
       const rows = await client.query<{ visibility: string }>(
-        'UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[]) RETURNING visibility',
-        [batchIds],
+        `UPDATE pages AS p
+            SET deleted_at = NULL,
+                space_key = CASE
+                  WHEN $2::text IS NOT NULL AND p.space_key = $2::text THEN $3::text
+                  ELSE p.space_key
+                END,
+                parent_id = CASE
+                  WHEN $4::boolean AND p.id = $5::int THEN NULL
+                  ELSE p.parent_id
+                END
+          WHERE p.id = ANY($1::int[])
+          RETURNING p.visibility`,
+        [batchIds, rehome?.missingSpaceKey ?? null, targetSpaceKey, detachRoot, page.id],
       );
-      return { page, restored: true, restoredCount: batchIds.length, rows: rows.rows };
+      return { page, restored: true, restoredCount: rows.rows.length, rows: rows.rows, rehome };
     });
 
     if (restored.refusal) {
@@ -2020,10 +2144,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     } else {
       await cache.invalidate(userId, 'pages');
     }
-    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id), {
+    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', rawId, {
       source: 'standalone',
       title: restored.page.title,
       restoredCount: restored.restoredCount,
+      ...restored.rehome,
     }, request);
     return { id: restored.page.id, title: restored.page.title, restored: true };
   });
@@ -2127,19 +2252,40 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // resolve the parent and reject a pending destructive component.
       const newPage = await withPageWriteTransaction([], async (client) => {
         let parentPath: string | null = null;
-        if (body.parentId) {
+        let parentKey: string | null = null;
+        if (body.parentId !== undefined) {
+          const rawParentId = body.parentId;
+          if (rawParentId === '') throw fastify.httpErrors.badRequest('Parent page not found');
+          const lookupId = /^\d+$/.test(rawParentId) ? toPageIdText(rawParentId) : rawParentId;
           const parentResult = await client.query<{
             id: number;
             path: string | null;
             space_key: string | null;
+            source: string;
+            confluence_id: string | null;
+            deleted_at: Date | null;
           }>(
-            'SELECT id, path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
-            [body.parentId],
+            `SELECT id, path, space_key, source, confluence_id, deleted_at
+               FROM pages
+              WHERE id::text = $1 OR confluence_id = $2
+              ORDER BY id`,
+            [lookupId, rawParentId],
           );
           const parent = parentResult.rows[0];
-          if (!parent) throw fastify.httpErrors.badRequest('Parent page not found');
+          if (parentResult.rows.length !== 1 || !parent || parent.deleted_at !== null) {
+            throw fastify.httpErrors.badRequest('Parent page not found');
+          }
           if (spaceKey && parent.space_key !== spaceKey) {
             throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
+          }
+          parentKey = parentKeyFor(parent.source, parent.id, parent.confluence_id);
+          try {
+            await assertIdentifierUnambiguous(parentKey, parent.id, 'stored parent', client);
+          } catch (error) {
+            if (error instanceof RelocateError) {
+              throw fastify.httpErrors.badRequest('Parent page not found');
+            }
+            throw error;
           }
           await assertPageHierarchyParentsAvailable(client, [parent.id]);
           parentPath = parent.path;
@@ -2158,7 +2304,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                    $8, $9, $9, 'not_embedded', NOW(), $10, $11)
            RETURNING id, title, version`,
           [body.title, effectiveBodyHtml, bodyText, userId,
-           visibility, spaceKey, body.parentId ?? null,
+           visibility, spaceKey, parentKey,
            pageType, !isFolder, initialLabels, initialPolicy],
         );
         const created = result.rows[0]!;
@@ -2431,7 +2577,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (unpaired) return unpaired;
     const userId = request.userId;
 
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
 
     // Load the page to determine source
     const existing = await query<{
@@ -2445,8 +2591,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `SELECT id, version, space_key, source, created_by_user_id, visibility,
               confluence_id, deleted_at, page_type, content_revision::text,
               lifecycle_revision::text, body_storage, body_html
-         FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
-      [isNumericId ? parseInt(id, 10) : id],
+         FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
+      [primaryKey ?? id],
     );
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
@@ -2955,7 +3101,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Parse query for permanent flag
     const queryParams = z.object({ permanent: z.string().optional() }).parse(request.query);
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
 
     // Load the page to determine source
     const existing = await query<{
@@ -2965,8 +3111,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT id, source, created_by_user_id, confluence_id, space_key, visibility,
               content_revision::text, lifecycle_revision::text
-         FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
-      [isNumericId ? parseInt(id, 10) : id],
+         FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
+      [primaryKey ?? id],
     );
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
@@ -3386,10 +3532,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // PUT /api/pages/:id/draft — save draft (does not affect live content)
   fastify.put('/pages/:id/draft', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const body = SaveDraftSchema.parse(request.body);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
@@ -3435,9 +3580,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // GET /api/pages/:id/draft — get draft content
   fastify.get('/pages/:id/draft', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     // Same caller-bound read rule as GET /pages/:id (space access, standalone
     // visibility and page restrictions). An unreadable page is 404 exactly
@@ -3471,9 +3615,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // POST /api/pages/:id/draft/publish — atomically publish draft to live
   fastify.post('/pages/:id/draft/publish', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     const existing = await query<{
       id: number; version: number; title: string;
@@ -3681,9 +3824,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // DELETE /api/pages/:id/draft — discard draft
   fastify.delete('/pages/:id/draft', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+    const { id: pageId } = PrimaryKeyParamSchema.parse(request.params);
     const userId = request.userId;
-    const pageId = parseInt(id, 10);
 
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
@@ -4857,15 +4999,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Verify the page exists and the user has access
     // Support both integer PK (standalone pages) and confluence_id (Confluence pages)
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
     const pageResult = await query<ImageUploadPage>(
       `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id,
               p.space_key, p.visibility, p.content_revision::text,
               p.lifecycle_revision::text
        FROM pages p
-       WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
+       WHERE ${primaryKey !== null ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
-      [isNumericId ? Number(id) : id],
+      [primaryKey ?? id],
     );
 
     if (pageResult.rows.length === 0) {
@@ -4958,15 +5100,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Verify the page exists and the user has access. Mirrors the inline
     // upload route's logic exactly so the two stay aligned.
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
     const pageResult = await query<ImageUploadPage>(
       `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id,
               p.space_key, p.visibility, p.content_revision::text,
               p.lifecycle_revision::text
        FROM pages p
-       WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
+       WHERE ${primaryKey !== null ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
-      [isNumericId ? Number(id) : id],
+      [primaryKey ?? id],
     );
     if (pageResult.rows.length === 0) {
       return reply.status(404).send({

@@ -56,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before the one-time snapshot-schema upgrade, retire and hold old writers
   stopped as documented in the immutable-page-baselines runbook.
 
+- **Cancelled baseline previews retry immediately (#1765):** a same-user
+  re-preview safely cleans a settled, never-started preparation before
+  reserving a new baseline, without waiting for maintenance or returning a
+  unique-constraint 500. Existing writer admission and exactly-once retained
+  capacity accounting remain intact.
+- **Page and draft identifier boundaries (#1739):** invalid local page IDs are
+  rejected before integer SQL casts or side effects. Legacy dual-capable routes
+  retain valid local-PK precedence and resolve large Confluence IDs as exact
+  text, preserving their access, ambiguity and missing-page responses.
 - **Deep search pins only identifiers found in the user's own question (#1718):**
   the paraphrase legs of a deep search now pass `pinIdentifiers: false`, so
   deep search pins only what the #1107 detector finds in the question itself,
@@ -67,6 +76,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate. The original-query leg keeps the caller's pin setting. Identifier
   queries the detector recognises still skip expansion and pin as before. The
   identifier page can still appear in the results at its ordinary merged rank.
+- **Content reports exclude trashed articles (#1744):** Trending and
+  content-quality reports now omit trash before applying their limits. Restored
+  pages are eligible again with their existing views and feedback; both reports
+  remain admin-only.
+- **Page date filters fail validation before timestamp SQL (#1738):** list,
+  search and bulk filters share an exact Gregorian date/qualified-timestamp
+  profile and return400 for invalid or unsupported inputs. Previously parseable
+  spellings, including fractions longer than six digits, are now explicitly
+  unsupported rather than normalized. Raw strings and inclusive date-only
+  `dateTo` midnight semantics remain unchanged; see
+  [the API profile and compatibility note](docs/API.md#page-date-filters).
 - **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
   `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
   files included) now imports as page labels; previously the list was dropped
@@ -252,6 +272,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures (raw `\binN` data included), headers, footers and footnotes are
   now dropped however deeply they nest, and an RTF whose font table or another
   skipped group holds millions of entries no longer fails to extract.
+- **Standalone creation keeps canonical parent keys (#1743):** padded page
+  IDs and Confluence parents now retain the resolved source-aware parent key,
+  so new children stay connected in hierarchy reads and owner-scoped trash
+  cascades. Invalid or ambiguous parents are refused without database cast
+  errors or collision details. Parent ownership policy is unchanged; existing
+  padded parent rows are not repaired.
 - **Bulk re-embed queues standalone pages (#1745):** *Re-embed* in the page
   list's bulk bar and an article's *Index now* (*Re-embed for search* in the
   article rail) now queue standalone pages for embedding; previously
@@ -263,6 +289,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bodiless pages are queued and counted, and the worker skips them — while a
   page that is not found, ambiguous, or moved to the trash before it could be
   queued is counted under `failed`.
+- **Restore articles after deleting their local space (#1742):** Trash now
+  identifies missing spaces and offers an explicit local-space/no-space target
+  only when the current refusal permits it. Restore rehomes matching trash-batch
+  rows atomically and protects destination/retained spaces against concurrent
+  deletion; a different missing batch space fails closed without a misleading
+  picker. Ordinary restores, ownership, purge and space-deletion rules stay intact.
 - **Long lines stay inside exported article PDFs (#1730):** code blocks no
   longer cut each line at 120 characters; a line wider than the code box (83
   characters) continues flush left on the next row, across page breaks, so no

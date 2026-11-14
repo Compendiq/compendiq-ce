@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toPageIdText } from './page-id-text.js';
+import { toPageIdInt4, toPageIdText } from './page-id-text.js';
 
 describe('toPageIdText (#1167)', () => {
   it('leaves a plain id unchanged', () => {
@@ -24,5 +24,27 @@ describe('toPageIdText (#1167)', () => {
     expect(toPageIdText('2200000000')).toBe('2200000000');
     expect(toPageIdText('00002200000000')).toBe('2200000000');
     expect(toPageIdText('9007199254740993')).toBe('9007199254740993');
+  });
+});
+
+// New shared-adapter feature checks; the original four text-normalizer controls stay intact.
+describe('toPageIdInt4 shared positive-int4 adapter', () => {
+  it.each([
+    ['1', 1],
+    ['7', 7],
+    ['0007', 7],
+    ['2147483647', 2_147_483_647],
+    ['00000000002147483647', 2_147_483_647],
+  ] as const)('returns the exact PK for %s', (input, expected) => {
+    expect(toPageIdInt4(input)).toBe(expected);
+  });
+
+  it.each([
+    '', '0', '000', '-7', '+7', ' 7 ', '7 ', '7\n', '\n7',
+    '1.0', '1e3', '0x10', '7tail', '2147483648', '3000000000',
+    '0003000000000', '9007199254740993', '2147483647.00000001',
+    '９', '١', '9'.repeat(400),
+  ])('returns null without throwing for unusable raw text %j', (input) => {
+    expect(toPageIdInt4(input)).toBeNull();
   });
 });

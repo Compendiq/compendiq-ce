@@ -30,6 +30,36 @@ are read directly from the current URL, including on Back/Forward while
 clear-focus and picker selection push entries. Keep unrelated URL parameters
 when editing filters, and keep the local graph request keyed on restored filters.
 
+## Page identifier boundaries (#1739)
+
+`PagePrimaryKeySchema` in `packages/contracts/src/schemas/page-id.ts` is the
+single local page-PK boundary: positive ASCII-decimal IDs in1–2147483647,
+normalizing decimal padding to a number and retaining numeric body inputs.
+PK-only routes (drafts, trash restore, PDF export, pins, move/reorder/breadcrumb
+and page-ID inputs to comments, analytics, connections, attachments, relocation,
+baselines and AI policy) validate before SQL or effects. Invalid inputs are400,
+except collab's existing HTTP404 / upgraded WS4404 `not_found` mapping.
+
+Legacy detail/CRUD, tags, verification, icon, presence, versions and pasted-image
+routes use `toPageIdInt4` from `backend/src/core/utils/page-id-text.ts` only to
+choose their PK arm. An in-range decimal ID keeps PK precedence, with no
+Confluence fallback after a PK miss or denial. Otherwise bind the original
+Confluence string verbatim, including huge IDs and their literal zero padding;
+never round, trim or int4-cap that arm. Tag routes hand the resolved PK to the
+existing services so a second lookup cannot reinterpret the raw identifier.
+
+Existing true-dual hierarchy/parent/bulk lookups retain textual PK comparisons,
+unbounded `toPageIdText` normalization on only that arm, and their visibility
+and ambiguity guards. `CreatePageSchema.parentId` stays dual/unbounded.
+Only Notion import's local destination `parentId` is bounded; external Notion,
+Confluence, comment/template and attachment resource IDs are not page PKs.
+
+Keep existing response contracts: an unresolved/inaccessible versions list is
+200 `{ versions: [], pageId: raw }`; presence DELETE is a204 no-op, while
+presence GET resolves and authorizes before SSE headers. Missing valid PKs
+retain each route's normal refusal. Validation grants no authority and changes
+none of the hierarchy, owner, trash-batch or writer fences below.
+
 ## Standalone Trash Cascade (#1636)
 
 Trashing a standalone article takes its WHOLE subtree, so the delete, the
@@ -66,6 +96,19 @@ detects it and the delete, bulk delete and restore all answer 409
 enforces for `/move` and `/relocate` (#1166) and `resolveBulkSelection` for the
 bulk routes (#1167). Picking a winner is not available: the stored key stays
 ambiguous, so one reader follows one candidate and the next reader the other.
+
+Standalone creation (`POST /api/pages`, #1743) resolves a supplied parent by
+numeric PK text or exact Confluence content ID, then stores
+`parentKeyFor(source, id, confluence_id)` from that resolved row: a standalone
+parent's PK as text, or a Confluence parent's content ID. Normalize padding
+only on the PK lookup arm; a standalone row's historical Confluence metadata
+must not become its stored parent key. Reject empty parent text before lookup,
+even if an existing row has an empty Confluence ID. Missing, deleted or
+ambiguous parents receive the same generic 400 without collision metadata;
+omission still creates a NULL-parent root and explicit JSON null is still a
+schema error. Keep the existing same-local-space check and ownership-agnostic
+parent validation: cascade authorization remains separate below. This fixes
+new creations only; existing padded `parent_id` rows are not repaired.
 
 **A cascade may only touch rows its caller may act on.** Both cascades, the
 bulk cascade and `descendantCount` all carry TWO guards: `source =
@@ -136,6 +179,15 @@ fallback share the predicate; the cache identity includes visibility and is
 versioned when its shape changes. Filter-mode bulk selection uses the same
 visibility test. This is a filter, not a replacement for the access predicate.
 
+**Page date filters (#1738).** Page lists, search validation and filter-mode
+bulk boundaries share `PageDateFilterSchema` from contracts; do not add a
+second parser or normalize its string output. The exact supported profile and
+compatibility restrictions are in [API date filters](../API.md#page-date-filters).
+Keep caller visibility/trash predicates and raw inclusive timestamp bounds:
+date-only `dateTo` includes midnight itself, but excludes later that day in the
+PostgreSQL session TimeZone. Search validates dates before mode dispatch without
+adding date filtering to semantic/hybrid retrieval.
+
 Local-space and shared space lists remain uncached because their mutable space
 metadata and caller-visible page count/home page belong to independent
 invalidation domains.
@@ -195,9 +247,9 @@ resolved selection lands in exactly one of the two (#1745).
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their
 own standalone row. Both halves matter. Direct, because the invariant is a
-statement about `parent_id` alone: a live parent means the page reappears
-beneath it and orphans nothing, whatever is trashed further up, so refusing on
-the nearest trashed ancestor at any depth refused safe restores. Actionable,
+statement about `parent_id` alone: on ordinary restore, a live parent means
+the page reappears beneath it, whatever is trashed further up. Refusing the
+nearest trashed ancestor at any depth refused safe restores. Actionable,
 because nothing else is restorable through this route — a Confluence-sourced row
 is rejected outright and another user's row is not the caller's — so refusing
 there traded a visible orphan for silent data loss at the retention deadline.
@@ -208,6 +260,40 @@ row and a cascade batch spans several of them. The 409 carries
 `reason: 'restore_ancestor_trashed'`, which is what `TrashPage` retries; the
 route's other refusals (a live import already exists, an ambiguous parent) are
 permanent, so the status code alone cannot be the classifier.
+
+If the stored real space is gone, restore returns409 `restore_space_missing`
+with `missingSpaceKey` and REQUIRED `canChooseTarget`. Only current true
+(missing root, no target) offers the exact server message plus an unchosen
+local-space/`__local__` picker. A missing retained batch key returns false and
+an honest batch refusal: choosing a target for this root cannot fix it. Never
+infer the remedy from cached Trash fields, message text or a prior key; another
+client may restore, rehome and retrash between attempts. Bulk treats all these
+space refusals as permanent, not ancestor retry rounds. See `docs/API.md` for
+the exact envelopes/messages; the three new reasons do not replace old errors.
+
+Only a deleted, owner-authorized standalone root whose real key M is absent
+may rehome to an existing local space or explicit `__local__` (stored NULL).
+NULL and historical `__local__` are valid virtual roots, never missing spaces.
+Existing containers (including Confluence containers) allow ordinary/same-key
+restore, not a general move. Use the authoritative `trashBatchIds`: untrash
+and rewrite ONLY its M rows in ONE UPDATE. A distinct, uniquely resolved LIVE
+direct parent detaches ONLY the root on actual rehome; equal-space, unresolved
+and non-actionable trashed parents stay linked. Leave paths/depths, child links,
+other stamps, sources and owners unchanged. Existing ancestor/import/ambiguity,
+frozen and pending-write refusals still win before semantic target checks.
+
+Inside the existing runtime/hierarchy/lifecycle transaction, lock the real
+root space FOR SHARE first, then all remaining existing retained spaces and
+an applicable real target in database C order FOR SHARE. Every nonvirtual
+final batch key must exist; never rehome a second missing key. Local space
+deletion uses one dedicated transaction and FOR UPDATE BEFORE its plain live
+count/delete, so either restore keeps its final spaces or deletion wins and
+restore refuses. No new advisory lock or trash-based deletion block. Local
+targets are not restricted by container creator; nonlocal/unknown targets
+share one generic refusal. No already-live orphan, purge or Confluence-row
+repair. Restore alone adopts the shared positive-int4 PK boundary; the audit
+keeps raw padded URL identity and adds target/missing keys only for actual
+rehome, with restoredCount from returned rows.
 
 `restore_import_conflict` means a live standalone import of the same normalized
 Notion identity exists for the same owner. Confluence rows are not imports.
@@ -407,3 +493,14 @@ both legs of the one keyword statement, so every fuzzy hit satisfies every
 active filter. Both legs keep the visibility and trash predicates, and
 `cp.title % $1` stays the fuzzy leg's index condition. Facet counts are
 narrowed only by the AI-policy filter.
+
+## Content Analytics (#1744)
+
+`GET /api/analytics/trending` and `/api/analytics/content-quality` remain
+admin-only, cross-corpus reports. Both exclude `pages.deleted_at IS NOT NULL`
+in SQL before applying the report limit. Keep the existing authentication and
+admin guards; these aggregates do not acquire normal page-list visibility rules.
+Soft trash preserves the page's views and feedback. Restoring it makes it
+eligible again using those same records, subject to the report's existing
+activity windows, ordering and limit.
+

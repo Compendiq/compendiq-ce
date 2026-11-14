@@ -135,6 +135,55 @@ describe.skipIf(!available)('GET /api/pages/trash + standalone auto-purge (DB)',
     }
   });
 
+  it('#1742 REGRESSION [R02] lists missing spaces without confusing existing or virtual roots', async () => {
+    const deletedAt = daysAgo(2);
+    const orphan = await insertStandalonePage('Owned orphan', 'private', userA, 'GONE_LOCAL', { deletedAt });
+    const noSpace = await insertStandalonePage('No space', 'private', userA, 'NOTES', { deletedAt });
+    await query('UPDATE pages SET space_key = NULL WHERE id = $1', [noSpace]);
+    const virtualRoot = await insertStandalonePage('Legacy virtual root', 'private', userA, '__local__', { deletedAt });
+    const existing = await insertStandalonePage('Existing local container', 'private', userA, 'NOTES', { deletedAt });
+    const remoteContainer = await insertStandalonePage('Existing remote container', 'private', userA, 'DEV', { deletedAt });
+    const otherOwner = await insertUser('trash_owner_b');
+    const foreign = await insertStandalonePage('FOREIGN PRIVATE ORPHAN', 'private', otherOwner, 'FOREIGN_GONE', { deletedAt });
+    const response = await app.inject({ method: 'GET', url: '/api/pages/trash' });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      items: Array<{
+        id: string;
+        spaceKey?: string | null;
+        spaceMissing?: boolean;
+        deletedAt: string;
+        deletedBy: string;
+        autoPurgeAt: string;
+      }>;
+      total: number;
+    }>();
+
+    expect(body.items.find((item) => item.id === String(orphan))).toMatchObject({
+      spaceKey: 'GONE_LOCAL',
+      spaceMissing: true,
+    });
+    for (const [id, spaceKey] of [
+      [noSpace, null],
+      [virtualRoot, '__local__'],
+      [existing, 'NOTES'],
+      [remoteContainer, 'DEV'],
+    ] as const) {
+      expect(body.items.find((item) => item.id === String(id))).toMatchObject({
+        spaceKey,
+        spaceMissing: false,
+      });
+    }
+    expect(body.total).toBe(5);
+    expect(body.items.some((item) => item.id === String(foreign))).toBe(false);
+    expect(response.payload).not.toContain('FOREIGN PRIVATE ORPHAN');
+    for (const item of body.items) {
+      expect(item.deletedAt).toBe(deletedAt.toISOString());
+      expect(item.deletedBy).toBe('trash_owner_a');
+      expect(item.autoPurgeAt).toBe(new Date(deletedAt.getTime() + 30 * DAY_MS).toISOString());
+    }
+  });
+
   it('purges standalone pages trashed >30 days ago, keeps fresh trash, returns the count', async () => {
     const expiredId = await insertStandalonePage('Expired trash', 'private', userA, 'NOTES', {
       deletedAt: daysAgo(31),

@@ -9,6 +9,17 @@ Guidance for Claude Code working in this repo. Codex and other AI tools also rea
 Trash distinguishes a failed read from a successful empty list. A failed
 refresh retains cached results with a stale warning; retry keeps its control
 mounted and focusable until the request settles, then rehomes orphaned focus.
+Ordinary Restore is bodyless. Only the CURRENT `restore_space_missing`409
+with `canChooseTarget === true` permits an explicit local-space/`__local__`
+choice; false/missing/nonboolean means show the current refusal without a
+picker. Trash `spaceKey`/`spaceMissing`, messages and previous refusal keys
+are not authority. Rehome only the missing root key within its exact trash
+batch; a different missing batch key fails closed. Never auto-retry or repair
+already-live orphans; preserve the existing owner/source/ancestor guards.
+
+Trending and content-quality analytics remain admin-only across the corpus.
+Both exclude trashed pages in SQL; restoration makes the same historical
+activity eligible again. See `docs/claude/pages-and-confluence.md`.
 
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
@@ -105,6 +116,14 @@ The sidebar's space-home projection detaches the configured homepage from its
 actual parent before promoting its children to roots. Keep the original page
 IDs for keyboard navigation, and retain the sole-homepage fallback (#1815).
 
+Standalone creation stores the resolved parent's source-aware `parentKeyFor`
+key, not raw request text (#1743). Parent resolution compares identifiers as
+text; only the PK arm normalizes padding, never the Confluence content arm.
+Reject explicit empty parent text before lookup; omission remains a NULL root.
+Parent validation stays ownership-agnostic; `page-subtree.ts` retains its
+separate source/owner guards. Existing padded parent rows are not repaired.
+See `docs/claude/pages-and-confluence.md`.
+
 ## Tech Stack (highlights, not a manifest)
 
 Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-dim `halfvec` measured/recommended — #1114) · BullMQ (toggleable via `USE_BULLMQ`) · jose / bcrypt · React 19 · TailwindCSS 4 · Radix · TanStack Query · TipTap v3 · Zustand · `turndown` + `jsdom` for content conversion · `pdf-lib` · `nodemailer`. Full deps in `package.json`.
@@ -115,8 +134,19 @@ Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-
 2. **Zero default secrets** — `NODE_ENV=production` MUST fail to start if `JWT_SECRET` or `PAT_ENCRYPTION_KEY` is default or < 32 chars.
 3. **LLM safety** — sanitize user content before sending (prompt-injection guard in `core/utils/sanitize-llm-input.ts`); sanitize output before rendering.
 4. **Validation** — Zod schemas from `@compendiq/contracts` on every API boundary. Parameterized SQL only.
+   Page PK inputs use `PagePrimaryKeySchema`; legacy numeric-PK/Confluence routes
+   use `toPageIdInt4` without changing the raw Confluence arm. Preserve each
+   route's missing/denied response and existing ambiguity rules. Never int4-cap
+   Confluence resource IDs or `CreatePageSchema.parentId`; see *Page identifier
+   boundaries* in `docs/claude/pages-and-confluence.md`.
 5. **Auth** — `fastify.authenticate` on every protected route. Public exceptions: `/api/health`, `/api/auth/*`. Access and refresh JWTs share `JWT_SECRET` and issuer, so purpose lives in the signed `typ` header: access `at+jwt`, refresh `rt+jwt`. `verifyToken()` is the only bearer verifier (HTTP, collab socket, logout) and requires `at+jwt`; the refresh decoder requires `rt+jwt` plus `jti` + `family`, with no exception for unmarked tokens (#1683). A new token kind signed with `JWT_SECRET` needs its own `typ` and verifier.
 6. **Infra isolation** — Postgres / Redis / Ollama must not bind `0.0.0.0` in production. Use Docker internal networks.
+
+**Page date filters (#1738).** Lists, search and bulk filters use the shared
+contracts `PageDateFilterSchema`; invalid/out-of-profile dates return400 before
+filter SQL. Keep raw strings, inclusive bounds and date-only `dateTo` at session
+midnight, not end-of-day. Exact formats and compatibility restrictions:
+`docs/API.md#page-date-filters`.
 
 **First-administrator bootstrap (#1661).** Migration 032's `__system__` admin
 owns built-in templates but is never a real operator. Registration policy,
@@ -222,6 +252,11 @@ can be chosen; admission never reads it and a lapsed licence never closes it.
 Never reintroduce a plugin activation hook or env flag for it. See
 `docs/claude/enterprise-and-baselines.md` and
 `docs/architecture/article-ai-policy-activation.md`.
+
+Baseline re-preview reclaims only the acting user's durably cancelled,
+settled, no-effect preparations through core's committed-abandonment cleanup.
+Only prepared rows are reusable; pending work and writer admission are never
+cleared or bypassed to retry. See `docs/claude/enterprise-and-baselines.md`.
 
 License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}` (v2; v1 omits `licenseId`). Persisted in `admin_settings` under key `license_key`. Full design in `docs/ENTERPRISE-ARCHITECTURE.md`.
 

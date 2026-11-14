@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PageVisibilityEnum } from './pages.js';
+import { PagePrimaryKeySchema } from './page-id.js';
 
 /**
  * Notion internal integration token — write-only. Never appears on a
@@ -164,7 +165,7 @@ export const NotionImportRequestSchema = z
   .object({
     pageIds: z.array(z.string().trim().min(1).max(128)).min(1).max(200),
     spaceKey: z.string().min(1).optional(),
-    parentId: z.union([z.string(), z.number()]).transform(String).optional(),
+    parentId: PagePrimaryKeySchema.transform(String).optional(),
     visibility: PageVisibilityEnum.optional().default('shared'),
     overwriteExisting: z.boolean().optional(),
     databaseModes: z.record(z.string(), NotionDatabaseModeEnum).optional(),
