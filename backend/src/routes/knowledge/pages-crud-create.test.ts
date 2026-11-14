@@ -6,6 +6,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z, ZodError } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  _resetWebhookEmitHookForTests,
+  setWebhookEmitHook,
+  type WebhookEvent,
+} from '../../core/services/webhook-emit-hook.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import {
   isDbAvailable,
@@ -15,11 +20,13 @@ import {
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import {
+  insertConfluencePage,
   insertLocalSpace,
   insertStandalonePage,
   insertUser,
 } from './pages.test-helpers.js';
 import { pagesCrudRoutes } from './pages-crud.js';
+import { localSpacesRoutes } from './local-spaces.js';
 
 interface CreateResponse {
   id: number | string;
@@ -66,6 +73,7 @@ const available = (await isDbAvailable()) && (await isRedisAvailable());
 const upstreamRequests: UpstreamRequest[] = [];
 const upstreamPageIds: string[] = [];
 const upstreamLabels = new Map<string, unknown>();
+const webhookEvents: WebhookEvent[] = [];
 
 let app: FastifyInstance;
 let redis: RedisClientType;
@@ -165,6 +173,7 @@ async function buildApp(): Promise<FastifyInstance> {
   });
   instance.decorate('redis', redis);
   await instance.register(pagesCrudRoutes, { prefix: '/api' });
+  await instance.register(localSpacesRoutes, { prefix: '/api' });
   await instance.ready();
   return instance;
 }
@@ -233,6 +242,109 @@ function createRequests(): UpstreamRequest[] {
   return upstreamRequests.filter((request) => request.url === '/rest/api/content');
 }
 
+interface HierarchyItem {
+  id: string | number;
+  parentId: string | null;
+}
+
+interface CreateSnapshot {
+  pages: unknown[];
+  audits: unknown[];
+  intents: unknown[];
+  cache: (string | null)[];
+  webhooks: WebhookEvent[];
+  upstream: UpstreamRequest[];
+}
+
+function parentCacheKeys(): string[] {
+  return [currentUserId, otherUserId].map((id) => `kb:${id}:pages:canonical-parent`);
+}
+
+async function createSnapshot(): Promise<CreateSnapshot> {
+  const pages = await query<{ page: unknown }>('SELECT to_jsonb(p) AS page FROM pages p ORDER BY id');
+  const audits = await query<{ audit: unknown }>(
+    "SELECT to_jsonb(a) AS audit FROM audit_log a WHERE action = 'PAGE_CREATED' ORDER BY id",
+  );
+  const intents = await query<{ intent: unknown }>(
+    'SELECT to_jsonb(i) AS intent FROM page_write_intents i ORDER BY id',
+  );
+  return {
+    pages: pages.rows.map((row) => row.page),
+    audits: audits.rows.map((row) => row.audit),
+    intents: intents.rows.map((row) => row.intent),
+    cache: await redis.mGet(parentCacheKeys()),
+    webhooks: [...webhookEvents],
+    upstream: [...upstreamRequests],
+  };
+}
+
+async function expectUnavailableParent(
+  title: string,
+  parentId: string | number | null,
+  error = 'Parent page not found',
+): Promise<void> {
+  await redis.mSet(Object.fromEntries(parentCacheKeys().map((key) => [key, 'unchanged'])));
+  const before = await createSnapshot();
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/pages',
+    payload: { title, bodyHtml: '<p>child</p>', source: 'standalone', parentId },
+  });
+
+  expect.soft(response.statusCode).toBe(400);
+  expect.soft(response.json()).toEqual({ error });
+  expect.soft(await rowsByTitle(title)).toEqual([]);
+  expect.soft(await createSnapshot()).toEqual(before);
+}
+
+async function seedConfluenceParent(contentId: string, title: string): Promise<number> {
+  const id = await insertConfluencePage(contentId, title, 'CONF');
+  await query('UPDATE pages SET path = $1, depth = 0 WHERE id = $2', [`/${id}`, id]);
+  return id;
+}
+
+async function expectParentProjection(
+  child: PageRow,
+  parentId: number,
+  parentTitle: string,
+  parentKey: string,
+): Promise<void> {
+  const detail = await app.inject({ method: 'GET', url: `/api/pages/${child.id}` });
+  const tree = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+  const breadcrumb = await app.inject({ method: 'GET', url: `/api/pages/${child.id}/breadcrumb` });
+  expect(detail.statusCode).toBe(200);
+  expect(tree.statusCode).toBe(200);
+  expect(breadcrumb.statusCode).toBe(200);
+  expect.soft(detail.json<{ parentId: string | null }>().parentId).toBe(parentKey);
+  expect.soft(tree.json<{ items: HierarchyItem[] }>().items.find((item) => String(item.id) === String(child.id))?.parentId)
+    .toBe(String(parentId));
+  expect.soft(breadcrumb.json<{ ancestors: Array<{ id: number; title: string }> }>().ancestors)
+    .toEqual([{ id: parentId, title: parentTitle }]);
+}
+
+async function expectTextParent(contentId: string, caseId: string): Promise<void> {
+  const parentTitle = `${caseId} Confluence parent`;
+  const parentId = await seedConfluenceParent(contentId, parentTitle);
+  await grantSpace(currentUserId, 'CONF');
+  const title = `${caseId} standalone child`;
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/pages',
+    payload: { title, bodyHtml: '<p>child</p>', source: 'standalone', parentId: contentId },
+  });
+  expect(response.statusCode).toBe(200);
+  const child = await oneRowByTitle(title);
+  expect(child.parent_id).toBe(contentId);
+  expect(child.path).toBe(`/${parentId}/${child.id}`);
+  expect(child.depth).toBe(1);
+  await expectParentProjection(child, parentId, parentTitle, contentId);
+  expect(upstreamRequests).toEqual([]);
+  expect(webhookEvents).toEqual([{
+    eventType: 'page.created',
+    payload: expect.objectContaining({ pageId: child.id, isLocal: true }),
+  }]);
+}
+
 describe.skipIf(!available)('POST /api/pages with real admission boundaries', () => {
   beforeAll(async () => {
     await setupTestDb();
@@ -245,10 +357,15 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     setRedisClient(redis);
     await startUpstream();
     app = await buildApp();
+    setWebhookEmitHook((event) => {
+      webhookEvents.push(event);
+      return Promise.resolve();
+    });
   }, 30_000);
 
   afterAll(async () => {
     await app.close();
+    _resetWebhookEmitHookForTests();
     await truncateAllTables();
     await redis.flushDb();
     await stopUpstream();
@@ -263,6 +380,7 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     upstreamRequests.length = 0;
     upstreamPageIds.length = 0;
     upstreamLabels.clear();
+    webhookEvents.length = 0;
     currentUserId = await insertUser('create_route_user');
     otherUserId = await insertUser('create_route_other');
     await insertLocalSpace('LOCAL_A', currentUserId);
@@ -377,6 +495,288 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     expect(row.space_key).toBeNull();
     expect(row.parent_id).toBe(String(parentId));
     expect(row.path).toBe(`/${parentId}/${row.id}`);
+  });
+
+  describe('canonical standalone parent keys (#1743)', () => {
+    it('R01 persists the resolved canonical PK for a padded standalone parent', async () => {
+      const parentId = await seedParent('R01 parent', 'LOCAL_A');
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'R01 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          spaceKey: 'LOCAL_A', parentId: `00${parentId}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const child = await oneRowByTitle('R01 child');
+      expect(child.parent_id).toBe(String(parentId));
+      expect(child.path).toBe(`/${parentId}/${child.id}`);
+      expect(child.depth).toBe(1);
+    });
+
+    it('R02 exposes a padded child parent and counts it in the parent detail', async () => {
+      const parentId = await seedParent('R02 parent', 'LOCAL_A');
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'R02 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          spaceKey: 'LOCAL_A', parentId: `00${parentId}`,
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      const child = await oneRowByTitle('R02 child');
+      const childDetail = await app.inject({ method: 'GET', url: `/api/pages/${child.id}` });
+      const parentDetail = await app.inject({ method: 'GET', url: `/api/pages/${parentId}` });
+
+      expect(childDetail.statusCode).toBe(200);
+      expect(parentDetail.statusCode).toBe(200);
+      expect.soft(childDetail.json<{ parentId: string | null }>().parentId).toBe(String(parentId));
+      expect.soft(parentDetail.json<{ hasChildren: boolean }>().hasChildren).toBe(true);
+      expect.soft(parentDetail.json<{ descendantCount: number }>().descendantCount).toBe(1);
+    });
+
+    it('R03 retains the padded child parent in both trees and breadcrumbs', async () => {
+      const parentTitle = 'R03 parent';
+      const parentId = await seedParent(parentTitle, 'LOCAL_A');
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'R03 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          spaceKey: 'LOCAL_A', parentId: `00${parentId}`,
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      const child = await oneRowByTitle('R03 child');
+      await expectParentProjection(child, parentId, parentTitle, String(parentId));
+      const localTree = await app.inject({ method: 'GET', url: '/api/spaces/LOCAL_A/tree' });
+      expect(localTree.statusCode).toBe(200);
+      expect.soft(localTree.json<{ items: HierarchyItem[] }>().items.find((item) => Number(item.id) === child.id)?.parentId)
+        .toBe(String(parentId));
+    });
+
+    it('R07 stores the Confluence key when a standalone child addresses the parent by PK', async () => {
+      const contentId = '3000000000';
+      const parentTitle = 'R07 Confluence parent';
+      const parentId = await seedConfluenceParent(contentId, parentTitle);
+      await grantSpace(currentUserId, 'CONF');
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'R07 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          parentId: String(parentId),
+        },
+      });
+
+      expect(created.statusCode).toBe(200);
+      const child = await oneRowByTitle('R07 child');
+      expect.soft(child.parent_id).toBe(contentId);
+      await expectParentProjection(child, parentId, parentTitle, contentId);
+      expect(upstreamRequests).toEqual([]);
+    });
+
+    it('R08 counts a standalone child through its Confluence parent canonical key', async () => {
+      const parentId = await seedConfluenceParent('3000000000', 'R08 parent');
+      await grantSpace(currentUserId, 'CONF');
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'R08 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          parentId: String(parentId),
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      const detail = await app.inject({ method: 'GET', url: `/api/pages/${parentId}` });
+      expect(detail.statusCode).toBe(200);
+      expect.soft(detail.json<{ hasChildren: boolean }>().hasChildren).toBe(true);
+      expect.soft(detail.json<{ descendantCount: number }>().descendantCount).toBe(1);
+    });
+
+    it('R09 resolves an existing oversized Confluence parent as text', async () => {
+      await expectTextParent('3000000000', 'R09');
+    });
+
+    it('R10 preserves an existing Confluence parent beyond Number precision', async () => {
+      await expectTextParent('9007199254740993', 'R10');
+    });
+
+    it('R11 resolves an existing opaque Confluence parent as text', async () => {
+      await expectTextParent('conf-parent-alpha', 'R11');
+    });
+
+    it('R12 preserves the opaque padded Confluence arm instead of selecting its unpadded decoy', async () => {
+      await seedConfluenceParent('3000000000', 'R12 unpadded decoy');
+      await expectTextParent('0003000000000', 'R12');
+    });
+
+    it('R13 refuses a missing nonnumeric parent without effects', async () => {
+      await expectUnavailableParent('R13 child', 'abc');
+    });
+
+    it('R14 refuses a missing parent just beyond int4 without effects', async () => {
+      await expectUnavailableParent('R14 child', '2147483648');
+    });
+
+    it('R15 refuses a missing parent beyond Number precision without effects', async () => {
+      await expectUnavailableParent('R15 child', '9007199254740993');
+    });
+
+    it('R16 refuses requested parent ambiguity without exposing a hidden decoy', async () => {
+      const parentId = await seedParent('R16 parent', 'LOCAL_A');
+      await seedConfluenceParent(String(parentId), 'R16 SECRET CONFLUENCE DECOY');
+      await expectUnavailableParent('R16 child', String(parentId));
+    });
+
+    it('R17 refuses a unique requested PK whose canonical Confluence key names another live page', async () => {
+      const decoyId = await insertStandalonePage('R17 SECRET PRIVATE DECOY', 'private', otherUserId, 'LOCAL_A');
+      const parentId = await seedConfluenceParent(String(decoyId), 'R17 parent');
+      await expectUnavailableParent('R17 child', String(parentId));
+    });
+
+    it('R18 refuses a canonical parent key collision with a trashed row without changing its stamp', async () => {
+      const decoyId = await insertStandalonePage('R18 SECRET TRASHED DECOY', 'private', otherUserId, 'LOCAL_A', {
+        deletedAt: new Date('2000-01-01T00:00:00Z'),
+      });
+      const parentId = await seedConfluenceParent(String(decoyId), 'R18 parent');
+      await expectUnavailableParent('R18 child', String(parentId));
+    });
+
+    it('R19 uses the standalone PK rather than historical Confluence metadata for a padded parent', async () => {
+      const parentId = await seedParent('R19 parent', 'LOCAL_A');
+      await query('UPDATE pages SET confluence_id = $1 WHERE id = $2', ['historical-parent', parentId]);
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'R19 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          spaceKey: 'LOCAL_A', parentId: `00${parentId}`,
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      expect.soft((await oneRowByTitle('R19 child')).parent_id).toBe(String(parentId));
+      expect((await oneRowByTitle('R19 parent')).confluence_id).toBe('historical-parent');
+    });
+
+    it('R20 rejects an explicit empty parent even when no empty identity exists', async () => {
+      await expectUnavailableParent('R20 child', '');
+    });
+
+    it('R21 rejects an explicit empty parent before an existing empty Confluence identity can resolve', async () => {
+      const decoyId = await seedConfluenceParent('', 'R21 empty identity decoy');
+      expect((await oneRowByTitle('R21 empty identity decoy'))).toMatchObject({ id: decoyId, confluence_id: '' });
+      await expectUnavailableParent('R21 child', '');
+    });
+
+    it('P02 preserves numeric JSON parent IDs as canonical standalone PK text', async () => {
+      const parentId = await seedParent('P02 parent', 'LOCAL_A');
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'P02 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          spaceKey: 'LOCAL_A', parentId,
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      const child = await oneRowByTitle('P02 child');
+      expect(child).toMatchObject({ parent_id: String(parentId), path: `/${parentId}/${child.id}`, depth: 1 });
+      expect(webhookEvents).toEqual([{
+        eventType: 'page.created',
+        payload: expect.objectContaining({ pageId: child.id, isLocal: true }),
+      }]);
+    });
+
+    it('P03 permits another owner private parent without granting access or cascade authority', async () => {
+      const ownerId = currentUserId;
+      const parentTitle = 'P03 SECRET PRIVATE PARENT';
+      const parentId = await insertStandalonePage(parentTitle, 'private', ownerId, 'LOCAL_A');
+      await query('UPDATE pages SET path = $1, depth = 0 WHERE id = $2', [`/${parentId}`, parentId]);
+      currentUserId = otherUserId;
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'P03 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          visibility: 'private', spaceKey: 'LOCAL_A', parentId: String(parentId),
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      const child = await oneRowByTitle('P03 child');
+      const detail = await app.inject({ method: 'GET', url: `/api/pages/${child.id}` });
+      const breadcrumb = await app.inject({ method: 'GET', url: `/api/pages/${child.id}/breadcrumb` });
+      const tree = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+      expect(detail.statusCode).toBe(200);
+      expect(breadcrumb.statusCode).toBe(200);
+      expect(tree.statusCode).toBe(200);
+      expect(detail.json<{ parentId: string | null }>().parentId).toBeNull();
+      expect(breadcrumb.json<{ ancestors: unknown[] }>().ancestors).toEqual([]);
+      expect(tree.json<{ items: HierarchyItem[] }>().items.find((item) => Number(item.id) === child.id)?.parentId).toBeNull();
+      for (const response of [detail, breadcrumb, tree]) expect(response.body).not.toContain(parentTitle);
+
+      currentUserId = ownerId;
+      const parentDetail = await app.inject({ method: 'GET', url: `/api/pages/${parentId}` });
+      expect(parentDetail.statusCode).toBe(200);
+      expect(parentDetail.json()).toMatchObject({ hasChildren: false, descendantCount: 0 });
+      const deleted = await app.inject({ method: 'DELETE', url: `/api/pages/${parentId}` });
+      expect(deleted.statusCode).toBe(200);
+      const trash = await app.inject({ method: 'GET', url: '/api/pages/trash' });
+      expect(trash.statusCode).toBe(200);
+      expect(trash.json<{ items: Array<{ id: string }> }>().items.map((item) => item.id)).not.toContain(String(child.id));
+
+      currentUserId = otherUserId;
+      const stillLive = await app.inject({ method: 'GET', url: `/api/pages/${child.id}` });
+      expect(stillLive.statusCode).toBe(200);
+      expect(stillLive.json<{ parentId: string | null }>().parentId).toBeNull();
+    });
+
+    it('P04 keeps canonical standalone metadata and unrelated legacy padded parent rows unchanged', async () => {
+      const parentId = await seedParent('P04 parent', 'LOCAL_A');
+      await query('UPDATE pages SET confluence_id = $1 WHERE id = $2', ['P04 historical identity', parentId]);
+      const legacyId = await insertStandalonePage('P04 legacy orphan', 'private', currentUserId, 'LOCAL_A', {
+        parentId: `00${parentId}`,
+      });
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'P04 child', bodyHtml: '<p>child</p>', source: 'standalone',
+          spaceKey: 'LOCAL_A', parentId: String(parentId),
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      expect((await oneRowByTitle('P04 child')).parent_id).toBe(String(parentId));
+      expect((await oneRowByTitle('P04 parent')).confluence_id).toBe('P04 historical identity');
+      expect((await oneRowByTitle('P04 legacy orphan'))).toMatchObject({
+        id: legacyId, parent_id: `00${parentId}`,
+      });
+    });
+
+    it('P05 keeps an already trashed parent unavailable without restamping it', async () => {
+      const parentId = await seedParent('P05 parent', 'LOCAL_A');
+      await query('UPDATE pages SET deleted_at = $1 WHERE id = $2', ['2000-01-01T00:00:00Z', parentId]);
+      await expectUnavailableParent('P05 child', String(parentId));
+    });
+
+    it('P09 preserves omitted-parent NULL roots and explicit-null refusal beside an empty identity', async () => {
+      const decoyId = await seedConfluenceParent('', 'P09 empty identity decoy');
+      const beforeDecoy = await oneRowByTitle('P09 empty identity decoy');
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: { title: 'P09 root', bodyHtml: '<p>root</p>', source: 'standalone' },
+      });
+      expect(created.statusCode).toBe(200);
+      const root = await oneRowByTitle('P09 root');
+      expect(root).toMatchObject({ parent_id: null, path: `/${root.id}`, depth: 0 });
+      expect(root.id).not.toBe(decoyId);
+      await expectUnavailableParent('P09 null child', null, 'Validation failed');
+      expect(await oneRowByTitle('P09 empty identity decoy')).toEqual(beforeDecoy);
+    });
   });
 
   it('auto-selects standalone storage for local, unknown, sentinel, and absent spaces', async () => {

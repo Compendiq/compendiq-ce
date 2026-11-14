@@ -67,6 +67,19 @@ enforces for `/move` and `/relocate` (#1166) and `resolveBulkSelection` for the
 bulk routes (#1167). Picking a winner is not available: the stored key stays
 ambiguous, so one reader follows one candidate and the next reader the other.
 
+Standalone creation (`POST /api/pages`, #1743) resolves a supplied parent by
+numeric PK text or exact Confluence content ID, then stores
+`parentKeyFor(source, id, confluence_id)` from that resolved row: a standalone
+parent's PK as text, or a Confluence parent's content ID. Normalize padding
+only on the PK lookup arm; a standalone row's historical Confluence metadata
+must not become its stored parent key. Reject empty parent text before lookup,
+even if an existing row has an empty Confluence ID. Missing, deleted or
+ambiguous parents receive the same generic 400 without collision metadata;
+omission still creates a NULL-parent root and explicit JSON null is still a
+schema error. Keep the existing same-local-space check and ownership-agnostic
+parent validation: cascade authorization remains separate below. This fixes
+new creations only; existing padded `parent_id` rows are not repaired.
+
 **A cascade may only touch rows its caller may act on.** Both cascades, the
 bulk cascade and `descendantCount` all carry TWO guards: `source =
 'standalone'` and `created_by_user_id`. The ownership guard is not defensive

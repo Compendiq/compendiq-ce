@@ -243,6 +243,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures (raw `\binN` data included), headers, footers and footnotes are
   now dropped however deeply they nest, and an RTF whose font table or another
   skipped group holds millions of entries no longer fails to extract.
+- **Standalone creation keeps canonical parent keys (#1743):** padded page
+  IDs and Confluence parents now retain the resolved source-aware parent key,
+  so new children stay connected in hierarchy reads and owner-scoped trash
+  cascades. Invalid or ambiguous parents are refused without database cast
+  errors or collision details. Parent ownership policy is unchanged; existing
+  padded parent rows are not repaired.
 - **Bulk re-embed queues standalone pages (#1745):** *Re-embed* in the page
   list's bulk bar and an article's *Index now* (*Re-embed for search* in the
   article rail) now queue standalone pages for embedding; previously

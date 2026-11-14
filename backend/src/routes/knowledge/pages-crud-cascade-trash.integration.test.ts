@@ -32,6 +32,16 @@ import {
   PAGE_HIERARCHY_LOCK_ID,
 } from '../../core/db/advisory-locks.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  _resetWebhookEmitHookForTests,
+  setWebhookEmitHook,
+  type WebhookEvent,
+} from '../../core/services/webhook-emit-hook.js';
+import { trashBatchIds } from '../../core/services/page-subtree.js';
+import {
+  cancelPageWriteIntentBeforeEffect,
+  reservePageWriteIntent,
+} from '../../core/services/page-write-admission.js';
 import { invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { pagesCrudRoutes } from './pages-crud.js';
@@ -287,6 +297,38 @@ let redis: RedisClientType;
 let confluenceServer: Server;
 let confluenceBaseUrl: string;
 let confluenceCreateBodies: Array<Record<string, unknown>> = [];
+const webhookEvents: WebhookEvent[] = [];
+
+async function seedCreateParent(title: string): Promise<number> {
+  const id = await insertStandalonePage(title, 'private', currentUserId, 'NOTES');
+  await query('UPDATE pages SET path = $1, depth = 0 WHERE id = $2', [`/${id}`, id]);
+  return id;
+}
+
+async function createChildThroughRoute(title: string, parentId: string): Promise<number> {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/pages',
+    payload: {
+      title, bodyHtml: '<p>child</p>', source: 'standalone',
+      visibility: 'private', spaceKey: 'NOTES', parentId,
+    },
+  });
+  expect(response.statusCode).toBe(200);
+  return response.json<{ id: number }>().id;
+}
+
+async function protectedParentState(pageId: number): Promise<unknown> {
+  const result = await query(
+    `SELECT title, body_html, body_text, version, source, space_key, parent_id, path,
+            content_revision::text, lifecycle_revision::text, baseline_id,
+            frozen_version, frozen_at, freeze_reason, freeze_provenance,
+            freeze_reported_signatories
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  return result.rows[0];
+}
 
 describe.skipIf(!available)('cascading standalone trash (#1636) — real PostgreSQL', () => {
   beforeAll(async () => {
@@ -320,10 +362,15 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       instance.redis = redis;
       await instance.register(pagesCrudRoutes, { prefix: '/api' });
     });
+    setWebhookEmitHook((event) => {
+      webhookEvents.push(event);
+      return Promise.resolve();
+    });
   });
 
   afterAll(async () => {
     await app.close();
+    _resetWebhookEmitHookForTests();
     await new Promise<void>((resolve, reject) => {
       confluenceServer.close((error) => error ? reject(error) : resolve());
     });
@@ -335,6 +382,7 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
     await truncateAllTables();
     await redis.flushDb();
     confluenceCreateBodies = [];
+    webhookEvents.length = 0;
     userA = await insertUser('cascade_a');
     userB = await insertUser('cascade_b');
     currentUserId = userA;
@@ -342,6 +390,158 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
     await insertLocalSpace('OTHER', userA);
     await setAccessibleSpaces(userA, ['NOTES']);
     await setAccessibleSpaces(userB, ['NOTES']);
+  });
+
+  describe('standalone create to canonical cascade (#1743)', () => {
+    it('R04 trashes and restores the batch of descendants created with padded parent IDs', async () => {
+      const root = await seedCreateParent('R04 root');
+      const child = await createChildThroughRoute('R04 child', `00${root}`);
+      const grandchild = await createChildThroughRoute('R04 grandchild', `00${child}`);
+      const ids = [root, child, grandchild].sort((a, b) => a - b);
+      const deleted = await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+
+      expect(deleted.statusCode).toBe(200);
+      expect.soft((await trashBatchIds(root, userA)).sort((a, b) => a - b)).toEqual(ids);
+      expect.soft(await liveIds(ids)).toEqual([]);
+      expect.soft(await distinctDeleteStamps(ids)).toBe(1);
+
+      const restored = await app.inject({ method: 'POST', url: `/api/pages/${root}/restore` });
+      expect(restored.statusCode).toBe(200);
+      expect(restored.json()).toMatchObject({ id: root, restored: true });
+      expect.soft((await liveIds(ids)).sort((a, b) => a - b)).toEqual(ids);
+      expect.soft(await trashBatchIds(root, userA)).toEqual([]);
+      const audits = await auditRows('PAGE_RESTORED');
+      expect(audits).toHaveLength(1);
+      expect.soft(audits[0]?.metadata).toMatchObject({ restoredCount: 3 });
+      const items = await treeItems();
+      expect.soft(items.find((item) => item.id === String(child))?.parentId).toBe(String(root));
+      expect.soft(items.find((item) => item.id === String(grandchild))?.parentId).toBe(String(child));
+    });
+
+    it('R05 permanently deletes a descendant created with a padded parent ID', async () => {
+      const root = await seedCreateParent('R05 root');
+      const child = await createChildThroughRoute('R05 child', `00${root}`);
+      const unrelated = await insertStandalonePage('R05 unrelated', 'private', userB, 'NOTES');
+      const deleted = await app.inject({ method: 'DELETE', url: `/api/pages/${root}?permanent=true` });
+
+      expect(deleted.statusCode).toBe(200);
+      expect.soft(await existingIds([root, child])).toEqual([]);
+      expect(await existingIds([unrelated])).toEqual([unrelated]);
+    });
+
+    it('R06 includes a padded-parent descendant in the bulk selection trash batch', async () => {
+      const root = await seedCreateParent('R06 root');
+      const child = await createChildThroughRoute('R06 child', `00${root}`);
+      const deleted = await app.inject({
+        method: 'POST', url: '/api/pages/bulk/delete', payload: { ids: [String(root)] },
+      });
+
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.json()).toMatchObject({ succeeded: 1, failed: 0 });
+      expect.soft(await liveIds([root, child])).toEqual([]);
+      expect.soft((await trashBatchIds(root, userA)).sort((a, b) => a - b))
+        .toEqual([root, child].sort((a, b) => a - b));
+      expect(await distinctDeleteStamps([root, child])).toBe(1);
+    });
+
+    it('P06 allows a child beneath a frozen unchanged parent without weakening its delete refusal', async () => {
+      const root = await seedCreateParent('P06 frozen parent');
+      await freezePage(root, userA);
+      const before = await protectedParentState(root);
+      const child = await createChildThroughRoute('P06 child', String(root));
+
+      expect(await protectedParentState(root)).toEqual(before);
+      const deleted = await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+      expect(deleted.statusCode).toBe(423);
+      expect(await protectedParentState(root)).toEqual(before);
+      expect((await liveIds([root, child])).sort((a, b) => a - b))
+        .toEqual([root, child].sort((a, b) => a - b));
+      expect(webhookEvents.filter((event) => event.eventType === 'page.created')).toEqual([{
+        eventType: 'page.created',
+        payload: expect.objectContaining({ pageId: child }),
+      }]);
+    });
+
+    it('P07 refuses child creation while the parent destructive intent remains pending and unstarted', async () => {
+      const root = await seedCreateParent('P07 pending parent');
+      const intent = await reservePageWriteIntent({
+        pageIds: [root],
+        kind: 'pages.delete.standalone',
+        actorId: userA,
+        effect: {
+          effectClass: 'local', rootPageId: root, targetCount: 1,
+          attachmentStores: ['attachment-cache', 'local', 'page-icons'],
+        },
+      });
+      try {
+        const before = await protectedParentState(root);
+        await seedPageCache(redis, [userA, userB]);
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/pages',
+          payload: {
+            title: 'P07 child', bodyHtml: '<p>child</p>', source: 'standalone',
+            visibility: 'private', spaceKey: 'NOTES', parentId: String(root),
+          },
+        });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toMatchObject({ reason: 'page_write_busy' });
+        expect(await protectedParentState(root)).toEqual(before);
+        expect((await query('SELECT id FROM pages WHERE title = $1', ['P07 child'])).rows).toEqual([]);
+        const pending = await query(
+          'SELECT status, effect_started_at, remote_effect_started_at FROM page_write_intents WHERE id = $1',
+          [intent.id],
+        );
+        expect(pending.rows).toEqual([{
+          status: 'pending', effect_started_at: null, remote_effect_started_at: null,
+        }]);
+        expect(await auditRows('PAGE_CREATED')).toEqual([]);
+        expect((await cachedPageUsers(redis, [userA, userB])).sort()).toEqual([userA, userB].sort());
+        expect(webhookEvents).toEqual([]);
+        expect(confluenceCreateBodies).toEqual([]);
+      } finally {
+        await cancelPageWriteIntentBeforeEffect(intent);
+      }
+    });
+
+    it('P08 waits behind the hierarchy delete fence and refuses the now-trashed parent without effects', async () => {
+      const root = await seedCreateParent('P08 concurrent parent');
+      await seedPageCache(redis, [userA, userB]);
+      const holder = await getPool().connect();
+      let pendingCreate: Promise<{ statusCode: number }> | undefined;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+        const holderPid = await backendPid(holder);
+        pendingCreate = app.inject({
+          method: 'POST',
+          url: '/api/pages',
+          payload: {
+            title: 'P08 child', bodyHtml: '<p>child</p>', source: 'standalone',
+            visibility: 'private', spaceKey: 'NOTES', parentId: String(root),
+          },
+        });
+        expect(
+          await waitForAdvisoryWaiter(PAGE_HIERARCHY_LOCK_ID, 'ShareLock', holderPid),
+          'create did not wait for the hierarchy fence',
+        ).toBe(true);
+        await holder.query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [root]);
+        await holder.query('COMMIT');
+
+        expect((await pendingCreate).statusCode).toBe(400);
+        expect(await liveIds([root])).toEqual([]);
+        expect((await query('SELECT id FROM pages WHERE title = $1', ['P08 child'])).rows).toEqual([]);
+        expect(await auditRows('PAGE_CREATED')).toEqual([]);
+        expect((await cachedPageUsers(redis, [userA, userB])).sort()).toEqual([userA, userB].sort());
+        expect(webhookEvents).toEqual([]);
+        expect(confluenceCreateBodies).toEqual([]);
+      } finally {
+        const rollbackError = await holder.query('ROLLBACK').then(() => undefined, (error: Error) => error);
+        holder.release(rollbackError);
+        await Promise.allSettled(pendingCreate ? [pendingCreate] : []);
+      }
+    });
   });
 
   // ── GET /api/pages/:id — hasChildren + descendantCount ────────────────────
