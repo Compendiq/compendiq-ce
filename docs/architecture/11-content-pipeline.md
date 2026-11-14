@@ -785,6 +785,14 @@ converter only spells the URL the store already serves:
 `buildPageImageUrl({ source: 'local', pageId, key, pageSource: 'standalone' })`
 → `/api/local-attachments/{pageId}/{file}`.
 
+Import lookup, live picker overlay, normalized unique index and restore clash
+admission share one identity: same owner, source standalone, nonNULL Notion
+token, not trashed. Remote discovery metadata remains cached; live markers
+are applied once after the cache hit/miss path and never written back into
+metadata storage. Both relocation directions atomically drop the binding while
+retaining page PK/dependencies; exact operation-owned rollback can restore
+ignored legacy Confluence metadata. A re-import receives a fresh standalone PK.
+
 | Notion block | `body_html` |
 |--------------|-------------|
 | `heading_1` / `heading_2` / `heading_3` / `heading_4` | `<h1>`–`<h4>` (toggleable headings also emit nested children) |

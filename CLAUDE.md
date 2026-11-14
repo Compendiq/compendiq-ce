@@ -49,6 +49,8 @@ large-graph gate, and full-graph escape remain independent.
 - `docs/claude/llm-and-rag.md`: REQUIRED before changing providers, retrieval or image analysis.
 - `docs/claude/pages-and-confluence.md`: REQUIRED before changing trash, visibility, connections, search or the Confluence toggle.
 - `docs/claude/content-pipeline.md`: REQUIRED before changing conversion, import, attachments, or the MCP docs sidecar/client.
+  Successful relocation in either direction severs the Notion import binding;
+  exact rollback retains its original value in operation-owned preparation.
 - `docs/claude/enterprise-and-baselines.md`: REQUIRED before changing EE hooks, baselines or page writers.
 
 ## Mandatory Rules

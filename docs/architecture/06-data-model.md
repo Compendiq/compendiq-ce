@@ -110,7 +110,7 @@ erDiagram
         int version
         text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
-        text notion_page_id "idempotency for one-shot Notion import (#1465); NULL unless imported. source stays standalone"
+        text notion_page_id "live standalone import binding; successful relocation clears; legacy CF compensation metadata is ignored"
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
@@ -249,6 +249,7 @@ erDiagram
         text target_visibility
         text original_source
         text original_confluence_id
+        text original_notion_page_id "nullable; exact rollback token, never normalized"
         text original_space_key
         text original_title
         text original_body_html
@@ -789,6 +790,25 @@ The create identity is recorded before readback or uploads, and every successful
 upload appends its own bounded receipt before the next provider call. Receipt
 capacity scales with the admitted inventory; the generic terminal result holds
 only its count and canonical ordered SHA-256, never a second full receipt array.
+
+Migration152 adds the eighteenth authored page snapshot value,
+`original_notion_page_id`. The universal-PK FK keeps that exact source row
+alive. Old writers only inserted the token, so every retained preparation is
+backfilled from its same FK row BEFORE any repair, independently of phase,
+ACLs, body or receipt classification. NULL is an exact known value, not an
+unknown-history default.
+
+The existing `pages_notion_page_id_owner_live_uidx` name and normalized owner
+key remain; its predicate is now source=standalone, nonNULL token, live row.
+Nullable-owner semantics are unchanged. Metadata on a Confluence row cannot
+block another standalone import, including after exact legacy compensation.
+The migration clears all Confluence tokens and only provenance-matching
+retained Confluence-to-local roots; other standalone near-matches remain
+untouched without aborting safe Confluence repair. No FK, status/progress,
+ACL, attachment, history, derived-state, capacity or lifecycle protocol is
+rewritten. Retirement is the bounded snapshot-schema precondition documented
+in the immutable-page-baselines runbook.
+
 
 Migration 121 seeds exactly one feature-state row with
 `creation_enabled = false` and one zeroed capacity row. #276 registers the

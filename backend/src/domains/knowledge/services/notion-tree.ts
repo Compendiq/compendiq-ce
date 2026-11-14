@@ -356,7 +356,6 @@ async function resolveHostPageId(
 
 export async function fetchNotionWorkspaceTree(
   client: NotionClient,
-  options: { userId?: string } = {},
 ): Promise<NotionTreeNode[]> {
   const results = await client.searchAll();
   const nodes = new Map<string, NotionTreeNode>();
@@ -458,32 +457,40 @@ export async function fetchNotionWorkspaceTree(
   await classifyBoardLayouts(client, nodes, rawByKey);
   await classifyDatabases(client, nodes);
 
-  if (options.userId) {
-    try {
-      const existing = await query<{ id: number; notion_page_id: string }>(
-        `SELECT id, lower(replace(notion_page_id, '-', '')) AS notion_page_id
+  return [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
+}
+
+/** Refresh request-local markers from live standalone imports owned by this user. */
+export async function refreshNotionImportedMarkers(nodes: NotionTreeNode[], userId: string): Promise<void> {
+  const existing = await query<{ id: number; notion_page_id: string }>(
+    `SELECT id, lower(replace(notion_page_id, '-', '')) AS notion_page_id
          FROM pages
          WHERE created_by_user_id = $1
+           AND source = 'standalone'
            AND notion_page_id IS NOT NULL
            AND deleted_at IS NULL`,
-        [options.userId],
-      );
-      const existingByNotionId = new Map<string, number>();
-      for (const row of existing.rows) {
-        existingByNotionId.set(row.notion_page_id, row.id);
-      }
-      for (const [key, node] of nodes) {
-        if ((node.type === 'page' || node.type === 'database') && existingByNotionId.has(key)) {
-          node.alreadyImported = true;
-          node.localPageId = existingByNotionId.get(key);
-        }
-      }
-    } catch {
-      // Graceful fallback if database is not reachable (e.g. mock unit tests)
-    }
+    [userId],
+  );
+  const existingByNotionId = new Map<string, number>();
+  for (const row of existing.rows) {
+    existingByNotionId.set(row.notion_page_id, row.id);
   }
 
-  return [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
+  function markImported(treeNodes: NotionTreeNode[]): void {
+    for (const node of treeNodes) {
+      if (node.type === 'page' || node.type === 'database') {
+        const localPageId = existingByNotionId.get(normalizeId(node.id));
+        node.alreadyImported = localPageId !== undefined;
+        if (localPageId !== undefined) {
+          node.localPageId = localPageId;
+        } else {
+          delete node.localPageId;
+        }
+      }
+      if (node.children.length > 0) markImported(node.children);
+    }
+  }
+  markImported(nodes);
 }
 
 /**
