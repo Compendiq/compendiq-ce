@@ -17,6 +17,10 @@ are not authority. Rehome only the missing root key within its exact trash
 batch; a different missing batch key fails closed. Never auto-retry or repair
 already-live orphans; preserve the existing owner/source/ancestor guards.
 
+Trending and content-quality analytics remain admin-only across the corpus.
+Both exclude trashed pages in SQL; restoration makes the same historical
+activity eligible again. See `docs/claude/pages-and-confluence.md`.
+
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.

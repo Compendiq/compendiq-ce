@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate. The original-query leg keeps the caller's pin setting. Identifier
   queries the detector recognises still skip expansion and pin as before. The
   identifier page can still appear in the results at its ordinary merged rank.
+- **Content reports exclude trashed articles (#1744):** Trending and
+  content-quality reports now omit trash before applying their limits. Restored
+  pages are eligible again with their existing views and feedback; both reports
+  remain admin-only.
 - **Page date filters fail validation before timestamp SQL (#1738):** list,
   search and bulk filters share an exact Gregorian date/qualified-timestamp
   profile and return400 for invalid or unsupported inputs. Previously parseable
