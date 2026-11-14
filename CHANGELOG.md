@@ -254,6 +254,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bodiless pages are queued and counted, and the worker skips them — while a
   page that is not found, ambiguous, or moved to the trash before it could be
   queued is counted under `failed`.
+- **Restore articles after deleting their local space (#1742):** Trash now
+  identifies missing spaces and offers an explicit local-space/no-space target
+  only when the current refusal permits it. Restore rehomes matching trash-batch
+  rows atomically and protects destination/retained spaces against concurrent
+  deletion; a different missing batch space fails closed without a misleading
+  picker. Ordinary restores, ownership, purge and space-deletion rules stay intact.
 - **Long lines stay inside exported article PDFs (#1730):** code blocks no
   longer cut each line at 120 characters; a line wider than the code box (83
   characters) continues flush left on the next row, across page breaks, so no

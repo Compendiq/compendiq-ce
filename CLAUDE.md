@@ -9,6 +9,13 @@ Guidance for Claude Code working in this repo. Codex and other AI tools also rea
 Trash distinguishes a failed read from a successful empty list. A failed
 refresh retains cached results with a stale warning; retry keeps its control
 mounted and focusable until the request settles, then rehomes orphaned focus.
+Ordinary Restore is bodyless. Only the CURRENT `restore_space_missing`409
+with `canChooseTarget === true` permits an explicit local-space/`__local__`
+choice; false/missing/nonboolean means show the current refusal without a
+picker. Trash `spaceKey`/`spaceMissing`, messages and previous refusal keys
+are not authority. Rehome only the missing root key within its exact trash
+batch; a different missing batch key fails closed. Never auto-retry or repair
+already-live orphans; preserve the existing owner/source/ancestor guards.
 
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
@@ -75,6 +82,12 @@ cd backend && npx vitest run <file> # single file
 npx playwright test                 # local E2E against an already-running stack; CI recipe below
 docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
+
+Independent backend test runs can set `TEST_DATABASE_NAMESPACE` and use
+`--maxWorkers=1 --no-file-parallelism` for one namespaced worker database.
+The default database names, Redis slots and pub/sub prefixes are unchanged;
+serialize runs sharing Redis. See `docs/claude/testing-and-retrieval-eval.md`
+for the namespace grammar and active-worker CREATE guard.
 
 ## Architecture
 

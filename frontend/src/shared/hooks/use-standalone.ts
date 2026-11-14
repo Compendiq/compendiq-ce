@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { TrashListResponse, Template, TemplateSummary, CreateTemplateInput, UpdateTemplateInput } from '@compendiq/contracts';
+import type { TrashListResponse, RestorePageBody, Template, TemplateSummary, CreateTemplateInput, UpdateTemplateInput } from '@compendiq/contracts';
 import { apiFetch, ApiError, refreshAccessTokenOnce } from '../lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -99,10 +99,12 @@ export function useTrash() {
 export function useRestorePage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (pageId: string) =>
+    mutationFn: ({ pageId, body }: { pageId: string; body?: RestorePageBody }) =>
       apiFetch(`/pages/${pageId}/restore`, {
         method: 'POST',
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
+    retry: false,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['trash'] });
       queryClient.invalidateQueries({ queryKey: ['pages'] });

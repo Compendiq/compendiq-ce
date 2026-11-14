@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ConnectionEventSchema,
   PageConnectionsSchema,
+  RestorePageBodySchema,
   TrashItemSchema,
   TrashListResponseSchema,
 } from './pages.js';
@@ -13,6 +14,8 @@ const validTrashItem = {
   title: 'Trashed note',
   source: 'standalone',
   visibility: 'private',
+  spaceKey: 'M',
+  spaceMissing: true,
   deletedAt: '2026-06-01T12:00:00.000Z',
   createdAt: '2026-05-20T08:30:00.000Z',
   deletedBy: 'trash_owner_a',
@@ -60,6 +63,71 @@ describe('TrashListResponseSchema', () => {
 
   it('rejects a negative total', () => {
     expect(() => TrashListResponseSchema.parse({ items: [], total: -1 })).toThrow();
+  });
+});
+
+describe('#1742 REGRESSION existing Trash wire schemas', () => {
+  it('[C03] requires spaceKey', () => {
+    const payload: Record<string, unknown> = { ...validTrashItem };
+    delete payload['spaceKey'];
+    expect(TrashItemSchema.safeParse(payload).success).toBe(false);
+  });
+
+  it('[C04] requires spaceMissing', () => {
+    const payload: Record<string, unknown> = { ...validTrashItem };
+    delete payload['spaceMissing'];
+    expect(TrashItemSchema.safeParse(payload).success).toBe(false);
+  });
+
+  it('[C05] rejects a numeric spaceKey', () => {
+    expect(TrashItemSchema.safeParse({ ...validTrashItem, spaceKey: 7 }).success).toBe(false);
+  });
+
+  it('[C06] rejects a null spaceMissing', () => {
+    expect(TrashItemSchema.safeParse({ ...validTrashItem, spaceMissing: null }).success).toBe(false);
+  });
+
+  it('[C07] rejects a string spaceMissing', () => {
+    expect(TrashItemSchema.safeParse({ ...validTrashItem, spaceMissing: 'true' }).success).toBe(false);
+  });
+
+  it('[C08] retains a valid null-space wire item unchanged', () => {
+    const payload = { ...validTrashItem, spaceKey: null, spaceMissing: false };
+    expect(TrashItemSchema.parse(payload)).toEqual(payload);
+  });
+
+  it('[C09] retains a valid virtual-root wire item unchanged', () => {
+    const payload = { ...validTrashItem, spaceKey: '__local__', spaceMissing: false };
+    expect(TrashItemSchema.parse(payload)).toEqual(payload);
+  });
+});
+
+// New public feature coverage, separate from the nine accepted existing-wire reds above.
+describe('RestorePageBodySchema public feature', () => {
+  it.each([
+    {},
+    { targetSpaceKey: 'TARGET' },
+    { targetSpaceKey: '__local__' },
+    { targetSpaceKey: ' TARGET ' },
+  ])('retains valid raw target body %j', (body) => {
+    expect(RestorePageBodySchema.parse(body)).toEqual(body);
+  });
+
+  it('strips unknown keys without inventing a target', () => {
+    expect(RestorePageBodySchema.parse({ unrelated: true })).toEqual({});
+  });
+
+  it.each([
+    { label: 'undefined', body: undefined },
+    { label: 'null', body: null },
+    { label: 'null target', body: { targetSpaceKey: null } },
+    { label: 'numeric target', body: { targetSpaceKey: 7 } },
+    { label: 'empty target', body: { targetSpaceKey: '' } },
+    { label: 'array', body: [] },
+    { label: 'number', body: 7 },
+    { label: 'string', body: 'TARGET' },
+  ])('rejects invalid raw schema input: $label', ({ body }) => {
+    expect(RestorePageBodySchema.safeParse(body).success).toBe(false);
   });
 });
 

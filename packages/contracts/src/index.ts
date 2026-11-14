@@ -3,6 +3,7 @@ export * from './schemas/collab.js';
 export * from './schemas/oidc.js';
 export * from './schemas/settings.js';
 export * from './schemas/pages.js';
+export * from './schemas/page-id.js';
 export * from './schemas/page-icon.js';
 export * from './schemas/page-versions.js';
 export * from './schemas/page-baselines.js';

@@ -49,6 +49,88 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
+### Standalone Trash and restore (#1742)
+
+`GET /api/pages/trash` lists only the caller's deleted standalone articles.
+Every item retains its existing fields and ISO dates and adds REQUIRED
+`spaceKey: string | null` (the raw stored key) and `spaceMissing: boolean`.
+Missing-space articles remain listed. NULL and historical `__local__` are
+valid virtual roots, so `spaceMissing` is false for both; an existing
+Confluence container is also not missing. These fields are snapshot hints,
+not a restore reservation or permission to show a target picker.
+
+`POST /api/pages/:id/restore` accepts a positive integer page PK
+(1–2147483647; decimal URL padding is accepted), not a Confluence identifier.
+Ordinary restore needs no body; `{}` is equivalent. Success remains
+`{"id":42,"title":"Trashed note","restored":true}`; an already-live owned
+standalone article returns `restored:false`, without repair or new effects.
+Explicit null/scalar/array bodies and null/numeric/empty target fields are
+validation400s. Unknown object fields strip; raw target keys are not trimmed
+or case-folded.
+
+If the root's real space M is absent, a bodyless request returns exactly:
+
+```json
+{"statusCode":409,"error":"Conflict","reason":"restore_space_missing","message":"The space \"M\" no longer exists. Choose a space to restore into.","missingSpaceKey":"M","canChooseTarget":true}
+```
+
+Only this current true response permits a deliberate retry with
+`{"targetSpaceKey":"EXISTING_LOCAL_KEY"}` or
+`{"targetSpaceKey":"__local__"}`. The latter stores NULL. Local containers
+are not restricted to their creator. No target is guessed/created and no
+automatic request retry occurs. Stored NULL/`__local__` and existing stored
+spaces allow omitted or identical effective targets only; they cannot be
+moved by restore. An existing Confluence container preserves ordinary
+standalone restore but is not a valid rehome destination.
+
+Only authorized same-trash-batch rows carrying M are rekeyed, atomically with
+untrash in one statement. Every other retained nonvirtual space must exist.
+If another batch key N is missing, the entire restore refuses, including
+after selecting a valid root target:
+
+```json
+{"statusCode":409,"error":"Conflict","reason":"restore_space_missing","message":"The space \"N\" for another page in this trash batch no longer exists. This batch cannot be restored by choosing a target for this page.","missingSpaceKey":"N","canChooseTarget":false}
+```
+
+`canChooseTarget` is a REQUIRED boolean on every missing-space refusal,
+assigned from that transaction's current refusal state. False has no root
+target remedy. Clients must show the current message and not open/reopen a
+picker for false, absent or malformed flags. Never infer permission from
+cached list metadata, message parsing or historical key equality: another
+client may restore/rehome/retrash between attempts. A new explicit bodyless
+request may legitimately return true for a different current root state.
+Bulk reports both missing-space states without retry loops.
+
+The other new semantic refusals use the same existing route envelope:
+
+```json
+{"statusCode":400,"error":"ValidationError","reason":"restore_target_not_applicable","message":"A restore target can only be chosen when the stored space no longer exists."}
+```
+
+```json
+{"statusCode":409,"error":"Conflict","reason":"restore_target_space_invalid","message":"The selected restore space is unavailable. Choose an existing local space."}
+```
+
+Unknown/deleted/nonlocal targets share the generic invalid-target response
+without exposing target source/owner/title or access. Missing keys describe
+only the authorized owner's standalone batch, not foreign/traversal pages.
+Existing owner/source/ancestor/import/ambiguity/frozen/pending refusals retain
+their precedence and envelopes; old PageWriteError bodies may omit message.
+No new wrapper, reason beyond these three, general move/repair, purge or
+Confluence-sourced-row behavior is introduced.
+
+Actual rehome detaches only the restored root when its unique resolved LIVE
+direct parent is in a different effective space; child links, paths/depths
+and non-actionable/unresolved parents stay unchanged. Restore holds all
+existing final spaces FOR SHARE through commit; local deletion locks its row
+FOR UPDATE before counting/deleting. Deletion still refuses only live pages,
+not trash; a concurrent loser refuses instead of producing a live orphan.
+`PAGE_RESTORED` audit adds raw `targetSpaceKey` (including `__local__`) and
+`missingSpaceKey` only for actual rehome; padded URL resource identity stays
+raw. Audit restoredCount uses actual updated rows, not a new response field.
+
+### Duplicate lookup
+
 `GET /api/pages/:id/duplicates` accepts a standalone page's internal numeric ID
 or a Confluence page's content ID. Both the source and candidates use the
 caller's page visibility, including restrictions; inaccessible, deleted,
