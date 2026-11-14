@@ -14,7 +14,7 @@ PyYAML==6.0.3
 # collection — so a change in selector semantics silently changes which nodes
 # are dropped, on the one tool whose entire contract is byte reproduction.
 # `six` is markdownify's, and markdownify is the HTML -> Markdown converter.
-soupsieve==2.9.2
+soupsieve==4.0
 six==1.17.0
 
 # Deliberately NOT pinned: `certifi`, `urllib3`, `idna`, `charset-normalizer`
