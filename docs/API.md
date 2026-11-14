@@ -49,6 +49,21 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
+For standalone `POST /api/pages`, `parentId` accepts a numeric page PK
+(including zero-padded decimal text) or an exact Confluence content ID.
+The Confluence text arm supports large and opaque IDs without int4 coercion.
+Creation stores the resolved parent's source-aware key: its PK as text for a
+standalone parent, its Confluence content ID for a Confluence parent. For a
+visible, unambiguous parent, detail retains that stored key while tree and
+breadcrumb projections identify the parent by its internal numeric PK.
+Omitting `parentId` creates a NULL-parent root. Explicit empty text is rejected
+before lookup, even beside an existing empty Confluence identity; explicit
+JSON null remains a schema 400. Missing, deleted or ambiguous supplied parents
+return the same generic 400 `Parent page not found`, without collision details.
+The same-local-space check, ownership-agnostic parent validation and separate
+cascade owner/source guards are unchanged. Existing padded parent rows are not
+repaired by this new-creation fix.
+
 `GET /api/pages/:id/duplicates` accepts a standalone page's internal numeric ID
 or a Confluence page's content ID. Both the source and candidates use the
 caller's page visibility, including restrictions; inaccessible, deleted,
@@ -148,6 +163,46 @@ well as the returned items. Omitting it leaves visibility unfiltered; access
 rules still apply in every case. Filter-based bulk selection uses the same
 visibility condition.
 
+#### Page date filters
+
+`dateFrom` and `dateTo` on page lists, search requests and filter-mode bulk
+operations share this exact supported ISO/RFC3339-style profile:
+
+- A valid proleptic-Gregorian `YYYY-MM-DD` date, with four-digit year
+  **0001–9999** and zero-padded month/day.
+- Or `YYYY-MM-DDTHH:mm:ss[.fraction](Z|+HH:mm|-HH:mm)`, with the same calendar
+  rule, uppercase **T/Z**, mandatory seconds, local hours **00–23**,
+  minutes/seconds **00–59**, and an optional **1–6 digit** fraction.
+  Signed UTC offsets require a colon, hours **00–15** and minutes **00–59**
+  (maximum magnitude **15:59**). `Z`, `+00:00` and `-00:00` are all accepted.
+  Brackets and parentheses here describe the grammar, not literal input.
+
+Values stay raw strings: no trimming, timezone normalization or rounding.
+Encode a positive offset's `+` as `%2B` in URLs; for example,
+`dateFrom=2025-06-15T12:00:00%2B05:30`.
+Bounds remain inclusive `>=` / `<=` timestamp comparisons. A date-only value
+means midnight in the PostgreSQL session TimeZone, not necessarily UTC:
+`dateTo=2025-06-15` includes exact midnight and earlier, but excludes later
+times that day. Equal date-only bounds match midnight alone; individually
+valid reversed bounds remain accepted and return an empty selection.
+Visibility, trash rules, count-drift checks and raw cache identity are unchanged.
+
+Invalid/out-of-profile inputs fail with `400 ValidationError` before date-filter
+SQL or bulk selection/effects. Omitted fields are allowed; explicit empty or
+whitespace strings, year0000/extended years, naive/minute-only/lowercase or
+space-separated timestamps, compact offsets, named zones, leap seconds,24:00,
+PostgreSQL keywords (`now`, `today`, `epoch`, `infinity`) and fractions longer
+than six digits are unsupported. This is not acceptance of every RFC3339 or
+PostgreSQL date spelling.
+
+**Compatibility choice (#1738):** malformed dates previously reached PostgreSQL
+and could return500, but not every new400 replaces a500. Previously parseable
+out-of-profile inputs could succeed200 or reach CountDrift409; another
+precondition could already return400 (for example, bulk sync with Confluence
+disabled). PostgreSQL could round a seven-digit bulk-delete bound and select
+and trash a row under the existing drift tolerance. Such bounds are now
+rejected, not silently rounded; the valid-filter count-drift behavior is unchanged.
+
 ### Get a Page
 
 ```bash
@@ -218,6 +273,10 @@ the current page record in every search mode and fallback path. A named
 In `mode=keyword`, `spaceKey`, `author`, `dateFrom`, `dateTo`, `tags` and
 `aiPolicy` apply to every returned item, including typo-tolerant title
 matches.
+
+`dateFrom`/`dateTo` are validated against the [page date-filter profile](#page-date-filters)
+in every search mode. Applying those bounds to results remains keyword-mode
+behavior; this does not add date filtering to semantic/hybrid retrieval.
 
 ### Readiness Probe (for Kubernetes / Docker)
 

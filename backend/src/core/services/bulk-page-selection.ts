@@ -19,6 +19,7 @@
  * are responsible for their own UPDATE / DELETE work.
  */
 import { z } from 'zod';
+import { PageDateFilterSchema } from '@compendiq/contracts';
 import { query } from '../db/postgres.js';
 import { visiblePagesPredicate } from './page-visibility.js';
 import { toPageIdText } from '../utils/page-id-text.js';
@@ -42,8 +43,8 @@ export const BulkPageFilterSchema = z
     qualityMin: z.coerce.number().int().min(0).max(100).optional(),
     qualityMax: z.coerce.number().int().min(0).max(100).optional(),
     qualityStatus: z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']).optional(),
-    dateFrom: z.string().optional(),
-    dateTo: z.string().optional(),
+    dateFrom: PageDateFilterSchema.optional(),
+    dateTo: PageDateFilterSchema.optional(),
   })
   .strict();
 

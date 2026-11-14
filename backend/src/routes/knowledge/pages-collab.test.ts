@@ -3720,3 +3720,164 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
 });
 
 
+
+describe('#1739 collaborative PK-only identifier boundary', () => {
+  beforeAll(() => {
+    expect(canRun, 'Identifier regressions require real PostgreSQL and Redis').toBe(true);
+  });
+
+  async function storedBoundaryState() {
+    const rows: Record<string, unknown> = {};
+    for (const table of ['pages', 'page_versions', 'page_collaborative_docs', 'page_write_intents']) {
+      const state = await query<{ rows: unknown }>(
+        `SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) AS rows FROM ${table} t`,
+      );
+      rows[table] = state.rows[0]!.rows;
+    }
+    return rows;
+  }
+
+  for (const raw of ['2147483648', '3000000000', '9007199254740993']) {
+    for (const transport of ['HTTP', 'WS'] as const) {
+      it(`#1739 RED R-X ${transport} ${raw} cannot widen to a matching Confluence ID`, async () => {
+        const actor = await createUser(`id-boundary-${transport}-${raw}`);
+        const decoyId = await insertConfluencePage({ spaceKey: 'IDCOLLAB', confluenceId: raw });
+        await grantSpaceRead(actor.userId, 'IDCOLLAB');
+        await enableCollabFlag();
+        const before = await storedBoundaryState();
+        if (transport === 'HTTP') {
+          const response = await app.inject({
+            method: 'POST', url: `/api/pages/${raw}/collab/commit`,
+            headers: { authorization: `Bearer ${actor.token}` },
+            payload: {
+              title: 'Identifier save', expectedLifecycleRevision: '1',
+              expectedDocumentState: EMPTY_DOCUMENT_STATE,
+            },
+          });
+          expect.soft(response.statusCode, response.body).toBe(404);
+          expect.soft(response.body).not.toMatch(/22003|22P02|out of range for type integer|NaN/);
+        } else {
+          const ws = new WebSocket(`${baseWs}/api/collab/${raw}`, [COLLAB_WS_PROTOCOL, actor.token]);
+          ws.binaryType = 'arraybuffer';
+          try {
+            const closed = await waitClose(ws);
+            expect.soft(closed.opened).toBe(true);
+            expect.soft(closed.code).toBe(4404);
+            expect.soft(closed.reason).toBe('not_found');
+          } finally {
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+          }
+        }
+        expect(await storedBoundaryState()).toEqual(before);
+        for (const key of new Set([raw, String(Number(raw)), String(decoyId)])) {
+          expect(await getRedisClient()!.sCard(`collab:active:${key}`)).toBe(0);
+        }
+        expect(getDefaultCollabRuntime()?.getRoom(decoyId)).toBeUndefined();
+        expect(getDefaultCollabRuntime()?.getRoom(Number(raw))).toBeUndefined();
+      });
+    }
+  }
+
+  for (const scenario of ['opaque', 'missing', 'private', 'restricted'] as const) {
+    for (const transport of ['HTTP', 'WS'] as const) {
+      it(`#1739 CONTROL R-X ${transport} preserves ${scenario} refusal`, async () => {
+        const actor = await createUser(`id-control-${transport}-${scenario}`);
+        const owner = await createUser(`id-control-owner-${transport}-${scenario}`, {
+          admin: scenario === 'restricted' && transport === 'HTTP',
+        });
+        let raw = scenario === 'opaque' ? 'abc' : '1999999999';
+        if (scenario === 'private') {
+          raw = String(await insertStandalone({ ownerId: owner.userId, visibility: 'private' }));
+        } else if (scenario === 'restricted') {
+          raw = String(await insertConfluencePage({
+            spaceKey: 'IDCOLLAB', confluenceId: 'restricted-id-control', inheritPerms: false,
+          }));
+          await grantSpaceRead(actor.userId, 'IDCOLLAB');
+        }
+        await enableCollabFlag();
+        const ownerSocket = scenario === 'restricted' && transport === 'HTTP'
+          ? await openAndSync(Number(raw), owner.token)
+          : undefined;
+        try {
+          const ownerMembers = ownerSocket ? (await getRedisClient()!.sMembers(`collab:active:${raw}`)).sort() : undefined;
+          if (ownerSocket) {
+            expect(ownerSocket.protocol).toBe(COLLAB_WS_PROTOCOL);
+            expect(ownerSocket.readyState).toBe(WebSocket.OPEN);
+            expect(ownerMembers).not.toHaveLength(0);
+          }
+          const before = await storedBoundaryState();
+          if (transport === 'HTTP') {
+            const response = await app.inject({
+              method: 'POST', url: `/api/pages/${raw}/collab/commit`,
+              headers: { authorization: `Bearer ${actor.token}` },
+              payload: {
+                title: 'Identifier control',
+                expectedLifecycleRevision: scenario === 'restricted' ? await pageLifecycleRevision(Number(raw)) : '1',
+                expectedDocumentState: EMPTY_DOCUMENT_STATE,
+              },
+            });
+            expect(response.statusCode, response.body).toBe(scenario === 'opaque' ? 404 : 403);
+          } else {
+            const ws = new WebSocket(`${baseWs}/api/collab/${raw}`, [COLLAB_WS_PROTOCOL, actor.token]);
+            const closed = await waitClose(ws);
+            expect(closed).toEqual({ opened: true, code: 4404, reason: 'not_found' });
+          }
+          expect(await storedBoundaryState()).toEqual(before);
+          if (ownerSocket) {
+            expect((await getRedisClient()!.sMembers(`collab:active:${raw}`)).sort()).toEqual(ownerMembers);
+            expect(ownerSocket.readyState).toBe(WebSocket.OPEN);
+            expect(getDefaultCollabRuntime()?.getRoom(Number(raw))).toBeDefined();
+          }
+        } finally {
+          if (ownerSocket) {
+            const closed = waitClose(ownerSocket);
+            ownerSocket.close();
+            await closed;
+            await vi.waitFor(async () => {
+              expect(await getRedisClient()!.sCard(`collab:active:${raw}`)).toBe(0);
+            });
+          }
+        }
+        expect(await getRedisClient()!.sCard(`collab:active:${raw}`)).toBe(0);
+      });
+    }
+  }
+
+  it('#1739 CONTROL R-X valid PK still upgrades, syncs and releases its owner', async () => {
+    const actor = await createUser('id-collab-valid');
+    const pageId = await insertStandalone({ ownerId: actor.userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const ws = await openAndSync(pageId, actor.token);
+    try {
+      expect(ws.protocol).toBe(COLLAB_WS_PROTOCOL);
+      expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeDefined();
+    } finally {
+      const closed = waitClose(ws);
+      ws.close();
+      await closed;
+    }
+    await vi.waitFor(async () => {
+      expect(await getRedisClient()!.sCard(`collab:active:${pageId}`)).toBe(0);
+    });
+  });
+
+  it('#1739 CONTROL R-X expired token retains upgrade-first4401', async () => {
+    const actor = await createUser('id-collab-expired');
+    const pageId = await insertStandalone({ ownerId: actor.userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const expired = await signExpiredToken(actor.userId, 'id-collab-expired', 'user');
+    const ws = new WebSocket(`${baseWs}/api/collab/${pageId}`, [COLLAB_WS_PROTOCOL, expired]);
+    const closed = await waitClose(ws);
+    expect(closed.opened).toBe(true);
+    expect(closed.code).toBe(4401);
+  });
+
+  it('#1739 CONTROL R-X flag-off retains upgrade-first4403', async () => {
+    const actor = await createUser('id-collab-flag');
+    const pageId = await insertStandalone({ ownerId: actor.userId, visibility: 'shared' });
+    const ws = new WebSocket(`${baseWs}/api/collab/${pageId}`, [COLLAB_WS_PROTOCOL, actor.token]);
+    const closed = await waitClose(ws);
+    expect(closed.opened).toBe(true);
+    expect(closed.code).toBe(4403);
+  });
+});
