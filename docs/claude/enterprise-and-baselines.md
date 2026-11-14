@@ -169,6 +169,19 @@ After a cutover, restore the snapshot only from the still-empty cutover ACL,
 serializing the check and write with ordinary grant/revoke statements using
 the ACE relation lock **before the page row lock**, matching restriction sync.
 A changed ACL must refuse rather than be overwritten.
+
+The authored rollback payload includes exact `original_notion_page_id`, NULL
+and spelling included. Successful local and Confluence publication require
+current token NULL in addition to existing content/owner/child/receipt fences.
+A rollback is not successful publication: exact legacy Confluence compensation
+may restore nonNULL metadata, ignored by the standalone-only import policy.
+A structurally original/no-cutover recovery restores only repaired token
+metadata and preserves current grants; token mismatch never decides phase.
+Existing ACE-before-page locking and cutover-ACL refusals remain authoritative.
+Keep uncertain effects, preparation, receipts/capacity, deferred-ingestion,
+collaborative-document and attachment fences intact. See the runbook's
+one-time152 retirement requirement before deploying this snapshot schema.
+
 Local delete recovery uses exact tombstones and retries committed cleanup
 without repeating deletion.
 Remote delete recovery completes the normal delete's room closure: its

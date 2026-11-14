@@ -209,6 +209,16 @@ row and a cascade batch spans several of them. The 409 carries
 route's other refusals (a live import already exists, an ambiguous parent) are
 permanent, so the status code alone cannot be the classifier.
 
+`restore_import_conflict` means a live standalone import of the same normalized
+Notion identity exists for the same owner. Confluence rows are not imports.
+Preserve the root check's existing precedence, then check the complete
+authoritative `trashBatchIds` mutation set after lifecycle/frozen/pending
+guards and before the ONE restore UPDATE. A descendant clash refuses the
+entire batch with409; it must not become a partially restored batch or an
+index-violation500. Traversal through old-trash/foreign/source intermediates,
+source-aware keys, UNION cycle termination, owner authority, ambiguity,
+exact trash stamps and all old parent/auth refusals remain unchanged.
+
 Cache scope is read off the ROWS the cascade touched, never off the target:
 `visibility` is per page, so a private parent can hold a shared sub-article, and
 keying `invalidateAcrossUsers` on the target alone left every other user holding

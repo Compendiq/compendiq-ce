@@ -356,7 +356,6 @@ async function resolveHostPageId(
 
 export async function fetchNotionWorkspaceTree(
   client: NotionClient,
-  options: { userId?: string } = {},
 ): Promise<NotionTreeNode[]> {
   const results = await client.searchAll();
   const nodes = new Map<string, NotionTreeNode>();
@@ -458,24 +457,16 @@ export async function fetchNotionWorkspaceTree(
   await classifyBoardLayouts(client, nodes, rawByKey);
   await classifyDatabases(client, nodes);
 
-  const roots = [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
-  if (options.userId) {
-    try {
-      await refreshNotionImportedMarkers(roots, options.userId);
-    } catch {
-      // Graceful fallback if database is not reachable (e.g. mock unit tests)
-    }
-  }
-
-  return roots;
+  return [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
 }
 
-/** Apply current imported markers without changing unmatched nodes. */
+/** Refresh request-local markers from live standalone imports owned by this user. */
 export async function refreshNotionImportedMarkers(nodes: NotionTreeNode[], userId: string): Promise<void> {
   const existing = await query<{ id: number; notion_page_id: string }>(
     `SELECT id, lower(replace(notion_page_id, '-', '')) AS notion_page_id
          FROM pages
          WHERE created_by_user_id = $1
+           AND source = 'standalone'
            AND notion_page_id IS NOT NULL
            AND deleted_at IS NULL`,
     [userId],
@@ -488,10 +479,12 @@ export async function refreshNotionImportedMarkers(nodes: NotionTreeNode[], user
   function markImported(treeNodes: NotionTreeNode[]): void {
     for (const node of treeNodes) {
       if (node.type === 'page' || node.type === 'database') {
-        const key = normalizeId(node.id);
-        if (existingByNotionId.has(key)) {
-          node.alreadyImported = true;
-          node.localPageId = existingByNotionId.get(key);
+        const localPageId = existingByNotionId.get(normalizeId(node.id));
+        node.alreadyImported = localPageId !== undefined;
+        if (localPageId !== undefined) {
+          node.localPageId = localPageId;
+        } else {
+          delete node.localPageId;
         }
       }
       if (node.children.length > 0) markImported(node.children);

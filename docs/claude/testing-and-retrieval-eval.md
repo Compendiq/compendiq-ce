@@ -6,6 +6,18 @@ Moved verbatim from `CLAUDE.md`. Paths are relative to the repository root.
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
 
+Backend tests use `kb_creator_test_wN` by default. Optional
+`TEST_DATABASE_NAMESPACE` adds a validated namespace:
+`kb_creator_test_<namespace>_wN`. Supplied values must match
+`/^[a-z][a-z0-9_]{0,31}$/` exactly; omitted/actual undefined keeps the legacy
+name, but an empty value is invalid and the literal string `undefined` is valid.
+Both Postgres env URLs are rewritten; namespaced CREATE accepts only the active
+namespace and worker, before importing pg or opening a connection.
+For independent serial runs, set a unique namespace and use
+`npm test -w backend -- --maxWorkers=1 --no-file-parallelism <test-file>`.
+Redis logical DBs and pub/sub prefixes are unchanged: serialize runs sharing
+the same Redis server, and provision only the run's owned Postgres database.
+
 The notification bell uses the global `/notifications/count` for its badge
 and mark-all action, not the current list page. Its paginated list and count
 queries must both be invalidated after read mutations.

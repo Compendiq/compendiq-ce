@@ -47,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Notion re-import after relocation (#1774):** Successful moves in either
+  direction release the Notion import binding without changing the page PK,
+  while exact rollback preserves NULL and original spelling. Cached picker
+  markers and whole-batch restore conflicts now follow live standalone imports.
+  Migration152 repairs stale Confluence bindings and proven retained local
+  cutovers; public import failures no longer expose database constraint names.
+  Before the one-time snapshot-schema upgrade, retire and hold old writers
+  stopped as documented in the immutable-page-baselines runbook.
+
 - **Deep search pins only identifiers found in the user's own question (#1718):**
   the paraphrase legs of a deep search now pass `pinIdentifiers: false`, so
   deep search pins only what the #1107 detector finds in the question itself,

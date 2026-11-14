@@ -1942,6 +1942,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         const clash = await client.query<{ id: number }>(
           `SELECT id FROM pages
             WHERE created_by_user_id = $1
+              AND source = 'standalone'
               AND deleted_at IS NULL
               AND id <> $2
               AND notion_page_id IS NOT NULL
@@ -1981,6 +1982,26 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       };
       assertSingleCascadeEditable(component, page.id);
       await lockPageWrites(client, batchIds);
+      const batchClash = await client.query(
+        `SELECT 1
+           FROM pages AS candidate
+           JOIN pages AS live
+             ON live.created_by_user_id = candidate.created_by_user_id
+            AND live.source = 'standalone'
+            AND live.deleted_at IS NULL
+            AND live.notion_page_id IS NOT NULL
+            AND lower(replace(live.notion_page_id, '-', '')) =
+                lower(replace(candidate.notion_page_id, '-', ''))
+          WHERE candidate.id = ANY($1::int[])
+            AND candidate.source = 'standalone'
+            AND candidate.notion_page_id IS NOT NULL
+            AND live.id <> candidate.id
+          LIMIT 1`,
+        [batchIds],
+      );
+      if (batchClash.rows.length > 0) {
+        throw new PageWriteError(409, 'restore_import_conflict', 'A live import of this page already exists');
+      }
       const rows = await client.query<{ visibility: string }>(
         'UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[]) RETURNING visibility',
         [batchIds],

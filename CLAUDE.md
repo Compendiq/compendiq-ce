@@ -38,6 +38,8 @@ large-graph gate, and full-graph escape remain independent.
 - `docs/claude/llm-and-rag.md`: REQUIRED before changing providers, retrieval or image analysis.
 - `docs/claude/pages-and-confluence.md`: REQUIRED before changing trash, visibility, connections, search or the Confluence toggle.
 - `docs/claude/content-pipeline.md`: REQUIRED before changing conversion, import, attachments, or the MCP docs sidecar/client.
+  Successful relocation in either direction severs the Notion import binding;
+  exact rollback retains its original value in operation-owned preparation.
 - `docs/claude/enterprise-and-baselines.md`: REQUIRED before changing EE hooks, baselines or page writers.
 
 ## Mandatory Rules
@@ -75,6 +77,12 @@ cd backend && npx vitest run <file> # single file
 npx playwright test                 # local E2E against an already-running stack; CI recipe below
 docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
+
+Independent backend test runs can set `TEST_DATABASE_NAMESPACE` and use
+`--maxWorkers=1 --no-file-parallelism` for one namespaced worker database.
+The default database names, Redis slots and pub/sub prefixes are unchanged;
+serialize runs sharing Redis. See `docs/claude/testing-and-retrieval-eval.md`
+for the namespace grammar and active-worker CREATE guard.
 
 ## Architecture
 

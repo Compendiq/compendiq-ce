@@ -202,6 +202,21 @@ Inline wiki databases remain selectable. Normalize UUID spelling, not titles,
 and reject cyclic edges without losing nodes. The picker batches confirmed IDs
 into requests of up to 200; explicit database exclusions travel with every batch.
 
+The remote tree metadata is cached, but imported markers are read live from
+this user's nontrashed standalone pages on EVERY public tree GET, including
+cache hits. UUID case/hyphens are normalized; no title or Confluence metadata
+row owns an import identity. Enrichment changes only request-owned parsed
+nodes after the metadata cache write completes. A failed authoritative marker
+read fails the request rather than inventing false or stale markers.
+
+Both successful relocation cutovers clear `notion_page_id` in the same UPDATE
+as the source/owner change, keeping the universal page PK and dependencies.
+Re-import therefore allocates a distinct standalone page; it must not rebind
+the moved copy. The exact original token belongs in relocation preparation
+for rollback, not in generic intent metadata. Safe pre-allocation 23505
+reconciliation stays distinct from an admitted uncertain failure, which remains
+failed and pending rather than being mapped to success or force-cleared.
+
 **Notion import plans before persisting.** Pages and databases share parent-first
 allocation, preserving the selected root and wiki home bodies. Actual embedded
 child pages/databases expand their owned descendants; mentions never imply
