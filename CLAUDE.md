@@ -103,6 +103,14 @@ The sidebar's space-home projection detaches the configured homepage from its
 actual parent before promoting its children to roots. Keep the original page
 IDs for keyboard navigation, and retain the sole-homepage fallback (#1815).
 
+Standalone creation stores the resolved parent's source-aware `parentKeyFor`
+key, not raw request text (#1743). Parent resolution compares identifiers as
+text; only the PK arm normalizes padding, never the Confluence content arm.
+Reject explicit empty parent text before lookup; omission remains a NULL root.
+Parent validation stays ownership-agnostic; `page-subtree.ts` retains its
+separate source/owner guards. Existing padded parent rows are not repaired.
+See `docs/claude/pages-and-confluence.md`.
+
 ## Tech Stack (highlights, not a manifest)
 
 Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-dim `halfvec` measured/recommended — #1114) · BullMQ (toggleable via `USE_BULLMQ`) · jose / bcrypt · React 19 · TailwindCSS 4 · Radix · TanStack Query · TipTap v3 · Zustand · `turndown` + `jsdom` for content conversion · `pdf-lib` · `nodemailer`. Full deps in `package.json`.

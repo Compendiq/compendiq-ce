@@ -49,6 +49,21 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
+For standalone `POST /api/pages`, `parentId` accepts a numeric page PK
+(including zero-padded decimal text) or an exact Confluence content ID.
+The Confluence text arm supports large and opaque IDs without int4 coercion.
+Creation stores the resolved parent's source-aware key: its PK as text for a
+standalone parent, its Confluence content ID for a Confluence parent. For a
+visible, unambiguous parent, detail retains that stored key while tree and
+breadcrumb projections identify the parent by its internal numeric PK.
+Omitting `parentId` creates a NULL-parent root. Explicit empty text is rejected
+before lookup, even beside an existing empty Confluence identity; explicit
+JSON null remains a schema 400. Missing, deleted or ambiguous supplied parents
+return the same generic 400 `Parent page not found`, without collision details.
+The same-local-space check, ownership-agnostic parent validation and separate
+cascade owner/source guards are unchanged. Existing padded parent rows are not
+repaired by this new-creation fix.
+
 `GET /api/pages/:id/duplicates` accepts a standalone page's internal numeric ID
 or a Confluence page's content ID. Both the source and candidates use the
 caller's page visibility, including restrictions; inaccessible, deleted,
