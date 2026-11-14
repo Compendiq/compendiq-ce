@@ -442,7 +442,7 @@ describe('1774 source-aware restore admission and authoritative batch', () => {
     const restoring = restore(root);
     let importing: Promise<unknown> | undefined;
     try {
-      const restorePid = await waitBlockedBy(held.pid, 'UPDATE pages SET deleted_at');
+      const restorePid = await waitBlockedBy(held.pid, 'UPDATE pages%SET deleted_at');
       const pendingImport = importItem();
       importing = pendingImport;
       await waitBlockedBy(restorePid, 'pg_advisory_xact_lock');
