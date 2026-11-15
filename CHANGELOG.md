@@ -68,6 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Liveness stays 200 during a database outage (#1755):** `GET
+  /api/health/live` is no longer rate limited and touches neither the
+  database nor Redis, so it answers 200 while the database is down or hanging;
+  `/api/health/ready`, `/api/health/start` and `/api/health` answer 503 instead
+  of 500. `getRateLimits()` no longer rejects once its 60 s cache expires: when
+  the settings read fails or does not answer within 1 s it serves the last
+  loaded limits (or the defaults, with the auth floor), and it retries the
+  database at most once per 10 s after a failure (30 s for a read that never
+  settles) instead of on every request. With a working database the limits and
+  their 60 s cache are unchanged.
+
 - **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
   `listActiveEmbeddingLocks` now removes stale members of
   `embedding:locks:active` with one atomic Lua script that re-checks each lock

@@ -348,6 +348,13 @@ under `job_history_retention_days` / `notifications_read_retention_days`
 the strict resolvers (a failed settings read skips the sweep; only an absent row
 falls back to env, then 90) and write one `RETENTION_PRUNED` row per run.
 
+**Rate limits soft-fail (#1755).** `getRateLimits()` never rejects: on a failed
+or slow (> 1 s) settings read it serves the last loaded limits, else the
+defaults (auth floor kept), with one read per retry window and an abandon rule
+for reads that never settle. Keep `/api/health/live` free of I/O and exempt
+from rate limiting (`config: { rateLimit: false }`); the other health probes
+do I/O and stay rate limited.
+
 **Removed (do not revive): `FTS_LANGUAGE`** — the keyword-index language lives in `admin_settings.fts_language`, edited in Settings → AI Models → Retrieval; the env var was inert on every migrated instance because migration 049 seeds that row before any request, so the fallback it fed was unreachable, and a leftover value is now reported as ignored at startup. The allow-list is `FTS_LANGUAGES` in `packages/contracts` and stays **closed**: PostgreSQL has no bind-parameter form for a `regconfig`, so the chosen name is interpolated into SQL. It is not one of the Retrieval panel's nine cheap knobs — saving it re-indexes every page inside the request — and the mechanism, its transaction and its failure modes are documented where they belong, in `docs/architecture/09-flow-rag-chat.md` and `docs/ADMIN-GUIDE.md`.
 
 OIDC/SSO is EE-only.

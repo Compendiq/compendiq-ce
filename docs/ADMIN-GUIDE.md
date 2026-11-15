@@ -2080,9 +2080,11 @@ Compendiq provides Kubernetes-compatible health probes:
 |----------|---------|--------|
 | `GET /api/health` | Public health status | PostgreSQL + Redis + LLM connectivity (coarse; no internal telemetry) |
 | `GET /api/health/ready` | Readiness probe | PostgreSQL + Redis |
-| `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive) |
+| `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive); no database or Redis access, not rate limited |
 | `GET /api/health/start` | Startup probe | Startup complete + PostgreSQL + LLM availability |
 | `GET /api/llm/circuit-breaker-status` | Per-provider circuit-breaker state | Returns a provider-keyed flat map: `{ [providerId]: { state, failureCount, nextRetryTime } }`. Requires auth. |
+
+During a database outage, rate limits stay in force: each backend process keeps applying the rate limits it last loaded (or the built-in defaults if it never loaded any) and retries the settings read at most once every 10 seconds instead of on every request.
 
 Example response from `GET /api/health`:
 
