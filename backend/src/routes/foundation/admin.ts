@@ -1305,9 +1305,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   fastify.put('/admin/smtp', async (request) => {
     // #743 — one shared guard: strip the masked-password sentinel round-tripped
-    // by the UI before BOTH the live-transport update and the DB persist below.
+    // by the UI before BOTH the DB persist and the live-transport update below.
+    // #1761 — persist first (one atomic statement), apply to the live transport
+    // only after it succeeds.
     const body = stripMaskedSmtpPass(SmtpUpdateSchema.parse(request.body));
-    updateSmtpConfig(body);
 
     // Persist to admin_settings table
     const entries: Array<{ key: string; value: string }> = [];
@@ -1337,6 +1338,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
         [keys, values],
       );
     }
+
+    // Apply to the live transport only after the rows are committed, so a failed
+    // save (or a failed encryption above) changes neither the database nor the
+    // live configuration (#1761).
+    updateSmtpConfig(body);
 
     await logAuditEvent(request.userId, 'ADMIN_ACTION', 'admin_settings', undefined, { action: 'update_smtp_settings' }, request);
     return { message: 'SMTP settings updated' };
