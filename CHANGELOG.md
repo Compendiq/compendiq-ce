@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PUT /api/admin/smtp` now writes the `smtp_*` rows (one statement) before it
   updates the live configuration, so a rejected save leaves both the database
   and the transport unchanged and a successful save makes them match.
+
 - **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
   `listActiveEmbeddingLocks` now removes stale members of
   `embedding:locks:active` with one atomic Lua script that re-checks each lock
