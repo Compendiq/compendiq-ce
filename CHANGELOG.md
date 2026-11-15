@@ -77,6 +77,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs. On-demand jobs are unaffected by the options but, on a scheduled queue,
   finished ones fall into the same count-trimmed set.
 
+- **Restore refuses an archive older than the target database (#1711):**
+  `restore-backup.ts` (dry-run and restore) now compares the archive's schema
+  migration with the target's newest `_migrations` row and refuses an older
+  archive before any attachment rename or `pg_restore`, naming both levels and
+  the new ADMIN-GUIDE procedure "Restoring an older archive" (restore into an
+  empty database, then let migrations run). An empty target, an equal level and
+  a target behind the archive stay allowed; `--force` does not bypass the
+  check. `POSTGRES_URL` is now required for `--dry-run` too (exit 2 without
+  it), and `restoreBackup` refuses when `POSTGRES_URL` is missing or differs
+  from the restore target URL.
+
 - **Backup source-stream failures no longer crash the API (#1709):** a
   `pg_dump` that fails to start or exits non-zero, or an attachment that
   vanishes or becomes unreadable during a backup, used to raise an unhandled
