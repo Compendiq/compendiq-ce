@@ -47,6 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Backup source-stream failures no longer crash the API (#1709):** a
+  `pg_dump` that fails to start or exits non-zero, or an attachment that
+  vanishes or becomes unreadable during a backup, used to raise an unhandled
+  stream error that killed the backend, left the run `running`, held the
+  backup lock for up to an hour and left the S3 multipart upload open. The
+  backup now fails cleanly with the real cause: the download is aborted and
+  audited as `BACKUP_EXPORT_FAILED`, an S3 run is marked `failed` with the
+  `pg_dump`/`ENOENT`/`EACCES` message and its multipart upload aborted, and
+  the lock, snapshot and `pg_dump` are released. A client that disconnects
+  mid-download now also closes the dump and attachment streams. The archive
+  format is unchanged.
+
 - **Notion re-import after relocation (#1774):** Successful moves in either
   direction release the Notion import binding without changing the page PK,
   while exact rollback preserves NULL and original spelling. Cached picker

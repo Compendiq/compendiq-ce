@@ -1798,6 +1798,11 @@ for restore verification.
 - **Schedule:** configure interval hours, keep-last-N, and delete-after-days.
   One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
   History refreshes while a run is active.
+- **Failures:** if `pg_dump` fails to start or exits non-zero, or an attachment
+  vanishes or becomes unreadable mid-backup, the backup fails without affecting
+  the server: a download is cut off and audited as `BACKUP_EXPORT_FAILED`, an
+  S3 run is marked `failed` with the `pg_dump` or file error and its multipart
+  upload is aborted. The lock is released at once, so the next run can retry.
 
 #### Enterprise KMS and immutable storage
 

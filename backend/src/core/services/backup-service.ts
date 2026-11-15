@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { Readable, Transform } from 'node:stream';
+import { pipeline, Readable, Transform } from 'node:stream';
 import type { PoolClient } from 'pg';
 import { getPool, query } from '../db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
@@ -262,8 +262,27 @@ export function terminatePgDumpAndWait(
 }
 
 export function dumpStreamFromProcess(child: ChildProcess): Readable {
-  if (!child.stdout) throw new BackupDumpError('pg_dump stdout is not piped');
+  // Both before anything below can throw (#1709): a failed spawn reports its
+  // 'error' and then 'close' on process.nextTick. Without an 'error' listener
+  // that crashes the process; without the lifecycle the 'close' is missed and
+  // release() waits for it forever.
   const lifecycle = pgDumpLifecycle(child);
+  const out = new Transform({
+    transform(chunk, _enc, cb) {
+      this.push(chunk);
+      cb();
+    },
+  });
+  child.on('error', (err) => {
+    // The message only: the error object's spawnargs carry --dbname=<POSTGRES_URL>.
+    out.destroy(new BackupDumpError(`pg_dump failed to start: ${err.message}`));
+  });
+  if (!child.stdout) {
+    // spawn() returns a child without pid or stdio when it fails before it
+    // can create the pipes (EMFILE/ENFILE); its pending 'error' ends `out`.
+    if (child.pid === undefined) return out;
+    throw new BackupDumpError('pg_dump stdout is not piped');
+  }
 
   const stderrChunks: Buffer[] = [];
   let stderrBytes = 0;
@@ -279,13 +298,6 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
       exitError.message = `pg_dump exited ${exitCode}: ${Buffer.concat(stderrChunks, stderrBytes).toString('utf8')}`;
     }
   };
-
-  const out = new Transform({
-    transform(chunk, _enc, cb) {
-      this.push(chunk);
-      cb();
-    },
-  });
 
   const maybeComplete = () => {
     if (stdoutEnded && childClosed && exitCode === 0) {
@@ -316,9 +328,6 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
   child.stdout.on('error', (err) => {
     out.destroy(new BackupDumpError(`pg_dump stdout failed: ${err.message}`));
   });
-  child.on('error', (err) => {
-    out.destroy(new BackupDumpError(`pg_dump failed to start: ${err.message}`));
-  });
   child.on('close', (code) => {
     childClosed = true;
     exitCode = code;
@@ -340,33 +349,80 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
   return out;
 }
 
-async function* backupMembers(dump: Readable, files: AttachmentFile[], meta: {
-  schemaMigration: string;
-  patFingerprint: string;
-  createdAt: string;
-}): AsyncGenerator<ArchiveEntry> {
-  const dumpHash = hashingPassThrough();
-  let dumpBytes = 0;
+/**
+ * Connects an archive member's source to its stages with callback-form
+ * `pipeline` (#1709). `.pipe()` neither forwards nor listens for source errors,
+ * so a failing `pg_dump` or an unreadable attachment emitted an unhandled
+ * `'error'` and killed the process. `pipeline` listens on every stage and, on
+ * the first failure, destroys all of them with that original error, so the
+ * returned tail (the stream `archiveFrames` reads) rejects its async iterator
+ * with the real cause (`BackupDumpError` text, `ENOENT`/`EACCES`). The callback
+ * only observes completion: the error reaches the consumer through the tail.
+ */
+function chainMember(source: Readable, ...stages: [Transform, ...Transform[]]): Transform {
+  pipeline(source, ...stages, () => {});
+  return stages[stages.length - 1]!;
+}
+
+interface DumpMember {
+  stream: Transform;
+  digest(): string;
+  bytes(): number;
+}
+
+/**
+ * Must be called synchronously after `spawnPgDump` (D-1709-1): `spawn()`
+ * reports a start failure with `process.nextTick`, which runs before the
+ * archive generator first resumes, so a chain composed lazily there would
+ * attach its error listener too late.
+ */
+function composeDumpMember(dump: Readable): DumpMember {
+  const hash = hashingPassThrough();
+  let bytes = 0;
   const counter = new Transform({
     transform(chunk, _enc, cb) {
-      dumpBytes += (chunk as Buffer).length;
+      bytes += (chunk as Buffer).length;
       this.push(chunk);
       cb();
     },
   });
-  yield { name: 'database.dump', stream: dump.pipe(dumpHash.stream).pipe(counter) };
+  return {
+    stream: chainMember(dump, hash.stream, counter),
+    digest: hash.digest,
+    bytes: () => bytes,
+  };
+}
+
+/** The attachment member the archive is currently reading, for early teardown. */
+interface InFlightAttachment {
+  stream?: Readable;
+}
+
+async function* backupMembers(
+  dump: DumpMember,
+  files: AttachmentFile[],
+  meta: {
+    schemaMigration: string;
+    patFingerprint: string;
+    createdAt: string;
+  },
+  inFlight: InFlightAttachment,
+): AsyncGenerator<ArchiveEntry> {
+  yield { name: 'database.dump', stream: dump.stream };
 
   const checksums: Record<string, string> = {
-    'database.dump': dumpHash.digest(),
+    'database.dump': dump.digest(),
   };
 
   for (const file of files) {
     const hash = hashingPassThrough();
+    inFlight.stream = chainMember(createReadStream(file.abs), hash.stream);
     yield {
       name: `attachments/${file.rel}`,
       size: file.size,
-      stream: createReadStream(file.abs).pipe(hash.stream),
+      stream: inFlight.stream,
     };
+    inFlight.stream = undefined;
     checksums[`attachments/${file.rel}`] = hash.digest();
   }
 
@@ -375,7 +431,7 @@ async function* backupMembers(dump: Readable, files: AttachmentFile[], meta: {
     createdAt: meta.createdAt,
     schemaMigration: meta.schemaMigration,
     patEncryptionKeyFingerprint: meta.patFingerprint,
-    databaseSizeBytes: dumpBytes,
+    databaseSizeBytes: dump.bytes(),
     checksums,
     format: 'cpqarc1',
   };
@@ -438,15 +494,23 @@ export async function createEncryptedBackupStream(
     snapshot = await exportPostgresSnapshot(options.snapshotPool);
     const files = await listAttachmentFiles(options.attachmentsRoot ?? attachmentsRoot());
     child = spawnPgDump(postgresUrl, options.spawnFn ?? spawn, snapshot.snapshotId);
-    const dump = dumpStreamFromProcess(child);
-    const packed = packArchive(backupMembers(dump, files, { schemaMigration, patFingerprint, createdAt }));
+    // No await between spawn and composition (D-1709-1).
+    const dump = composeDumpMember(dumpStreamFromProcess(child));
+    const inFlight: InFlightAttachment = {};
+    const packed = packArchive(
+      backupMembers(dump, files, { schemaMigration, patFingerprint, createdAt }, inFlight),
+    );
     const encrypted = encryptBackupStream(packed, secret);
-    encrypted.once('close', () => {
+    // An early consumer stop does not reach a member the archive is waiting
+    // on (D-1709-3): destroy both chains so pg_dump's stream and the
+    // attachment file are closed; destroying a finished chain is a no-op.
+    const teardown = () => {
+      dump.stream.destroy();
+      inFlight.stream?.destroy();
       void release().catch((err: unknown) => logger.error({ err }, 'Failed to release backup resources'));
-    });
-    encrypted.once('error', () => {
-      void release().catch((err: unknown) => logger.error({ err }, 'Failed to release backup resources'));
-    });
+    };
+    encrypted.once('close', teardown);
+    encrypted.once('error', teardown);
     return { stream: encrypted, filename, release };
   } catch (err) {
     await release();

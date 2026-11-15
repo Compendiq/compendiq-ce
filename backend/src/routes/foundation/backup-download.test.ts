@@ -1,7 +1,17 @@
-import type { ServerResponse } from 'node:http';
+import type { ChildProcess, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { EventEmitter, once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { get, type IncomingMessage, type ServerResponse } from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import Fastify from 'fastify';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as BackupService from '../../core/services/backup-service.js';
+import type { BackupSecret } from '../../core/services/backup-stream.js';
+import { isDbAvailable, setupTestDb } from '../../test-db-helper.js';
 import { backupDownloadRoutes } from './backup-download.js';
 
 const consumeBackupExportTicket = vi.fn();
@@ -28,6 +38,7 @@ vi.mock('../../core/services/audit-service.js', () => ({
 
 const TICKET = 'a'.repeat(64);
 const SECRET = { kind: 'passphrase' as const, passphrase: 'correct horse battery staple' };
+const dbAvailable = await isDbAvailable();
 
 async function build(onRequest?: (response: ServerResponse) => void) {
   const app = Fastify();
@@ -291,6 +302,87 @@ describe('backup download routes (#1420)', () => {
 
       finishAudit?.();
       expect((await responsePromise).statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// The real createEncryptedBackupStream (real Postgres snapshot, real archive
+// and encryption) behind the real route, with a pg_dump that fails mid-stream.
+describe.skipIf(!dbAvailable)('backup download with a failing pg_dump (#1709)', () => {
+  let attachmentsRoot: string;
+  const escaped: unknown[] = [];
+  const recordEscape = (reason: unknown) => {
+    escaped.push(reason);
+  };
+
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+
+  beforeEach(async () => {
+    consumeBackupExportTicket.mockResolvedValue({ userId: 'admin-1', secret: SECRET });
+    attachmentsRoot = await mkdtemp(path.join(os.tmpdir(), 'backup-download-1709-'));
+    escaped.length = 0;
+    process.on('uncaughtException', recordEscape);
+    process.on('unhandledRejection', recordEscape);
+  });
+
+  afterEach(async () => {
+    process.off('uncaughtException', recordEscape);
+    process.off('unhandledRejection', recordEscape);
+    vi.clearAllMocks();
+    await rm(attachmentsRoot, { recursive: true, force: true });
+  });
+
+  it('aborts the response body and records BACKUP_EXPORT_FAILED once', async () => {
+    const actual = await vi.importActual<typeof BackupService>('../../core/services/backup-service.js');
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const pgDump = Object.assign(new EventEmitter(), {
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+    }) as unknown as ChildProcess;
+    const spawnPgDump = () => {
+      process.nextTick(() => stdout.write(randomBytes(64 * 1024)));
+      return pgDump;
+    };
+    // One function cannot implement spawn's overloads; the backup only needs a child back.
+    const spawnFn = spawnPgDump as unknown as typeof spawn;
+    createEncryptedBackupStream.mockImplementationOnce((secret: BackupSecret) =>
+      actual.createEncryptedBackupStream(secret, { spawnFn, attachmentsRoot }),
+    );
+    const app = await build();
+    try {
+      const url = await app.listen({ host: '127.0.0.1', port: 0 });
+      const responseReady = Promise.withResolvers<IncomingMessage>();
+      get(`${url}/api/backup/download/${TICKET}`, responseReady.resolve).once('error', responseReady.reject);
+      const response = await responseReady.promise;
+      const responseClosed = Promise.withResolvers<void>();
+      response.once('close', () => responseClosed.resolve());
+      response.on('error', () => {});
+
+      expect(response.statusCode).toBe(200);
+      await once(response, 'data');
+      stderr.end('pg_dump: error: connection to server was lost');
+      await nextEventLoopTurn();
+      stdout.end();
+      pgDump.emit('close', 1, null);
+      await responseClosed.promise;
+
+      expect(response.complete).toBe(false);
+      await vi.waitFor(() => expect(logAuditEvent).toHaveBeenCalledOnce());
+      expect(logAuditEvent).toHaveBeenCalledWith(
+        'admin-1',
+        'BACKUP_EXPORT_FAILED',
+        'backup',
+        expect.stringMatching(/^compendiq-backup-\d{8}T\d{6}Z\.enc$/),
+        { filename: expect.stringMatching(/^compendiq-backup-.*\.enc$/) },
+      );
+      for (let i = 0; i < 5; i += 1) await nextEventLoopTurn();
+      expect(escaped).toEqual([]);
     } finally {
       await app.close();
     }
