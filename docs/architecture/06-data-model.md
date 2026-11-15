@@ -522,6 +522,7 @@ erDiagram
         text error
         text triggered_by "nullable user id text; null for schedule"
         text job_id "nullable BullMQ job id"
+        text warning "nullable; S3 prune error on a success run, max 1000 chars"
     }
 
     roles {
@@ -941,7 +942,11 @@ a user foreign key so scheduled runs and historical actor identifiers remain
 representable. Because an in-flight S3 archive necessarily snapshots
 its own row as `running`, offline restore reconciles every restored `running`
 row to `failed` with a finish time and the error `Backup interrupted by restore`
-after migrations and before reporting restore success.
+after migrations and before reporting restore success. Migration 153 adds the
+nullable `warning` column (#1710): when the S3 retention prune fails after the
+upload completed, the run stays `success` with `error` NULL and the prune error
+message (at most 1000 characters) is stored in `warning` by a dedicated
+`UPDATE` that never touches status, size, object key, finish time or error.
 
 Enterprise migration 900 adds `backup_destinations` and
 `backup_destination_results`. The primary is a runtime mirror of the CE S3

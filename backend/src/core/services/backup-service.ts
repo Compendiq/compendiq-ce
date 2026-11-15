@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { Readable, Transform } from 'node:stream';
+import { pipeline, Readable, Transform } from 'node:stream';
 import type { PoolClient } from 'pg';
 import { getPool, query } from '../db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
@@ -14,6 +14,7 @@ import {
   releaseWorkerLock,
 } from './redis-cache.js';
 import type { BackupManifest } from './backup-manifest.js';
+import { logAuditEvent } from './audit-service.js';
 import {
   encryptBackupStream,
   fingerprintPatEncryptionKey,
@@ -262,8 +263,27 @@ export function terminatePgDumpAndWait(
 }
 
 export function dumpStreamFromProcess(child: ChildProcess): Readable {
-  if (!child.stdout) throw new BackupDumpError('pg_dump stdout is not piped');
+  // Both before anything below can throw (#1709): a failed spawn reports its
+  // 'error' and then 'close' on process.nextTick. Without an 'error' listener
+  // that crashes the process; without the lifecycle the 'close' is missed and
+  // release() waits for it forever.
   const lifecycle = pgDumpLifecycle(child);
+  const out = new Transform({
+    transform(chunk, _enc, cb) {
+      this.push(chunk);
+      cb();
+    },
+  });
+  child.on('error', (err) => {
+    // The message only: the error object's spawnargs carry --dbname=<POSTGRES_URL>.
+    out.destroy(new BackupDumpError(`pg_dump failed to start: ${err.message}`));
+  });
+  if (!child.stdout) {
+    // spawn() returns a child without pid or stdio when it fails before it
+    // can create the pipes (EMFILE/ENFILE); its pending 'error' ends `out`.
+    if (child.pid === undefined) return out;
+    throw new BackupDumpError('pg_dump stdout is not piped');
+  }
 
   const stderrChunks: Buffer[] = [];
   let stderrBytes = 0;
@@ -279,13 +299,6 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
       exitError.message = `pg_dump exited ${exitCode}: ${Buffer.concat(stderrChunks, stderrBytes).toString('utf8')}`;
     }
   };
-
-  const out = new Transform({
-    transform(chunk, _enc, cb) {
-      this.push(chunk);
-      cb();
-    },
-  });
 
   const maybeComplete = () => {
     if (stdoutEnded && childClosed && exitCode === 0) {
@@ -316,9 +329,6 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
   child.stdout.on('error', (err) => {
     out.destroy(new BackupDumpError(`pg_dump stdout failed: ${err.message}`));
   });
-  child.on('error', (err) => {
-    out.destroy(new BackupDumpError(`pg_dump failed to start: ${err.message}`));
-  });
   child.on('close', (code) => {
     childClosed = true;
     exitCode = code;
@@ -340,33 +350,80 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
   return out;
 }
 
-async function* backupMembers(dump: Readable, files: AttachmentFile[], meta: {
-  schemaMigration: string;
-  patFingerprint: string;
-  createdAt: string;
-}): AsyncGenerator<ArchiveEntry> {
-  const dumpHash = hashingPassThrough();
-  let dumpBytes = 0;
+/**
+ * Connects an archive member's source to its stages with callback-form
+ * `pipeline` (#1709). `.pipe()` neither forwards nor listens for source errors,
+ * so a failing `pg_dump` or an unreadable attachment emitted an unhandled
+ * `'error'` and killed the process. `pipeline` listens on every stage and, on
+ * the first failure, destroys all of them with that original error, so the
+ * returned tail (the stream `archiveFrames` reads) rejects its async iterator
+ * with the real cause (`BackupDumpError` text, `ENOENT`/`EACCES`). The callback
+ * only observes completion: the error reaches the consumer through the tail.
+ */
+function chainMember(source: Readable, ...stages: [Transform, ...Transform[]]): Transform {
+  pipeline(source, ...stages, () => {});
+  return stages[stages.length - 1]!;
+}
+
+interface DumpMember {
+  stream: Transform;
+  digest(): string;
+  bytes(): number;
+}
+
+/**
+ * Must be called synchronously after `spawnPgDump` (D-1709-1): `spawn()`
+ * reports a start failure with `process.nextTick`, which runs before the
+ * archive generator first resumes, so a chain composed lazily there would
+ * attach its error listener too late.
+ */
+function composeDumpMember(dump: Readable): DumpMember {
+  const hash = hashingPassThrough();
+  let bytes = 0;
   const counter = new Transform({
     transform(chunk, _enc, cb) {
-      dumpBytes += (chunk as Buffer).length;
+      bytes += (chunk as Buffer).length;
       this.push(chunk);
       cb();
     },
   });
-  yield { name: 'database.dump', stream: dump.pipe(dumpHash.stream).pipe(counter) };
+  return {
+    stream: chainMember(dump, hash.stream, counter),
+    digest: hash.digest,
+    bytes: () => bytes,
+  };
+}
+
+/** The attachment member the archive is currently reading, for early teardown. */
+interface InFlightAttachment {
+  stream?: Readable;
+}
+
+async function* backupMembers(
+  dump: DumpMember,
+  files: AttachmentFile[],
+  meta: {
+    schemaMigration: string;
+    patFingerprint: string;
+    createdAt: string;
+  },
+  inFlight: InFlightAttachment,
+): AsyncGenerator<ArchiveEntry> {
+  yield { name: 'database.dump', stream: dump.stream };
 
   const checksums: Record<string, string> = {
-    'database.dump': dumpHash.digest(),
+    'database.dump': dump.digest(),
   };
 
   for (const file of files) {
     const hash = hashingPassThrough();
+    inFlight.stream = chainMember(createReadStream(file.abs), hash.stream);
     yield {
       name: `attachments/${file.rel}`,
       size: file.size,
-      stream: createReadStream(file.abs).pipe(hash.stream),
+      stream: inFlight.stream,
     };
+    inFlight.stream = undefined;
     checksums[`attachments/${file.rel}`] = hash.digest();
   }
 
@@ -375,7 +432,7 @@ async function* backupMembers(dump: Readable, files: AttachmentFile[], meta: {
     createdAt: meta.createdAt,
     schemaMigration: meta.schemaMigration,
     patEncryptionKeyFingerprint: meta.patFingerprint,
-    databaseSizeBytes: dumpBytes,
+    databaseSizeBytes: dump.bytes(),
     checksums,
     format: 'cpqarc1',
   };
@@ -438,15 +495,23 @@ export async function createEncryptedBackupStream(
     snapshot = await exportPostgresSnapshot(options.snapshotPool);
     const files = await listAttachmentFiles(options.attachmentsRoot ?? attachmentsRoot());
     child = spawnPgDump(postgresUrl, options.spawnFn ?? spawn, snapshot.snapshotId);
-    const dump = dumpStreamFromProcess(child);
-    const packed = packArchive(backupMembers(dump, files, { schemaMigration, patFingerprint, createdAt }));
+    // No await between spawn and composition (D-1709-1).
+    const dump = composeDumpMember(dumpStreamFromProcess(child));
+    const inFlight: InFlightAttachment = {};
+    const packed = packArchive(
+      backupMembers(dump, files, { schemaMigration, patFingerprint, createdAt }, inFlight),
+    );
     const encrypted = encryptBackupStream(packed, secret);
-    encrypted.once('close', () => {
+    // An early consumer stop does not reach a member the archive is waiting
+    // on (D-1709-3): destroy both chains so pg_dump's stream and the
+    // attachment file are closed; destroying a finished chain is a no-op.
+    const teardown = () => {
+      dump.stream.destroy();
+      inFlight.stream?.destroy();
       void release().catch((err: unknown) => logger.error({ err }, 'Failed to release backup resources'));
-    });
-    encrypted.once('error', () => {
-      void release().catch((err: unknown) => logger.error({ err }, 'Failed to release backup resources'));
-    });
+    };
+    encrypted.once('close', teardown);
+    encrypted.once('error', teardown);
     return { stream: encrypted, filename, release };
   } catch (err) {
     await release();
@@ -484,6 +549,11 @@ export async function finishBackupRun(
   );
 }
 
+/** Stores a non-fatal warning on a run without touching its status or outcome columns. */
+export async function recordBackupRunWarning(id: string, warning: string): Promise<void> {
+  await query('UPDATE backup_runs SET warning = $2 WHERE id = $1', [id, warning]);
+}
+
 export async function listBackupRuns(limit = 20): Promise<Array<{
   id: string;
   createdAt: string;
@@ -495,6 +565,7 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
   error: string | null;
   triggeredBy: string | null;
   jobId: string | null;
+  warning: string | null;
 }>> {
   const result = await query<{
     id: string;
@@ -507,8 +578,9 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
     error: string | null;
     triggered_by: string | null;
     job_id: string | null;
+    warning: string | null;
   }>(
-    `SELECT id, created_at, finished_at, destination, status, bytes, object_key, error, triggered_by, job_id
+    `SELECT id, created_at, finished_at, destination, status, bytes, object_key, error, triggered_by, job_id, warning
        FROM backup_runs
       ORDER BY created_at DESC
       LIMIT $1`,
@@ -525,7 +597,21 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
     error: r.error,
     triggeredBy: r.triggered_by,
     jobId: r.job_id,
+    warning: r.warning,
   }));
+}
+
+/** Longest prune-error text stored as a run warning (the S3 error body is already capped upstream). */
+const MAX_RUN_WARNING_LENGTH = 1000;
+
+/** Destroys the upload source and releases the snapshot and lock; never throws. */
+async function destroyAndRelease(backup: EncryptedBackupStream, runId: string): Promise<void> {
+  backup.stream.destroy();
+  try {
+    await backup.release();
+  } catch (err) {
+    logger.error({ runId, err }, 'Failed to release backup resources');
+  }
 }
 
 export async function runS3Backup(
@@ -533,54 +619,97 @@ export async function runS3Backup(
   jobId: string | null,
 ): Promise<string> {
   const runId = await insertBackupRun({ destination: 's3', triggeredBy, jobId });
+  // Once set, the upload is recorded as a success and nothing may demote it (D-1710-2).
+  let successRecorded = false;
+  let backup: EncryptedBackupStream | undefined;
   try {
     const cfg = await getBackupRuntimeConfig();
     if (!cfg.s3.enabled || !cfg.s3.bucket || !cfg.s3.endpoint) {
       throw new Error('S3 backup is not configured');
     }
     const secret: BackupSecret = { kind: 'master', keyMaterial: requireMasterBackupKey() };
-    const backup = await createEncryptedBackupStream(secret);
-    let outcome:
-      | { uploaded: UploadedObject; error?: never }
-      | { uploaded?: never; error: unknown };
+    backup = await createEncryptedBackupStream(secret);
+    const target: S3Target = {
+      endpoint: cfg.s3.endpoint,
+      bucket: cfg.s3.bucket,
+      region: cfg.s3.region,
+      accessKey: cfg.s3.accessKey,
+      secretKey: cfg.s3.secretKey,
+      prefix: cfg.s3.prefix,
+      forcePathStyle: cfg.s3.forcePathStyle,
+    };
+
+    let uploaded: UploadedObject;
     try {
-      const target: S3Target = {
-        endpoint: cfg.s3.endpoint,
-        bucket: cfg.s3.bucket,
-        region: cfg.s3.region,
-        accessKey: cfg.s3.accessKey,
-        secretKey: cfg.s3.secretKey,
-        prefix: cfg.s3.prefix,
-        forcePathStyle: cfg.s3.forcePathStyle,
-      };
-      const key = objectKeyFor(cfg.s3.prefix);
-      const uploaded = await uploadBackupObject(target, key, backup.stream);
+      uploaded = await uploadBackupObject(target, objectKeyFor(cfg.s3.prefix), backup.stream);
+    } catch (uploadError) {
+      await destroyAndRelease(backup, runId);
+      throw uploadError;
+    }
+
+    // Phase 1: record the completed upload before anything that can fail or
+    // hang, so a prune problem never leaves the run `running` and due again.
+    // The stream is destroyed and the lock released whatever happens here.
+    // Release normally began already when the encrypted stream ended (the
+    // #1709 teardown), so this step awaits that same memoised promise.
+    try {
+      await finishBackupRun(runId, {
+        status: 'success',
+        bytes: uploaded.bytes,
+        objectKey: uploaded.key,
+      });
+      successRecorded = true;
+      try {
+        await markBackupLastRun(new Date().toISOString());
+      } catch (err) {
+        logger.error(
+          { runId, err },
+          'Failed to persist backup_last_run_at; the next due tick will upload again',
+        );
+      }
+    } finally {
+      await destroyAndRelease(backup, runId);
+    }
+
+    // Phase 2: retention. Its failure is a warning on the finished run. It
+    // runs after the lock is released; prune keeps the newest objects, so an
+    // overlapping forced run is safe.
+    let pruneWarning: string | null = null;
+    try {
       const pruned = await pruneBackupObjects(
         target,
         cfg.schedule.retentionCount,
         cfg.schedule.retentionDays,
       );
       if (pruned.length) logger.info({ pruned }, 'Pruned expired S3 backups');
-      outcome = { uploaded };
-    } catch (error) {
-      outcome = { error };
+    } catch (err) {
+      const message = (err instanceof Error ? err.message : String(err)) || 'S3 backup prune failed';
+      pruneWarning = message.slice(0, MAX_RUN_WARNING_LENGTH);
+      logger.warn({ runId, err }, 'S3 backup prune failed; the uploaded backup is kept as a success');
     }
-    backup.stream.destroy();
+    if (pruneWarning !== null) {
+      try {
+        await recordBackupRunWarning(runId, pruneWarning);
+      } catch (err) {
+        logger.error({ runId, err }, 'Failed to persist the backup prune warning');
+      }
+    }
     try {
-      await backup.release();
-    } catch (cleanupError) {
-      if (!('error' in outcome)) throw cleanupError;
+      await logAuditEvent(triggeredBy, 'BACKUP_UPLOADED', 'backup', runId, {
+        objectKey: uploaded.key,
+        bytes: uploaded.bytes,
+        pruneWarning,
+      });
+    } catch (err) {
+      logger.error({ runId, err }, 'Failed to audit the uploaded backup');
     }
-    if ('error' in outcome) throw outcome.error;
-    const { uploaded } = outcome;
-    await finishBackupRun(runId, {
-      status: 'success',
-      bytes: uploaded.bytes,
-      objectKey: uploaded.key,
-    });
-    await markBackupLastRun(new Date().toISOString());
     return backup.filename;
   } catch (err) {
+    if (successRecorded && backup) {
+      // Backstop: every post-success step above handles its own failure.
+      logger.error({ runId, err }, 'Unexpected error after the backup run was recorded as a success');
+      return backup.filename;
+    }
     const message = err instanceof Error ? err.message : String(err);
     await finishBackupRun(runId, { status: 'failed', error: message });
     throw err;

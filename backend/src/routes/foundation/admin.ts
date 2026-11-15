@@ -26,6 +26,8 @@ import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
   getWebhookDeliveriesRetentionDays,
+  getJobHistoryRetentionDays,
+  getNotificationsReadRetentionDays,
   getWorkerBatchSize,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
@@ -452,6 +454,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       llmMaxConcurrentStreamsPerUser,
       adminAccessDeniedRetentionDays,
       webhookDeliveriesRetentionDays,
+      jobHistoryRetentionDays,
+      notificationsReadRetentionDays,
       registrationMode,
       ftsLanguage,
       ragFetchWidth,
@@ -478,6 +482,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getStreamCap(),
       getAdminAccessDeniedRetentionDays(),
       getWebhookDeliveriesRetentionDays(),
+      getJobHistoryRetentionDays(),
+      getNotificationsReadRetentionDays(),
       getRegistrationMode(),
       // #1114 — read the keyword-index language through its own reader for
       // the same reason as the nine below: `getFtsLanguage` DISCARDS a value
@@ -599,6 +605,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       adminAccessDeniedRetentionDays,
       // #1797 — retention for webhook_deliveries attempt rows (default 90, [7, 3650]).
       webhookDeliveriesRetentionDays,
+      // #1760 — retention for job_history rows and READ notifications (default 90, [7, 3650]).
+      jobHistoryRetentionDays,
+      notificationsReadRetentionDays,
       // AI Safety
       aiGuardrailNoFabrication: guardrails.noFabricationInstruction,
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
@@ -798,6 +807,21 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({
         key: 'webhook_deliveries_retention_days',
         value: String(body.webhookDeliveriesRetentionDays),
+      });
+    }
+
+    // #1760 — retention (days) for job_history rows and READ notifications.
+    // Zod already enforced the [7, 3650] integer range at the boundary.
+    if (body.jobHistoryRetentionDays !== undefined) {
+      updates.push({
+        key: 'job_history_retention_days',
+        value: String(body.jobHistoryRetentionDays),
+      });
+    }
+    if (body.notificationsReadRetentionDays !== undefined) {
+      updates.push({
+        key: 'notifications_read_retention_days',
+        value: String(body.notificationsReadRetentionDays),
       });
     }
 

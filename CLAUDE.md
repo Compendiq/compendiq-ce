@@ -76,6 +76,16 @@ revision only rejects the result when the embedded title or `body_html` differs
 from the locked row; a stale result rolls back without clearing the new page's
 dirty flag. Keep the separate image-analysis revision and schema-epoch fences.
 
+Backup archive members are connected with callback `pipeline`, never `.pipe()`
+(#1709): a source error must reach the archive, not crash the process. Compose
+the `pg_dump` chain synchronously after spawning it (a spawn failure arrives on
+`process.nextTick`), and destroy open member chains when the encrypted stream closes.
+
+An S3 backup run is recorded `success` and `backup_last_run_at` is set as soon as
+the upload completes (#1710); retention prune runs afterwards, outside the lock,
+and its failure becomes `backup_runs.warning`, never a `failed` run. Keep every
+post-success step non-throwing, and the run's `status`/`error` untouched.
+
 ## Build
 
 ```bash
@@ -325,6 +335,12 @@ edited under Settings → AI Models → Workers; the former batch-size env vars
 are ignored. The controls preserve edits made during a save, distinguish
 unreadable settings from cached settings, and retain Retry focus through
 recovery. Use the shared `nm-input` treatment, not structural border tokens.
+
+**Retention sweeps (#1760).** `job_history` and **read** notifications are pruned
+under `job_history_retention_days` / `notifications_read_retention_days`
+(default 90, [7, 3650]); unread notifications are never deleted. The sweeps use
+the strict resolvers (a failed settings read skips the sweep; only an absent row
+falls back to env, then 90) and write one `RETENTION_PRUNED` row per run.
 
 **Removed (do not revive): `FTS_LANGUAGE`** — the keyword-index language lives in `admin_settings.fts_language`, edited in Settings → AI Models → Retrieval; the env var was inert on every migrated instance because migration 049 seeds that row before any request, so the fallback it fed was unreachable, and a leftover value is now reported as ignored at startup. The allow-list is `FTS_LANGUAGES` in `packages/contracts` and stays **closed**: PostgreSQL has no bind-parameter form for a `regconfig`, so the chosen name is interpolated into SQL. It is not one of the Retrieval panel's nine cheap knobs — saving it re-indexes every page inside the request — and the mechanism, its transaction and its failure modes are documented where they belong, in `docs/architecture/09-flow-rag-chat.md` and `docs/ADMIN-GUIDE.md`.
 

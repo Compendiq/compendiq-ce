@@ -504,3 +504,212 @@ describe.skipIf(!dbAvailable)('pending_sync_versions retention atomicity (#1796)
     expect(heartbeats.rows[2]!.metadata.rows_pruned).toBe(1);
   });
 });
+
+// ── job_history and read-notification retention (#1760) ──────────────────
+
+async function setRetentionSetting(key: string, days: number): Promise<void> {
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value)
+     VALUES ($1, $2)
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`,
+    [key, String(days)],
+  );
+}
+
+/** `age` is a Postgres interval literal, e.g. '31 days' or '29 days 23 hours 59 minutes'. */
+async function insertJobHistory(jobId: string, age: string, status = 'completed'): Promise<void> {
+  await query(
+    `INSERT INTO job_history (queue_name, job_id, job_name, status, created_at)
+     VALUES ('retention-test', $1, 'sweep', $2, NOW() - $3::interval)`,
+    [jobId, status, age],
+  );
+}
+
+async function insertNotificationUser(): Promise<string> {
+  const user = await query<{ id: string }>(
+    `INSERT INTO users (username, password_hash, role)
+     VALUES ('notif-ret-user', 'x', 'user') RETURNING id`,
+  );
+  return user.rows[0]!.id;
+}
+
+async function insertNotification(
+  userId: string,
+  title: string,
+  isRead: boolean,
+  age: string,
+): Promise<void> {
+  await query(
+    `INSERT INTO notifications (user_id, type, title, is_read, created_at)
+     VALUES ($1, 'test', $2, $3, NOW() - $4::interval)`,
+    [userId, title, isRead, age],
+  );
+}
+
+async function remainingJobIds(): Promise<string[]> {
+  const r = await query<{ job_id: string }>(`SELECT job_id FROM job_history ORDER BY job_id`);
+  return r.rows.map((row) => row.job_id);
+}
+
+async function remainingNotificationTitles(): Promise<string[]> {
+  const r = await query<{ title: string }>(`SELECT title FROM notifications ORDER BY title`);
+  return r.rows.map((row) => row.title);
+}
+
+async function heartbeatsFor(resourceId: string) {
+  const r = await query<{ resource_type: string; metadata: Record<string, unknown> }>(
+    `SELECT resource_type, metadata FROM audit_log
+      WHERE action = 'RETENTION_PRUNED' AND resource_id = $1`,
+    [resourceId],
+  );
+  return r.rows;
+}
+
+describe.skipIf(!dbAvailable)('job_history retention (#1760)', () => {
+  afterEach(() => {
+    delete process.env.RETENTION_JOB_HISTORY_DAYS;
+  });
+
+  it('deletes completed and failed rows past the window, keeps newer ones and leaves error_log behaviour unchanged', async () => {
+    await setRetentionSetting('job_history_retention_days', 30);
+    await insertJobHistory('old-completed', '800 days');
+    await insertJobHistory('old-failed', '31 days', 'failed');
+    await insertJobHistory('boundary-kept', '29 days 23 hours 59 minutes');
+    await insertJobHistory('boundary-deleted', '30 days 1 minute');
+    await insertJobHistory('recent-failed', '1 day', 'failed');
+    await insertJobHistory('fresh', '0 seconds');
+    // error_log keeps its own env-driven 30-day window, independent of this one.
+    await query(
+      `INSERT INTO error_log (error_type, message, created_at) VALUES
+         ('t', 'old', NOW() - INTERVAL '31 days'),
+         ('t', 'new', NOW() - INTERVAL '1 day')`,
+    );
+
+    const results = await runRetentionCleanup();
+
+    expect(results['job_history']).toBe(3);
+    expect(await remainingJobIds()).toEqual(['boundary-kept', 'fresh', 'recent-failed']);
+    const errorLog = await query<{ message: string }>(`SELECT message FROM error_log`);
+    expect(errorLog.rows.map((r) => r.message)).toEqual(['new']);
+    expect(results['error_log']).toBe(1);
+  });
+
+  it('defaults to 90 days when neither the setting row nor the env fallback exists', async () => {
+    await insertJobHistory('past-90', '91 days');
+    await insertJobHistory('inside-90', '89 days');
+
+    const results = await runRetentionCleanup();
+
+    expect(results['job_history']).toBe(1);
+    expect(await remainingJobIds()).toEqual(['inside-90']);
+    const [heartbeat] = await heartbeatsFor('job_history');
+    expect(heartbeat!.metadata.retention_days).toBe(90);
+  });
+
+  it('uses the env fallback only while the setting row is absent; the row wins once present', async () => {
+    process.env.RETENTION_JOB_HISTORY_DAYS = '45';
+    await insertJobHistory('past-45', '50 days');
+    await insertJobHistory('inside-45', '40 days');
+
+    const fromEnv = await runRetentionCleanup();
+    expect(fromEnv['job_history']).toBe(1);
+    expect(await remainingJobIds()).toEqual(['inside-45']);
+    expect((await heartbeatsFor('job_history'))[0]!.metadata.retention_days).toBe(45);
+
+    await setRetentionSetting('job_history_retention_days', 400);
+    await insertJobHistory('past-45-again', '50 days');
+    const fromRow = await runRetentionCleanup();
+    expect(fromRow['job_history']).toBe(0);
+    expect(await remainingJobIds()).toEqual(['inside-45', 'past-45-again']);
+  });
+});
+
+describe.skipIf(!dbAvailable)('read notifications retention (#1760)', () => {
+  afterEach(() => {
+    delete process.env.RETENTION_NOTIFICATIONS_READ_DAYS;
+  });
+
+  it('deletes only READ notifications past the window; unread rows of any age and younger read rows stay', async () => {
+    await setRetentionSetting('notifications_read_retention_days', 30);
+    const userId = await insertNotificationUser();
+    await insertNotification(userId, 'read-800d', true, '800 days');
+    await insertNotification(userId, 'read-31d', true, '31 days');
+    await insertNotification(userId, 'read-boundary-deleted', true, '30 days 1 minute');
+    await insertNotification(userId, 'read-boundary-kept', true, '29 days 23 hours 59 minutes');
+    await insertNotification(userId, 'read-1d', true, '1 day');
+    await insertNotification(userId, 'unread-800d', false, '800 days');
+    await insertNotification(userId, 'unread-31d', false, '31 days');
+    await insertNotification(userId, 'unread-1d', false, '1 day');
+    await query(
+      `INSERT INTO notification_preferences (user_id, type, in_app, email) VALUES ($1, 'test', TRUE, FALSE)`,
+      [userId],
+    );
+
+    const results = await runRetentionCleanup();
+
+    expect(results['notifications_read']).toBe(3);
+    expect(await remainingNotificationTitles()).toEqual([
+      'read-1d',
+      'read-boundary-kept',
+      'unread-1d',
+      'unread-31d',
+      'unread-800d',
+    ]);
+    const prefs = await query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM notification_preferences`);
+    expect(prefs.rows[0]!.c).toBe('1');
+  });
+
+  it('defaults to 90 days and never deletes an unread notification, however old', async () => {
+    const userId = await insertNotificationUser();
+    await insertNotification(userId, 'read-91d', true, '91 days');
+    await insertNotification(userId, 'read-89d', true, '89 days');
+    await insertNotification(userId, 'unread-3000d', false, '3000 days');
+
+    const results = await runRetentionCleanup();
+
+    expect(results['notifications_read']).toBe(1);
+    expect(await remainingNotificationTitles()).toEqual(['read-89d', 'unread-3000d']);
+    expect((await heartbeatsFor('notifications_read'))[0]!.metadata.retention_days).toBe(90);
+  });
+
+  it('uses the env fallback only while the setting row is absent; the row wins once present', async () => {
+    process.env.RETENTION_NOTIFICATIONS_READ_DAYS = '45';
+    const userId = await insertNotificationUser();
+    await insertNotification(userId, 'read-50d', true, '50 days');
+    await insertNotification(userId, 'read-40d', true, '40 days');
+
+    const fromEnv = await runRetentionCleanup();
+    expect(fromEnv['notifications_read']).toBe(1);
+    expect(await remainingNotificationTitles()).toEqual(['read-40d']);
+
+    await setRetentionSetting('notifications_read_retention_days', 400);
+    await insertNotification(userId, 'read-50d-again', true, '50 days');
+    const fromRow = await runRetentionCleanup();
+    expect(fromRow['notifications_read']).toBe(0);
+    expect(await remainingNotificationTitles()).toEqual(['read-40d', 'read-50d-again']);
+  });
+});
+
+describe.skipIf(!dbAvailable)('job_history and notifications heartbeats (#1760)', () => {
+  it('writes one RETENTION_PRUNED row per table per run, zero-row runs included, naming the table twice', async () => {
+    await runRetentionCleanup();
+
+    for (const table of ['job_history', 'notifications_read']) {
+      const rows = await heartbeatsFor(table);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.resource_type).toBe('table');
+      expect(rows[0]!.metadata).toEqual({ table, rows_pruned: 0, retention_days: 90 });
+    }
+  });
+
+  it('reports the rows deleted and appends a new heartbeat on every run', async () => {
+    await setRetentionSetting('job_history_retention_days', 7);
+    await insertJobHistory('stale', '10 days');
+
+    await runRetentionCleanup();
+    await runRetentionCleanup();
+
+    const rows = await heartbeatsFor('job_history');
+    expect(rows.map((r) => r.metadata.rows_pruned).sort()).toEqual([0, 1]);
+  });
+});

@@ -15,6 +15,11 @@
  *       have their own purge in sync-service (upstream re-confirmation).
  *   - webhook_deliveries (#1797): attempt ledger rows of terminal outbox
  *       items older than the admin-configurable window (default 90d).
+ *   - job_history (#1760): every row is terminal (completed / failed), so
+ *       rows older than the admin-configurable window (default 90d).
+ *   - notifications (#1760): READ notifications older than the
+ *       admin-configurable window (default 90d). Unread notifications are
+ *       never deleted, whatever their age.
  *
  * Retention periods are configurable via environment variables:
  *   RETENTION_AUDIT_LOG_DAYS, RETENTION_SEARCH_ANALYTICS_DAYS,
@@ -22,7 +27,9 @@
  *   RETENTION_ADMIN_ACCESS_DENIED_DAYS (env fallback for the admin-configurable
  *   `admin_access_denied_retention_days` setting — consulted only when the DB
  *   row is absent), RETENTION_WEBHOOK_DELIVERIES_DAYS (same, for
- *   `webhook_deliveries_retention_days`).
+ *   `webhook_deliveries_retention_days`), RETENTION_JOB_HISTORY_DAYS (same, for
+ *   `job_history_retention_days`), RETENTION_NOTIFICATIONS_READ_DAYS (same, for
+ *   `notifications_read_retention_days`).
  */
 
 import type { PoolClient } from 'pg';
@@ -33,6 +40,8 @@ import {
   getAdminAccessDeniedRetentionDays,
   getPendingSyncVersionsRetentionDays,
   getWebhookDeliveriesRetentionDays,
+  getJobHistoryRetentionDaysStrict,
+  getNotificationsReadRetentionDaysStrict,
 } from './admin-settings-service.js';
 import { logAuditEvent } from './audit-service.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
@@ -152,6 +161,12 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
     logger.error({ err }, 'Page versions retention cleanup failed');
     results.page_versions = 0;
   }
+
+  // job_history and read-notification retention (#1760). Run after the
+  // sweeps above; each is independent and never throws, so a failure here
+  // cannot change another sweep's result.
+  results['job_history'] = await runJobHistoryRetention();
+  results['notifications_read'] = await runReadNotificationsRetention();
 
   return results;
 }
@@ -587,4 +602,108 @@ async function runWebhookDeliveriesRetention(): Promise<number> {
     logger.error({ err, retentionDays: days }, 'webhook_deliveries retention cleanup failed');
   }
   return totalDeleted;
+}
+
+const BATCHED_PURGE_SIZE = 10_000;
+
+/**
+ * One batched, age-based sweep over a table with an integer primary key.
+ * `deleteSql` is a literal owned by this module: `$1` is the window in days,
+ * `$2` the batch size, and the outer DELETE repeats the full predicate beside
+ * `id IN (...)` so a row that changed between the subquery and the delete is
+ * re-checked. Table names are never interpolated from input.
+ *
+ * Failure semantics mirror `runWebhookDeliveriesRetention`: an unreadable
+ * setting skips the sweep (0); a failing delete is logged, returns the rows
+ * deleted so far and emits no heartbeat; nothing here ever throws.
+ */
+async function runBatchedRetention(sweep: {
+  /** Results key, heartbeat `resourceId` and `details.table`. */
+  name: 'job_history' | 'notifications_read';
+  settingKey: string;
+  /** Strict resolver: rejects when the `admin_settings` read fails (row absent is not a failure). */
+  getDays: () => Promise<number>;
+  deleteSql: string;
+}): Promise<number> {
+  let days: number;
+  try {
+    days = await sweep.getDays();
+  } catch (err) {
+    logger.error({ err }, `Failed to resolve ${sweep.settingKey}; skipping purge`);
+    return 0;
+  }
+
+  const pool = getPool();
+  let totalDeleted = 0;
+
+  try {
+    for (;;) {
+      const { rowCount } = await pool.query(sweep.deleteSql, [days, BATCHED_PURGE_SIZE]);
+      const n = rowCount ?? 0;
+      totalDeleted += n;
+      if (n > 0) {
+        logger.debug(
+          { batch: n, totalSoFar: totalDeleted, retentionDays: days },
+          `${sweep.name} retention batch deleted`,
+        );
+      }
+      if (n < BATCHED_PURGE_SIZE) break;
+    }
+    if (totalDeleted > 0) {
+      logger.info(
+        { deleted: totalDeleted, retentionDays: days },
+        `${sweep.name} retention cleanup completed`,
+      );
+    }
+    // #307 Finding #4: always emit (heartbeat), including zero-row runs.
+    await logAuditEvent(null, 'RETENTION_PRUNED', 'table', sweep.name, {
+      table: sweep.name,
+      rows_pruned: totalDeleted,
+      retention_days: days,
+    });
+  } catch (err) {
+    logger.error({ err, retentionDays: days }, `${sweep.name} retention cleanup failed`);
+  }
+  return totalDeleted;
+}
+
+/**
+ * Prune `job_history` (the Postgres record of finished queue jobs, migration
+ * 050) older than `job_history_retention_days` (#1760). Every row is terminal
+ * (`completed` / `failed`), so eligibility is age alone.
+ */
+function runJobHistoryRetention(): Promise<number> {
+  return runBatchedRetention({
+    name: 'job_history',
+    settingKey: 'job_history_retention_days',
+    getDays: getJobHistoryRetentionDaysStrict,
+    deleteSql: `DELETE FROM job_history
+                 WHERE created_at < NOW() - INTERVAL '1 day' * $1
+                   AND id IN (
+                     SELECT id FROM job_history
+                      WHERE created_at < NOW() - INTERVAL '1 day' * $1
+                      LIMIT $2
+                   )`,
+  });
+}
+
+/**
+ * Prune READ `notifications` older than `notifications_read_retention_days`
+ * (#1760). Unread notifications are never deleted, whatever their age.
+ */
+function runReadNotificationsRetention(): Promise<number> {
+  return runBatchedRetention({
+    name: 'notifications_read',
+    settingKey: 'notifications_read_retention_days',
+    getDays: getNotificationsReadRetentionDaysStrict,
+    deleteSql: `DELETE FROM notifications
+                 WHERE is_read = TRUE
+                   AND created_at < NOW() - INTERVAL '1 day' * $1
+                   AND id IN (
+                     SELECT id FROM notifications
+                      WHERE is_read = TRUE
+                        AND created_at < NOW() - INTERVAL '1 day' * $1
+                      LIMIT $2
+                   )`,
+  });
 }
