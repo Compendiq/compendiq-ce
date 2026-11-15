@@ -1803,6 +1803,27 @@ for restore verification.
   the server: a download is cut off and audited as `BACKUP_EXPORT_FAILED`, an
   S3 run is marked `failed` with the `pg_dump` or file error and its multipart
   upload is aborted. The lock is released at once, so the next run can retry.
+- **Retention prune failures (#1710):** once the upload has completed, the run
+  is recorded as `success` with its object key and size, and `backup_last_run_at`
+  is set, so the schedule interval is honoured. Retention (keep-last-N and
+  delete-after-days) then runs as a separate step after the backup lock is
+  released. If it fails — a denied `ListObjects` or `DeleteObjects`, a network
+  error — the run stays `success`, `error` stays empty, and the prune error
+  message (truncated to 1000 characters) is stored as the run's *warning*. It
+  appears in the **History** list under Backup & Recovery as
+  `— warning: <text>`, in `GET /api/admin/backup` history entries as `warning`,
+  and as `pruneWarning` in the `BACKUP_UPLOADED` audit event that is written
+  for every completed S3 upload. The failure is also logged at `warn`, and the
+  job result stays `Uploaded <filename>`. Nothing prunes the old objects until
+  a later due run succeeds at it, so storage grows meanwhile; fix the
+  credentials or bucket policy to restore pruning. This is what makes
+  append-only (delete-less) credentials workable: you get one upload per
+  interval and a visible warning instead of an upload on every 15-minute tick.
+  The one remaining re-upload case: if the upload completed but recording
+  `backup_last_run_at` fails (a database fault), the run stays `success` and the
+  error is logged, but no interval gate was stored, so the next due tick uploads
+  again. If the database rejects the success write itself, the run is marked
+  `failed` as before.
 
 #### Enterprise KMS and immutable storage
 

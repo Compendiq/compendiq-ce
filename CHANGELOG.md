@@ -59,6 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-download now also closes the dump and attachment streams. The archive
   format is unchanged.
 
+- **S3 retention-prune failure is a warning, not a failed run (#1710):** a
+  denied or failing `ListObjects`/`DeleteObjects` after a completed upload used
+  to mark the run `failed` without its object key and skip
+  `backup_last_run_at`, so every 15-minute tick uploaded another full backup.
+  The upload is now recorded as `success` (object key, size, schedule gate)
+  before retention runs; a prune failure is stored as a new `backup_runs.warning`
+  (migration 153, first 1000 characters), logged at `warn`, shown in the Backup
+  history as `— warning: <text>`, returned as `warning` by
+  `GET /api/admin/backup` and carried as `pruneWarning` by a `BACKUP_UPLOADED`
+  audit event now written for every completed S3 upload. `BackupRunSchema.warning`
+  defaults to `null` when a backend omits it.
+
 - **Notion re-import after relocation (#1774):** Successful moves in either
   direction release the Notion import binding without changing the page PK,
   while exact rollback preserves NULL and original spelling. Cached picker

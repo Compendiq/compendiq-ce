@@ -81,6 +81,11 @@ Backup archive members are connected with callback `pipeline`, never `.pipe()`
 the `pg_dump` chain synchronously after spawning it (a spawn failure arrives on
 `process.nextTick`), and destroy open member chains when the encrypted stream closes.
 
+An S3 backup run is recorded `success` and `backup_last_run_at` is set as soon as
+the upload completes (#1710); retention prune runs afterwards, outside the lock,
+and its failure becomes `backup_runs.warning`, never a `failed` run. Keep every
+post-success step non-throwing, and the run's `status`/`error` untouched.
+
 ## Build
 
 ```bash

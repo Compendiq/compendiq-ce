@@ -14,6 +14,7 @@ import {
   releaseWorkerLock,
 } from './redis-cache.js';
 import type { BackupManifest } from './backup-manifest.js';
+import { logAuditEvent } from './audit-service.js';
 import {
   encryptBackupStream,
   fingerprintPatEncryptionKey,
@@ -539,6 +540,11 @@ export async function finishBackupRun(
   );
 }
 
+/** Stores a non-fatal warning on a run without touching its status or outcome columns. */
+export async function recordBackupRunWarning(id: string, warning: string): Promise<void> {
+  await query('UPDATE backup_runs SET warning = $2 WHERE id = $1', [id, warning]);
+}
+
 export async function listBackupRuns(limit = 20): Promise<Array<{
   id: string;
   createdAt: string;
@@ -550,6 +556,7 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
   error: string | null;
   triggeredBy: string | null;
   jobId: string | null;
+  warning: string | null;
 }>> {
   const result = await query<{
     id: string;
@@ -562,8 +569,9 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
     error: string | null;
     triggered_by: string | null;
     job_id: string | null;
+    warning: string | null;
   }>(
-    `SELECT id, created_at, finished_at, destination, status, bytes, object_key, error, triggered_by, job_id
+    `SELECT id, created_at, finished_at, destination, status, bytes, object_key, error, triggered_by, job_id, warning
        FROM backup_runs
       ORDER BY created_at DESC
       LIMIT $1`,
@@ -580,7 +588,21 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
     error: r.error,
     triggeredBy: r.triggered_by,
     jobId: r.job_id,
+    warning: r.warning,
   }));
+}
+
+/** Longest prune-error text stored as a run warning (the S3 error body is already capped upstream). */
+const MAX_RUN_WARNING_LENGTH = 1000;
+
+/** Destroys the upload source and releases the snapshot and lock; never throws. */
+async function destroyAndRelease(backup: EncryptedBackupStream, runId: string): Promise<void> {
+  backup.stream.destroy();
+  try {
+    await backup.release();
+  } catch (err) {
+    logger.error({ runId, err }, 'Failed to release backup resources');
+  }
 }
 
 export async function runS3Backup(
@@ -588,54 +610,95 @@ export async function runS3Backup(
   jobId: string | null,
 ): Promise<string> {
   const runId = await insertBackupRun({ destination: 's3', triggeredBy, jobId });
+  // Once set, the upload is recorded as a success and nothing may demote it (D-1710-2).
+  let successRecorded = false;
+  let backup: EncryptedBackupStream | undefined;
   try {
     const cfg = await getBackupRuntimeConfig();
     if (!cfg.s3.enabled || !cfg.s3.bucket || !cfg.s3.endpoint) {
       throw new Error('S3 backup is not configured');
     }
     const secret: BackupSecret = { kind: 'master', keyMaterial: requireMasterBackupKey() };
-    const backup = await createEncryptedBackupStream(secret);
-    let outcome:
-      | { uploaded: UploadedObject; error?: never }
-      | { uploaded?: never; error: unknown };
+    backup = await createEncryptedBackupStream(secret);
+    const target: S3Target = {
+      endpoint: cfg.s3.endpoint,
+      bucket: cfg.s3.bucket,
+      region: cfg.s3.region,
+      accessKey: cfg.s3.accessKey,
+      secretKey: cfg.s3.secretKey,
+      prefix: cfg.s3.prefix,
+      forcePathStyle: cfg.s3.forcePathStyle,
+    };
+
+    let uploaded: UploadedObject;
     try {
-      const target: S3Target = {
-        endpoint: cfg.s3.endpoint,
-        bucket: cfg.s3.bucket,
-        region: cfg.s3.region,
-        accessKey: cfg.s3.accessKey,
-        secretKey: cfg.s3.secretKey,
-        prefix: cfg.s3.prefix,
-        forcePathStyle: cfg.s3.forcePathStyle,
-      };
-      const key = objectKeyFor(cfg.s3.prefix);
-      const uploaded = await uploadBackupObject(target, key, backup.stream);
+      uploaded = await uploadBackupObject(target, objectKeyFor(cfg.s3.prefix), backup.stream);
+    } catch (uploadError) {
+      await destroyAndRelease(backup, runId);
+      throw uploadError;
+    }
+
+    // Phase 1: record the completed upload before anything that can fail or
+    // hang, so a prune problem never leaves the run `running` and due again.
+    // The stream is destroyed and the lock released whatever happens here.
+    try {
+      await finishBackupRun(runId, {
+        status: 'success',
+        bytes: uploaded.bytes,
+        objectKey: uploaded.key,
+      });
+      successRecorded = true;
+      try {
+        await markBackupLastRun(new Date().toISOString());
+      } catch (err) {
+        logger.error(
+          { runId, err },
+          'Failed to persist backup_last_run_at; the next due tick will upload again',
+        );
+      }
+    } finally {
+      await destroyAndRelease(backup, runId);
+    }
+
+    // Phase 2: retention. Its failure is a warning on the finished run. It
+    // runs after the lock is released; prune keeps the newest objects, so an
+    // overlapping forced run is safe.
+    let pruneWarning: string | null = null;
+    try {
       const pruned = await pruneBackupObjects(
         target,
         cfg.schedule.retentionCount,
         cfg.schedule.retentionDays,
       );
       if (pruned.length) logger.info({ pruned }, 'Pruned expired S3 backups');
-      outcome = { uploaded };
-    } catch (error) {
-      outcome = { error };
+    } catch (err) {
+      const message = (err instanceof Error ? err.message : String(err)) || 'S3 backup prune failed';
+      pruneWarning = message.slice(0, MAX_RUN_WARNING_LENGTH);
+      logger.warn({ runId, err }, 'S3 backup prune failed; the uploaded backup is kept as a success');
     }
-    backup.stream.destroy();
+    if (pruneWarning !== null) {
+      try {
+        await recordBackupRunWarning(runId, pruneWarning);
+      } catch (err) {
+        logger.error({ runId, err }, 'Failed to persist the backup prune warning');
+      }
+    }
     try {
-      await backup.release();
-    } catch (cleanupError) {
-      if (!('error' in outcome)) throw cleanupError;
+      await logAuditEvent(triggeredBy, 'BACKUP_UPLOADED', 'backup', runId, {
+        objectKey: uploaded.key,
+        bytes: uploaded.bytes,
+        pruneWarning,
+      });
+    } catch (err) {
+      logger.error({ runId, err }, 'Failed to audit the uploaded backup');
     }
-    if ('error' in outcome) throw outcome.error;
-    const { uploaded } = outcome;
-    await finishBackupRun(runId, {
-      status: 'success',
-      bytes: uploaded.bytes,
-      objectKey: uploaded.key,
-    });
-    await markBackupLastRun(new Date().toISOString());
     return backup.filename;
   } catch (err) {
+    if (successRecorded && backup) {
+      // Backstop: every post-success step above handles its own failure.
+      logger.error({ runId, err }, 'Unexpected error after the backup run was recorded as a success');
+      return backup.filename;
+    }
     const message = err instanceof Error ? err.message : String(err);
     await finishBackupRun(runId, { status: 'failed', error: message });
     throw err;
