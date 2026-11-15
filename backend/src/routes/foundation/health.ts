@@ -61,9 +61,11 @@ async function checkLlm(): Promise<{ connected: boolean; providerName: string | 
 
 export async function healthRoutes(fastify: FastifyInstance) {
   // GET /api/health/live - Liveness probe
-  // Is the process alive? Always returns 200.
-  // Used by k8s liveness probe.
-  fastify.get('/health/live', async () => {
+  // Is the process alive? Always returns 200, without database or Redis access.
+  // Used by k8s liveness probe. Exempt from the global rate limit (#1755): the
+  // limiter reads its limits from the database, and a probe that returns a
+  // constant without I/O adds no amplification worth limiting.
+  fastify.get('/health/live', { config: { rateLimit: false } }, async () => {
     return { status: 'ok' };
   });
 
