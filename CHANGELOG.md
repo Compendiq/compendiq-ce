@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Retention for job history and read notifications (#1760):** the daily
+  retention sweep now deletes `job_history` rows and **read** notifications
+  older than two new admin-configurable windows,
+  `job_history_retention_days` and `notifications_read_retention_days`
+  (default 90, range 7–3650, migration 154, env fallbacks
+  `RETENTION_JOB_HISTORY_DAYS` / `RETENTION_NOTIFICATIONS_READ_DAYS`, exposed
+  as `jobHistoryRetentionDays` / `notificationsReadRetentionDays` in
+  `GET`/`PUT /api/admin/settings` and as two rows under Settings → Governance
+  → Data & Compliance → Retention → *Retention windows*). Each sweep deletes in
+  batches of 10 000 and writes a `RETENTION_PRUNED` audit row per run, zero-row
+  runs included. Unread notifications are never deleted, whatever their age.
+  **Upgrade note:** rows older than 90 days are deleted by the first daily
+  sweep after upgrading; raise the windows first to keep them longer.
+
 - **Webhook delivery-ledger retention control (#1875):** Settings → Governance →
   Data & Compliance → Retention gains a *Retention windows* section with a
   **Webhook delivery attempts retention** field for

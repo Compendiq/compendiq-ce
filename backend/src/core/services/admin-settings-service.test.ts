@@ -23,6 +23,8 @@ vi.mock('../utils/logger.js', () => ({
 
 import {
   getWebhookDeliveriesRetentionDays,
+  getJobHistoryRetentionDays,
+  getNotificationsReadRetentionDays,
   getAdminAccessDeniedRetentionDays,
   getRagPinIdentifiersEnabled,
   invalidateRagPinIdentifiersCache,
@@ -83,6 +85,62 @@ describe('getWebhookDeliveriesRetentionDays (#1797)', () => {
     await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(90);
     mockQuery.mockRejectedValueOnce(new Error('db down'));
     await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(90);
+  });
+});
+
+describe.each([
+  {
+    name: 'getJobHistoryRetentionDays',
+    getter: getJobHistoryRetentionDays,
+    settingKey: 'job_history_retention_days',
+    envKey: 'RETENTION_JOB_HISTORY_DAYS',
+  },
+  {
+    name: 'getNotificationsReadRetentionDays',
+    getter: getNotificationsReadRetentionDays,
+    settingKey: 'notifications_read_retention_days',
+    envKey: 'RETENTION_NOTIFICATIONS_READ_DAYS',
+  },
+])('$name (#1760)', ({ getter, settingKey, envKey }) => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    delete process.env[envKey];
+  });
+
+  afterEach(() => {
+    delete process.env[envKey];
+  });
+
+  it('reads its own admin_settings row and returns the value when in range', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '30' }] });
+    await expect(getter()).resolves.toBe(30);
+    expect(mockQuery.mock.calls[0]![0]).toContain(`setting_key='${settingKey}'`);
+  });
+
+  it('honours the env fallback only when the row is absent, then defaults to 90', async () => {
+    process.env[envKey] = '45';
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '30' }] });
+    await expect(getter()).resolves.toBe(30);
+
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getter()).resolves.toBe(45);
+
+    delete process.env[envKey];
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getter()).resolves.toBe(90);
+  });
+
+  it('ignores out-of-range DB and env values and never throws on a DB error', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '6' }] });
+    await expect(getter()).resolves.toBe(90);
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '3651' }] });
+    await expect(getter()).resolves.toBe(90);
+    mockQuery.mockRejectedValueOnce(new Error('db down'));
+    await expect(getter()).resolves.toBe(90);
+
+    process.env[envKey] = '3';
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getter()).resolves.toBe(90);
   });
 });
 
