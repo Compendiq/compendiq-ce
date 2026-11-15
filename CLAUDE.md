@@ -159,7 +159,7 @@ midnight, not end-of-day. Exact formats and compatibility restrictions:
 `docs/API.md#page-date-filters`.
 
 **Invitation password hand-over (#1737).** `POST /api/admin/users` awaits the
-invitation email, bounded by `INVITATION_SEND_TIMEOUT_MS` (30 s, not
+invitation email, bounded by `INVITATION_SEND_TIMEOUT_MS` (15 s, not
 configurable), and returns the generated `temporaryPassword` exactly when
 delivery is not confirmed; the `user_created` audit row is written after the
 attempt with `invitationSent`. The password never reaches a log or audit row.

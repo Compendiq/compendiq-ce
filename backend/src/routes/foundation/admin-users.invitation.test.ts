@@ -194,6 +194,7 @@ describe.skipIf(!dbAvailable)('POST /api/admin/users — invitation delivery (#1
 
     expect(res.statusCode).toBe(201);
     expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalled();
     expect(body.temporaryPassword).toMatch(/^[0-9a-f]{20}$/);
     const { password_hash } = await userRow(body.user.id);
     expect(await bcrypt.compare(body.temporaryPassword!, password_hash)).toBe(true);

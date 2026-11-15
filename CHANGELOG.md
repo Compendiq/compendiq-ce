@@ -70,13 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Invitation password no longer lost when the email is not delivered
   (#1737):** `POST /api/admin/users` with `sendInvitation: true` now awaits the
-  invitation email (bounded to 30 s) and returns the generated
+  invitation email (bounded to 15 s) and returns the generated
   `temporaryPassword` in the `201` response whenever delivery is not confirmed:
   SMTP disabled or without a host, the transport failing, or the send not
   settling in time. It is omitted only when the email was sent. The
   `user_created` audit event is written after the attempt and gains
   `invitationSent` next to `invited`. Responses for users without an email or
   with an explicit password are unchanged, and the admin UI needed no change.
+
 - **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
   `listActiveEmbeddingLocks` now removes stale members of
   `embedding:locks:active` with one atomic Lua script that re-checks each lock

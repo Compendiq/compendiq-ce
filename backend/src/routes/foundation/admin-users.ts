@@ -36,13 +36,14 @@ import { vitestIntOr } from '../../core/utils/safe-int.js';
 
 /**
  * Upper bound on the in-request invitation send (#1737). nodemailer's own
- * defaults (120 s connect, 30 s greeting, 600 s socket) exceed the reverse
- * proxy's `/api/` timeout, so an SMTP server that accepts and then stalls
- * would 504 the create request after the user exists and the generated
- * password is lost. Expiry means "delivery not confirmed": the password is
- * returned. Fixed in production; Vitest may shorten it.
+ * defaults (120 s connect, 30 s greeting, 600 s socket) exceed what front
+ * proxies and load balancers allow: they commonly time out at 30 s or less
+ * (30 s and 20 s defaults exist), and a cut-off request leaves the user
+ * created with the generated password lost. 15 s stays clearly below that and
+ * far above a healthy SMTP exchange. Expiry means "delivery not confirmed":
+ * the password is returned. Fixed in production; Vitest may shorten it.
  */
-export const INVITATION_SEND_TIMEOUT_MS = vitestIntOr('INVITATION_SEND_TIMEOUT_MS', 30_000);
+export const INVITATION_SEND_TIMEOUT_MS = vitestIntOr('INVITATION_SEND_TIMEOUT_MS', 15_000);
 
 const INVITATION_TIMED_OUT = Symbol('invitation-send-timed-out');
 
