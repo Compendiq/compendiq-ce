@@ -388,7 +388,7 @@ describe('Health routes behind the global rate limiter during a database outage 
     app.decorate('authenticate', async () => {
       throw new Error('Unauthorized');
     });
-    // Mirrors the global limiter registration in `app.ts` (lines 233–238).
+    // Mirrors the global `@fastify/rate-limit` registration in `buildApp()` (`app.ts`).
     await app.register(rateLimit, {
       global: true,
       max: async () => (await getRateLimits()).global.max,
