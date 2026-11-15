@@ -68,6 +68,8 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    const promptInjectionDetected = warnings.length > 0;
+    const wasSanitized = sanitized !== markdown;
     if (warnings.length > 0) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/analyze-quality' }, request);
     }
@@ -108,6 +110,8 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
             inputMessages: qualityMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
             promptHash: fingerprintPrompt(qualityMessages),
             retrievedChunkIds: [],
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           },
           cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });
