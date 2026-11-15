@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Provider error frames fail the request (#1728):** an OpenAI-compatible
+  provider that reports an `error` inside a streaming response, even when it
+  then sends `[DONE]`, no longer produces a successful empty or partial
+  answer. Generate, Improve, Summarize, Quality, Diagram and Ask end the
+  stream with `{ error: 'Provider error', done: true }` and write an `error`
+  audit entry; nothing is cached, Ask saves no conversation turn, and the
+  summary and quality workers mark the page failed and retry it. The
+  provider's error text is never sent to the client. A blank assistant turn
+  already saved by this defect no longer counts as grounding, so an
+  ungrounded follow-up in such a thread is refused again. Ask's error text
+  for a stream that ended before `[DONE]` is now
+  `Stream ended before completion`, as on the other routes.
+
 - **Ask stops generating when the client disconnects (#1719):**
   `POST /api/llm/ask` now notices a closed browser tab or a cancelled request
   and aborts the provider stream within milliseconds. A disconnected ask no

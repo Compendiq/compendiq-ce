@@ -50,6 +50,8 @@ import { bumpProviderCacheVersion } from '../../llm/services/cache-bus.js';
 let server: Server;
 let baseUrl: string;
 let responseText: string;
+/** When set, the stub sends a provider `error` frame after the text and before `[DONE]` (#1728). */
+let providerErrorText: string | undefined;
 
 // Webhook emit-call-site (#114). The hook is a CE-side no-op; we mock it
 // to assert call shape from the worker's success path.
@@ -68,7 +70,8 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       request.resume();
       request.on('end', () => {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: responseText } }] })}\n\ndata: [DONE]\n\n`);
+        const errorFrame = providerErrorText === undefined ? '' : `data: ${JSON.stringify({ error: { message: providerErrorText } })}\n\n`;
+        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: responseText } }] })}\n\n${errorFrame}data: [DONE]\n\n`);
       });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -83,6 +86,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       [baseUrl],
     );
     responseText = 'This is a **test** summary.';
+    providerErrorText = undefined;
     await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('summary', $1, 'qwen3.5')", [provider.rows[0]!.id]);
     bumpProviderCacheVersion();
 
@@ -257,6 +261,33 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_html).toContain('test');
       expect(result.rows[0].summary_model).toBe('test-model');
       expect(result.rows[0].summary_content_hash).toHaveLength(64);
+    });
+
+    it('fails the page and persists no summary when the provider sends an error frame (#1728)', async () => {
+      // The full summary text arrives first; the error frame and [DONE]
+      // follow. Before #1728 the text was persisted as a finished summary.
+      providerErrorText = 'upstream worker crashed: CUDA out of memory on gpu-7';
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('err1728', $1, 'Error Frame Page', $2, 'pending')`,
+        [testSpaceKey, 'E'.repeat(200)],
+      );
+
+      expect(await runSummaryBatch('test-model')).toEqual({ processed: 0, errors: 1 });
+
+      const result = await query<{
+        summary_status: string; summary_text: string | null; summary_html: string | null;
+        summary_error: string | null; summary_retry_count: number;
+      }>(
+        "SELECT summary_status, summary_text, summary_html, summary_error, summary_retry_count FROM pages WHERE confluence_id = 'err1728'",
+      );
+      expect(result.rows[0]).toEqual({
+        summary_status: 'failed',
+        summary_text: null,
+        summary_html: null,
+        summary_error: 'streamChat: provider reported an error in the stream',
+        summary_retry_count: 1,
+      });
     });
 
     it('re-queues pages orphaned in summarizing after a crash (#911)', async () => {
