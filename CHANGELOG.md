@@ -47,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Scheduler job records in Redis are bounded (#1756):** the repeatable
+  schedulers (`sync`, `quality`, `summary`, `image-analysis`, `maintenance`,
+  `data-retention`, `backup`) now keep only the last 100 completed and 200
+  failed job records per queue instead of every run, so they no longer fill the
+  `noeviction` Redis. Each run still has its `job_history` row. Records stored
+  before the upgrade are trimmed lazily as new jobs finish; no startup cleanup
+  runs. On-demand jobs are unaffected by the options but, on a scheduled queue,
+  finished ones fall into the same count-trimmed set.
+
 - **Notion re-import after relocation (#1774):** Successful moves in either
   direction release the Notion import binding without changing the page PK,
   while exact rollback preserves NULL and original spelling. Cached picker

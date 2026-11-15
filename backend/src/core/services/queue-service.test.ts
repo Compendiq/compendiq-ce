@@ -356,6 +356,11 @@ describe('queue-service', () => {
   // branch of startQueueWorkers. The legacy-purity test below only proves the
   // call is GONE from legacy mode — this one proves it still HAPPENS in
   // BullMQ mode, on the right queue, with the right id and repeat options.
+  const SCHEDULED_RETENTION_OPTS = {
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 200 },
+  };
+
   describe('BullMQ mode (USE_BULLMQ=true) — scheduler registration', () => {
     const ORIGINAL_USE_BULLMQ = process.env.USE_BULLMQ;
 
@@ -380,7 +385,7 @@ describe('queue-service', () => {
       expect(maintenance!.upsertJobScheduler).toHaveBeenCalledWith(
         'data-retention-scheduler',
         { every: 24 * 60 * 60 * 1000 },
-        { name: 'data-retention' },
+        { name: 'data-retention', opts: SCHEDULED_RETENTION_OPTS },
       );
     });
 
@@ -396,8 +401,36 @@ describe('queue-service', () => {
       expect(maintenance.upsertJobScheduler).toHaveBeenCalledWith(
         'maintenance-scheduler',
         { every: 24 * 60 * 60 * 1000 },
-        { name: 'maintenance' },
+        { name: 'maintenance', opts: SCHEDULED_RETENTION_OPTS },
       );
+    });
+
+    // Dynamic import as in the neighbouring tests: beforeEach resets modules.
+    it('bounds the Redis records of every scheduler with the same template options (#1756)', async () => {
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const minute = 60 * 1000;
+      const hour = 60 * minute;
+      const expected: Array<[queue: string, id: string, every: number, name: string]> = [
+        ['sync', 'sync-scheduler', 15 * minute, 'sync'],
+        ['quality', 'quality-scheduler', hour, 'quality'],
+        ['summary', 'summary-scheduler', hour, 'summary'],
+        ['image-analysis', 'image-analysis-scheduler', 15 * minute, 'image-analysis'],
+        ['maintenance', 'maintenance-scheduler', 24 * hour, 'maintenance'],
+        ['maintenance', 'data-retention-scheduler', 24 * hour, 'data-retention'],
+        ['backup', 'backup-scheduler', 15 * minute, 'backup'],
+      ];
+      for (const [queue, id, every, name] of expected) {
+        expect(queueStubs.get(queue)!.upsertJobScheduler).toHaveBeenCalledWith(
+          id,
+          { every },
+          { name, opts: SCHEDULED_RETENTION_OPTS },
+        );
+      }
+      // No scheduler outside the list above, and none without the bound.
+      const calls = [...queueStubs.values()].flatMap((stub) => stub.upsertJobScheduler.mock.calls);
+      expect(calls).toHaveLength(expected.length);
     });
 
     it('forwards exact BullMQ job IDs to forced and scheduled backup processors', async () => {

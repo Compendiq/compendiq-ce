@@ -420,7 +420,7 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 **Configuration:**
 - `USE_BULLMQ=true` (default) -- set to `false` to fall back to legacy `setInterval` workers
 - Redis `maxmemory-policy` must be `noeviction` (default in the provided Docker config)
-- Job history is stored in the `job_history` PostgreSQL table for observability; BullMQ queue metrics are not exposed via the API
+- Redis keeps the last 100 completed and 200 failed scheduler runs per queue (older records are removed as new runs finish; records stored before an upgrade are trimmed the same way, no startup cleanup). Every run is also written to the `job_history` PostgreSQL table, the longer record, whose own retention is tracked in #1760; BullMQ queue metrics are not exposed via the API
 - `REEMBED_WAIT_LOCKS_MS=600000` (default 10 min): how long the `reembed-all`
   worker waits for in-flight per-user embedding runs to finish before
   aborting the job. Visible in the admin UI via `GET /api/admin/embedding/locks`.
