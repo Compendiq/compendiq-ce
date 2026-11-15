@@ -1315,9 +1315,12 @@ handoff.
 
 Restore has no Fastify route. `scripts/restore-backup.ts` runs outside the
 server, and `backup-restore.ts` exclusively owns its on-disk stage/validation
-and commit/rollback phases. It reuses the archive implementation and calls
-`core/db/postgres.ts` only after `pg_restore` succeeds so shipped migrations
-run from the same standalone process.
+and commit/rollback phases. It reuses the archive implementation and uses
+`core/db/postgres.ts` twice from the same standalone process: before staging
+(dry-run included) it reads the target's newest `_migrations` row to refuse an
+archive older than the target, and any read error refuses the restore (#1711);
+after `pg_restore` succeeds it runs the shipped migrations and reconciles
+interrupted backup runs.
 
 ## Article AI policy in workers (SPEC-WORK-001)
 

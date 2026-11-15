@@ -268,6 +268,12 @@ settled, no-effect preparations through core's committed-abandonment cleanup.
 Only prepared rows are reusable; pending work and writer admission are never
 cleared or bypassed to retry. See `docs/claude/enterprise-and-baselines.md`.
 
+Restore refuses an archive older than the target database (#1711). Restore
+entry points must call `restoreBackup`, which reads the target level; a direct
+`stageAndValidateBackup` call checks it only when given `targetMigration` (the
+Enterprise DR verifier validates without restoring). A target-read error never
+counts as an empty database.
+
 License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}` (v2; v1 omits `licenseId`). Persisted in `admin_settings` under key `license_key`. Full design in `docs/ENTERPRISE-ARCHITECTURE.md`.
 
 **Access Control user caches (#1809).** `['admin', 'users']` stores the

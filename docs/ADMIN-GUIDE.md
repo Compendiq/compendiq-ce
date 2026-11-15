@@ -1921,9 +1921,11 @@ the target database and attachment directory.
 Restore is an offline, standalone operation: stop Fastify traffic before a
 non-dry-run restore, and run `backend/scripts/restore-backup.ts` from a source
 checkout with `postgresql17-client` (`pg_restore`) installed. `POSTGRES_URL`
-must reach the target database. `ATTACHMENTS_DIR` must identify the real live
-attachment tree; its parent must be writable and on the filesystem that will
-hold the restored tree.
+must reach the target database, **also for `--dry-run`**: validation reads the
+target's newest applied migration. Without it the CLI exits with code 2 and
+`POSTGRES_URL is required (also for --dry-run)`. `ATTACHMENTS_DIR` must
+identify the real live attachment tree; its parent must be writable and on the
+filesystem that will hold the restored tree.
 
 The CLI creates a mode-`0700` `.compendiq-restore-*` directory next to
 `ATTACHMENTS_DIR`. Reserve free space there for the complete decrypted
@@ -1954,11 +1956,26 @@ listings and often shell history; do not use it for routine operations.
 Before any live mutation, restore fully consumes AES-GCM authentication and
 validates safe/unique archive members, a strict closed manifest (bounded to
 1 MiB), the exact SHA-256 checksum set, database size, the
-`PAT_ENCRYPTION_KEY` fingerprint, and that the archive migration is not newer
-than this binary. `--force` overrides **only** the PAT-key fingerprint
-mismatch; it never bypasses authentication, schema, path, member, checksum,
-size, or forward-migration checks. Validation failure and dry-run leave
-PostgreSQL and live attachments unchanged and remove staging.
+`PAT_ENCRYPTION_KEY` fingerprint, that the archive migration is not newer
+than this binary, and that it is **not older than the target database**
+(newest `_migrations` row). An empty target (no `_migrations` table, or no
+rows) is allowed, as is a target at or behind the archive's level; an
+unreadable target refuses the restore. In Enterprise builds the level on both
+sides is the newest migration name across Community and Enterprise
+migrations, so an archive with an older Community level under an unchanged
+Enterprise level is not detected; restore a backup taken before an upgrade
+with the empty-database procedure. An older archive is refused with
+`Backup migration <archive> is older than the target database (<target>)`;
+see [Restoring an older archive](#restoring-an-older-archive). `--force`
+overrides **only** the PAT-key fingerprint mismatch; it never bypasses
+authentication, schema, path, member, checksum, size, forward-migration, or
+target-schema checks. Validation failure and dry-run leave PostgreSQL and live
+attachments unchanged and remove staging.
+
+The target level is read once, before staging. The target database must not
+change between that check and the restore (no application start, migration
+run, or second restore against it), which is one reason restore is an offline
+procedure.
 
 Commit renames the previous attachment tree aside, installs the staged tree,
 and runs `pg_restore --clean --if-exists --no-owner --no-acl
@@ -1977,6 +1994,32 @@ does not attempt a database or attachment rollback. The error reports both
 the retained old-attachment rollback directory and restore staging directory.
 Keep both while diagnosing/recovering the database; remove them manually only
 after the restored state is accepted or another restore has completed.
+
+##### Restoring an older archive
+
+An archive taken at an older schema than the target database (for example a
+v0.8.0 backup after upgrading to v0.9.x, or a pre-upgrade backup after a failed
+upgrade) cannot be restored in place, and both `--dry-run` and the restore
+refuse it. `pg_restore --clean` only drops the objects the archive contains:
+tables added by newer migrations keep foreign keys to restored tables (for
+example `cannot drop constraint users_pkey … because other objects depend on
+it`), and their rows would describe data that no longer exists.
+
+Restore into an empty database instead and let the application migrations
+move it forward:
+
+1. Stop Fastify traffic. Create an empty database owned by the application
+   role (for example `createdb -O kb_user kb_creator_restore`) and an empty
+   attachment directory beside the live one.
+2. Point `POSTGRES_URL` at the empty database and `ATTACHMENTS_DIR` at the
+   empty directory, then run the restore with `--dry-run`, and again without
+   it. The restore applies the shipped migrations after `pg_restore`, so the
+   database ends at this binary's newest migration.
+3. Point the backend's `POSTGRES_URL` and `ATTACHMENTS_DIR` at the restored
+   database and directory and start it; startup migrations find nothing left
+   to apply.
+4. Keep the previous database and attachment tree until the restored state is
+   accepted, then remove them.
 
 ### Manual PostgreSQL dump
 
