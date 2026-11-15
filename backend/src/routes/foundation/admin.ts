@@ -76,7 +76,7 @@ import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRu
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { getSmtpConfig, updateSmtpConfig, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
+import { getSmtpConfig, updateSmtpConfig, reloadSmtpConfigFromDb, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
 import { publish } from '../../core/services/redis-cache-bus.js';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 
@@ -1344,7 +1344,23 @@ export async function adminRoutes(fastify: FastifyInstance) {
     // live configuration (#1761).
     updateSmtpConfig(body);
 
+    // #1757 — re-read the rows so this replica's live config is the same
+    // function of the database as every other replica's (a failed re-read is
+    // soft: the local apply above stands). Then tell the other replicas.
+    // An empty patch wrote nothing, so there is nothing to reload or announce.
+    const rowsWritten = entries.length > 0;
+    if (rowsWritten) {
+      await reloadSmtpConfigFromDb('writer');
+    }
+
     await logAuditEvent(request.userId, 'ADMIN_ACTION', 'admin_settings', undefined, { action: 'update_smtp_settings' }, request);
+
+    // Never awaited: during a Redis outage `publish` waits in the client's
+    // offline queue, and the response must not. The payload is a bare reload
+    // signal; peers re-read the rows (ADR-024), so no setting travels on it.
+    if (rowsWritten) {
+      void publish('smtp:config:changed', {});
+    }
     return { message: 'SMTP settings updated' };
   });
 

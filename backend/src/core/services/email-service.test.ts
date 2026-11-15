@@ -113,14 +113,23 @@ describe('email-service', () => {
       expect(getSmtpConfig().enabled).toBe(true);
     });
 
-    it('falls back to the current (env) value when smtp_enabled is absent from DB', async () => {
-      const { initEmailService, updateSmtpConfig, getSmtpConfig } = await import('./email-service.js');
-      updateSmtpConfig({ enabled: true });
-      mockDbQuery.mockResolvedValueOnce({
-        rows: [{ setting_key: 'smtp_host', setting_value: 'db.example.com' }],
-      });
-      await initEmailService();
-      expect(getSmtpConfig().enabled).toBe(true);
+    it('falls back to the env value when smtp_enabled is absent from DB', async () => {
+      // #1757 (D-1757-1) — an absent row falls back to the environment
+      // (DEFAULT_CONFIG, read at import), not to the current live value, so
+      // SMTP_ENABLED is set before a fresh import of the module.
+      vi.stubEnv('SMTP_ENABLED', 'true');
+      vi.resetModules();
+      try {
+        const { initEmailService, getSmtpConfig } = await import('./email-service.js');
+        mockDbQuery.mockResolvedValueOnce({
+          rows: [{ setting_key: 'smtp_host', setting_value: 'db.example.com' }],
+        });
+        await initEmailService();
+        expect(getSmtpConfig().enabled).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      }
     });
   });
 

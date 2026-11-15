@@ -90,6 +90,9 @@ post-success step non-throwing, and the run's `status`/`error` untouched.
 masked password, build the entries (including `encryptPat`), run the single
 upsert, and only then call `updateSmtpConfig`. A failed save must leave the
 live transport and the rows unchanged; keep any new step after the upsert.
+After a save that wrote rows it awaits `reloadSmtpConfigFromDb('writer')`, audits,
+then fires `publish('smtp:config:changed', {})` without awaiting it (#1757);
+every replica re-reads the rows on that signal. Never put a setting on the bus.
 
 ## Build
 

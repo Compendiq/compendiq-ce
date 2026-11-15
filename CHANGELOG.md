@@ -68,6 +68,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SMTP settings now reach every replica without a restart (#1757):** after
+  `PUT /api/admin/smtp` has written the rows, the saving replica re-reads them
+  and publishes a reload signal on the new `smtp:config:changed` cache-bus
+  channel (empty payload; no setting or password travels on Redis). Every
+  replica re-reads the `smtp_*` rows on that signal and after a bus reconnect,
+  through one serialized reloader, so `GET /api/admin/smtp` and the test mail
+  on any replica use the saved configuration. The publish is not awaited, so a
+  save still answers during a Redis outage. A field without a stored row falls
+  back to that replica's `SMTP_*` environment value.
+
 - **A failed SMTP save no longer changes the live transport (#1761):**
   `PUT /api/admin/smtp` now writes the `smtp_*` rows (one statement) before it
   updates the live configuration, so a rejected save leaves both the database

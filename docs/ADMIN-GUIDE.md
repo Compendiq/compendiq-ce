@@ -564,6 +564,8 @@ Compendiq can send email notifications for key events. Configure SMTP in **Setti
 
 Settings configured via the admin UI are persisted in the `admin_settings` database table and take precedence over environment variables. Use the **Send Test** button to verify SMTP connectivity.
 
+A save applies on every backend replica without a restart: the replica that handles it writes the rows first, then re-reads them, and signals the others through Redis (`smtp:config:changed`) to re-read them too; a replica whose Redis connection was interrupted re-reads them when it reconnects. A failed save changes nothing: neither the stored settings nor the mail transport in use. A field that has no stored row falls back to that replica's `SMTP_*` environment variable, so keep those identical on every replica.
+
 Edits made while a save is in progress remain in the form and require a subsequent save; the completed request only saves the values submitted with it.
 
 ### Enterprise

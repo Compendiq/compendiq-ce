@@ -12,7 +12,10 @@
 
 import nodemailer, { type Transporter } from 'nodemailer';
 import { logger } from '../utils/logger.js';
+import { query } from '../db/postgres.js';
 import { decryptPat, encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../utils/crypto.js';
+import { createCoalescedReloader } from './coalesced-reload.js';
+import { isCacheBusActive, onReconnect, subscribe } from './redis-cache-bus.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -214,59 +217,169 @@ function readStoredSmtpPass(stored: string): { pass: string; reEncrypted: string
   }
 }
 
+// ─── Loading from admin_settings (boot and every reload, #1757) ──────────────
+
+/** Why a reload was requested. Diagnostic only: it reaches the failure log. */
+export type SmtpReloadPhase = 'cold-load' | 'writer' | 'bus' | 'reconnect' | 'subscribe';
+
 /**
- * Initialize SMTP config from admin_settings table.
+ * One successful read of the smtp_* rows. `storedPass` and `reEncrypted` feed
+ * the conditional re-encryption write-back. The object itself identifies the
+ * run that read it (coalesced-reload S9), so the write-back starts once per
+ * applied run however many requesters shared that run.
  */
-export async function initEmailService(): Promise<void> {
-  try {
-    const { query } = await import('../db/postgres.js');
+interface SmtpLoad {
+  config: SmtpConfig;
+  storedPass: string | undefined;
+  reEncrypted: string | null;
+}
+
+/**
+ * Map the smtp_* rows onto a full configuration (D-1757-1). An absent row
+ * falls back to the environment (`DEFAULT_CONFIG`), never to the current live
+ * value, so the boot load and every later reload are the same function of the
+ * database on every replica. Zero rows yield the environment defaults.
+ */
+function mapSmtpRows(settings: Record<string, string>): SmtpLoad {
+  if (Object.keys(settings).length === 0) {
+    return { config: { ...DEFAULT_CONFIG }, storedPass: undefined, reEncrypted: null };
+  }
+  const storedPass = settings['smtp_pass'];
+  const passResult = storedPass !== undefined ? readStoredSmtpPass(storedPass) : null;
+  return {
+    config: {
+      host: settings['smtp_host'] ?? DEFAULT_CONFIG.host,
+      // An empty smtp_port row falls back like an absent one.
+      port: settings['smtp_port'] ? parseInt(settings['smtp_port'], 10) : DEFAULT_CONFIG.port,
+      // Unchanged (O-1): with at least one row but no smtp_secure row this is
+      // false even when SMTP_SECURE=true.
+      secure: settings['smtp_secure'] === 'true',
+      user: settings['smtp_user'] ?? DEFAULT_CONFIG.user,
+      pass: passResult ? passResult.pass : DEFAULT_CONFIG.pass,
+      from: settings['smtp_from'] ?? DEFAULT_CONFIG.from,
+      // DB value is authoritative when present (issue #743) — otherwise an
+      // SMTP_ENABLED=true env bootstrap could never be disabled via the UI.
+      enabled: settings['smtp_enabled'] !== undefined ? settings['smtp_enabled'] === 'true' : DEFAULT_CONFIG.enabled,
+    },
+    storedPass,
+    reEncrypted: passResult?.reEncrypted ?? null,
+  };
+}
+
+/**
+ * Every load of the SMTP configuration (boot, writer, bus event, reconnect)
+ * goes through this one serialized, coalesced reloader (#1758), so an older
+ * read can never overwrite a newer one. `apply` only swaps the live config;
+ * the re-encryption write-back runs after the run, outside the reloader.
+ */
+const reloadSmtpConfig = createCoalescedReloader<SmtpLoad, SmtpReloadPhase>({
+  read: async () => {
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
        WHERE setting_key LIKE 'smtp_%'`,
       [],
     );
-
     const settings: Record<string, string> = {};
     for (const row of result.rows) {
       settings[row.setting_key] = row.setting_value;
     }
+    return mapSmtpRows(settings);
+  },
+  apply: (load) => {
+    updateSmtpConfig(load.config);
+  },
+  onFailure: (err, phase) => {
+    logger.warn({ err, phase }, 'Failed to load SMTP settings from admin_settings');
+  },
+});
 
-    if (Object.keys(settings).length > 0) {
-      const storedPass = settings['smtp_pass'];
-      const passResult = storedPass !== undefined ? readStoredSmtpPass(storedPass) : null;
-      updateSmtpConfig({
-        host: settings['smtp_host'] ?? _config.host,
-        port: settings['smtp_port'] ? parseInt(settings['smtp_port'], 10) : _config.port,
-        secure: settings['smtp_secure'] === 'true',
-        user: settings['smtp_user'] ?? _config.user,
-        pass: passResult ? passResult.pass : _config.pass,
-        from: settings['smtp_from'] ?? _config.from,
-        // DB value is authoritative when present (issue #743) — otherwise an
-        // SMTP_ENABLED=true env bootstrap could never be disabled via the UI.
-        enabled: settings['smtp_enabled'] !== undefined ? settings['smtp_enabled'] === 'true' : _config.enabled,
-      });
+/** The write-back of each applied run, keyed by that run's value object. */
+const reEncryptionWriteBacks = new WeakMap<SmtpLoad, Promise<void>>();
 
-      // issue #738 — converge the at-rest value without the admin re-saving
-      // settings: encrypt legacy plaintext rows and upgrade ciphertexts that
-      // sit on a stale key version / pre-HKDF derivation. The UPDATE is
-      // conditional on the exact value read above so a concurrent
-      // PUT /admin/smtp during startup is never overwritten with a
-      // re-encryption of the OLD password (#762 review follow-up).
-      if (storedPass !== undefined && passResult?.reEncrypted) {
-        try {
-          await query(
-            `UPDATE admin_settings SET setting_value = $1, updated_at = NOW()
-             WHERE setting_key = 'smtp_pass' AND setting_value = $2`,
-            [passResult.reEncrypted, storedPass],
-          );
-          logger.info('Re-encrypted smtp_pass in admin_settings with the latest encryption key');
-        } catch (err) {
-          logger.warn({ err }, 'Failed to re-encrypt smtp_pass in admin_settings');
-        }
-      }
+/**
+ * Start the re-encryption write-back of an applied run unless it was already
+ * started for that run; returns the run's write-back promise (never rejects).
+ */
+function startReEncryptionWriteBack(load: SmtpLoad): Promise<void> {
+  let writeBack = reEncryptionWriteBacks.get(load);
+  if (!writeBack) {
+    writeBack = writeBackReEncryptedPass(load);
+    reEncryptionWriteBacks.set(load, writeBack);
+  }
+  return writeBack;
+}
+
+// issue #738 — converge the at-rest value without the admin re-saving
+// settings: encrypt legacy plaintext rows and upgrade ciphertexts that sit on
+// a stale key version / pre-HKDF derivation. The UPDATE is conditional on the
+// exact value read so a concurrent PUT /admin/smtp is never overwritten with a
+// re-encryption of the OLD password (#762 review follow-up). Never published.
+async function writeBackReEncryptedPass({ storedPass, reEncrypted }: SmtpLoad): Promise<void> {
+  if (storedPass === undefined || !reEncrypted) {
+    return;
+  }
+  try {
+    const result = await query(
+      `UPDATE admin_settings SET setting_value = $1, updated_at = NOW()
+       WHERE setting_key = 'smtp_pass' AND setting_value = $2`,
+      [reEncrypted, storedPass],
+    );
+    if (result.rowCount === 1) {
+      logger.info('Re-encrypted smtp_pass in admin_settings with the latest encryption key');
     }
   } catch (err) {
-    logger.warn({ err }, 'Failed to load SMTP settings from admin_settings');
+    logger.warn({ err }, 'Failed to re-encrypt smtp_pass in admin_settings');
+  }
+}
+
+/**
+ * Re-read the smtp_* rows and apply them to the live configuration (#1757).
+ * Resolves `true` when a read that started at or after this call was applied,
+ * `false` when it failed (the previous configuration stays, a warning is
+ * logged). Never rejects. Does not wait for the re-encryption write-back.
+ */
+export async function reloadSmtpConfigFromDb(phase: SmtpReloadPhase): Promise<boolean> {
+  const outcome = await reloadSmtpConfig(phase);
+  if (!outcome.ok) {
+    return false;
+  }
+  void startReEncryptionWriteBack(outcome.value);
+  return true;
+}
+
+/**
+ * Reload the SMTP configuration whenever another replica saves it (cache-bus
+ * `smtp:config:changed`) and after the bus reconnects (missed events are not
+ * replayed, ADR-024). Must run after `initCacheBus`; resolves with one function
+ * that removes both handlers.
+ *
+ * D-1757-2: with an active bus it also reloads once, awaited, which narrows
+ * (does not close) the window between the boot load and the subscription.
+ */
+export async function subscribeSmtpConfigReload(): Promise<() => void> {
+  const unsubscribeBus = subscribe('smtp:config:changed', async () => {
+    await reloadSmtpConfigFromDb('bus');
+  });
+  const unsubscribeReconnect = onReconnect(async () => {
+    await reloadSmtpConfigFromDb('reconnect');
+  });
+  if (isCacheBusActive()) {
+    await reloadSmtpConfigFromDb('subscribe');
+  }
+  return () => {
+    unsubscribeBus();
+    unsubscribeReconnect();
+  };
+}
+
+/**
+ * Initialize SMTP config from admin_settings table (the boot cold-load).
+ * Unlike other reloads it waits for its own re-encryption write-back.
+ */
+export async function initEmailService(): Promise<void> {
+  const outcome = await reloadSmtpConfig('cold-load');
+  if (outcome.ok) {
+    await startReEncryptionWriteBack(outcome.value);
   }
 }
 

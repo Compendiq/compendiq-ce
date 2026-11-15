@@ -35,17 +35,23 @@ vi.mock('../db/postgres.js', async (importOriginal) => {
   };
 });
 
+import { createClient, type RedisClientType } from 'redis';
+import nodemailer from 'nodemailer';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../db/postgres.js';
 import { encryptPat, decryptPat } from '../utils/crypto.js';
-import { initEmailService } from './email-service.js';
+import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
+import { getSmtpConfig, initEmailService, sendTestEmail, subscribeSmtpConfigReload } from './email-service.js';
+import { initCacheBus, close as closeCacheBus } from './redis-cache-bus.js';
 
 const dbAvailable = await isDbAvailable();
+const redisAvailable = dbAvailable && (await isRedisAvailable());
 
 describe.skipIf(!dbAvailable)(
   'initEmailService smtp_pass write-backs — real Postgres (#738 / #762 review follow-up)',
@@ -128,6 +134,112 @@ describe.skipIf(!dbAvailable)(
       const stored = await readSmtpPass();
       expect(stored).toBe(concurrentCipher);
       expect(decryptPat(stored)).toBe('brand-new-secret');
+    });
+  },
+);
+
+// #1757 — a save on another replica reaches this one through the cache-bus:
+// the peer writes the rows and publishes the bare reload signal; this process
+// re-reads PostgreSQL. A bus reconnect reloads too (missed signals are not
+// replayed, ADR-024).
+describe.skipIf(!redisAvailable)(
+  'SMTP configuration reaches every replica — real Postgres and Redis (#1757)',
+  () => {
+    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+    const channel = prefixedRedisChannel('smtp:config:changed');
+    let main: RedisClientType;
+    /** Stands in for the other replica: it only writes rows and publishes the signal. */
+    let peer: RedisClientType;
+    let unsubscribe: (() => void) | null = null;
+
+    beforeAll(async () => {
+      await setupTestDb();
+      main = createClient({ url }) as RedisClientType;
+      main.on('error', () => { /* surfaced through the assertions */ });
+      await main.connect();
+      peer = createClient({ url }) as RedisClientType;
+      peer.on('error', () => { /* surfaced through the assertions */ });
+      await peer.connect();
+      await initCacheBus(main);
+    });
+
+    afterAll(async () => {
+      await closeCacheBus();
+      await main.quit();
+      await peer.quit();
+      await teardownTestDb();
+    });
+
+    beforeEach(async () => {
+      await truncateAllTables();
+      hooks.afterSmtpSelect = null;
+      unsubscribe = await subscribeSmtpConfigReload();
+      // SUBSCRIBE is acknowledged asynchronously; publish only once Redis has it.
+      await vi.waitFor(async () => {
+        const counts = await peer.pubSubNumSub(channel);
+        expect(counts[channel]).toBeGreaterThan(0);
+      });
+    });
+
+    afterEach(() => {
+      unsubscribe?.();
+      unsubscribe = null;
+    });
+
+    async function writeSmtpRows(settings: Record<string, string>): Promise<void> {
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         SELECT key, value, NOW()
+         FROM unnest($1::text[], $2::text[]) AS t(key, value)
+         ON CONFLICT (setting_key) DO UPDATE
+         SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [Object.keys(settings), Object.values(settings)],
+      );
+    }
+
+    it("converges on a peer's save and sends the test mail through the newly saved host", async () => {
+      expect(getSmtpConfig().host).not.toBe('peer.example.com');
+
+      await writeSmtpRows({
+        smtp_host: 'peer.example.com',
+        smtp_port: '2525',
+        smtp_secure: 'false',
+        smtp_user: 'peer-user',
+        smtp_pass: encryptPat('peer-secret'),
+        smtp_from: 'peer@example.com',
+        smtp_enabled: 'true',
+      });
+      await peer.publish(channel, JSON.stringify({}));
+
+      await vi.waitFor(() =>
+        expect(getSmtpConfig()).toMatchObject({
+          host: 'peer.example.com',
+          port: 2525,
+          secure: false,
+          user: 'peer-user',
+          from: 'peer@example.com',
+          enabled: true,
+        }),
+      );
+
+      const createTransport = nodemailer.createTransport as ReturnType<typeof vi.fn>;
+      createTransport.mockClear();
+      expect(await sendTestEmail('admin@example.com')).toEqual({ success: true });
+      expect(createTransport).toHaveBeenCalledTimes(1);
+      expect(createTransport.mock.calls[0]![0]).toMatchObject({
+        host: 'peer.example.com',
+        port: 2525,
+        auth: { user: 'peer-user', pass: 'peer-secret' },
+      });
+    });
+
+    it('reloads the rows after the bus subscriber reconnects', async () => {
+      // Written without a signal: only the reconnect reload can pick it up.
+      await writeSmtpRows({ smtp_host: 'after-reconnect.example.com', smtp_enabled: 'true' });
+
+      await peer.sendCommand(['CLIENT', 'KILL', 'TYPE', 'pubsub']);
+
+      await vi.waitFor(() => expect(getSmtpConfig().host).toBe('after-reconnect.example.com'), { timeout: 5_000 });
     });
   },
 );
