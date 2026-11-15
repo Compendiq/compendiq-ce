@@ -2176,7 +2176,7 @@ remains available only when the licence grants `advanced_rbac`.
 2. Fill in username (required), optional email, optional display name, and pick the role (`user` or `admin`).
 3. Choose one of two credential modes:
    - **Explicit password** — type it into the form. The user signs in with that password on first login.
-   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → System → Integrations → Email / SMTP admin tab). When SMTP is not configured the API returns the temporary password in the response so the admin can hand it over out-of-band.
+   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → System → Integrations → Email / SMTP admin tab). When the email cannot be delivered (SMTP not configured, the send fails, or it is not confirmed within 30 seconds) the temporary password is shown once in the create dialog so the admin can hand it over out-of-band; it is not shown when the email was sent. The audit event `user_created` records `invitationSent` for the outcome.
 4. The new user is created immediately — there is no email-verification step in CE.
 
 ### Editing a user
