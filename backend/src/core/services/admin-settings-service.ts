@@ -1097,32 +1097,9 @@ export async function getWebhookDeliveriesRetentionDays(): Promise<number> {
   return 90;
 }
 
-/**
- * #1760 — returns the configured retention window (days) for `job_history`
- * rows. Consumed by `data-retention-service.ts :: runJobHistoryRetention` and
- * the admin GET/PUT `/api/admin/settings` surface.
- *
- * Read cascade:
- *   admin_settings.job_history_retention_days  (authoritative)
- *     -> env RETENTION_JOB_HISTORY_DAYS        (optional fallback)
- *     -> 90                                    (hard default)
- *
- * Clamped to [7, 3650]. No caching (24 h scheduler cadence).
- */
-export async function getJobHistoryRetentionDays(): Promise<number> {
-  try {
-    const r = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key='job_history_retention_days'`,
-    );
-    const raw = r.rows[0]?.setting_value;
-    if (raw) {
-      const n = parseInt(raw, 10);
-      if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
-    }
-  } catch {
-    // Fall through to env / default — this getter must never throw.
-  }
-  const env = process.env.RETENTION_JOB_HISTORY_DAYS;
+/** Env fallback (when set and in [7, 3650]) then the hard default 90. */
+function retentionFallbackDays(envVar: string): number {
+  const env = process.env[envVar];
   if (env) {
     const n = parseInt(env, 10);
     if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
@@ -1131,38 +1108,85 @@ export async function getJobHistoryRetentionDays(): Promise<number> {
 }
 
 /**
+ * #1760 — strict read of a retention window: a FAILED `admin_settings` read
+ * rejects, while an absent (or out-of-range) row still cascades to the env
+ * fallback and then 90. The destructive sweeps use this form so a transient
+ * read failure can never run a delete with a window the administrator did
+ * not choose (for example 3650 days read as 90).
+ */
+async function readRetentionDaysStrict(settingKey: string, envVar: string): Promise<number> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+    [settingKey],
+  );
+  const raw = r.rows[0]?.setting_value;
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+  }
+  return retentionFallbackDays(envVar);
+}
+
+/** Non-throwing read for the admin settings surface: a failed read shows the fallback. */
+async function readRetentionDays(settingKey: string, envVar: string): Promise<number> {
+  try {
+    return await readRetentionDaysStrict(settingKey, envVar);
+  } catch {
+    return retentionFallbackDays(envVar);
+  }
+}
+
+/**
+ * #1760 — returns the configured retention window (days) for `job_history`
+ * rows for the admin GET/PUT `/api/admin/settings` surface. Never throws; the
+ * sweep uses `getJobHistoryRetentionDaysStrict`.
+ *
+ * Read cascade:
+ *   admin_settings.job_history_retention_days  (authoritative)
+ *     -> env RETENTION_JOB_HISTORY_DAYS        (optional fallback, row absent)
+ *     -> 90                                    (hard default)
+ *
+ * Clamped to [7, 3650]. No caching (24 h scheduler cadence).
+ */
+export function getJobHistoryRetentionDays(): Promise<number> {
+  return readRetentionDays('job_history_retention_days', 'RETENTION_JOB_HISTORY_DAYS');
+}
+
+/**
+ * #1760 — same cascade as `getJobHistoryRetentionDays`, but a failed
+ * `admin_settings` read rejects. Consumed by
+ * `data-retention-service.ts :: runJobHistoryRetention`, which then skips the
+ * sweep.
+ */
+export function getJobHistoryRetentionDaysStrict(): Promise<number> {
+  return readRetentionDaysStrict('job_history_retention_days', 'RETENTION_JOB_HISTORY_DAYS');
+}
+
+/**
  * #1760 — returns the configured retention window (days) for READ
- * `notifications`. Consumed by
- * `data-retention-service.ts :: runReadNotificationsRetention` and the admin
- * GET/PUT `/api/admin/settings` surface. Unread notifications are never
- * pruned, whatever this window says.
+ * `notifications` for the admin GET/PUT `/api/admin/settings` surface. Never
+ * throws; the sweep uses `getNotificationsReadRetentionDaysStrict`. Unread
+ * notifications are never pruned, whatever this window says.
  *
  * Read cascade:
  *   admin_settings.notifications_read_retention_days  (authoritative)
- *     -> env RETENTION_NOTIFICATIONS_READ_DAYS        (optional fallback)
+ *     -> env RETENTION_NOTIFICATIONS_READ_DAYS        (optional fallback, row absent)
  *     -> 90                                           (hard default)
  *
  * Clamped to [7, 3650]. No caching (24 h scheduler cadence).
  */
-export async function getNotificationsReadRetentionDays(): Promise<number> {
-  try {
-    const r = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key='notifications_read_retention_days'`,
-    );
-    const raw = r.rows[0]?.setting_value;
-    if (raw) {
-      const n = parseInt(raw, 10);
-      if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
-    }
-  } catch {
-    // Fall through to env / default — this getter must never throw.
-  }
-  const env = process.env.RETENTION_NOTIFICATIONS_READ_DAYS;
-  if (env) {
-    const n = parseInt(env, 10);
-    if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
-  }
-  return 90;
+export function getNotificationsReadRetentionDays(): Promise<number> {
+  return readRetentionDays('notifications_read_retention_days', 'RETENTION_NOTIFICATIONS_READ_DAYS');
+}
+
+/**
+ * #1760 — same cascade as `getNotificationsReadRetentionDays`, but a failed
+ * `admin_settings` read rejects. Consumed by
+ * `data-retention-service.ts :: runReadNotificationsRetention`, which then
+ * skips the sweep.
+ */
+export function getNotificationsReadRetentionDaysStrict(): Promise<number> {
+  return readRetentionDaysStrict('notifications_read_retention_days', 'RETENTION_NOTIFICATIONS_READ_DAYS');
 }
 
 /**

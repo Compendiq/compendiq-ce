@@ -40,8 +40,8 @@ import {
   getAdminAccessDeniedRetentionDays,
   getPendingSyncVersionsRetentionDays,
   getWebhookDeliveriesRetentionDays,
-  getJobHistoryRetentionDays,
-  getNotificationsReadRetentionDays,
+  getJobHistoryRetentionDaysStrict,
+  getNotificationsReadRetentionDaysStrict,
 } from './admin-settings-service.js';
 import { logAuditEvent } from './audit-service.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
@@ -621,6 +621,7 @@ async function runBatchedRetention(sweep: {
   /** Results key, heartbeat `resourceId` and `details.table`. */
   name: 'job_history' | 'notifications_read';
   settingKey: string;
+  /** Strict resolver: rejects when the `admin_settings` read fails (row absent is not a failure). */
   getDays: () => Promise<number>;
   deleteSql: string;
 }): Promise<number> {
@@ -675,7 +676,7 @@ function runJobHistoryRetention(): Promise<number> {
   return runBatchedRetention({
     name: 'job_history',
     settingKey: 'job_history_retention_days',
-    getDays: getJobHistoryRetentionDays,
+    getDays: getJobHistoryRetentionDaysStrict,
     deleteSql: `DELETE FROM job_history
                  WHERE created_at < NOW() - INTERVAL '1 day' * $1
                    AND id IN (
@@ -694,7 +695,7 @@ function runReadNotificationsRetention(): Promise<number> {
   return runBatchedRetention({
     name: 'notifications_read',
     settingKey: 'notifications_read_retention_days',
-    getDays: getNotificationsReadRetentionDays,
+    getDays: getNotificationsReadRetentionDaysStrict,
     deleteSql: `DELETE FROM notifications
                  WHERE is_read = TRUE
                    AND created_at < NOW() - INTERVAL '1 day' * $1
