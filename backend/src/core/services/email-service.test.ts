@@ -48,6 +48,16 @@ describe('email-service', () => {
     expect(result).toBe(true);
   });
 
+  it('sendEmail returns false when the transport sendMail rejects', async () => {
+    const { sendEmail, updateSmtpConfig } = await import('./email-service.js');
+    updateSmtpConfig({ enabled: true, host: 'smtp.test.com', port: 587, user: 'user', pass: 'pass' });
+    // The mocked createTransport hands every caller the same shared sendMail.
+    const { sendMail } = nodemailer.createTransport({}) as unknown as { sendMail: ReturnType<typeof vi.fn> };
+    sendMail.mockRejectedValueOnce(new Error('connection refused'));
+    const result = await sendEmail('test@example.com', 'Test Subject', '<p>Hello</p>');
+    expect(result).toBe(false);
+  });
+
   it('getSmtpConfig masks the password', async () => {
     const { getSmtpConfig, updateSmtpConfig } = await import('./email-service.js');
     updateSmtpConfig({ pass: 'secret-password' });

@@ -68,6 +68,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Admin user update: `null` clears the email or display name (#1736):**
+  `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
+  or `displayName` through to the service, which stores `NULL`. Keys left out
+  of the body still leave the field unchanged; previously `null` was treated
+  as omitted, so the value could not be cleared through the API.
+
+- **Invitation password no longer lost when the email is not delivered
+  (#1737):** `POST /api/admin/users` with `sendInvitation: true` now awaits the
+  invitation email (bounded to 15 s) and returns the generated
+  `temporaryPassword` in the `201` response whenever delivery is not confirmed:
+  SMTP disabled or without a host, the transport failing, or the send not
+  settling in time. It is omitted only when the email was sent. The
+  `user_created` audit event is written after the attempt and gains
+  `invitationSent` next to `invited`. Responses for users without an email or
+  with an explicit password are unchanged, and the admin UI needed no change.
+
+- **Liveness stays 200 during a database outage (#1755):** `GET
+  /api/health/live` is no longer rate limited and touches neither the
+  database nor Redis, so it answers 200 while the database is down or hanging;
+  `/api/health/ready`, `/api/health/start` and `/api/health` answer 503 instead
+  of 500. `getRateLimits()` no longer rejects once its 60 s cache expires: when
+  the settings read fails or does not answer within 1 s it serves the last
+  loaded limits (or the defaults, with the auth floor), and it retries the
+  database at most once per 10 s after a failure (30 s for a read that never
+  settles) instead of on every request. With a working database the limits and
+  their 60 s cache are unchanged.
+
 - **SMTP settings now reach every replica without a restart (#1757):** after
   `PUT /api/admin/smtp` has written the rows, the saving replica re-reads them
   and publishes a reload signal on the new `smtp:config:changed` cache-bus
@@ -79,11 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back to that replica's `SMTP_*` environment value, except `secure`: once any
   `smtp_*` row exists it is `false` unless an `smtp_secure` row says `true`,
   even with `SMTP_SECURE=true` (unchanged).
-
-- **A failed SMTP save no longer changes the live transport (#1761):**
-  `PUT /api/admin/smtp` now writes the `smtp_*` rows (one statement) before it
-  updates the live configuration, so a rejected save leaves both the database
-  and the transport unchanged and a successful save makes them match.
 
 - **Overlapping cached-setting reloads no longer restore an older value (#1758):**
   `makeCachedSetting` (IP allowlist, sync-conflict policy, LLM concurrency and
@@ -97,6 +119,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has not answered after 30 s is abandoned and never applied. Failed reads
   still keep the previous value and log a warning; turning the collab flag
   off still closes every room before `PUT /api/admin/settings` answers.
+
+- **A failed SMTP save no longer changes the live transport (#1761):**
+  `PUT /api/admin/smtp` now writes the `smtp_*` rows (one statement) before it
+  updates the live configuration, so a rejected save leaves both the database
+  and the transport unchanged and a successful save makes them match.
 
 - **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
   `listActiveEmbeddingLocks` now removes stale members of
