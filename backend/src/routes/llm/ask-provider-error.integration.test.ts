@@ -68,6 +68,7 @@ interface AskResult {
 }
 
 describe.skipIf(!available)('POST /api/llm/ask — provider error frames (#1728)', () => {
+  // Rate-limit budget: this file sends 9 asks; the llmStream limit is 10 per minute per app instance, so a tenth would answer 429.
   let app: FastifyInstance;
   let provider: Server;
   let appPort: number;
