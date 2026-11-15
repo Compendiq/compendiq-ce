@@ -32,6 +32,20 @@ import { accountInvitation } from '../../core/services/email-templates.js';
 import { sendEmail } from '../../core/services/email-service.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { vitestIntOr } from '../../core/utils/safe-int.js';
+
+/**
+ * Upper bound on the in-request invitation send (#1737). nodemailer's own
+ * defaults (120 s connect, 30 s greeting, 600 s socket) exceed what front
+ * proxies and load balancers allow: they commonly time out at 30 s or less
+ * (30 s and 20 s defaults exist), and a cut-off request leaves the user
+ * created with the generated password lost. 15 s stays clearly below that and
+ * far above a healthy SMTP exchange. Expiry means "delivery not confirmed":
+ * the password is returned. Fixed in production; Vitest may shorten it.
+ */
+export const INVITATION_SEND_TIMEOUT_MS = vitestIntOr('INVITATION_SEND_TIMEOUT_MS', 15_000);
+
+const INVITATION_TIMED_OUT = Symbol('invitation-send-timed-out');
 
 const ADMIN_RATE_LIMIT = {
   config: {
@@ -94,6 +108,40 @@ export async function adminUsersRoutes(fastify: FastifyInstance): Promise<void> 
           generateRandomPassword: body.sendInvitation === true && !body.password,
         });
 
+        // Invitation email, awaited (bounded) so a failed or unconfirmed
+        // delivery is known before responding: only then does the admin get
+        // the generated password back to hand over manually. Neither a
+        // rejection nor the bound expiring fails the request.
+        let invitationSent = false;
+        if (body.sendInvitation && user.email && temporaryPassword) {
+          const frontendUrl = (process.env.FRONTEND_URL ?? '').split(',')[0]?.trim();
+          const tpl = accountInvitation({
+            recipientName: user.displayName ?? user.username,
+            username: user.username,
+            temporaryPassword,
+            invitedByName: request.username,
+            loginUrl: frontendUrl ? `${frontendUrl}/login` : undefined,
+          });
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const outcome = await Promise.race([
+              sendEmail(user.email, tpl.subject, tpl.html),
+              new Promise<typeof INVITATION_TIMED_OUT>((resolve) => {
+                timer = setTimeout(() => resolve(INVITATION_TIMED_OUT), INVITATION_SEND_TIMEOUT_MS);
+              }),
+            ]);
+            if (outcome === INVITATION_TIMED_OUT) {
+              logger.warn({ userId: user.id }, 'admin-users: invitation email not confirmed in time');
+            } else {
+              invitationSent = outcome === true;
+            }
+          } catch (err) {
+            logger.warn({ err, userId: user.id }, 'admin-users: invitation email failed');
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+
         await logAuditEvent(
           request.userId,
           'ADMIN_ACTION',
@@ -105,36 +153,17 @@ export async function adminUsersRoutes(fastify: FastifyInstance): Promise<void> 
             username: user.username,
             role: user.role,
             invited: body.sendInvitation === true,
+            invitationSent,
           },
           request,
         );
 
-        // Fire-and-forget invitation email. Failing to send does NOT fail
-        // the request — the admin can still see the temp password in the
-        // response when sendInvitation is set and no SMTP is configured.
-        if (body.sendInvitation && user.email && temporaryPassword) {
-          const frontendUrl = (process.env.FRONTEND_URL ?? '').split(',')[0]?.trim();
-          const tpl = accountInvitation({
-            recipientName: user.displayName ?? user.username,
-            username: user.username,
-            temporaryPassword,
-            invitedByName: request.username,
-            loginUrl: frontendUrl ? `${frontendUrl}/login` : undefined,
-          });
-          sendEmail(user.email, tpl.subject, tpl.html).catch((err) => {
-            logger.warn({ err, userId: user.id }, 'admin-users: invitation email failed');
-          });
-        }
-
         reply.code(201);
         return {
           user,
-          // Only return the temp password when we generated one AND there's
-          // no email destination to send it to (falls back to manual copy).
-          temporaryPassword:
-            temporaryPassword && (!user.email || !body.sendInvitation)
-              ? temporaryPassword
-              : undefined,
+          // The generated password is returned exactly when the invitation
+          // was not delivered (no email, SMTP off, send failed or timed out).
+          temporaryPassword: temporaryPassword && !invitationSent ? temporaryPassword : undefined,
         };
       } catch (err) {
         mapServiceError(fastify, err);

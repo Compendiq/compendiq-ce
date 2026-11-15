@@ -158,6 +158,12 @@ filter SQL. Keep raw strings, inclusive bounds and date-only `dateTo` at session
 midnight, not end-of-day. Exact formats and compatibility restrictions:
 `docs/API.md#page-date-filters`.
 
+**Invitation password hand-over (#1737).** `POST /api/admin/users` awaits the
+invitation email, bounded by `INVITATION_SEND_TIMEOUT_MS` (15 s, not
+configurable), and returns the generated `temporaryPassword` exactly when
+delivery is not confirmed; the `user_created` audit row is written after the
+attempt with `invitationSent`. The password never reaches a log or audit row.
+
 **First-administrator bootstrap (#1661).** Migration 032's `__system__` admin
 owns built-in templates but is never a real operator. Registration policy,
 registration role assignment, setup status, and setup-admin creation all use
