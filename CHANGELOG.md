@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Conversation titles never keep reasoning (#1724):** a generated title now
+  ignores `<think>…</think>` blocks (and a lone closing tag from hosts whose
+  template supplies the opener). A reply that is only reasoning, or was cut
+  inside it, keeps the question-derived title. The shared helper
+  `think-blocks.ts` also replaces three local copies of the closed-block
+  expression, with unchanged behaviour.
+
 - **Admin user update: `null` clears the email or display name (#1736):**
   `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
   or `displayName` through to the service, which stores `NULL`. Keys left out
