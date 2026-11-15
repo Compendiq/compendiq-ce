@@ -2183,7 +2183,7 @@ remains available only when the licence grants `advanced_rbac`.
 
 From the user's row in the table:
 
-- **Display name, email, role** can be patched via `PUT /api/admin/users/:id`. Changing an email to one that is already in use returns HTTP 409 (`EMAIL_TAKEN`).
+- **Display name, email, role** can be patched via `PUT /api/admin/users/:id`. Send `null` to clear the email or display name; fields left out of the body stay unchanged. Changing an email to one that is already in use returns HTTP 409 (`EMAIL_TAKEN`).
 - **Demoting the last active admin** is rejected with HTTP 409 (`LAST_ADMIN`). Promote another admin first.
 - Username and password cannot be changed through this form. Password changes go through the self-service flow from the user's own profile; username is immutable once set.
 
