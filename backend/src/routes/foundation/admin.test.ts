@@ -63,6 +63,8 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
   getWebhookDeliveriesRetentionDays: vi.fn().mockResolvedValue(90),
+  getJobHistoryRetentionDays: vi.fn().mockResolvedValue(90),
+  getNotificationsReadRetentionDays: vi.fn().mockResolvedValue(90),
   // Worker batch sizes — the real row → default cascade is covered in
   // `admin-retrieval-settings.test.ts` against the real service.
   getWorkerBatchSize: vi.fn().mockResolvedValue(5),
@@ -127,7 +129,11 @@ import { decryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/ut
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
-import { getAdminAccessDeniedRetentionDays as mockGetAdminAccessDeniedRetentionDays } from '../../core/services/admin-settings-service.js';
+import {
+  getAdminAccessDeniedRetentionDays as mockGetAdminAccessDeniedRetentionDays,
+  getJobHistoryRetentionDays as mockGetJobHistoryRetentionDays,
+  getNotificationsReadRetentionDays as mockGetNotificationsReadRetentionDays,
+} from '../../core/services/admin-settings-service.js';
 
 describe('Admin routes', () => {
   let app: ReturnType<typeof Fastify>;
@@ -818,6 +824,68 @@ describe('Admin routes', () => {
         method: 'PUT',
         url: '/api/admin/settings',
         payload: { webhookDeliveriesRetentionDays: value },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  // ─── #1760 — jobHistoryRetentionDays / notificationsReadRetentionDays wiring ──
+  describe.each([
+    {
+      field: 'jobHistoryRetentionDays',
+      key: 'job_history_retention_days',
+      getter: mockGetJobHistoryRetentionDays,
+    },
+    {
+      field: 'notificationsReadRetentionDays',
+      key: 'notifications_read_retention_days',
+      getter: mockGetNotificationsReadRetentionDays,
+    },
+  ])('$field (issue #1760)', ({ field, key, getter }) => {
+    it('GET /api/admin/settings returns the getter value', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+      (getter as ReturnType<typeof vi.fn>).mockResolvedValueOnce(120);
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)[field]).toBe(120);
+    });
+
+    it('GET /api/admin/settings returns 90 by default', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+      expect(JSON.parse(response.body)[field]).toBe(90);
+    });
+
+    it('PUT /api/admin/settings persists the field via UPSERT', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { [field]: 7 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const upsert = calls.find(([sql, args]) =>
+        typeof sql === 'string' &&
+        sql.includes('INSERT INTO admin_settings') &&
+        Array.isArray(args) &&
+        args[0] === key,
+      );
+      expect(upsert).toBeTruthy();
+      expect((upsert![1] as unknown[])[1]).toBe('7');
+    });
+
+    it.each([6, 3651, 30.5])('PUT rejects %s with 400 (validated by Zod)', async (value) => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { [field]: value },
       });
       expect(response.statusCode).toBe(400);
     });

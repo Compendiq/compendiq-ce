@@ -428,22 +428,44 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
   completed/failed `reembed-all` job records BullMQ keeps in Redis before
   sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
 - `webhook_deliveries_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Webhook delivery attempts retention** under Retention windows (below), or as `webhookDeliveriesRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS` when the row is absent): the daily `maintenance` retention sweep prunes `webhook_deliveries` attempt rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Only attempts of finished deliveries (`webhook_outbox.status` `done`/`dead`) are pruned, because the delivery worker counts a pending item's ledger rows to pick its next attempt number. `webhook_outbox` rows are never deleted by this sweep.
+- `job_history_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Job history retention** under Retention windows (below), or as `jobHistoryRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_JOB_HISTORY_DAYS` only while the row is absent): the daily `maintenance` retention sweep deletes `job_history` rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Every `job_history` row records a finished job (`completed` or `failed`), so age alone decides; no other table is touched. If the setting cannot be read, the sweep is skipped and logged instead of running with a default. **Upgrading deletes `job_history` rows older than 90 days at the first sweep unless you set the window first (see the upgrade paragraph below).**
+- `notifications_read_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Read notifications retention** under Retention windows (below), or as `notificationsReadRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_NOTIFICATIONS_READ_DAYS` only while the row is absent): the same sweep deletes notifications that have been read (`is_read = TRUE`) and are older than this, in batches of 10 000, with its own `RETENTION_PRUNED` heartbeat (zero-row runs included). **Unread notifications are never deleted, whatever their age**, and `notification_preferences` is untouched. If the setting cannot be read, the sweep is skipped and logged instead of running with a default. **Upgrading deletes read notifications older than 90 days at the first sweep unless you set the window first (see the upgrade paragraph below).**
+
+**Upgrading to the job history and read notification windows.** Migration 154
+seeds both windows at 90 days, so the first daily sweep after the upgrade
+deletes `job_history` rows and read notifications older than 90 days. To keep
+more, either insert the rows before upgrading
+(`INSERT INTO admin_settings (setting_key, setting_value) VALUES ('job_history_retention_days', '365'), ('notifications_read_retention_days', '365') ON CONFLICT (setting_key) DO NOTHING;`,
+which the migration leaves untouched), or set them with
+`PUT /api/admin/settings` (`{"jobHistoryRetentionDays": 365, "notificationsReadRetentionDays": 365}`)
+right after the upgrade and before the first sweep. The previous version drops
+these fields from a `PUT`, so the API cannot set them before the upgrade. The
+`RETENTION_JOB_HISTORY_DAYS` / `RETENTION_NOTIFICATIONS_READ_DAYS` variables
+apply only while the row is absent, which a migrated database never is, so they
+cannot keep rows. With `USE_BULLMQ=false` the first sweep runs 24 hours after
+the backend starts; with BullMQ it runs at the existing
+`data-retention-scheduler` slot, which on a new Redis, or after a missed slot,
+is right at start, so inserting the rows first is the only guaranteed way. The
+windows also apply to restored data: after a restore, the next sweep deletes
+restored `job_history` rows and read notifications older than the window.
 
 **Retention windows.** **Settings → Governance → Data & Compliance → Retention**
-opens with a *Retention windows* section holding the two single-table windows
+opens with a *Retention windows* section holding the single-table windows
 the daily sweep applies: **Admin access-denied audit retention**
 (`admin_access_denied_retention_days`, `ADMIN_ACCESS_DENIED` rows of
-`audit_log`) and **Webhook delivery attempts retention**
-(`webhook_deliveries_retention_days`). Both take whole days from 7 to 3650;
+`audit_log`), **Webhook delivery attempts retention**
+(`webhook_deliveries_retention_days`), **Job history retention**
+(`job_history_retention_days`) and **Read notifications retention**
+(`notifications_read_retention_days`). All take whole days from 7 to 3650;
 an out-of-range or fractional value is rejected inline and cannot be saved.
 Each window has its own **Save** (or Enter in its field), which sends only
-that one setting, so saving one never changes the other or any other admin
+that one setting, so saving one never changes another window or any other admin
 setting. A failed save keeps the typed value and shows the server's reason.
 If the settings cannot be read, the section says so and offers **Retry**
 instead of showing defaults. The section sits above, and is independent of,
 the Enterprise per-table policy matrix. The Retention tab itself is shown only
 under an Enterprise licence with the `data_retention_policies` feature; other
-deployments set both windows through `PUT /api/admin/settings` (or the env
+deployments set these windows through `PUT /api/admin/settings` (or the env
 fallbacks while the rows are absent).
 
 ### LLM Request Queue
