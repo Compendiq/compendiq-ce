@@ -152,10 +152,13 @@ describe.skipIf(!redisAvailable)('listActiveEmbeddingLocks stale scrub (real Red
       await hooked.scrubsDone();
       setRedisClient(real);
 
-      const held = (await real.get(lockKey(id))) === lockId && lockId !== null;
+      // Every trial must be a real one: the acquire succeeded and its key is live.
+      expect(lockId, `trial ${trial}: acquire must succeed`).not.toBeNull();
+      const held = (await real.get(lockKey(id))) === lockId;
+      expect(held, `trial ${trial}: lock key must hold the acquired id`).toBe(true);
       const member = Number(await real.sIsMember(SET_KEY, id)) === 1;
       const visible = (await listActiveEmbeddingLocks()).some((l) => l.userId === id && l.holderEpoch === lockId);
-      if (held && (!member || !visible)) hidden++;
+      if (!member || !visible) hidden++;
     }
     expect(hidden).toBe(0);
   }, 60_000);
