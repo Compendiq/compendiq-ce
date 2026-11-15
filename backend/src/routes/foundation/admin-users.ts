@@ -151,8 +151,8 @@ export async function adminUsersRoutes(fastify: FastifyInstance): Promise<void> 
       const patch = AdminUserUpdateSchema.parse(request.body);
       try {
         const user = await updateUser(id, {
-          email: patch.email ?? undefined,
-          displayName: patch.displayName ?? undefined,
+          email: patch.email,
+          displayName: patch.displayName,
           role: patch.role,
         });
         await logAuditEvent(
