@@ -1,14 +1,23 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile, type ChildProcess, type spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { encryptBackupStream, packArchive, type ArchiveEntry } from './backup-stream.js';
-import { restoreBackup } from './backup-restore.js';
+import { restoreBackup, stageAndValidateBackup } from './backup-restore.js';
+
+// Pass-through spy: the target schema check must refuse before the live
+// attachment tree is renamed, which the file system alone cannot show once a
+// rollback has renamed it back.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
 
 const MASTER = { kind: 'master' as const, keyMaterial: 'master-key-at-least-32-characters!!' };
 const PAT_KEY = 'pat-key-at-least-32-characters!!!!';
@@ -149,6 +158,7 @@ async function restore(
     runMigrationsFn: harness.runMigrationsFn,
     queryFn: harness.queryFn,
     newestMigration: NEWEST_MIGRATION,
+    targetMigration: NEWEST_MIGRATION,
     ...overrides,
   });
 }
@@ -167,12 +177,14 @@ async function expectValidationFailure(
 
 beforeEach(() => {
   process.env.PAT_ENCRYPTION_KEY = PAT_KEY;
+  vi.mocked(rename).mockClear();
 });
 
 afterEach(async () => {
   await Promise.all([...workRoots].map((root) => rm(root, { recursive: true, force: true })));
   workRoots.clear();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('restoreBackup validation', () => {
@@ -323,6 +335,7 @@ describe('restoreBackup validation', () => {
         attachmentsRoot: process.env.ATTACHMENTS_ROOT,
         postgresUrl: 'postgres://restore-test',
         dryRun: true,
+        targetMigration: null,
       });
       if (manifest.schemaMigration !== '${NEWEST_MIGRATION}') {
         throw new Error('Unexpected schema migration: ' + manifest.schemaMigration);
@@ -475,5 +488,203 @@ describe('restoreBackup commit', () => {
     expect(harness.spawnFn).not.toHaveBeenCalled();
     expect(harness.runMigrationsFn).not.toHaveBeenCalled();
     expect(await readFile(harness.existingAttachment, 'utf8')).toBe(ORIGINAL);
+  });
+});
+
+describe('restoreBackup target schema check (#1711)', () => {
+  const BINARY = '129_page_ace_cache_invalidation.sql';
+  const ARCHIVE_110 = '110_connection_impression_dedupe.sql';
+  const ARCHIVE_121 = '121_page_baselines.sql';
+  const ARCHIVE_122 = '122_page_write_recovery_history_segments.sql';
+  const RESTORE_URL = 'postgres://restore-test';
+
+  function archiveAt(schemaMigration: string, mutate?: (manifest: ManifestFixture) => void): Readable {
+    return encryptedFixture({
+      mutateManifest: (manifest) => {
+        manifest.schemaMigration = schemaMigration;
+        mutate?.(manifest);
+      },
+    });
+  }
+
+  function olderThanTarget(archive: string, target: string): string {
+    return `Backup migration ${archive} is older than the target database (${target}). Restore into an empty database and let the application migrations run; see ADMIN-GUIDE "Restoring an older archive".`;
+  }
+
+  /** Refused before staging or with staging removed, and before any live mutation. */
+  async function expectRefusedBeforeMutation(
+    harness: RestoreHarness,
+    pending: Promise<unknown>,
+    message: string | RegExp,
+  ): Promise<void> {
+    await expect(pending).rejects.toMatchObject({
+      name: 'BackupRestoreError',
+      message: typeof message === 'string' ? message : expect.stringMatching(message),
+    });
+    expect(vi.mocked(rename)).not.toHaveBeenCalled();
+    expect(harness.spawnFn).not.toHaveBeenCalled();
+    expect(harness.runMigrationsFn).not.toHaveBeenCalled();
+    expect(await readFile(harness.existingAttachment, 'utf8')).toBe(ORIGINAL);
+    expect(await readdir(harness.workRoot)).toEqual(['attachments-live']);
+  }
+
+  it.each([
+    [ARCHIVE_110, false],
+    [ARCHIVE_110, true],
+    [ARCHIVE_121, false],
+    [ARCHIVE_121, true],
+  ])('refuses archive %s over a newer target (dryRun %s) before any rename or pg_restore', async (archive, dryRun) => {
+    const harness = await createHarness();
+
+    await expectRefusedBeforeMutation(
+      harness,
+      restore(harness, archiveAt(archive), { newestMigration: BINARY, targetMigration: BINARY, dryRun }),
+      olderThanTarget(archive, BINARY),
+    );
+  });
+
+  it('does not let --force bypass the older-archive refusal', async () => {
+    const harness = await createHarness();
+    const archive = archiveAt(ARCHIVE_110, (manifest) => {
+      manifest.patEncryptionKeyFingerprint = patFingerprint('wrong-key');
+    });
+
+    await expectRefusedBeforeMutation(
+      harness,
+      restore(harness, archive, { newestMigration: BINARY, targetMigration: BINARY, force: true }),
+      olderThanTarget(ARCHIVE_110, BINARY),
+    );
+  });
+
+  it.each([
+    ['an empty target', ARCHIVE_110, null],
+    ['a target at the archive level', BINARY, BINARY],
+    ['a target behind the archive', ARCHIVE_122, ARCHIVE_110],
+  ])('restores into %s and runs migrations', async (_label, archive, target) => {
+    const harness = await createHarness();
+
+    const manifest = await restore(harness, archiveAt(archive), {
+      newestMigration: BINARY,
+      targetMigration: target,
+    });
+
+    expect(manifest.schemaMigration).toBe(archive);
+    // The spy sees the service's renames, so the refusal tests' "no rename" is meaningful.
+    expect(vi.mocked(rename)).toHaveBeenCalledWith(harness.attachmentsRoot, expect.any(String));
+    expect(harness.spawnFn).toHaveBeenCalledOnce();
+    expect(harness.runMigrationsFn).toHaveBeenCalledOnce();
+    expect(await readFile(path.join(harness.attachmentsRoot, 'local/1/file.txt'), 'utf8')).toBe(
+      'replacement',
+    );
+  });
+
+  it.each([null, '152_relocation_notion_identity.sql'])(
+    'keeps the forward check and its message first (target %s)',
+    async (target) => {
+      const harness = await createHarness();
+
+      await expectRefusedBeforeMutation(
+        harness,
+        restore(harness, archiveAt('130_future.sql'), { newestMigration: BINARY, targetMigration: target }),
+        `Backup migration 130_future.sql is newer than this binary (${BINARY})`,
+      );
+    },
+  );
+
+  it('skips the check when a direct stageAndValidateBackup caller omits targetMigration', async () => {
+    const harness = await createHarness();
+
+    const stage = await stageAndValidateBackup({
+      encrypted: archiveAt(ARCHIVE_110),
+      secret: MASTER,
+      attachmentsRoot: harness.attachmentsRoot,
+      newestMigration: BINARY,
+    });
+    await rm(stage.root, { recursive: true, force: true });
+
+    expect(stage.manifest.schemaMigration).toBe(ARCHIVE_110);
+  });
+
+  it('refuses in a direct stageAndValidateBackup call with an older targetMigration and removes staging', async () => {
+    const harness = await createHarness();
+
+    await expectRefusedBeforeMutation(
+      harness,
+      stageAndValidateBackup({
+        encrypted: archiveAt(ARCHIVE_110),
+        secret: MASTER,
+        attachmentsRoot: harness.attachmentsRoot,
+        newestMigration: BINARY,
+        targetMigration: BINARY,
+      }),
+      olderThanTarget(ARCHIVE_110, BINARY),
+    );
+  });
+
+  it.each([true, false])(
+    'refuses an empty postgresUrl before staging when the target level must be read (dryRun %s)',
+    async (dryRun) => {
+      const harness = await createHarness();
+
+      await expectRefusedBeforeMutation(
+        harness,
+        restore(harness, archiveAt(BINARY), {
+          postgresUrl: '',
+          newestMigration: BINARY,
+          targetMigration: undefined,
+          dryRun,
+        }),
+        'POSTGRES_URL is required (also for --dry-run)',
+      );
+      expect(harness.queryFn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses a real restore with an empty postgresUrl even when targetMigration is supplied', async () => {
+    const harness = await createHarness();
+
+    await expectRefusedBeforeMutation(
+      harness,
+      restore(harness, archiveAt(BINARY), {
+        postgresUrl: '',
+        newestMigration: BINARY,
+        targetMigration: BINARY,
+      }),
+      'POSTGRES_URL is required (also for --dry-run)',
+    );
+  });
+
+  it.each([
+    ['unset', undefined, /POSTGRES_URL is not set/],
+    ['a different database', 'postgres://other-database', /POSTGRES_URL does not match/],
+  ])('refuses before staging when POSTGRES_URL is %s', async (_label, envUrl, message) => {
+    const harness = await createHarness();
+    vi.stubEnv('POSTGRES_URL', envUrl);
+
+    await expectRefusedBeforeMutation(
+      harness,
+      restore(harness, archiveAt(BINARY), {
+        newestMigration: BINARY,
+        targetMigration: undefined,
+        dryRun: true,
+      }),
+      message,
+    );
+    expect(harness.queryFn).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the target level cannot be read', async () => {
+    const harness = await createHarness();
+    vi.stubEnv('POSTGRES_URL', RESTORE_URL);
+    harness.queryFn.mockRejectedValue(new Error('connection refused'));
+
+    await expectRefusedBeforeMutation(
+      harness,
+      restore(harness, archiveAt(BINARY), {
+        newestMigration: BINARY,
+        targetMigration: undefined,
+      }),
+      /target database schema level.*connection refused/,
+    );
   });
 });

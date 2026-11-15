@@ -47,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Restore refuses an archive older than the target database (#1711):**
+  `restore-backup.ts` (dry-run and restore) now compares the archive's schema
+  migration with the target's newest `_migrations` row and refuses an older
+  archive before any attachment rename or `pg_restore`, naming both levels and
+  the new ADMIN-GUIDE procedure "Restoring an older archive" (restore into an
+  empty database, then let migrations run). An empty target, an equal level and
+  a target behind the archive stay allowed; `--force` does not bypass the
+  check. `POSTGRES_URL` is now required for `--dry-run` too (exit 2 without
+  it), and `restoreBackup` refuses when `POSTGRES_URL` is missing or differs
+  from the restore target URL.
+
 - **Notion re-import after relocation (#1774):** Successful moves in either
   direction release the Notion import binding without changing the page PK,
   while exact rollback preserves NULL and original spelling. Cached picker
