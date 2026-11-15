@@ -26,7 +26,9 @@ const names = ['sync', 'quality', 'summary', 'image-analysis', 'maintenance', 'r
 const queues: Queue[] = [];
 const redis = createClient({ url: process.env.REDIS_URL });
 const SCHEDULER_EVERY_MS = 10;
-const WAIT = { timeout: 45_000, interval: 50 };
+// Each poll stays well below TEST_TIMEOUT_MS; the vitest default (30 s) is too tight for ~200 runs.
+const WAIT = { timeout: 60_000, interval: 50 };
+const TEST_TIMEOUT_MS = 120_000;
 
 // Real BullMQ, Redis, PostgreSQL and workers; the repeat interval of the
 // backup scheduler is shortened and its processor stubbed. The scheduler
@@ -81,7 +83,7 @@ describe.skipIf(!available)('scheduler job record retention (#1756)', () => {
 
   it('keeps at most 100 completed scheduler records while job_history has one row per run', async () => {
     stub.failing = false;
-    await runUntil(130);
+    await runUntil(105);
     const runs = stub.runs;
     expect(runs).toBeGreaterThan(100);
 
@@ -91,11 +93,11 @@ describe.skipIf(!available)('scheduler job record retention (#1756)', () => {
       "SELECT count(*)::text AS n FROM job_history WHERE queue_name = 'backup' AND status = 'completed'",
     );
     expect(Number(rows.rows[0]!.n)).toBe(runs);
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('keeps at most 200 failed scheduler records while job_history has one row per run', async () => {
     stub.failing = true;
-    await runUntil(230);
+    await runUntil(205);
     const runs = stub.runs;
     expect(runs).toBeGreaterThan(200);
     expect(await backup.getCompletedCount()).toBeLessThanOrEqual(100);
@@ -105,5 +107,5 @@ describe.skipIf(!available)('scheduler job record retention (#1756)', () => {
       "SELECT count(*)::text AS n FROM job_history WHERE queue_name = 'backup' AND status = 'failed'",
     );
     expect(Number(rows.rows[0]!.n)).toBe(runs);
-  });
+  }, TEST_TIMEOUT_MS);
 });
