@@ -1819,11 +1819,12 @@ for restore verification.
   credentials or bucket policy to restore pruning. This is what makes
   append-only (delete-less) credentials workable: you get one upload per
   interval and a visible warning instead of an upload on every 15-minute tick.
-  The one remaining re-upload case: if the upload completed but recording
-  `backup_last_run_at` fails (a database fault), the run stays `success` and the
-  error is logged, but no interval gate was stored, so the next due tick uploads
-  again. If the database rejects the success write itself, the run is marked
-  `failed` as before.
+  Two database-fault cases still re-upload on the next due tick, because the
+  schedule gate is not stored in either: (1) the upload completed but recording
+  `backup_last_run_at` fails — the run stays `success` and the error is logged;
+  (2) the upload completed but the database rejects the success write itself —
+  the run is marked `failed` without an object key (the object is in the
+  bucket), as before.
 
 #### Enterprise KMS and immutable storage
 

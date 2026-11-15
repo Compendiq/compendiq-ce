@@ -65,7 +65,15 @@ vi.mock('./backup-s3.js', async (importOriginal) => {
 
 import { setRedisClient } from './redis-cache.js';
 import { getBackupRuntimeConfig, updateBackupSettings } from './backup-settings.js';
-import { BACKUP_LOCK_NAME, isBackupDue, listBackupRuns, runS3Backup } from './backup-service.js';
+import {
+  BACKUP_LOCK_NAME,
+  finishBackupRun,
+  insertBackupRun,
+  isBackupDue,
+  listBackupRuns,
+  recordBackupRunWarning,
+  runS3Backup,
+} from './backup-service.js';
 import { processBackupJob } from './backup-worker.js';
 
 const dbAvailable = await isDbAvailable();
@@ -233,6 +241,20 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           WHERE table_name = 'backup_runs' AND column_name = 'warning'`,
       );
       expect(column.rows).toEqual([{ data_type: 'text', is_nullable: 'YES' }]);
+    });
+
+    it('recording a warning changes only the warning of a finished run', async () => {
+      const id = await insertBackupRun({ destination: 's3', triggeredBy: 'admin-1', jobId: 'job-columns' });
+      await finishBackupRun(id, { status: 'success', bytes: 4096, objectKey: `${PREFIX}run.enc` });
+      const readRow = () =>
+        query<Record<string, unknown>>('SELECT * FROM backup_runs WHERE id = $1', [id]).then((result) => result.rows[0]!);
+      const before = await readRow();
+      expect(before).toMatchObject({ status: 'success', error: null, warning: null });
+      expect(before.finished_at).toBeInstanceOf(Date);
+
+      await recordBackupRunWarning(id, 'DeleteObjects failed (403)');
+
+      expect(await readRow()).toEqual({ ...before, warning: 'DeleteObjects failed (403)' });
     });
 
     it('denied DeleteObjects: one object, a success row with a truncated warning, the gate set, later ticks skip', async () => {

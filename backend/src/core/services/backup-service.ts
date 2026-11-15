@@ -650,6 +650,8 @@ export async function runS3Backup(
     // Phase 1: record the completed upload before anything that can fail or
     // hang, so a prune problem never leaves the run `running` and due again.
     // The stream is destroyed and the lock released whatever happens here.
+    // Release normally began already when the encrypted stream ended (the
+    // #1709 teardown), so this step awaits that same memoised promise.
     try {
       await finishBackupRun(runId, {
         status: 'success',

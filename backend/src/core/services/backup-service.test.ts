@@ -687,16 +687,6 @@ describe('S3 backup run: a prune failure is a warning (#1710)', () => {
     expect(new Set(order).size).toBe(order.length);
   });
 
-  it('does not let the warning UPDATE touch the outcome columns', async () => {
-    arrangeCompletedUpload();
-    mockPruneBackupObjects.mockRejectedValue(new Error('DeleteObjects failed (403)'));
-
-    await runS3Backup(null, null);
-
-    const sql = String(warningUpdates()[0]![0]);
-    expect(sql).not.toMatch(/status|bytes|object_key|finished_at|error/);
-  });
-
   it('lets isBackupDue hold for the interval after a success with a warning', async () => {
     arrangeCompletedUpload();
     mockPruneBackupObjects.mockRejectedValue(new Error('DeleteObjects failed (403)'));
