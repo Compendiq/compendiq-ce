@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasoning block, or is cut off by the token limit without naming the bands in
   order, is undetermined (`null`, re-probed after the cooldown) instead of a
   `false` cached for 30 days.
+
 - **Conversation titles never keep reasoning (#1724):** a generated title now
   ignores `<think>…</think>` blocks (and a lone closing tag from hosts whose
   template supplies the opener). A reply that is only reasoning, or was cut
