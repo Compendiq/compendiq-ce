@@ -94,7 +94,7 @@ const IMAGE_ANALYSIS_REFUSAL_MESSAGE: Record<ImageAnalysisResolutionReason | 'te
   text_only:
     'This model refused the test image, so it cannot analyze page images. Pick a vision-capable model; the previous assignment is unchanged.',
   unconfirmed:
-    'Image support could not be confirmed — the provider did not answer the probe (unreachable, an authentication or rate-limit error, or an open breaker), or it answered but the reply was cut off before a visible answer (a reasoning model that used up the probe\'s token budget). That is not a verdict about the model: see the probe error, check the endpoint and credentials, then save again. The previous assignment is unchanged.',
+    'Image support could not be confirmed — the provider did not answer the probe (unreachable, an authentication or rate-limit error, or an open breaker), or it answered but the reply was cut off before a visible answer (a reasoning model that used up the probe\'s token budget). That is not a verdict about the model: check the endpoint and credentials, then save again. The previous assignment is unchanged.',
 };
 
 /**

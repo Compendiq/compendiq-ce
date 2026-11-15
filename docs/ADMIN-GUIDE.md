@@ -2484,7 +2484,7 @@ LLM providers → **Image analysis (vision)**.
   (the provider did not answer — unreachable, auth, 429, open breaker — or it
   answered but the reply was cut off before a visible answer, as a reasoning
   model can when it uses up the probe's token budget; not a verdict about the
-  model; see the probe error, fix the endpoint and save again, or **Re-check**).
+  model; fix the endpoint and save again, or **Re-check**).
 - **Pause, not purge.** Unassigning stops new analysis; descriptions already
   indexed and still valid stay searchable. The **Index identity** line shows
   the model identity the index was built under; if the provider's endpoint
