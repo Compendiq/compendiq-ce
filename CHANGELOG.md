@@ -39,14 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is not tied to the webhook feature, because the sweep keeps pruning existing
   ledger rows after webhooks are switched off.
 
-### Fixed
-
-- **Summarize, quality, and diagram audits record prompt-injection flags (#1726):**
-  the LLM audit entries for the summarize, quality, and diagram routes now set
-  `promptInjectionDetected` and `sanitized` from the sanitizer result, matching
-  generate and improve. Previously these fields were omitted, so the audit trail
-  could not show that injected content reached the model.
-
 ### Changed
 
 - **MCP docs cache entries are bounded (#1770):** the `mcp-docs` sidecar now
@@ -75,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Derived default queries are unchanged.
 
 ### Fixed
+
+- **Summarize, quality, and diagram audits record prompt-injection flags (#1726):**
+  the LLM audit entries for the summarize, quality, and diagram routes now set
+  `promptInjectionDetected` and `sanitized` from the sanitizer result, matching
+  generate and improve. Previously these fields were omitted, so the audit trail
+  could not show that injected content reached the model.
 
 - **Admin user update: `null` clears the email or display name (#1736):**
   `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
