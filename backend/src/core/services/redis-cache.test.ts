@@ -5,6 +5,7 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+import { logger } from '../utils/logger.js';
 import {
   setRedisClient,
   getRedisClient,
@@ -344,34 +345,95 @@ describe('redis-cache embedding lock', () => {
       expect(locks).toHaveLength(2);
     });
 
-    it('self-heals a stale set member (key expired, SREM never ran) — plan RED #4', async () => {
-      mockRedis.sMembers.mockResolvedValueOnce(['alice', 'stale-user']);
-      // Replies interleaved [GET, PTTL, GET, PTTL]. `null` GET = expired key.
-      mockMulti(['uuid-alice', 3_000_000, null, -2]);
-      mockRedis.sRem.mockResolvedValue(1);
+    it('self-heals a stale set member with one atomic scrub eval (no sRem) — plan RED #4', async () => {
+      mockRedis.sMembers.mockResolvedValueOnce(['alice', 'stale-user', 'stale-2']);
+      // Replies interleaved [GET, PTTL, ...]. `null` GET = expired key.
+      mockMulti(['uuid-alice', 3_000_000, null, -2, null, -2]);
+      mockRedis.eval.mockResolvedValue(2);
 
       const locks = await listActiveEmbeddingLocks();
 
-      // Snapshot returned synchronously includes the stale entry with parity -2 TTL.
+      // Snapshot returned synchronously includes the stale entries with parity -2 TTL.
       expect(locks).toContainEqual({ userId: 'alice', holderEpoch: 'uuid-alice', ttlRemainingMs: 3_000_000 });
       expect(locks).toContainEqual({ userId: 'stale-user', holderEpoch: '', ttlRemainingMs: -2 });
+      expect(locks).toContainEqual({ userId: 'stale-2', holderEpoch: '', ttlRemainingMs: -2 });
 
-      // Lazy async self-heal fires SREM for the stale member(s) — not awaited, but
-      // the microtask is scheduled synchronously by the promise chain. Yield once.
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(mockRedis.sRem).toHaveBeenCalledWith('embedding:locks:active', ['stale-user']);
+      // The scrub is issued synchronously (fire-and-forget): one eval declaring
+      // the set key plus each stale lock key, with the matching ids in ARGV.
+      expect(mockRedis.eval).toHaveBeenCalledTimes(1);
+      const [script, options] = mockRedis.eval.mock.calls[0]!;
+      expect(script).toEqual(expect.any(String));
+      expect(options).toEqual({
+        keys: ['embedding:locks:active', 'embedding:lock:stale-user', 'embedding:lock:stale-2'],
+        arguments: ['stale-user', 'stale-2'],
+      });
+      expect(mockRedis.sRem).not.toHaveBeenCalled();
     });
 
-    it('does NOT call SREM when no stale members are present', async () => {
+    it('does NOT run the scrub when no stale members are present', async () => {
       mockRedis.sMembers.mockResolvedValueOnce(['alice']);
       mockMulti(['uuid-alice', 3_000_000]);
-      mockRedis.sRem.mockResolvedValue(0);
 
       await listActiveEmbeddingLocks();
       await Promise.resolve();
 
+      expect(mockRedis.eval).not.toHaveBeenCalled();
       expect(mockRedis.sRem).not.toHaveBeenCalled();
+    });
+
+    it('an acquire landing before the scrub stays a live member: the scrub is the atomic script and the next listing shows it', async () => {
+      // The set has a stale member `u1` when the listing reads it.
+      mockRedis.sMembers.mockResolvedValueOnce(['u1']);
+      mockMulti([null, -2]);
+
+      // The mocked eval plays Redis: the first call after the listing is the scrub;
+      // an acquire for u1 (SET NX + SADD Lua) lands just before it executes.
+      const members = new Set<string>(['u1']);
+      const keys = new Map<string, string>();
+      let acquiredLockId: string | null = null;
+      mockRedis.eval.mockImplementation(async (script: string, opts: { keys: string[]; arguments: string[] }) => {
+        if (opts.keys[0] === 'embedding:lock:u1' && opts.keys[1] === 'embedding:locks:active') {
+          // acquire script
+          keys.set(opts.keys[0], opts.arguments[0]!);
+          members.add(opts.arguments[1]!);
+          return opts.arguments[0]!;
+        }
+        // scrub script: run the real acquire first, then the conditional removal
+        acquiredLockId = await acquireEmbeddingLock('u1');
+        let removed = 0;
+        opts.arguments.forEach((id, i) => {
+          if (!keys.has(opts.keys[i + 1]!) && members.delete(id)) removed++;
+        });
+        return removed;
+      });
+
+      await listActiveEmbeddingLocks();
+      // Let the fire-and-forget scrub (which awaits the acquire) finish.
+      await vi.waitFor(() => expect(acquiredLockId).not.toBeNull());
+      await vi.waitFor(() => expect(mockRedis.eval).toHaveBeenCalledTimes(2));
+
+      expect(members.has('u1')).toBe(true);
+
+      // Next listing sees the live holder.
+      mockRedis.sMembers.mockResolvedValueOnce([...members]);
+      mockMulti([acquiredLockId, 3_599_000]);
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([{ userId: 'u1', holderEpoch: acquiredLockId, ttlRemainingMs: 3_599_000 }]);
+      expect(mockRedis.sRem).not.toHaveBeenCalled();
+    });
+
+    it('a failed scrub is logged at warn and the listing still resolves with the snapshot', async () => {
+      mockRedis.sMembers.mockResolvedValueOnce(['stale-user']);
+      mockMulti([null, -2]);
+      mockRedis.eval.mockRejectedValue(new Error('scrub failed'));
+      vi.mocked(logger.warn).mockClear();
+      vi.mocked(logger.error).mockClear();
+
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([{ userId: 'stale-user', holderEpoch: '', ttlRemainingMs: -2 }]);
+
+      await vi.waitFor(() => expect(logger.warn).toHaveBeenCalled());
+      expect(logger.error).not.toHaveBeenCalled();
     });
 
     it('returns empty array when SMEMBERS throws', async () => {
