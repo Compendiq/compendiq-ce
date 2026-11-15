@@ -23,6 +23,10 @@ vi.mock('../utils/logger.js', () => ({
 
 import {
   getWebhookDeliveriesRetentionDays,
+  getJobHistoryRetentionDays,
+  getJobHistoryRetentionDaysStrict,
+  getNotificationsReadRetentionDays,
+  getNotificationsReadRetentionDaysStrict,
   getAdminAccessDeniedRetentionDays,
   getRagPinIdentifiersEnabled,
   invalidateRagPinIdentifiersCache,
@@ -83,6 +87,86 @@ describe('getWebhookDeliveriesRetentionDays (#1797)', () => {
     await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(90);
     mockQuery.mockRejectedValueOnce(new Error('db down'));
     await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(90);
+  });
+});
+
+describe.each([
+  {
+    name: 'getJobHistoryRetentionDays',
+    getter: getJobHistoryRetentionDays,
+    strict: getJobHistoryRetentionDaysStrict,
+    settingKey: 'job_history_retention_days',
+    envKey: 'RETENTION_JOB_HISTORY_DAYS',
+  },
+  {
+    name: 'getNotificationsReadRetentionDays',
+    getter: getNotificationsReadRetentionDays,
+    strict: getNotificationsReadRetentionDaysStrict,
+    settingKey: 'notifications_read_retention_days',
+    envKey: 'RETENTION_NOTIFICATIONS_READ_DAYS',
+  },
+])('$name (#1760)', ({ getter, strict, settingKey, envKey }) => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    delete process.env[envKey];
+  });
+
+  afterEach(() => {
+    delete process.env[envKey];
+  });
+
+  it('reads its own admin_settings row and returns the value when in range', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '30' }] });
+    await expect(getter()).resolves.toBe(30);
+    expect(mockQuery.mock.calls[0]![1]).toEqual([settingKey]);
+  });
+
+  it('honours the env fallback only when the row is absent, then defaults to 90', async () => {
+    process.env[envKey] = '45';
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '30' }] });
+    await expect(getter()).resolves.toBe(30);
+
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getter()).resolves.toBe(45);
+
+    delete process.env[envKey];
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getter()).resolves.toBe(90);
+  });
+
+  it('ignores out-of-range DB and env values and never throws on a DB error', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '6' }] });
+    await expect(getter()).resolves.toBe(90);
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '3651' }] });
+    await expect(getter()).resolves.toBe(90);
+    mockQuery.mockRejectedValueOnce(new Error('db down'));
+    await expect(getter()).resolves.toBe(90);
+
+    process.env[envKey] = '3';
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getter()).resolves.toBe(90);
+  });
+
+  describe('strict form used by the sweep', () => {
+    it('applies the same cascade as the non-throwing getter when the read succeeds', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '365' }] });
+      await expect(strict()).resolves.toBe(365);
+      expect(mockQuery.mock.calls[0]![1]).toEqual([settingKey]);
+
+      process.env[envKey] = '45';
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      await expect(strict()).resolves.toBe(45);
+
+      delete process.env[envKey];
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      await expect(strict()).resolves.toBe(90);
+    });
+
+    it('rejects when the admin_settings read fails, even with an env fallback set', async () => {
+      process.env[envKey] = '45';
+      mockQuery.mockRejectedValueOnce(new Error('db down'));
+      await expect(strict()).rejects.toThrow('db down');
+    });
   });
 });
 
