@@ -139,6 +139,12 @@ Parent validation stays ownership-agnostic; `page-subtree.ts` retains its
 separate source/owner guards. Existing padded parent rows are not repaired.
 See `docs/claude/pages-and-confluence.md`.
 
+Process caches re-read from Postgres on bus events, reconnects, polls or a
+writer's own reload go through `createCoalescedReloader`
+(`core/services/coalesced-reload.ts`, #1758): one read at a time, one coalesced
+follow-up, synchronous `apply`, I/O side effects after the awaited reload.
+Never assign such a cache straight from an awaited query again.
+
 ## Tech Stack (highlights, not a manifest)
 
 Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-dim `halfvec` measured/recommended — #1114) · BullMQ (toggleable via `USE_BULLMQ`) · jose / bcrypt · React 19 · TailwindCSS 4 · Radix · TanStack Query · TipTap v3 · Zustand · `turndown` + `jsdom` for content conversion · `pdf-lib` · `nodemailer`. Full deps in `package.json`.

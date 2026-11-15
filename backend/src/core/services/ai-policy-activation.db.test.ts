@@ -7,11 +7,13 @@
  * concurrent enables serialize on the row lock, a held lock answers the
  * retryable 503 after `lock_timeout`, and the process cache only ever
  * changes by reading the database (cold load, bus signal, reconnect, poll,
- * writer reload, test seam).
+ * writer reload, test seam) — through one serialized, coalesced reloader, so
+ * an older read never overwrites a newer one (#1758).
  */
 import { randomUUID } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as postgres from '../db/postgres.js';
 import { getPool, query } from '../db/postgres.js';
 import {
   insertTestRuntime,
@@ -111,6 +113,42 @@ function createMockRedis() {
     },
     emitReady() { for (const fn of readyListeners) fn(); },
   };
+}
+
+/** The reloader's read, as `ai-policy-activation.ts` sends it. */
+const ACTIVATION_READ_SQL = 'SELECT enabled FROM ai_policy_activation_state WHERE singleton';
+
+/**
+ * Passthrough spy on `postgres.query` that holds the first activation read
+ * AFTER it has read the row: that read observes the database as it was and
+ * answers only on `release()` — a slow first reload. Every activation read
+ * is recorded so the test can await all of them before it ends.
+ */
+function holdFirstActivationRead() {
+  const original = postgres.query;
+  const captured = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  const reads: Array<Promise<unknown>> = [];
+  vi.spyOn(postgres, 'query').mockImplementation(((text: string, params?: unknown[]) => {
+    const result = original(text, params);
+    if (text !== ACTIVATION_READ_SQL) return result;
+    const answered = reads.length === 0
+      ? result.then(async (rows) => { captured.resolve(); await released.promise; return rows; })
+      : result;
+    reads.push(answered.catch(() => undefined));
+    return answered;
+  }) as typeof postgres.query);
+  return {
+    reads,
+    /** Resolves once the held read has observed the row. */
+    captured: captured.promise,
+    release: () => released.resolve(),
+  };
+}
+
+/** Lets the reloader apply what the awaited reads returned. */
+function settleMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 describe.skipIf(!available)('article AI policy activation switch (#1881)', () => {
@@ -454,6 +492,61 @@ describe.skipIf(!available)('article AI policy activation switch (#1881)', () =>
                    VALUES (TRUE, FALSE, NOW() - interval '2 days')`);
       vi.advanceTimersByTime(AI_POLICY_ACTIVATION_POLL_MS);
       await vi.waitFor(() => expect(isAiPolicyEnforcementEnabledCached()).toBe(false));
+    });
+
+    it('#1758: an overlapping bus signal and poll with a delayed first read end on the committed row and stay there', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      const redis = createMockRedis();
+      await initCacheBus(redis.main);
+      await loadAiPolicyActivation();
+      expect(isAiPolicyEnforcementEnabledCached()).toBe(false);
+      const hold = holdFirstActivationRead();
+
+      // The bus reload reads `enabled = FALSE` and answers late.
+      redis.emit(AI_POLICY_ACTIVATION_CHANNEL, '{}');
+      await hold.captured;
+      // A write commits; the poll asks for a reload while that read is held.
+      await query('UPDATE ai_policy_activation_state SET enabled = TRUE WHERE singleton');
+      vi.advanceTimersByTime(AI_POLICY_ACTIVATION_POLL_MS);
+      // A read the poll started on its own (only possible without coalescing)
+      // answers first; with coalescing there is none and this does not wait.
+      await Promise.all(hold.reads.slice(1));
+      hold.release();
+
+      await vi.waitFor(() => expect(hold.reads).toHaveLength(2));
+      await Promise.all(hold.reads);
+      await settleMicrotasks();
+      expect(isAiPolicyEnforcementEnabledCached()).toBe(true);
+
+      // No further trigger: nothing reads again and the value stays.
+      await settleMicrotasks();
+      expect(hold.reads).toHaveLength(2);
+      expect(isAiPolicyEnforcementEnabledCached()).toBe(true);
+    });
+
+    it('#1758: the writer path returns the written state while an older read is still in flight', async () => {
+      const redis = createMockRedis();
+      await initCacheBus(redis.main);
+      await loadAiPolicyActivation();
+      const hold = holdFirstActivationRead();
+
+      // A bus reload reads `enabled = FALSE` and answers late…
+      redis.emit(AI_POLICY_ACTIVATION_CHANNEL, '{}');
+      await hold.captured;
+      // …while an administrator enables the switch on this process.
+      const write = setAiPolicyEnforcementEnabled(adminId, { enabled: true });
+      await vi.waitFor(async () => expect((await stateRow()).enabled).toBe(true));
+      // As above: a writer read running beside the held one answers first.
+      await Promise.all(hold.reads.slice(1));
+      hold.release();
+
+      const state = await write;
+      expect(state.enabled).toBe(true);
+      expect(isAiPolicyEnforcementEnabledCached()).toBe(true);
+
+      await Promise.all(hold.reads);
+      await settleMicrotasks();
+      expect(isAiPolicyEnforcementEnabledCached()).toBe(true); // the late read did not win
     });
   });
 
