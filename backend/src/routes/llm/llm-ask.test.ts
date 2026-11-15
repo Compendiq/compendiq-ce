@@ -2,6 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi, beforeEach } 
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { once } from 'events';
+import type { ServerResponse } from 'http';
+import { setTimeout as delay } from 'timers/promises';
 import os from 'os';
 import path from 'path';
 import { logger } from '../../core/utils/logger.js';
@@ -391,6 +394,8 @@ async function* singleChunkGenerator(content: string) {
 
 describe('POST /api/llm/ask', () => {
   let app: ReturnType<typeof Fastify>;
+  /** The response of the latest request, so a test can make its client leave. */
+  let lastReplyRaw: ServerResponse | undefined;
 
   beforeAll(async () => {
     app = Fastify({ logger: false });
@@ -401,9 +406,10 @@ describe('POST /api/llm/ask', () => {
     app.decorate('requireAdmin', async () => {});
     app.decorate('redis', {});
     app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
+    app.addHook('onRequest', async (request, reply) => {
       request.userId = 'test-user-123';
       request.userCan = async () => true;
+      lastReplyRaw = reply.raw;
     });
     // #282: the route refuses a body that names neither an article nor an
     // explicit `independent` question (400 `ask_identity_required`). The
@@ -4232,6 +4238,66 @@ describe('POST /api/llm/ask', () => {
       });
 
       expect(response.statusCode).toBe(410);
+    });
+  });
+
+  describe('client disconnect (#1719)', () => {
+    /**
+     * Destroys the response the way a vanished client does (light-my-request
+     * emits its `close` on the next tick) and waits for the route's abort.
+     * The bound only matters if the route never listens: then the generator
+     * goes on as if the client were still there.
+     */
+    async function disconnectClient(signal: AbortSignal): Promise<void> {
+      lastReplyRaw!.destroy();
+      await Promise.race([once(signal, 'abort'), delay(1_000)]);
+    }
+
+    async function askAndSettle(): Promise<void> {
+      // The client is gone, so `inject` itself rejects; the handler goes on.
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } }).catch(() => undefined);
+      await vi.waitFor(() => expect(lastReplyRaw!.writableEnded).toBe(true), { timeout: 5_000 });
+    }
+
+    it('records one Client disconnected entry when streamChat returns silently after the abort', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockImplementation(async function* (_c: unknown, _m: unknown, _msgs: unknown, signal: AbortSignal) {
+        await disconnectClient(signal);
+        // `streamChat` returns without a chunk for an aborted caller.
+        if (signal.aborted) return;
+        yield { content: 'answer', done: true };
+      });
+
+      await askAndSettle();
+
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({
+        action: 'ask', status: 'error', errorMessage: 'Client disconnected', outputTokens: 0,
+      });
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
+    it('records no entry when the abort coincides with a beforeDispatch refusal', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      let abortedAtRefusal = false;
+      mockStreamChatClient.mockImplementation(async function* (
+        _c: unknown, _m: unknown, _msgs: unknown, signal: AbortSignal, opts: { beforeDispatch: () => Promise<void> },
+      ) {
+        await disconnectClient(signal);
+        abortedAtRefusal = signal.aborted;
+        // The grounding moved: the pre-dispatch proof refuses (a policy
+        // decision, no inference), just as the client leaves.
+        mockProvenancePagesStillAdmitted.mockResolvedValue(false);
+        await opts.beforeDispatch();
+        yield { content: 'answer', done: true };
+      });
+
+      await askAndSettle();
+
+      expect(abortedAtRefusal).toBe(true);
+      expect(mockEmitLlmAudit).not.toHaveBeenCalled();
     });
   });
 });

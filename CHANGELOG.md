@@ -68,6 +68,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ask stops generating when the client disconnects (#1719):**
+  `POST /api/llm/ask` now notices a closed browser tab or a cancelled request
+  and aborts the provider stream within milliseconds. A disconnected ask no
+  longer finishes in the background: nothing is cached, no conversation turn
+  is saved, no title is generated, the per-user stream slot is released at
+  once, and the LLM audit log records one `error` / `Client disconnected`
+  entry instead of a `success`. A client that left before the provider was
+  called causes no provider request and no audit entry.
+
 - **Admin user update: `null` clears the email or display name (#1736):**
   `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
   or `displayName` through to the service, which stores `NULL`. Keys left out
