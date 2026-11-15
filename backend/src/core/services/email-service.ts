@@ -4,10 +4,10 @@
  * Configurable via admin_settings table (with env var fallbacks).
  * When SMTP is not configured, silently logs a warning and skips.
  *
- * Emails are sent fire-and-forget — callers do not await delivery.
- * A simple in-memory queue with concurrency limit prevents overwhelming
- * the SMTP server. For production deployments with BullMQ enabled,
- * emails could be routed through a BullMQ queue instead.
+ * `sendEmail` never throws and resolves `false` when it did not send. Most callers
+ * ignore the result; the invitation route awaits it, bounded, to decide whether to
+ * return the generated password to the admin (#1737). Failures are logged here at
+ * `error` level.
  */
 
 import nodemailer, { type Transporter } from 'nodemailer';

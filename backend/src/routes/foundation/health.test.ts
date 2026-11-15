@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { healthRoutes, markStartupComplete } from './health.js';
+import rateLimit from '@fastify/rate-limit';
+import { getRateLimits, _resetCache } from '../../core/services/rate-limit-service.js';
 
 // `checkLlm` reads the default provider from `llm_providers`. We intercept
 // `query` at the module boundary and hand back a stub row.
@@ -369,5 +371,82 @@ describe('Health routes', () => {
         expect.objectContaining({ baseUrl: 'https://api.openai.com/v1' }),
       );
     });
+  });
+});
+
+// #1755: during a database outage the rate-limit settings read fails. The app
+// below registers `@fastify/rate-limit` exactly as `app.ts` does (global
+// limiter whose `max` reads the real `getRateLimits()`), so the health routes
+// see the same limiter as in production while `query` rejects.
+describe('Health routes behind the global rate limiter during a database outage (#1755)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+    app.decorate('redis', {});
+    app.decorate('authenticate', async () => {
+      throw new Error('Unauthorized');
+    });
+    // Mirrors the global `@fastify/rate-limit` registration in `buildApp()` (`app.ts`).
+    await app.register(rateLimit, {
+      global: true,
+      max: async () => (await getRateLimits()).global.max,
+      timeWindow: '1 minute',
+    });
+    await app.register(healthRoutes, { prefix: '/api' });
+    // A route with its own limit, configured like the auth routes.
+    app.get(
+      '/api/limited',
+      {
+        config: {
+          rateLimit: {
+            max: async () => (await getRateLimits()).auth.max,
+            timeWindow: '1 minute',
+          },
+        },
+      },
+      async () => ({ ok: true }),
+    );
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetCache();
+    mockQuery.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:5432'));
+    (mockCheckPg as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    (mockCheckRedis as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+  });
+
+  it('answers /health/live with 200 every time, without reading the rate-limit settings', async () => {
+    for (let i = 0; i < 5; i++) {
+      const response = await app.inject({ method: 'GET', url: '/api/health/live' });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({ status: 'ok' });
+    }
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('answers /health/ready, /health/start and /health with 503 (not 500), reading the settings once', async () => {
+    for (let i = 0; i < 3; i++) {
+      expect((await app.inject({ method: 'GET', url: '/api/health/ready' })).statusCode).toBe(503);
+      expect((await app.inject({ method: 'GET', url: '/api/health/start' })).statusCode).toBe(503);
+      expect((await app.inject({ method: 'GET', url: '/api/health' })).statusCode).toBe(503);
+    }
+    // One failed attempt per retry window, not one database read per request.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('still answers 429 on a rate-limited route once its limit is exceeded', async () => {
+    // Nothing was ever loaded, so the default auth limit (5 per minute) applies.
+    for (let i = 0; i < 5; i++) {
+      expect((await app.inject({ method: 'GET', url: '/api/limited' })).statusCode).toBe(200);
+    }
+    expect((await app.inject({ method: 'GET', url: '/api/limited' })).statusCode).toBe(429);
   });
 });
