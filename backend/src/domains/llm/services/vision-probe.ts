@@ -180,21 +180,21 @@ export async function probeVision(
     });
     // Reasoning is not the answer: colours named while thinking prove nothing.
     const visible = stripThinkBlocks(text);
-    const vision = replyNamesBandsInOrder(visible.text);
-    logger.debug(
-      { providerId: cfg.providerId, model, vision, reply: visible.text.slice(0, 120) },
-      'Vision probe completed',
-    );
-    if (vision) return { vision: true };
+    const named = replyNamesBandsInOrder(visible.text);
     // No in-order answer, but the reply was cut off: that says nothing about
     // image support, and a `false` would be cached for CAPABILITY_MAX_AGE_DAYS.
-    if (visible.unclosed) {
-      return { vision: null, error: 'Vision probe reply ended inside a reasoning block' };
-    }
-    if (finishReason === 'length') {
-      return { vision: null, error: 'Vision probe reply was cut off by the token limit' };
-    }
-    return { vision: false };
+    const result: { vision: boolean | null; error?: string } = named
+      ? { vision: true }
+      : visible.unclosed
+        ? { vision: null, error: 'Vision probe reply ended inside a reasoning block' }
+        : finishReason === 'length'
+          ? { vision: null, error: 'Vision probe reply was cut off by the token limit' }
+          : { vision: false };
+    logger.debug(
+      { providerId: cfg.providerId, model, vision: result.vision, reply: visible.text.slice(0, 120) },
+      'Vision probe completed',
+    );
+    return result;
   } catch (err) {
     // `describeProbeFailure` folds in a slice of the provider's error body — it
     // is the whole point of the body-conditional branch above, but it is still
