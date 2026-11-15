@@ -17,6 +17,7 @@ const {
   mockObjectKeyFor,
   mockPruneBackupObjects,
   mockUploadBackupObject,
+  mockLogAuditEvent,
   mockSpawn,
   mockLogger,
 } = vi.hoisted(() => ({
@@ -31,6 +32,7 @@ const {
   mockObjectKeyFor: vi.fn(),
   mockPruneBackupObjects: vi.fn(),
   mockUploadBackupObject: vi.fn(),
+  mockLogAuditEvent: vi.fn(),
   mockSpawn: vi.fn(),
   mockLogger: {
     error: vi.fn(),
@@ -66,6 +68,9 @@ vi.mock('./backup-s3.js', () => ({
   pruneBackupObjects: mockPruneBackupObjects,
   uploadBackupObject: mockUploadBackupObject,
 }));
+vi.mock('./audit-service.js', () => ({
+  logAuditEvent: mockLogAuditEvent,
+}));
 
 import {
   createEncryptedBackupStream,
@@ -73,12 +78,27 @@ import {
   exportPostgresSnapshot,
   latestSchemaMigration,
   listBackupRuns,
+  isBackupDue,
   runS3Backup,
   spawnPgDump,
   terminatePgDumpAndWait,
 } from './backup-service.js';
 
 const falsyRejections = [undefined, null, false, 0, ''] as const;
+
+const S3_RUNTIME_CONFIG = {
+  s3: {
+    enabled: true,
+    endpoint: 'https://s3.example.com',
+    bucket: 'backups',
+    region: 'us-east-1',
+    accessKey: 'access',
+    secretKey: 'secret',
+    prefix: 'compendiq-backups/',
+    forcePathStyle: true,
+  },
+  schedule: { retentionCount: 7, retentionDays: 30 },
+};
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -151,6 +171,8 @@ beforeEach(() => {
   mockLogger.error.mockReset();
   mockLogger.info.mockReset();
   mockLogger.warn.mockReset();
+  mockLogAuditEvent.mockReset();
+  mockLogAuditEvent.mockResolvedValue(undefined);
   mockSpawn.mockReset();
 });
 
@@ -396,19 +418,7 @@ describe('backup run job correlation', () => {
 
   it('releases backup resources before recording an immediate S3 upload failure', async () => {
     process.env.POSTGRES_URL = 'postgres://db';
-    mockGetBackupRuntimeConfig.mockResolvedValue({
-      s3: {
-        enabled: true,
-        endpoint: 'https://s3.example.com',
-        bucket: 'backups',
-        region: 'us-east-1',
-        accessKey: 'access',
-        secretKey: 'secret',
-        prefix: 'compendiq-backups/',
-        forcePathStyle: true,
-      },
-      schedule: { retentionCount: 7, retentionDays: 30 },
-    });
+    mockGetBackupRuntimeConfig.mockResolvedValue(S3_RUNTIME_CONFIG);
     mockQuery
       .mockResolvedValueOnce({ rows: [{ id: 'run-1' }] })
       .mockResolvedValueOnce({ rows: [{ name: '108_backup_run_job_id.sql' }] })
@@ -436,62 +446,44 @@ describe('backup run job correlation', () => {
     expect(mockReleaseWorkerLock.mock.invocationCallOrder[0]!).toBeLessThan(
       mockQuery.mock.invocationCallOrder[finishFailureCall]!,
     );
+    // An upload failure is unchanged by #1710: not recorded as uploaded, no gate advanced.
+    expect(mockMarkBackupLastRun).not.toHaveBeenCalled();
+    expect(mockPruneBackupObjects).not.toHaveBeenCalled();
+    expect(mockLogAuditEvent).not.toHaveBeenCalled();
   });
 
-  it.each(['upload', 'prune'] as const)(
-    'preserves the primary S3 %s failure when snapshot release also rejects',
-    async (failureStage) => {
-      process.env.POSTGRES_URL = 'postgres://db';
-      mockGetBackupRuntimeConfig.mockResolvedValue({
-        s3: {
-          enabled: true,
-          endpoint: 'https://s3.example.com',
-          bucket: 'backups',
-          region: 'us-east-1',
-          accessKey: 'access',
-          secretKey: 'secret',
-          prefix: 'compendiq-backups/',
-          forcePathStyle: true,
-        },
-        schedule: { retentionCount: 7, retentionDays: 30 },
-      });
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'run-1' }] })
-        .mockResolvedValueOnce({ rows: [{ name: '108_backup_run_job_id.sql' }] })
-        .mockResolvedValue({ rows: [], rowCount: 1 });
-      const cleanupFailure = new Error('snapshot commit failed during cleanup');
-      const snapshotHarness = fakeSnapshotClient('00000003-0000001B-1', {
-        commitError: cleanupFailure,
-      });
-      mockGetPool.mockReturnValue({ connect: vi.fn(async () => snapshotHarness.client) });
-      const child = fakeChild();
-      child.kill.mockImplementation(() => {
-        queueMicrotask(() => child.process.emit('close', null, 'SIGTERM'));
-        return true;
-      });
-      mockSpawn.mockReturnValue(child.process);
-      const primaryFailure = new Error(`primary S3 ${failureStage} failed`);
-      if (failureStage === 'upload') {
-        mockUploadBackupObject.mockRejectedValue(primaryFailure);
-      } else {
-        mockUploadBackupObject.mockResolvedValue({
-          key: 'compendiq-backups/backup.enc',
-          bytes: 123,
-        });
-        mockPruneBackupObjects.mockRejectedValue(primaryFailure);
-      }
+  it('preserves the primary S3 upload failure when snapshot release also rejects', async () => {
+    process.env.POSTGRES_URL = 'postgres://db';
+    mockGetBackupRuntimeConfig.mockResolvedValue(S3_RUNTIME_CONFIG);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'run-1' }] })
+      .mockResolvedValueOnce({ rows: [{ name: '108_backup_run_job_id.sql' }] })
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    const cleanupFailure = new Error('snapshot commit failed during cleanup');
+    const snapshotHarness = fakeSnapshotClient('00000003-0000001B-1', {
+      commitError: cleanupFailure,
+    });
+    mockGetPool.mockReturnValue({ connect: vi.fn(async () => snapshotHarness.client) });
+    const child = fakeChild();
+    child.kill.mockImplementation(() => {
+      queueMicrotask(() => child.process.emit('close', null, 'SIGTERM'));
+      return true;
+    });
+    mockSpawn.mockReturnValue(child.process);
+    const primaryFailure = new Error('primary S3 upload failed');
+    mockUploadBackupObject.mockRejectedValue(primaryFailure);
 
-      const actual = await rejectedValue(runS3Backup('admin-1', 'backup-job-44'));
+    const actual = await rejectedValue(runS3Backup('admin-1', 'backup-job-44'));
 
-      expect(actual).toBe(primaryFailure);
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE backup_runs'),
-        ['run-1', 'failed', null, null, primaryFailure.message],
-      );
-    },
-  );
+    expect(actual).toBe(primaryFailure);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE backup_runs'),
+      ['run-1', 'failed', null, null, primaryFailure.message],
+    );
+    expect(mockPruneBackupObjects).not.toHaveBeenCalled();
+  });
 
-  it('returns persisted queue job IDs in backup history', async () => {
+  it('returns persisted queue job IDs and prune warnings in backup history', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [
         {
@@ -505,17 +497,307 @@ describe('backup run job correlation', () => {
           error: null,
           triggered_by: 'admin-1',
           job_id: 'backup-job-42',
+          warning: 'DeleteObjects failed (403)',
+        },
+        {
+          id: 'run-2',
+          created_at: new Date('2026-08-28T09:00:00.000Z'),
+          finished_at: new Date('2026-08-28T09:01:00.000Z'),
+          destination: 's3',
+          status: 'success',
+          bytes: '123',
+          object_key: 'compendiq-backups/backup.enc',
+          error: null,
+          triggered_by: null,
+          job_id: null,
+          warning: null,
         },
       ],
     });
 
     await expect(listBackupRuns()).resolves.toEqual([
-      expect.objectContaining({ id: 'run-1', jobId: 'backup-job-42' }),
+      expect.objectContaining({ id: 'run-1', jobId: 'backup-job-42', warning: 'DeleteObjects failed (403)' }),
+      expect.objectContaining({ id: 'run-2', bytes: 123, warning: null }),
     ]);
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringMatching(/SELECT .*job_id.*FROM backup_runs/s),
+      expect.stringMatching(/SELECT .*job_id.*warning.*FROM backup_runs/s),
       [20],
     );
+  });
+});
+
+describe('S3 backup run: a prune failure is a warning (#1710)', () => {
+  interface CompletedUploadHarness {
+    snapshotHarness: { calls: string[] };
+    /** The stream handed to the uploader, i.e. the one runS3Backup must destroy. */
+    readonly uploadSource: Readable;
+  }
+  const SUCCESS_UPDATE = ['run-1', 'success', 123, 'compendiq-backups/backup.enc', null];
+
+  /** The run's UPDATE statements, in call order. */
+  function runUpdates() {
+    return mockQuery.mock.calls.filter(([sql]) => String(sql).includes('UPDATE backup_runs'));
+  }
+  function failedUpdates() {
+    return runUpdates().filter(([, params]) => (params as unknown[])[1] === 'failed');
+  }
+  function warningUpdates() {
+    return runUpdates().filter(([sql]) => String(sql).includes('SET warning'));
+  }
+  function callOrder(update: unknown[] | undefined): number {
+    const index = mockQuery.mock.calls.findIndex((call) => call === update);
+    return mockQuery.mock.invocationCallOrder[index]!;
+  }
+
+  /** A real encrypted stream over a fake pg_dump whose upload "completes" at once. */
+  function arrangeCompletedUpload(options: {
+    commitError?: unknown;
+    failQuery?: (sql: string, params: unknown[] | undefined) => Error | undefined;
+  } = {}): CompletedUploadHarness {
+    process.env.POSTGRES_URL = 'postgres://db';
+    mockGetBackupRuntimeConfig.mockResolvedValue(S3_RUNTIME_CONFIG);
+    let insertedRun = false;
+    mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      const failure = options.failQuery?.(sql, params);
+      if (failure) throw failure;
+      if (!insertedRun && sql.includes('INSERT INTO backup_runs')) {
+        insertedRun = true;
+        return { rows: [{ id: 'run-1' }] };
+      }
+      if (sql.includes('_migrations')) return { rows: [{ name: '108_backup_run_job_id.sql' }] };
+      return { rows: [], rowCount: 1 };
+    });
+    const snapshotHarness = fakeSnapshotClient(
+      '00000003-0000001B-1',
+      'commitError' in options ? { commitError: options.commitError } : {},
+    );
+    mockGetPool.mockReturnValue({ connect: vi.fn(async () => snapshotHarness.client) });
+    const child = fakeChild();
+    child.kill.mockImplementation(() => {
+      queueMicrotask(() => child.process.emit('close', null, 'SIGTERM'));
+      return true;
+    });
+    mockSpawn.mockReturnValue(child.process);
+    let uploadSource: Readable | undefined;
+    mockUploadBackupObject.mockImplementation(async (_target: unknown, key: string, stream: Readable) => {
+      uploadSource = stream;
+      return { key, bytes: 123 };
+    });
+    return {
+      snapshotHarness,
+      /** The stream handed to the uploader, i.e. the one runS3Backup must destroy. */
+      get uploadSource() {
+        return uploadSource!;
+      },
+    };
+  }
+
+  function expectRecordedAsSuccess() {
+    expect(runUpdates()[0]![1]).toEqual(SUCCESS_UPDATE);
+    expect(failedUpdates()).toEqual([]);
+  }
+
+  function expectReleasedOnce(harness: CompletedUploadHarness) {
+    expect(harness.uploadSource.destroyed).toBe(true);
+    expect(mockReleaseWorkerLock).toHaveBeenCalledOnce();
+    expect(harness.snapshotHarness.calls.filter((sql) => sql === 'COMMIT')).toHaveLength(1);
+  }
+
+  it.each([
+    ['delete', 'DeleteObjects failed (403): <Error><Code>AccessDenied</Code></Error>'],
+    ['list', 'ListObjects failed (403): <Error><Code>AccessDenied</Code></Error>'],
+  ])('records success with a warning when the %s step of the prune fails', async (_step, message) => {
+    const harness = arrangeCompletedUpload();
+    const pruneError = new Error(message);
+    mockPruneBackupObjects.mockRejectedValue(pruneError);
+
+    await expect(runS3Backup('admin-1', 'backup-job-1')).resolves.toMatch(/^compendiq-backup-.+\.enc$/);
+
+    expectRecordedAsSuccess();
+    expect(mockMarkBackupLastRun).toHaveBeenCalledOnce();
+    expect(warningUpdates().map(([sql, params]) => [String(sql), params])).toEqual([
+      ['UPDATE backup_runs SET warning = $2 WHERE id = $1', ['run-1', message]],
+    ]);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1', err: pruneError }),
+      expect.any(String),
+    );
+    expect(mockLogAuditEvent).toHaveBeenCalledWith('admin-1', 'BACKUP_UPLOADED', 'backup', 'run-1', {
+      objectKey: 'compendiq-backups/backup.enc',
+      bytes: 123,
+      pruneWarning: message,
+    });
+    expectReleasedOnce(harness);
+  });
+
+  it('truncates the stored warning to 1000 characters', async () => {
+    arrangeCompletedUpload();
+    mockPruneBackupObjects.mockRejectedValue(new Error(`${'x'.repeat(1000)}tail`));
+
+    await runS3Backup(null, null);
+
+    expect(warningUpdates()[0]![1]).toEqual(['run-1', 'x'.repeat(1000)]);
+    expect(mockLogAuditEvent).toHaveBeenCalledWith(null, 'BACKUP_UPLOADED', 'backup', 'run-1', {
+      objectKey: 'compendiq-backups/backup.enc',
+      bytes: 123,
+      pruneWarning: 'x'.repeat(1000),
+    });
+  });
+
+  it('stores no warning and audits a null pruneWarning when the prune succeeds', async () => {
+    arrangeCompletedUpload();
+    mockPruneBackupObjects.mockResolvedValue(['compendiq-backups/old.enc']);
+
+    await runS3Backup('admin-1', null);
+
+    expectRecordedAsSuccess();
+    expect(warningUpdates()).toEqual([]);
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      { pruned: ['compendiq-backups/old.enc'] },
+      'Pruned expired S3 backups',
+    );
+    expect(mockLogAuditEvent).toHaveBeenCalledWith('admin-1', 'BACKUP_UPLOADED', 'backup', 'run-1', {
+      objectKey: 'compendiq-backups/backup.enc',
+      bytes: 123,
+      pruneWarning: null,
+    });
+  });
+
+  it('records success and the interval gate, then releases the lock, and only then prunes, warns and audits', async () => {
+    arrangeCompletedUpload();
+    let lockReleasesWhenPruneStarted = -1;
+    mockPruneBackupObjects.mockImplementation(async () => {
+      lockReleasesWhenPruneStarted = mockReleaseWorkerLock.mock.calls.length;
+      throw new Error('DeleteObjects failed (403)');
+    });
+
+    await runS3Backup('admin-1', null);
+
+    expect(lockReleasesWhenPruneStarted).toBe(1);
+    const order = [
+      callOrder(runUpdates()[0]),
+      mockMarkBackupLastRun.mock.invocationCallOrder[0]!,
+      mockReleaseWorkerLock.mock.invocationCallOrder[0]!,
+      mockPruneBackupObjects.mock.invocationCallOrder[0]!,
+      callOrder(warningUpdates()[0]),
+      mockLogAuditEvent.mock.invocationCallOrder[0]!,
+    ];
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(new Set(order).size).toBe(order.length);
+  });
+
+  it('lets isBackupDue hold for the interval after a success with a warning', async () => {
+    arrangeCompletedUpload();
+    mockPruneBackupObjects.mockRejectedValue(new Error('DeleteObjects failed (403)'));
+
+    await runS3Backup(null, null);
+
+    const lastRunAt = mockMarkBackupLastRun.mock.calls[0]![0] as string;
+    mockGetBackupRuntimeConfig.mockResolvedValue({
+      s3: { enabled: true },
+      schedule: { enabled: true, intervalHours: 24, lastRunAt },
+    });
+    const finishedAt = Date.parse(lastRunAt);
+    await expect(isBackupDue(new Date(finishedAt + 15 * 60 * 1000))).resolves.toBe(false);
+    await expect(isBackupDue(new Date(finishedAt + 23 * 60 * 60 * 1000))).resolves.toBe(false);
+    await expect(isBackupDue(new Date(finishedAt + 24 * 60 * 60 * 1000))).resolves.toBe(true);
+  });
+
+  describe('a failure after the upload is recorded', () => {
+    it('keeps the success, releases once and still prunes when markBackupLastRun rejects', async () => {
+      const harness = arrangeCompletedUpload();
+      const gateError = new Error('settings write failed');
+      mockMarkBackupLastRun.mockRejectedValue(gateError);
+
+      await expect(runS3Backup('admin-1', null)).resolves.toMatch(/^compendiq-backup-/);
+
+      expectRecordedAsSuccess();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-1', err: gateError }),
+        expect.any(String),
+      );
+      expectReleasedOnce(harness);
+      expect(mockPruneBackupObjects).toHaveBeenCalledOnce();
+      expect(mockLogAuditEvent).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the success when releasing the snapshot rejects after the upload', async () => {
+      const harness = arrangeCompletedUpload({ commitError: new Error('snapshot commit failed') });
+
+      await expect(runS3Backup('admin-1', null)).resolves.toMatch(/^compendiq-backup-/);
+
+      expectRecordedAsSuccess();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-1' }),
+        'Failed to release backup resources',
+      );
+      expect(harness.uploadSource.destroyed).toBe(true);
+      expect(mockMarkBackupLastRun).toHaveBeenCalledOnce();
+      expect(mockPruneBackupObjects).toHaveBeenCalledOnce();
+      expect(mockLogAuditEvent).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the success when persisting the warning rejects', async () => {
+      arrangeCompletedUpload({
+        failQuery: (sql) => (sql.includes('SET warning') ? new Error('warning write failed') : undefined),
+      });
+      mockPruneBackupObjects.mockRejectedValue(new Error('DeleteObjects failed (403)'));
+
+      await expect(runS3Backup('admin-1', null)).resolves.toMatch(/^compendiq-backup-/);
+
+      expectRecordedAsSuccess();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-1' }),
+        'Failed to persist the backup prune warning',
+      );
+      expect(mockLogAuditEvent).toHaveBeenCalledWith(
+        'admin-1',
+        'BACKUP_UPLOADED',
+        'backup',
+        'run-1',
+        expect.objectContaining({ pruneWarning: 'DeleteObjects failed (403)' }),
+      );
+    });
+
+    it('keeps the success when the audit write rejects', async () => {
+      arrangeCompletedUpload();
+      mockPruneBackupObjects.mockRejectedValue(new Error('DeleteObjects failed (403)'));
+      mockLogAuditEvent.mockRejectedValue(new Error('audit write failed'));
+
+      await expect(runS3Backup('admin-1', null)).resolves.toMatch(/^compendiq-backup-/);
+
+      expectRecordedAsSuccess();
+      expect(warningUpdates()).toHaveLength(1);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-1' }),
+        'Failed to audit the uploaded backup',
+      );
+    });
+  });
+
+  describe('before the upload is recorded', () => {
+    it('destroys the stream, releases once and records failed when the success write rejects', async () => {
+      const writeError = new Error('database unavailable');
+      const harness = arrangeCompletedUpload({
+        failQuery: (sql, params) =>
+          sql.includes('UPDATE backup_runs') && params?.[1] === 'success' ? writeError : undefined,
+      });
+
+      await expect(runS3Backup('admin-1', null)).rejects.toBe(writeError);
+
+      expectReleasedOnce(harness);
+      expect(failedUpdates().map(([, params]) => params)).toEqual([
+        ['run-1', 'failed', null, null, 'database unavailable'],
+      ]);
+      expect(mockMarkBackupLastRun).not.toHaveBeenCalled();
+      expect(mockPruneBackupObjects).not.toHaveBeenCalled();
+      expect(mockLogAuditEvent).not.toHaveBeenCalled();
+      // The failed write comes after the lock is released.
+      expect(mockReleaseWorkerLock.mock.invocationCallOrder[0]!).toBeLessThan(
+        callOrder(failedUpdates()[0]),
+      );
+    });
   });
 });
 
