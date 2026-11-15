@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Admin user update: `null` clears the email or display name (#1736):**
+  `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
+  or `displayName` through to the service, which stores `NULL`. Keys left out
+  of the body still leave the field unchanged; previously `null` was treated
+  as omitted, so the value could not be cleared through the API.
+
 - **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
   `listActiveEmbeddingLocks` now removes stale members of
   `embedding:locks:active` with one atomic Lua script that re-checks each lock
