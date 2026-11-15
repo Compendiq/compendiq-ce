@@ -4299,5 +4299,74 @@ describe('POST /api/llm/ask', () => {
       expect(abortedAtRefusal).toBe(true);
       expect(mockEmitLlmAudit).not.toHaveBeenCalled();
     });
+
+    /** A promise the test resolves, and one that settles when the route reaches it. */
+    function heldStep() {
+      let markReached!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>((resolve) => { markReached = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      return { reached, released, markReached, release };
+    }
+
+    it('keeps the single success entry when the client leaves while the completed answer is published', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      let signal!: AbortSignal;
+      mockStreamChatClient.mockImplementation(async function* (_c: unknown, _m: unknown, _msgs: unknown, s: AbortSignal) {
+        signal = s;
+        yield { content: 'answer', done: true };
+      });
+      const publication = heldStep();
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (String(sql).includes('INSERT INTO llm_conversations')) {
+          publication.markReached();
+          await publication.released;
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+
+      const asked = askAndSettle();
+      await publication.reached;
+      await disconnectClient(signal);
+      expect(signal.aborted).toBe(true);
+      publication.release();
+      await asked;
+
+      // The answer was complete: it is published and audited `success`, and
+      // the disconnect during publication adds no second entry.
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({ action: 'ask', status: 'success' });
+    });
+
+    it('records one Client disconnected entry when publication is refused after the client left', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      let signal!: AbortSignal;
+      const proof = heldStep();
+      mockStreamChatClient.mockImplementation(async function* (_c: unknown, _m: unknown, _msgs: unknown, s: AbortSignal) {
+        signal = s;
+        yield { content: 'answer', done: false };
+        // The grounding moves during inference: the publication proof refuses.
+        mockProvenancePagesStillAdmitted.mockImplementation(async () => {
+          proof.markReached();
+          await proof.released;
+          return false;
+        });
+        yield { content: '', done: true };
+      });
+
+      const asked = askAndSettle();
+      await proof.reached;
+      await disconnectClient(signal);
+      expect(signal.aborted).toBe(true);
+      proof.release();
+      await asked;
+
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({
+        action: 'ask', status: 'error', errorMessage: 'Client disconnected',
+      });
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+    });
   });
 });
