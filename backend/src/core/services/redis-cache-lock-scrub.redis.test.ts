@@ -14,11 +14,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createClient, type RedisClientType } from 'redis';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import {
   setRedisClient,
   acquireEmbeddingLock,
   listActiveEmbeddingLocks,
 } from './redis-cache.js';
+
+const redisAvailable = await isRedisAvailable();
 
 const SET_KEY = 'embedding:locks:active';
 const lockKey = (id: string): string => `embedding:lock:${id}`;
@@ -76,7 +79,7 @@ function scrubClient(acquireFor?: { id: string; onAcquired: (lockId: string | nu
   return { client: hooked as unknown as RedisClientType, scrubsDone: () => Promise.all(scrubs) };
 }
 
-describe('listActiveEmbeddingLocks stale scrub (real Redis)', () => {
+describe.skipIf(!redisAvailable)('listActiveEmbeddingLocks stale scrub (real Redis)', () => {
   beforeAll(async () => {
     real = createClient({ url: process.env.REDIS_URL }) as RedisClientType;
     await real.connect();
