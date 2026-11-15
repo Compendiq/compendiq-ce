@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ShieldAlert, Webhook, type LucideIcon } from 'lucide-react';
+import { Bell, History, ShieldAlert, Webhook, type LucideIcon } from 'lucide-react';
 import { AdminSettingsSchema, type AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
@@ -19,9 +19,13 @@ import { useNoticeRetry } from '../../shared/hooks/use-notice-retry';
 // Each row is its own form and PUTs exactly one key, so saving one window can
 // never carry, or overwrite, the other row's draft or any other admin setting.
 
-type RetentionField = 'adminAccessDeniedRetentionDays' | 'webhookDeliveriesRetentionDays';
+type RetentionField =
+  | 'adminAccessDeniedRetentionDays'
+  | 'webhookDeliveriesRetentionDays'
+  | 'jobHistoryRetentionDays'
+  | 'notificationsReadRetentionDays';
 
-/** Backend default for both windows; shown when an older backend omits a field. */
+/** Backend default for every window; shown when an older backend omits a field. */
 const RETENTION_DEFAULT_DAYS = 90;
 const VALIDATION_MESSAGE = 'Enter a whole number from 7 to 3650.';
 
@@ -75,6 +79,38 @@ const RETENTION_ROWS: RetentionRowConfig[] = [
     ),
     icon: Webhook,
     successToast: 'Webhook delivery retention updated',
+  },
+  {
+    field: 'jobHistoryRetentionDays',
+    idBase: 'job-history-retention',
+    saveTestId: 'job-history-retention-save-btn',
+    rowTestId: 'job-history-retention-section',
+    label: 'Job history retention (days)',
+    description: (
+      <>
+        Automated purge of <code className={inlineCode}>job_history</code>{' '}
+        rows, the record of each finished background job (completed or failed).
+        Rows older than the window are removed; nothing else is touched.
+        Default 90 days.
+      </>
+    ),
+    icon: History,
+    successToast: 'Job history retention updated',
+  },
+  {
+    field: 'notificationsReadRetentionDays',
+    idBase: 'notifications-read-retention',
+    saveTestId: 'notifications-read-retention-save-btn',
+    rowTestId: 'notifications-read-retention-section',
+    label: 'Read notifications retention (days)',
+    description: (
+      <>
+        Automated purge of notifications that have been read. Unread
+        notifications are never deleted, however old they are. Default 90 days.
+      </>
+    ),
+    icon: Bell,
+    successToast: 'Read notifications retention updated',
   },
 ];
 

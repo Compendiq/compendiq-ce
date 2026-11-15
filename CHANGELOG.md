@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Retention for job history and read notifications (#1760):** the daily
+  retention sweep now deletes `job_history` rows and **read** notifications
+  older than two new admin-configurable windows,
+  `job_history_retention_days` and `notifications_read_retention_days`
+  (default 90, range 7–3650, migration 154, env fallbacks
+  `RETENTION_JOB_HISTORY_DAYS` / `RETENTION_NOTIFICATIONS_READ_DAYS`, exposed
+  as `jobHistoryRetentionDays` / `notificationsReadRetentionDays` in
+  `GET`/`PUT /api/admin/settings` and as two rows under Settings → Governance
+  → Data & Compliance → Retention → *Retention windows*). Each sweep deletes in
+  batches of 10 000 and writes a `RETENTION_PRUNED` audit row per run, zero-row
+  runs included. Unread notifications are never deleted, whatever their age.
+  **Upgrade note:** migration 154 seeds both windows at 90 days, so the first
+  daily sweep after upgrading deletes `job_history` rows and read
+  notifications older than 90 days. To keep more, insert the two
+  `admin_settings` rows before upgrading (`ON CONFLICT DO NOTHING` keeps them)
+  or set the windows with `PUT /api/admin/settings` right after upgrading and
+  before the first sweep; the previous version ignores these fields, and the
+  env variables apply only while the row is absent. The windows also apply to
+  restored data: after a restore, the next sweep deletes restored rows older
+  than the window.
+
 - **Webhook delivery-ledger retention control (#1875):** Settings → Governance →
   Data & Compliance → Retention gains a *Retention windows* section with a
   **Webhook delivery attempts retention** field for
@@ -55,6 +76,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the upgrade are trimmed lazily as new jobs finish; no startup cleanup
   runs. On-demand jobs are unaffected by the options but, on a scheduled queue,
   finished ones fall into the same count-trimmed set.
+
+- **Backup source-stream failures no longer crash the API (#1709):** a
+  `pg_dump` that fails to start or exits non-zero, or an attachment that
+  vanishes or becomes unreadable during a backup, used to raise an unhandled
+  stream error that killed the backend, left the run `running`, held the
+  backup lock for up to an hour and left the S3 multipart upload open. The
+  backup now fails cleanly with the real cause: the download is aborted and
+  audited as `BACKUP_EXPORT_FAILED`, an S3 run is marked `failed` with the
+  `pg_dump`/`ENOENT`/`EACCES` message and its multipart upload aborted, and
+  the lock, snapshot and `pg_dump` are released. A client that disconnects
+  mid-download now also closes the dump and attachment streams. The archive
+  format is unchanged.
+
+- **S3 retention-prune failure is a warning, not a failed run (#1710):** a
+  denied or failing `ListObjects`/`DeleteObjects` after a completed upload used
+  to mark the run `failed` without its object key and skip
+  `backup_last_run_at`, so every 15-minute tick uploaded another full backup.
+  The upload is now recorded as `success` (object key, size, schedule gate)
+  before retention runs; a prune failure is stored as a new `backup_runs.warning`
+  (migration 153, first 1000 characters), logged at `warn`, shown in the Backup
+  history as `— warning: <text>`, returned as `warning` by
+  `GET /api/admin/backup` and carried as `pruneWarning` by a `BACKUP_UPLOADED`
+  audit event now written for every completed S3 upload. `BackupRunSchema.warning`
+  defaults to `null` when a backend omits it.
 
 - **Notion re-import after relocation (#1774):** Successful moves in either
   direction release the Notion import binding without changing the page PK,

@@ -69,7 +69,13 @@ const mockPreview = [
 // Default to 90 (matches backend default) but overridable per test. A PUT
 // persists into this object, like the real UPSERT of only the supplied keys.
 type RetentionSettingsFixture = Partial<
-  Record<'adminAccessDeniedRetentionDays' | 'webhookDeliveriesRetentionDays', number>
+  Record<
+    | 'adminAccessDeniedRetentionDays'
+    | 'webhookDeliveriesRetentionDays'
+    | 'jobHistoryRetentionDays'
+    | 'notificationsReadRetentionDays',
+    number
+  >
 >;
 let mockAdminSettings: RetentionSettingsFixture = {
   adminAccessDeniedRetentionDays: 90,
@@ -405,7 +411,28 @@ describe('DataRetentionTab', () => {
         save: DENIED_SAVE,
         row: 'denied-admin-retention-section',
       },
+      {
+        name: 'job history',
+        field: 'jobHistoryRetentionDays',
+        input: 'job-history-retention-input',
+        save: 'job-history-retention-save-btn',
+        row: 'job-history-retention-section',
+      },
+      {
+        name: 'read notifications',
+        field: 'notificationsReadRetentionDays',
+        input: 'notifications-read-retention-input',
+        save: 'notifications-read-retention-save-btn',
+        row: 'notifications-read-retention-section',
+      },
     ] as const;
+
+    const ALL_NINETY = {
+      adminAccessDeniedRetentionDays: 90,
+      webhookDeliveriesRetentionDays: 90,
+      jobHistoryRetentionDays: 90,
+      notificationsReadRetentionDays: 90,
+    } satisfies RetentionSettingsFixture;
 
     async function renderLoaded() {
       const fetchSpy = mockFetch();
@@ -419,20 +446,22 @@ describe('DataRetentionTab', () => {
       return (screen.getByTestId(testId) as HTMLInputElement).value;
     }
 
-    it('renders the server webhookDeliveriesRetentionDays value', async () => {
-      mockAdminSettings = { adminAccessDeniedRetentionDays: 45, webhookDeliveriesRetentionDays: 120 };
+    it.each(ROWS)('$name: renders the server value', async (row) => {
+      mockAdminSettings = { ...ALL_NINETY, [row.field]: 120 };
       await renderLoaded();
 
-      expect(inputValue(WEBHOOK_INPUT)).toBe('120');
-      expect(inputValue(DENIED_INPUT)).toBe('45');
+      for (const other of ROWS) {
+        expect(inputValue(other.input)).toBe(other.field === row.field ? '120' : '90');
+      }
     });
 
-    it('falls back to 90 when an older backend omits webhookDeliveriesRetentionDays', async () => {
-      mockAdminSettings = { adminAccessDeniedRetentionDays: 45 };
+    it.each(ROWS)('$name: falls back to 90 when an older backend omits the field', async (row) => {
+      mockAdminSettings = { ...ALL_NINETY, [row.field]: undefined };
       await renderLoaded();
 
-      expect(inputValue(WEBHOOK_INPUT)).toBe('90');
-      expect(inputValue(DENIED_INPUT)).toBe('45');
+      for (const other of ROWS) {
+        expect(inputValue(other.input)).toBe('90');
+      }
     });
 
     it('renders the webhook window even when the Enterprise data_retention_policies feature is gated off', async () => {
@@ -504,34 +533,34 @@ describe('DataRetentionTab', () => {
       expect(save).toHaveAttribute('aria-disabled', 'true');
     });
 
-    it('PUTs only webhookDeliveriesRetentionDays, refreshes the settings and clears the draft', async () => {
-      mockAdminSettings = { adminAccessDeniedRetentionDays: 90, webhookDeliveriesRetentionDays: 90 };
+    it.each(ROWS)('$name: PUTs only its own field, refreshes the settings and clears the draft', async (row) => {
+      mockAdminSettings = { ...ALL_NINETY };
       const { fetchSpy, queryClient } = await renderLoaded();
       const getsBeforeSave = settingsGetCount(fetchSpy);
 
-      fireEvent.change(screen.getByTestId(WEBHOOK_INPUT), { target: { value: '120' } });
-      fireEvent.click(screen.getByTestId(WEBHOOK_SAVE));
+      fireEvent.change(screen.getByTestId(row.input), { target: { value: '120' } });
+      fireEvent.click(screen.getByTestId(row.save));
 
       await waitFor(() => expect(settingsPutCalls(fetchSpy)).toHaveLength(1));
       const body = putBody(settingsPutCalls(fetchSpy)[0]!);
-      expect(Object.keys(body)).toEqual(['webhookDeliveriesRetentionDays']);
-      expect(body.webhookDeliveriesRetentionDays).toBe(120);
+      expect(Object.keys(body)).toEqual([row.field]);
+      expect(body[row.field]).toBe(120);
 
       await waitFor(() => expect(settingsGetCount(fetchSpy)).toBeGreaterThan(getsBeforeSave));
-      await waitFor(() => expect(screen.getByTestId(WEBHOOK_SAVE)).toHaveAttribute('aria-disabled', 'true'));
-      expect(inputValue(WEBHOOK_INPUT)).toBe('120');
+      await waitFor(() => expect(screen.getByTestId(row.save)).toHaveAttribute('aria-disabled', 'true'));
+      expect(inputValue(row.input)).toBe('120');
 
       // The draft is gone: a later server change shows through instead of a
       // pinned '120'.
-      mockAdminSettings.webhookDeliveriesRetentionDays = 150;
+      mockAdminSettings[row.field] = 150;
       await act(async () => {
         await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
       });
-      await waitFor(() => expect(inputValue(WEBHOOK_INPUT)).toBe('150'));
+      await waitFor(() => expect(inputValue(row.input)).toBe('150'));
     });
 
-    it('keeps the draft and shows the server error inline when the save fails, then retries', async () => {
-      mockAdminSettings = { adminAccessDeniedRetentionDays: 90, webhookDeliveriesRetentionDays: 90 };
+    it.each(ROWS)('$name: keeps the draft and shows the server error inline when the save fails, then retries', async (row) => {
+      mockAdminSettings = { ...ALL_NINETY };
       settingsPutResponse = async () =>
         new Response(JSON.stringify({ message: 'Retention window rejected by policy' }), {
           status: 400,
@@ -540,8 +569,8 @@ describe('DataRetentionTab', () => {
       const { fetchSpy } = await renderLoaded();
       const toastError = vi.spyOn(toast, 'error');
 
-      fireEvent.change(screen.getByTestId(WEBHOOK_INPUT), { target: { value: '120' } });
-      fireEvent.click(screen.getByTestId(WEBHOOK_SAVE));
+      fireEvent.change(screen.getByTestId(row.input), { target: { value: '120' } });
+      fireEvent.click(screen.getByTestId(row.save));
 
       const alert = await screen.findByRole('alert');
       expect(alert).toHaveTextContent(
@@ -549,14 +578,14 @@ describe('DataRetentionTab', () => {
       );
       // A mounted row reports inline only; the toast is for an unmounted row.
       expect(toastError).not.toHaveBeenCalled();
-      expect(inputValue(WEBHOOK_INPUT)).toBe('120');
-      expect(screen.getByTestId(WEBHOOK_SAVE)).not.toHaveAttribute('aria-disabled');
+      expect(inputValue(row.input)).toBe('120');
+      expect(screen.getByTestId(row.save)).not.toHaveAttribute('aria-disabled');
 
       settingsPutResponse = null;
-      fireEvent.click(screen.getByTestId(WEBHOOK_SAVE));
+      fireEvent.click(screen.getByTestId(row.save));
       await waitFor(() => expect(settingsPutCalls(fetchSpy)).toHaveLength(2));
       await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
-      expect(mockAdminSettings.webhookDeliveriesRetentionDays).toBe(120);
+      expect(mockAdminSettings[row.field]).toBe(120);
     });
 
     it('reports a failure that lands after the row unmounted as a toast', async () => {
@@ -607,29 +636,36 @@ describe('DataRetentionTab', () => {
       expect(settingsPutCalls(fetchSpy)).toHaveLength(1);
     });
 
-    it.each(['click', 'submit'] as const)(
-      'a webhook save by %s never carries or clears the unsaved access-denied draft',
-      async (activation) => {
-        mockAdminSettings = { adminAccessDeniedRetentionDays: 90, webhookDeliveriesRetentionDays: 90 };
-        const { fetchSpy } = await renderLoaded();
-        const getsBeforeSave = settingsGetCount(fetchSpy);
+    describe.each(ROWS)('$name save isolation', (row) => {
+      it.each(['click', 'submit'] as const)(
+        'a save by %s never carries or clears another row\'s unsaved draft',
+        async (activation) => {
+          mockAdminSettings = { ...ALL_NINETY };
+          const others = ROWS.filter((other) => other.field !== row.field);
+          const { fetchSpy } = await renderLoaded();
+          const getsBeforeSave = settingsGetCount(fetchSpy);
 
-        fireEvent.change(screen.getByTestId(DENIED_INPUT), { target: { value: '30' } });
-        fireEvent.change(screen.getByTestId(WEBHOOK_INPUT), { target: { value: '120' } });
-        await act(async () => {
-          if (activation === 'click') fireEvent.click(screen.getByTestId(WEBHOOK_SAVE));
-          else fireEvent.submit(screen.getByTestId(WEBHOOK_ROW));
-        });
+          for (const other of others) {
+            fireEvent.change(screen.getByTestId(other.input), { target: { value: '30' } });
+          }
+          fireEvent.change(screen.getByTestId(row.input), { target: { value: '120' } });
+          await act(async () => {
+            if (activation === 'click') fireEvent.click(screen.getByTestId(row.save));
+            else fireEvent.submit(screen.getByTestId(row.row));
+          });
 
-        await waitFor(() => expect(settingsPutCalls(fetchSpy)).toHaveLength(1));
-        expect(Object.keys(putBody(settingsPutCalls(fetchSpy)[0]!))).toEqual(['webhookDeliveriesRetentionDays']);
-        await waitFor(() => expect(settingsGetCount(fetchSpy)).toBeGreaterThan(getsBeforeSave));
+          await waitFor(() => expect(settingsPutCalls(fetchSpy)).toHaveLength(1));
+          expect(Object.keys(putBody(settingsPutCalls(fetchSpy)[0]!))).toEqual([row.field]);
+          await waitFor(() => expect(settingsGetCount(fetchSpy)).toBeGreaterThan(getsBeforeSave));
 
-        expect(inputValue(DENIED_INPUT)).toBe('30');
-        expect(screen.getByTestId(DENIED_SAVE)).not.toHaveAttribute('aria-disabled');
-        expect(mockAdminSettings.adminAccessDeniedRetentionDays).toBe(90);
-      },
-    );
+          for (const other of others) {
+            expect(inputValue(other.input)).toBe('30');
+            expect(screen.getByTestId(other.save)).not.toHaveAttribute('aria-disabled');
+            expect(mockAdminSettings[other.field]).toBe(90);
+          }
+        },
+      );
+    });
 
     it('shows a read failure without inventing values, and Retry restores the rows and focus', async () => {
       settingsGetFailures = 1;

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { BackupStatusResponse } from '@compendiq/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -425,6 +425,54 @@ describe('BackupTab (#1420)', () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
     expect(statusGets).toBe(retriedGets);
+  });
+
+  it('shows a prune warning on its own history row only, tolerating a backend that omits the field', async () => {
+    const settled = {
+      destination: 's3',
+      status: 'success',
+      bytes: 512,
+      error: null,
+      triggeredBy: null,
+      jobId: null,
+      finishedAt: '2026-08-28T10:00:03.000Z',
+    };
+    mockFetch({
+      ...READY_STATUS,
+      history: [
+        {
+          ...settled,
+          id: 'run-warned',
+          createdAt: '2026-08-28T12:00:00.000Z',
+          objectKey: 'compendiq-backups/warned.enc',
+          warning: 'DeleteObjects failed (403): AccessDenied',
+        },
+        {
+          ...settled,
+          id: 'run-clean',
+          createdAt: '2026-08-28T11:00:00.000Z',
+          objectKey: 'compendiq-backups/clean.enc',
+          warning: null,
+        },
+        {
+          ...settled,
+          id: 'run-old-backend',
+          createdAt: '2026-08-28T10:00:00.000Z',
+          objectKey: 'compendiq-backups/old.enc',
+        },
+      ] as BackupStatusResponse['history'],
+    });
+    render(<BackupTab />, { wrapper: wrapper() });
+
+    const rows = within(await screen.findByTestId('backup-history')).getAllByRole('listitem');
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent(
+      'compendiq-backups/warned.enc — warning: DeleteObjects failed (403): AccessDenied',
+    );
+    expect(rows[1]).toHaveTextContent('compendiq-backups/clean.enc');
+    expect(rows[1]).not.toHaveTextContent('warning');
+    expect(rows[2]).toHaveTextContent('compendiq-backups/old.enc');
+    expect(rows[2]).not.toHaveTextContent('warning');
   });
 
   it('saves S3 endpoint via PUT', async () => {
