@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type * as AdminSettingsModule from './admin-settings-service.js';
 
 const mockPool = {
   query: vi.fn(),
