@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
+  `listActiveEmbeddingLocks` now removes stale members of
+  `embedding:locks:active` with one atomic Lua script that re-checks each lock
+  key inside Redis, instead of a separate `SREM`. A lock acquired between the
+  listing's read and the cleanup keeps its set entry and shows up in the next
+  listing, so the other-holder check and the re-embed-all wait loop no longer
+  miss it. Lock keys, TTLs and the snapshot shape are unchanged.
+
 - **Notion re-import after relocation (#1774):** Successful moves in either
   direction release the Notion import binding without changing the page PK,
   while exact rollback preserves NULL and original spelling. Cached picker
