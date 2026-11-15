@@ -7,10 +7,15 @@ import { adminRoutes } from './admin.js';
 // Mock external dependencies. Passthrough keeps the real encryptPat/decryptPat
 // (used by PUT /admin/smtp to encrypt smtp_pass at rest, #738) while stubbing
 // the key-rotation entry point.
-vi.mock('../../core/utils/crypto.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/utils/crypto.js')>()),
-  reEncryptPat: vi.fn().mockReturnValue(null),
-}));
+vi.mock('../../core/utils/crypto.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/utils/crypto.js')>();
+  return {
+    ...actual,
+    // #1761 — spy-wrapped so a test can make encryption fail once.
+    encryptPat: vi.fn(actual.encryptPat),
+    reEncryptPat: vi.fn().mockReturnValue(null),
+  };
+});
 
 vi.mock('../../core/services/audit-service.js', () => ({
   getAuditLog: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 50 }),
@@ -125,7 +130,7 @@ vi.mock('../../domains/llm/services/llm-queue.js', () => ({
 
 import nodemailer from 'nodemailer';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
-import { decryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
+import { decryptPat, encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
@@ -1129,6 +1134,129 @@ describe('Admin routes', () => {
       const keys = params[0] as string[];
       const values = params[1] as string[];
       expect(values[keys.indexOf('smtp_pass')]).toBe('');
+    });
+  });
+
+  // ========================
+  // SMTP settings — persist before apply (issue #1761)
+  // ========================
+  // A failed save must leave the live configuration untouched; a successful
+  // one must make the live configuration match the persisted rows.
+  describe('PUT /api/admin/smtp - persist before apply (#1761)', () => {
+    const mockedQuery = mockQuery as ReturnType<typeof vi.fn>;
+    const mockedCreateTransport = nodemailer.createTransport as ReturnType<typeof vi.fn>;
+    const isUpsert = (sql: unknown) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings');
+    const findUpsert = () =>
+      (mockedQuery.mock.calls as Array<[string, unknown[]]>).find(([sql]) => isUpsert(sql));
+
+    const previous = {
+      host: 'smtp.previous.local',
+      port: 587,
+      secure: false,
+      user: 'previous-user',
+      pass: 'previous-secret',
+      from: 'previous@test.local',
+      enabled: true,
+    };
+
+    const put = (payload: Record<string, unknown>) =>
+      app.inject({ method: 'PUT', url: '/api/admin/smtp', payload });
+    const getConfig = async () => JSON.parse((await app.inject({ method: 'GET', url: '/api/admin/smtp' })).body);
+
+    // Establishes the "previous" live configuration through the route itself.
+    beforeEach(async () => {
+      mockedQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+      // Move away first so applying `previous` always drops any cached transport.
+      expect((await put({ ...previous, host: 'smtp.reset.local' })).statusCode).toBe(200);
+      expect((await put(previous)).statusCode).toBe(200);
+      vi.clearAllMocks();
+      mockedQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    });
+
+    const sendTestMail = async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/admin/smtp/test', payload: { to: 'admin@test.local' } });
+      expect(res.statusCode).toBe(200);
+      return mockedCreateTransport.mock.calls.map((c) => (c[0] as { host: string }).host);
+    };
+
+    it('answers 500 and keeps the live configuration and transport when the upsert rejects', async () => {
+      mockedQuery.mockImplementation(async (sql: unknown) => {
+        if (isUpsert(sql)) throw new Error('admin_settings write rejected');
+        return { rows: [], rowCount: 0 };
+      });
+
+      const res = await put({ host: 'smtp.rejected.local', port: 2525, enabled: false });
+      expect(res.statusCode).toBe(500);
+
+      const config = await getConfig();
+      expect(config.host).toBe(previous.host);
+      expect(config.port).toBe(previous.port);
+      expect(config.enabled).toBe(true);
+
+      // The transport built for the next send uses the previous host.
+      expect(await sendTestMail()).toEqual([previous.host]);
+    });
+
+    it('keeps the live configuration when encrypting the password fails', async () => {
+      (encryptPat as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+        throw new Error('encryption unavailable');
+      });
+
+      const res = await put({ host: 'smtp.rejected.local', pass: 'new-secret', enabled: false });
+      expect(res.statusCode).toBe(500);
+      expect(findUpsert()).toBeUndefined();
+
+      const config = await getConfig();
+      expect(config.host).toBe(previous.host);
+      expect(config.enabled).toBe(true);
+      expect(await sendTestMail()).toEqual([previous.host]);
+    });
+
+    it('makes the live configuration equal the persisted rows after a successful save', async () => {
+      const next = {
+        host: 'smtp.next.local',
+        port: 2525,
+        secure: true,
+        user: 'next-user',
+        pass: 'next-secret',
+        from: 'next@test.local',
+        enabled: false,
+      };
+      const res = await put(next);
+      expect(res.statusCode).toBe(200);
+
+      const upsert = findUpsert();
+      expect(upsert).toBeDefined();
+      const keys = upsert![1][0] as string[];
+      const values = upsert![1][1] as string[];
+      const row = (key: string) => values[keys.indexOf(key)];
+
+      const config = await getConfig();
+      expect(row('smtp_host')).toBe(config.host);
+      expect(Number(row('smtp_port'))).toBe(config.port);
+      expect(row('smtp_secure') === 'true').toBe(config.secure);
+      expect(row('smtp_user')).toBe(config.user);
+      expect(row('smtp_from')).toBe(config.from);
+      expect(row('smtp_enabled') === 'true').toBe(config.enabled);
+      expect(decryptPat(row('smtp_pass'))).toBe(next.pass);
+      expect(config.pass).toBe('••••••••');
+      expect(config).toMatchObject({ host: next.host, port: next.port, secure: next.secure, enabled: next.enabled });
+    });
+
+    it('answers 200 for an empty body without an upsert and leaves the configuration unchanged', async () => {
+      const res = await put({});
+      expect(res.statusCode).toBe(200);
+      expect(findUpsert()).toBeUndefined();
+
+      const config = await getConfig();
+      expect(config).toMatchObject({
+        host: previous.host,
+        port: previous.port,
+        secure: previous.secure,
+        user: previous.user,
+        from: previous.from,
+        enabled: previous.enabled,
+      });
     });
   });
 

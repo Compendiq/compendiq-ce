@@ -86,6 +86,11 @@ the upload completes (#1710); retention prune runs afterwards, outside the lock,
 and its failure becomes `backup_runs.warning`, never a `failed` run. Keep every
 post-success step non-throwing, and the run's `status`/`error` untouched.
 
+`PUT /api/admin/smtp` persists first and applies second (#1761): parse, strip the
+masked password, build the entries (including `encryptPat`), run the single
+upsert, and only then call `updateSmtpConfig`. A failed save must leave the
+live transport and the rows unchanged; keep any new step after the upsert.
+
 ## Build
 
 ```bash
