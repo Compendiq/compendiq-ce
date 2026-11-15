@@ -263,8 +263,27 @@ export function terminatePgDumpAndWait(
 }
 
 export function dumpStreamFromProcess(child: ChildProcess): Readable {
-  if (!child.stdout) throw new BackupDumpError('pg_dump stdout is not piped');
+  // Both before anything below can throw (#1709): a failed spawn reports its
+  // 'error' and then 'close' on process.nextTick. Without an 'error' listener
+  // that crashes the process; without the lifecycle the 'close' is missed and
+  // release() waits for it forever.
   const lifecycle = pgDumpLifecycle(child);
+  const out = new Transform({
+    transform(chunk, _enc, cb) {
+      this.push(chunk);
+      cb();
+    },
+  });
+  child.on('error', (err) => {
+    // The message only: the error object's spawnargs carry --dbname=<POSTGRES_URL>.
+    out.destroy(new BackupDumpError(`pg_dump failed to start: ${err.message}`));
+  });
+  if (!child.stdout) {
+    // spawn() returns a child without pid or stdio when it fails before it
+    // can create the pipes (EMFILE/ENFILE); its pending 'error' ends `out`.
+    if (child.pid === undefined) return out;
+    throw new BackupDumpError('pg_dump stdout is not piped');
+  }
 
   const stderrChunks: Buffer[] = [];
   let stderrBytes = 0;
@@ -280,13 +299,6 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
       exitError.message = `pg_dump exited ${exitCode}: ${Buffer.concat(stderrChunks, stderrBytes).toString('utf8')}`;
     }
   };
-
-  const out = new Transform({
-    transform(chunk, _enc, cb) {
-      this.push(chunk);
-      cb();
-    },
-  });
 
   const maybeComplete = () => {
     if (stdoutEnded && childClosed && exitCode === 0) {
@@ -316,9 +328,6 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
   });
   child.stdout.on('error', (err) => {
     out.destroy(new BackupDumpError(`pg_dump stdout failed: ${err.message}`));
-  });
-  child.on('error', (err) => {
-    out.destroy(new BackupDumpError(`pg_dump failed to start: ${err.message}`));
   });
   child.on('close', (code) => {
     childClosed = true;

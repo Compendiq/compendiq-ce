@@ -28,7 +28,7 @@ import { PassThrough, Readable } from 'node:stream';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { query } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
 import { isDbAvailable, setupTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import type * as ChildProcessModule from 'node:child_process';
@@ -252,6 +252,62 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(error.message).toMatch(/^pg_dump failed to start: .*ENOENT/);
       await expectLockReleased();
       expect(childClosed).toBe(true);
+      await expectProcessStayedUp();
+    });
+
+    it('(a) contains a start failure that returns a child without pid or stdio (EMFILE/ENFILE)', async () => {
+      // The real spawn() under descriptor exhaustion (checked with `ulimit -n`
+      // on Node 26.13.1) returns a child with no pid, stdout or stderr whose
+      // kill() returns false, then emits 'error' and 'close' (-24) in one
+      // process.nextTick. The error object's spawnargs carry the database URL.
+      await writeFile(path.join(attachmentsDir, 'page-1.png'), randomBytes(512));
+      const postgresUrl = process.env.POSTGRES_URL!;
+      let spawnArgs: readonly string[] = [];
+      const spawnWithoutStdio = (command: string, args: readonly string[]) => {
+        spawnArgs = args;
+        const child = Object.assign(new EventEmitter(), { kill: () => false });
+        process.nextTick(() => {
+          const spawnError = Object.assign(new Error(`spawn ${command} EMFILE`), {
+            code: 'EMFILE',
+            errno: -24,
+            syscall: `spawn ${command}`,
+            path: command,
+            spawnargs: args,
+          });
+          child.emit('error', spawnError);
+          child.emit('close', -24, null);
+        });
+        return child;
+      };
+      let snapshotReleased = false;
+      const snapshotPool = {
+        connect: async () => {
+          const client = await getPool().connect();
+          const release = client.release.bind(client);
+          client.release = (err?: Error | boolean) => {
+            snapshotReleased = true;
+            release(err);
+          };
+          return client;
+        },
+      };
+
+      const error = await rejectionOf(
+        createEncryptedBackupStream(SECRET, {
+          // One function cannot implement spawn's overloads; the backup calls only (command, args, options).
+          spawnFn: spawnWithoutStdio as unknown as SpawnFn,
+          attachmentsRoot: attachmentsDir,
+          snapshotPool,
+        }).then((backup) => readAll(backup.stream)),
+      );
+
+      expect(spawnArgs).toContain(`--dbname=${postgresUrl}`);
+      expect(error.name).toBe('BackupDumpError');
+      expect(error.message).toBe('pg_dump failed to start: spawn pg_dump EMFILE');
+      expect(error.message).not.toContain(postgresUrl);
+      expect(error).not.toHaveProperty('spawnargs');
+      await expectLockReleased();
+      await vi.waitFor(() => expect(snapshotReleased).toBe(true));
       await expectProcessStayedUp();
     });
 
@@ -507,7 +563,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         ]);
         expect(requests[0]).toMatch(/^POST \/backups\/compendiq-backups\/.+\?uploads=$/);
         expect(requests.at(-1)).toMatch(/^DELETE \/backups\/compendiq-backups\/.+\?uploadId=upload-1709$/);
-        expect(requests.some((request) => request.includes('CompleteMultipartUpload'))).toBe(false);
+        // A CompleteMultipartUpload is recorded as `POST <key>?uploadId=<id>`.
+        expect(requests.filter((request) => /^POST [^?]+\?uploadId=/.test(request))).toEqual([]);
         await expectLockReleased();
         expect(pgDump.closed).toBe(true);
         await expectProcessStayedUp();
