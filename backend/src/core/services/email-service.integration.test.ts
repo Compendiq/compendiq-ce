@@ -146,6 +146,9 @@ describe.skipIf(!redisAvailable)(
   'SMTP configuration reaches every replica — real Postgres and Redis (#1757)',
   () => {
     const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+    // The cache-bus duplicates `main` for its subscriber, so the subscriber
+    // carries this connection name and can be found (and killed) by id alone.
+    const busClientName = `smtp-reload-${process.pid}-${Date.now()}`;
     const channel = prefixedRedisChannel('smtp:config:changed');
     let main: RedisClientType;
     /** Stands in for the other replica: it only writes rows and publishes the signal. */
@@ -154,7 +157,7 @@ describe.skipIf(!redisAvailable)(
 
     beforeAll(async () => {
       await setupTestDb();
-      main = createClient({ url }) as RedisClientType;
+      main = createClient({ url, name: busClientName }) as RedisClientType;
       main.on('error', () => { /* surfaced through the assertions */ });
       await main.connect();
       peer = createClient({ url }) as RedisClientType;
@@ -197,6 +200,13 @@ describe.skipIf(!redisAvailable)(
       );
     }
 
+    /** Redis client id of a connection, or undefined when it is not connected. */
+    async function clientId(filter: string[], match: (line: string) => boolean): Promise<string | undefined> {
+      const clients = await peer.sendCommand(['CLIENT', 'LIST', ...filter]);
+      if (typeof clients !== 'string') throw new Error('Redis did not return its client inventory');
+      return clients.split('\n').find(match)?.match(/(?:^| )id=(\d+)/)?.[1];
+    }
+
     it("converges on a peer's save and sends the test mail through the newly saved host", async () => {
       expect(getSmtpConfig().host).not.toBe('peer.example.com');
 
@@ -233,13 +243,29 @@ describe.skipIf(!redisAvailable)(
       });
     });
 
-    it('reloads the rows after the bus subscriber reconnects', async () => {
-      // Written without a signal: only the reconnect reload can pick it up.
-      await writeSmtpRows({ smtp_host: 'after-reconnect.example.com', smtp_enabled: 'true' });
+    it('reloads the rows after the bus subscriber reconnects, without touching other subscribers', async () => {
+      // Another worker's subscriber on the same Redis server: it must survive.
+      const bystander = createClient({ url }) as RedisClientType;
+      bystander.on('error', () => { /* surfaced through the assertions */ });
+      await bystander.connect();
+      try {
+        const bystanderId = String(await bystander.sendCommand(['CLIENT', 'ID']));
+        await bystander.subscribe(prefixedRedisChannel('smtp:test:bystander'), () => undefined);
 
-      await peer.sendCommand(['CLIENT', 'KILL', 'TYPE', 'pubsub']);
+        // Written without a signal: only the reconnect reload can pick it up.
+        await writeSmtpRows({ smtp_host: 'after-reconnect.example.com', smtp_enabled: 'true' });
 
-      await vi.waitFor(() => expect(getSmtpConfig().host).toBe('after-reconnect.example.com'), { timeout: 5_000 });
+        // Kill only this file's cache-bus subscriber, by id (never by type: the
+        // backend suite shares one Redis server across parallel workers).
+        const subscriberId = await clientId(['TYPE', 'PUBSUB'], (line) => line.includes(`name=${busClientName} `));
+        expect(subscriberId).toBeDefined();
+        expect(await peer.sendCommand(['CLIENT', 'KILL', 'ID', subscriberId!])).toBe(1);
+
+        await vi.waitFor(() => expect(getSmtpConfig().host).toBe('after-reconnect.example.com'), { timeout: 5_000 });
+        expect(await clientId(['ID', bystanderId], (line) => line.includes(`id=${bystanderId} `))).toBe(bystanderId);
+      } finally {
+        await bystander.quit();
+      }
     });
   },
 );

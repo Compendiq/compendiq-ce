@@ -76,7 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through one serialized reloader, so `GET /api/admin/smtp` and the test mail
   on any replica use the saved configuration. The publish is not awaited, so a
   save still answers during a Redis outage. A field without a stored row falls
-  back to that replica's `SMTP_*` environment value.
+  back to that replica's `SMTP_*` environment value, except `secure`: once any
+  `smtp_*` row exists it is `false` unless an `smtp_secure` row says `true`,
+  even with `SMTP_SECURE=true` (unchanged).
 
 - **A failed SMTP save no longer changes the live transport (#1761):**
   `PUT /api/admin/smtp` now writes the `smtp_*` rows (one statement) before it

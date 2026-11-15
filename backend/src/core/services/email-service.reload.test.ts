@@ -78,9 +78,9 @@ async function livePass(svc: EmailService): Promise<string | undefined> {
 }
 
 /**
- * Yield one macrotask so already-started work (a write-back's lazy import and
- * query) gets to run. Not a duration guess: it is only used to show that
- * nothing further happens after the awaited condition was observed.
+ * Yield one macrotask so already-started work (a write-back's mocked query
+ * and the log line after it) gets to settle. Not a duration guess: it is only
+ * used to show that nothing further happens after the awaited condition.
  */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 

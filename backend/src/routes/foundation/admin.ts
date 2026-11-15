@@ -1345,12 +1345,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
     updateSmtpConfig(body);
 
     // #1757 — re-read the rows so this replica's live config is the same
-    // function of the database as every other replica's (a failed re-read is
-    // soft: the local apply above stands). Then tell the other replicas.
+    // function of the database as every other replica's. Then tell the other
+    // replicas. When the re-read fails, apply the saved body again: an older
+    // reload that was in flight may have put the pre-save rows back over the
+    // local apply above, and this replica must keep serving what it saved.
     // An empty patch wrote nothing, so there is nothing to reload or announce.
     const rowsWritten = entries.length > 0;
-    if (rowsWritten) {
-      await reloadSmtpConfigFromDb('writer');
+    if (rowsWritten && !(await reloadSmtpConfigFromDb('writer'))) {
+      updateSmtpConfig(body);
     }
 
     await logAuditEvent(request.userId, 'ADMIN_ACTION', 'admin_settings', undefined, { action: 'update_smtp_settings' }, request);

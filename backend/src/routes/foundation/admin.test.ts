@@ -1412,6 +1412,35 @@ describe('Admin routes', () => {
       expect(await getConfig()).toMatchObject({ host: 'smtp.local-apply.local', port: 2626, enabled: true });
       expect(mockedPublish).toHaveBeenCalledWith('smtp:config:changed', {});
     });
+
+    it('keeps the save when an older in-flight reload puts the pre-save rows back and the re-read fails', async () => {
+      expect((await put({ host: 'smtp.before.local', port: 587, enabled: false })).statusCode).toBe(200);
+      vi.clearAllMocks();
+
+      // An older reload (a peer's bus event) read the rows before this save and
+      // answers only after it; the writer's own re-read then fails.
+      const heldOlderRead = Promise.withResolvers<void>();
+      let smtpSelects = 0;
+      mockedQuery.mockImplementation(async (sql: unknown, params?: unknown[]) => {
+        if (!isSmtpSelect(sql)) return store.impl(sql, params);
+        smtpSelects += 1;
+        if (smtpSelects > 1) throw new Error('connection lost');
+        const preSaveRows = await store.impl(sql, params);
+        await heldOlderRead.promise;
+        return preSaveRows;
+      });
+      const olderReload = reloadSmtpConfigFromDb('bus');
+      await vi.waitFor(() => expect(smtpSelects).toBe(1));
+
+      const response = put({ host: 'smtp.after.local', port: 2727, enabled: true });
+      await vi.waitFor(() => expect(reloadSmtpConfigFromDb).toHaveBeenCalledWith('writer'));
+      heldOlderRead.resolve();
+
+      expect(await olderReload).toBe(true); // applied the pre-save rows
+      expect((await response).statusCode).toBe(200);
+      expect(smtpSelects).toBe(2);
+      expect(await getConfig()).toMatchObject({ host: 'smtp.after.local', port: 2727, enabled: true });
+    });
   });
 
   // ========================
