@@ -87,8 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer finishes in the background: nothing is cached, no conversation turn
   is saved, no title is generated, the per-user stream slot is released at
   once, and the LLM audit log records one `error` / `Client disconnected`
-  entry instead of a `success`. A client that left before the provider was
-  called causes no provider request and no audit entry.
+  entry instead of a `success`. A client that has already left when the route
+  is about to call the provider (after retrieval, the cache lookup and the
+  lock wait) causes no provider request and no audit entry.
 
 - **Admin user update: `null` clears the email or display name (#1736):**
   `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
