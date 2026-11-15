@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Overlapping cached-setting reloads no longer restore an older value (#1758):**
+  `makeCachedSetting` (IP allowlist, sync-conflict policy, LLM concurrency and
+  queue depth), the collaborative-editing flag and the article AI policy
+  switch now reload through one serialized, coalesced reloader each
+  (`core/services/coalesced-reload.ts`). At most one read runs at a time; any
+  number of bus events, reconnects, polls or writer reloads arriving meanwhile
+  cause exactly one follow-up read, and an awaited reload resolves with a read
+  that started after the request. Previously a slow first read could finish
+  last and leave a process on the older row until the next event. A read that
+  has not answered after 30 s is abandoned and never applied. Failed reads
+  still keep the previous value and log a warning; turning the collab flag
+  off still closes every room before `PUT /api/admin/settings` answers.
+
 - **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
   `listActiveEmbeddingLocks` now removes stale members of
   `embedding:locks:active` with one atomic Lua script that re-checks each lock

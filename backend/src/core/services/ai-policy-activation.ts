@@ -40,6 +40,7 @@ import { getPool, query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { getAccessTokenLifetimeSeconds } from '../plugins/auth.js';
 import type { AuditAction } from './audit-service.js';
+import { createCoalescedReloader } from './coalesced-reload.js';
 import { onReconnect, publish, subscribe } from './redis-cache-bus.js';
 import { AI_POLICY_ENFORCEMENT_VERSION } from './ai-policy-runtime-guard.js';
 
@@ -122,22 +123,32 @@ async function readEnabledFromDb(): Promise<boolean> {
 }
 
 /**
- * Re-read the switch from PostgreSQL. A failed cold load leaves the process
- * disabled (fail closed); a failed re-read keeps the previous value — the
- * poll retries, and a stale value weakens no safety property (admission and
- * the tightening trigger never consult this cache).
+ * The one reloader every trigger shares (cold load, bus, reconnect, poll,
+ * writer, test seam): reads never overlap, overlapping requests coalesce into
+ * one follow-up read, and an awaited reload observes a row committed before
+ * the request (#1758). A failed cold load leaves the process disabled (fail
+ * closed); a failed re-read keeps the previous value — the poll retries, and
+ * a stale value weakens no safety property (admission and the tightening
+ * trigger never consult this cache).
  */
-async function reloadFromDb(phase: ReloadPhase): Promise<boolean> {
-  try {
-    enabledCache = await readEnabledFromDb();
-  } catch (err) {
+const reloadEnabled = createCoalescedReloader<boolean, ReloadPhase>({
+  read: readEnabledFromDb,
+  apply: (enabled) => {
+    enabledCache = enabled;
+  },
+  onFailure: (err, phase) => {
     logger.warn(
       { err, phase },
       phase === 'cold-load'
         ? 'ai-policy-activation: cold-load failed — starting DISABLED (fail closed) and polling'
         : 'ai-policy-activation: re-read failed — keeping the previous value',
     );
-  }
+  },
+});
+
+/** Re-read the switch from PostgreSQL through the shared reloader. */
+async function reloadFromDb(phase: ReloadPhase): Promise<boolean> {
+  await reloadEnabled(phase);
   return enabledCache;
 }
 
