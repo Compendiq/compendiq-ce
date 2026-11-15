@@ -1911,7 +1911,11 @@ validates safe/unique archive members, a strict closed manifest (bounded to
 than this binary, and that it is **not older than the target database**
 (newest `_migrations` row). An empty target (no `_migrations` table, or no
 rows) is allowed, as is a target at or behind the archive's level; an
-unreadable target refuses the restore. An older archive is refused with
+unreadable target refuses the restore. In Enterprise builds the level on both
+sides is the newest migration name across Community and Enterprise
+migrations, so an archive with an older Community level under an unchanged
+Enterprise level is not detected; restore a backup taken before an upgrade
+with the empty-database procedure. An older archive is refused with
 `Backup migration <archive> is older than the target database (<target>)`;
 see [Restoring an older archive](#restoring-an-older-archive). `--force`
 overrides **only** the PAT-key fingerprint mismatch; it never bypasses
