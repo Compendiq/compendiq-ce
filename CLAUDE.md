@@ -76,6 +76,11 @@ revision only rejects the result when the embedded title or `body_html` differs
 from the locked row; a stale result rolls back without clearing the new page's
 dirty flag. Keep the separate image-analysis revision and schema-epoch fences.
 
+Backup archive members are connected with callback `pipeline`, never `.pipe()`
+(#1709): a source error must reach the archive, not crash the process. Compose
+the `pg_dump` chain synchronously after spawning it (a spawn failure arrives on
+`process.nextTick`), and destroy open member chains when the encrypted stream closes.
+
 ## Build
 
 ```bash
