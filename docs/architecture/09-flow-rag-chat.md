@@ -146,6 +146,7 @@ sequenceDiagram
             PROV-->>BE: delta
             BE-->>FE: SSE { content: delta }
         end
+        note right of BE: #35;1719 client disconnect: the RESPONSE's close (reply.raw, never request.raw —<br/>a POST's request has already closed) aborts streamChat, so the provider socket<br/>closes#59; nothing is cached, appended or titled, one audit row error /<br/>Client disconnected, lock and stream slot released. A client gone before<br/>dispatch gets no provider request and no audit row
         PROV-->>BE: done
         BE->>CACHE: setCachedResponse(key, answer)<br/>(history-free asks only — a follow-up is<br/>grounded in the asker's own thread)
         BE->>CONV: append user turn + answer + sources (atomic jsonb ||)<br/>assistant turn carries aiProvenance { version:1, providerId, configRevision,<br/>locality, pages[{pageId, policy, policyRevision, contentRevision}] } (#35;282)#59; row columns<br/>ai_provenance_complete=TRUE, ai_provenance_version, provider_config_revision, provider_locality
@@ -2273,8 +2274,12 @@ data: { "content": "more tokens" }
 data: { "done": true, "conversationId": "…", "sources": [ … ] }
 ```
 
-On abort (client disconnect) the backend aborts the upstream LLM request —
-see `backend/src/routes/llm/sse-abort.test.ts` for the behaviour we rely on.
+On abort (client disconnect) the backend aborts the upstream LLM request.
+The signal is the response's `close` (`reply.raw`), never `request.raw`: a
+POST's request has already closed when the handler runs (#1719). A
+disconnected ask persists, caches and titles nothing and is audited
+`error` / `Client disconnected`; see
+`backend/src/routes/llm/ask-disconnect.integration.test.ts`.
 
 ### Source objects (#1125)
 
