@@ -5,6 +5,7 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { chat, type ChatMessage } from './openai-compatible-client.js';
 import { ConversationTurnAiProvenanceSchema, type ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { stripThinkBlocks } from './think-blocks.js';
 import { admitArticleStage } from './article-stage-admission.js';
 import { loadProviderMetadata } from './ai-policy-admission.js';
 import { provenancePagesStillAdmitted } from './ai-policy-retrieval.js';
@@ -45,7 +46,11 @@ export function initialTitleFromQuestion(question: string): string {
  * defensive: provider preambles and presentation markup never reach the UI.
  */
 export function normalizeGeneratedTitle(raw: string): string | null {
-  let title = raw
+  // Reasoning is never a title; a reply cut inside reasoning has none, so the
+  // caller keeps the question-derived one.
+  const visible = stripThinkBlocks(raw);
+  if (visible.unclosed) return null;
+  let title = visible.text
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .find((line) => line.length > 0);

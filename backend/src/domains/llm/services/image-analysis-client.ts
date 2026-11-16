@@ -12,6 +12,7 @@ import {
 } from './openai-compatible-client.js';
 import { z } from 'zod';
 import { ArticleStageRefusedError } from './article-stage-admission.js';
+import { stripClosedThinkBlocks } from './think-blocks.js';
 import { loadProviderConfig } from './llm-provider-resolver.js';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -205,8 +206,7 @@ export function classifyHttpStatus(status: number): { class: 'rejected' | 'unava
 
 /** `<think>…</think>` blocks some hosts leave in `content`, then any Markdown fence. */
 function stripWrappers(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+  return stripClosedThinkBlocks(text)
     .replace(/```(?:json|JSON)?\s*/g, '')
     .replace(/```/g, '');
 }

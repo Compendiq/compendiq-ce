@@ -113,6 +113,16 @@ describe('normalizeGeneratedTitle', () => {
   it.each(['', ' \n ', '***', 'Title: ...'])('rejects an empty or presentation-only reply %j', (raw) => {
     expect(normalizeGeneratedTitle(raw)).toBeNull();
   });
+
+  it.each([
+    ['closed think then a title', '<think>Rotate the PAT</think>\nRotating a PAT', 'Rotating a PAT'],
+    ['orphan closer then a title', 'planning aloud\n</think>\nRotating a PAT', 'Rotating a PAT'],
+    ['closed think only', '<think>Okay, the user is asking…</think>', null],
+    ['unclosed think only', '<think>\nOkay, the user is asking…', null],
+    ['text before an unclosed think', 'Rotating a PAT\n<think>hmm', null],
+  ])('ignores reasoning: %s', (_name, raw, expected) => {
+    expect(normalizeGeneratedTitle(raw)).toBe(expected);
+  });
 });
 
 describe('generateConversationTitle', () => {
@@ -228,5 +238,15 @@ describe('generateConversationTitle', () => {
     arrange();
     await expect(generateConversationTitle(base)).resolves.toBeUndefined();
     if (_name !== 'database failure') expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['closed reasoning only', '<think>The user wants a title.</think>'],
+    ['reply cut inside reasoning', '<think>\nOkay, the user is asking'],
+  ])('keeps the question-derived title when the reply is %s', async (_name, reply) => {
+    mockChat.mockResolvedValue(reply);
+    await generateConversationTitle(base);
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });

@@ -42,6 +42,7 @@ import { withSpan } from '../../../telemetry.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { chat, type ChatMessage } from './openai-compatible-client.js';
 import { queryArticleTransport, type QueryArticleInput } from './query-article-transport.js';
+import { stripClosedThinkBlocks } from './think-blocks.js';
 import { detectIdentifiers } from './identifier-shortcircuit.js';
 import {
   hybridSearch,
@@ -262,7 +263,6 @@ const REFORMULATION_SYSTEM_PROMPT = [
 /** Numbering, bullets, and the wrapping quotes models add despite the brief. */
 const LIST_MARKER = /^\s*(?:[-*•–]|\d+[.)])\s*/;
 const WRAPPING_QUOTES = /^["'“”‘’`]+|["'“”‘’`]+$/g;
-const THINK_BLOCK = /<think>[\s\S]*?<\/think>/gi;
 
 /**
  * Turn a reply into at most {@link PARAPHRASE_COUNT} usable queries.
@@ -277,7 +277,7 @@ export function parseReformulations(reply: string, original: string): string[] {
   const normalized = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
   const seen = new Set<string>([normalized(original)]);
   const out: string[] = [];
-  for (const rawLine of reply.replace(THINK_BLOCK, '').split('\n')) {
+  for (const rawLine of stripClosedThinkBlocks(reply).split('\n')) {
     const line = rawLine
       .replace(LIST_MARKER, '')
       .replace(WRAPPING_QUOTES, '')
