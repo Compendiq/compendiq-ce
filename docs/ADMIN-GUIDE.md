@@ -1877,11 +1877,14 @@ because the frontend is newer.
   sends Governance bypass and never creates a delete marker to hide a retained
   backup. Unreadable policy or protection metadata fails closed.
 
-For version-aware pruning, grant `s3:ListBucketVersions`,
+Enterprise prunes version-aware for every S3 destination, whether or not
+Object Lock is enabled, so grant `s3:ListBucketVersions`,
 `s3:GetBucketObjectLockConfiguration`, `s3:GetObjectRetention`,
 `s3:GetObjectLegalHold`, `s3:GetObjectVersion`, and `s3:DeleteObjectVersion`,
-in addition to upload/list permissions. Missing metadata-read permission is not
-treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
+in addition to upload/list permissions, for all Enterprise S3 backups. A missing
+permission does not fail the backup: the run stays `success` and the prune error
+is stored as the run's warning in Backup & Recovery history. Missing
+metadata-read permission is not treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
 per-part and included in completion; a multipart checksum is not SHA-256 of the
 concatenated object bytes.
 
