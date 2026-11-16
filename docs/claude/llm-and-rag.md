@@ -76,6 +76,17 @@ never by name or size. Only history-free
 asks write the `/llm/ask` cache; a follow-up is grounded in the asker's own
 thread, which the key does not carry.
 
+A streaming route aborts its provider request on the response's `close`
+(`reply.raw`), as `streamSSE` does, and seeds the abort from
+`reply.raw.destroyed`; a POST's `request.raw` has already closed and never
+reports socket loss (#1719). A disconnected ask persists, caches and titles
+nothing and records one `error` / `Client disconnected` audit entry.
+
+A provider `error` frame inside a 200 stream is `ProviderStreamError`; the
+provider's text stays on its `detail`. Only a stream that reached `[DONE]`
+without one is a result. Client-facing failure text comes from
+`streamFailureMessage`, and a blank assistant turn is not grounding (#1728).
+
 LLM inference audit hooks receive message role/length summaries and
 `promptHash`, never prompt plaintext. Producers hash the actual provider
 messages as ordered JSON tuples of role and content, retaining structured
