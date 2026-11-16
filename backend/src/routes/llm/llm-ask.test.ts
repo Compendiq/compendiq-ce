@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'timers/promises';
 import os from 'os';
 import path from 'path';
 import { logger } from '../../core/utils/logger.js';
+import { ProviderStreamError, StreamIncompleteError } from '../../domains/llm/services/provider-stream-error.js';
 
 // --- Mock: llm-provider-resolver (resolveUsecase) ---
 const mockResolveUsecase = vi.fn().mockResolvedValue({
@@ -959,6 +960,42 @@ describe('POST /api/llm/ask', () => {
       expect(mockStreamChatClient).toHaveBeenCalled();
       const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
       expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    /** A follow-up in a thread whose single answer is `answer`, during an embedding outage. */
+    async function askFollowUpDuringOutage(answer: unknown) {
+      searchWithMeta(OUTAGE_META);
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'How do I rotate a token?' }, { role: 'assistant', content: answer }])] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Ungrounded answer.'));
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'And then?', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(200);
+      return parseSseBody(response.body) as Array<Record<string, unknown>>;
+    }
+
+    it.each([
+      ['empty', ''],
+      ['whitespace only', ' \n\t '],
+    ])('a thread whose only answer is %s grounds nothing — refuses during an outage (#1728)', async (_label, answer) => {
+      // The shape a provider error frame followed by [DONE] persisted before
+      // #1728: a successful-looking assistant turn without content.
+      const events = await askFollowUpDuringOutage(answer);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(events.find((f) => f.final === true)).toMatchObject({ refused: true, refusalReason: 'semantic_index_unavailable' });
+    });
+
+    it('a thread with a real answer still stands the gate down during an outage (#1728 control)', async () => {
+      const events = await askFollowUpDuringOutage('Revoke the old token, then issue a new one.');
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      expect(events.some((f) => f.refused === true)).toBe(false);
     });
 
     it('refusal is persisted as a real assistant turn, without a source-list promise (#1268 M1)', async () => {
@@ -4367,6 +4404,32 @@ describe('POST /api/llm/ask', () => {
       });
       expect(mockSetCachedResponse).not.toHaveBeenCalled();
       expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('provider stream failures (#1728)', () => {
+    it.each([
+      ['a provider error frame', new ProviderStreamError(3, 'upstream worker crashed: CUDA out of memory'), 'Provider error'],
+      ['an incomplete stream', new StreamIncompleteError(3), 'Stream ended before completion'],
+      ['any other stream error', new Error('socket hang up'), 'Stream error'],
+    ])('answers %s with the shared failure text and persists nothing', async (_label, error, wireText) => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockImplementation(async function* () {
+        yield { content: 'Hel', done: false };
+        throw error;
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.at(-1)).toEqual({ error: wireText, done: true });
+      expect(events.some((f) => f.final === true)).toBe(false);
+      expect(response.body).not.toContain('CUDA');
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({ action: 'ask', status: 'error', errorMessage: error.message });
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
     });
   });
 });

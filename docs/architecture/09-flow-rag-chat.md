@@ -420,7 +420,13 @@ hold across all five:
    a prefix as the finished output. Generate's audit entry comes from this
    outcome (one `error` row for a truncated stream, one `success` for a
    completed one, none for a replay); the route's own catch covers only a
-   failure before dispatch.
+   failure before dispatch. A provider `error` frame is the same kind of
+   failure (#1728): the parser stops at the first one, ignores everything
+   after it including `[DONE]`, and throws `ProviderStreamError` (the
+   provider's text only on its `detail`) with the same `</think>` close,
+   silent return and breaker rules; the wire says `Provider error`
+   (`streamFailureMessage`), Ask persists, caches and titles nothing, and a
+   blank assistant turn no longer counts as grounding for the refusal gate.
 3. **Durable output is written under admission, on the held client.**
    Improve's `llm_improvements … status = 'completed'` write runs inside
    `admitArticleStage(provenance, userId, 'chat', publish, context,

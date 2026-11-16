@@ -74,6 +74,7 @@ import {
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_DOCUMENT_TEXT_FOR_LLM,
+  streamFailureMessage,
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
@@ -1300,8 +1301,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         : confidence.basis === 'similarity'
           ? similarityThreshold
           : Math.max(similarityThreshold, rerankThreshold);
+    // #1728: a blank assistant turn grounds nothing. Threads written before
+    // provider error frames were failures can hold one that looks answered.
     const hasSubstantiveHistory = conversationHistory.some(
-      (m) => m.role === 'assistant' && !m.refused,
+      (m) => m.role === 'assistant' && !m.refused && contentToText(m.content).trim() !== '',
     );
     // NOTE the one thing deliberately absent from this list: the images the
     // retriever found (#1115 P4). `imagePart` is the USER's own attachment
@@ -1842,7 +1845,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
               : err instanceof Error ? err.message : String(err),
           });
           reply.raw.write(`data: ${JSON.stringify({
-            error: publicationRefused ? 'ai_grounding_not_admissible' : 'Stream error', done: true,
+            error: publicationRefused ? 'ai_grounding_not_admissible' : streamFailureMessage(err), done: true,
           })}\n\n`);
         }
       } finally {

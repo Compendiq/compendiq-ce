@@ -21,7 +21,8 @@ import {
   ImageStagingUnavailableError,
 } from '../../core/services/image-staging.js';
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
-import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
+import type { StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
+import { ProviderStreamError, StreamIncompleteError } from '../../domains/llm/services/provider-stream-error.js';
 import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
 import {
   SEARXNG_CATEGORIES_DEFAULT,
@@ -345,6 +346,16 @@ export function sendCachedSSE(
 }
 
 /**
+ * Client-facing text for a failed provider stream; never carries provider
+ * text. Shared by `streamSSE` and Ask so the wire cannot drift (#1728).
+ */
+export function streamFailureMessage(err: unknown): 'Stream ended before completion' | 'Provider error' | 'Stream error' {
+  if (err instanceof StreamIncompleteError) return 'Stream ended before completion';
+  if (err instanceof ProviderStreamError) return 'Provider error';
+  return 'Stream error';
+}
+
+/**
  * Helper to stream SSE response from an async generator with abort support.
  * Creates an AbortController and aborts on client disconnect.
  */
@@ -483,15 +494,22 @@ export async function streamSSE(
     reportStreamError(err);
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
-    } else if (err instanceof StreamIncompleteError) {
-      // The provider closed the socket before `[DONE]`: the text the client
-      // already saw is a prefix. Say so on the wire rather than letting the
-      // stream merely stop, so the client never renders it as finished.
-      logger.warn({ receivedCharacters: err.receivedCharacters }, 'SSE stream ended before completion');
-      reply.raw.write(`data: ${JSON.stringify({ error: 'Stream ended before completion', done: true })}\n\n`);
     } else {
-      logger.error({ err }, 'SSE stream error');
-      reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
+      if (err instanceof StreamIncompleteError) {
+        // The provider closed the socket before `[DONE]`: the text the client
+        // already saw is a prefix. Say so on the wire rather than letting the
+        // stream merely stop, so the client never renders it as finished.
+        logger.warn({ receivedCharacters: err.receivedCharacters }, 'SSE stream ended before completion');
+      } else if (err instanceof ProviderStreamError) {
+        // The provider's own text goes to the log only, and only a prefix.
+        logger.warn(
+          { receivedCharacters: err.receivedCharacters, detail: err.detail.slice(0, 200) },
+          'SSE stream: provider reported an error',
+        );
+      } else {
+        logger.error({ err }, 'SSE stream error');
+      }
+      reply.raw.write(`data: ${JSON.stringify({ error: streamFailureMessage(err), done: true })}\n\n`);
     }
   } finally {
     stopLockHeartbeat?.();
@@ -507,9 +525,7 @@ export async function streamSSE(
         status: streamFailed ? 'error' : 'success',
         ...(streamFailed
           ? {
-              errorMessage: controller.signal.aborted
-                ? 'Client disconnected'
-                : streamError instanceof StreamIncompleteError ? 'Stream ended before completion' : 'Stream error',
+              errorMessage: controller.signal.aborted ? 'Client disconnected' : streamFailureMessage(streamError),
             }
           : {}),
       });
