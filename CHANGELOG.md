@@ -74,6 +74,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generate and improve. Previously these fields were omitted, so the audit trail
   could not show that injected content reached the model.
 
+- **Vision probe ignores reasoning and no longer caches a cut-off reply (#1727):**
+  the probe now matches colours in the visible reply only, so colours named
+  inside `<think>…</think>` no longer count. A reply that ends inside a
+  reasoning block, or is cut off by the token limit without naming the bands in
+  order, is undetermined (`null`, re-probed after the cooldown) instead of a
+  `false` cached for 30 days.
+
+- **Conversation titles never keep reasoning (#1724):** a generated title now
+  ignores `<think>…</think>` blocks (and a lone closing tag from hosts whose
+  template supplies the opener). A reply that is only reasoning, or was cut
+  inside it, keeps the question-derived title. The shared helper
+  `think-blocks.ts` also replaces three local copies of the closed-block
+  expression, with unchanged behaviour.
+
+- **Provider error frames fail the request (#1728):** an OpenAI-compatible
+  provider that reports an `error` inside a streaming response, even when it
+  then sends `[DONE]`, no longer produces a successful empty or partial
+  answer. Generate, Improve, Summarize, Quality, Diagram and Ask end the
+  stream with `{ error: 'Provider error', done: true }` and write an `error`
+  audit entry; nothing is cached, Ask saves no conversation turn, and the
+  summary and quality workers mark the page failed and retry it. The
+  provider's error text is never sent to the client. A blank assistant turn
+  already saved by this defect no longer counts as grounding, so an
+  ungrounded follow-up in such a thread is refused again. Ask's error text
+  for a stream that ended before `[DONE]` is now
+  `Stream ended before completion`, as on the other routes.
+
+- **Ask stops generating when the client disconnects (#1719):**
+  `POST /api/llm/ask` now notices a closed browser tab or a cancelled request
+  and aborts the provider stream within milliseconds. A disconnected ask no
+  longer finishes in the background: nothing is cached, no conversation turn
+  is saved, no title is generated, the per-user stream slot is released at
+  once, and the LLM audit log records one `error` / `Client disconnected`
+  entry instead of a `success`. A client that has already left when the route
+  is about to call the provider (after retrieval, the cache lookup and the
+  lock wait) causes no provider request and no audit entry.
+
 - **Admin user update: `null` clears the email or display name (#1736):**
   `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
   or `displayName` through to the service, which stores `NULL`. Keys left out
