@@ -169,6 +169,39 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
     expect(audit.rows[0]?.status).toBe('error');
   }, 30_000);
 
+  // #1728: a provider `error` frame followed by `[DONE]` used to complete the
+  // stream, so the prefix was cached and audited as a success.
+  it.each([
+    ['as the first frame', ''],
+    ['after content', 'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'],
+  ])('records a provider error frame %s, followed by [DONE], as a failure', async (label, prefix) => {
+    const providerText = 'upstream worker crashed: CUDA out of memory on gpu-7';
+    nextProviderResponse = `${prefix}data: ${JSON.stringify({ error: { message: providerText, type: 'server_error' } })}\n\ndata: [DONE]\n\n`;
+    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+    const response = await fetch(`${base}/api/llm/generate`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: `provider error frame ${label} ${Date.now()}` }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    const events = body.split('\n').filter((line) => line.startsWith('data: ')).map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>);
+    expect(events.at(-1)).toEqual({ error: 'Provider error', done: true });
+    expect(events.some((event) => event.final === true)).toBe(false);
+    expect(body).not.toContain('CUDA');
+    expect(await waitForDatabaseCondition(async () => {
+      const rows = await query<{ count: string }>(`SELECT count(*) FROM llm_audit_log WHERE user_id = $1 AND action = 'generate'`, [userId]);
+      return Number(rows.rows[0]!.count) === received.length;
+    })).toBe(true);
+    const audit = await query<{ status: string; error_message: string | null }>(
+      `SELECT status, error_message FROM llm_audit_log
+       WHERE user_id = $1 AND action = 'generate' ORDER BY id DESC LIMIT 1`, [userId],
+    );
+    expect(audit.rows).toEqual([{ status: 'error', error_message: 'Provider error' }]);
+    const messages = received.at(-1)!;
+    expect(await app.redis.exists(buildLlmCacheKey('synthetic', messages[0]!.content, messages[1]!.content, providerId))).toBe(0);
+  }, 30_000);
+
   it('flushes a waiting Generate response and reuses the live owner after a poll timeout', async () => {
     const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
     controlledPrompt = `single-flight slow ${Date.now()}`;
