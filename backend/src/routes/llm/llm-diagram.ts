@@ -50,6 +50,8 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    let promptInjectionDetected = warnings.length > 0;
+    let wasSanitized = sanitized !== markdown;
     if (warnings.length > 0) {
       await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate-diagram' }, request);
     }
@@ -62,7 +64,10 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
       const stripped = instruction.replace(/<[^>]*>/g, '').slice(0, 10_000);
       const { sanitized: cleanInstruction, warnings: instructionWarnings } = sanitizeLlmInput(stripped);
       sanitizedInstruction = cleanInstruction;
+      if (cleanInstruction !== stripped) wasSanitized = true;
       if (instructionWarnings.length > 0) {
+        promptInjectionDetected = true;
+        wasSanitized = true;
         await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
           warnings: instructionWarnings,
           route: '/llm/generate-diagram',
@@ -115,6 +120,8 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
             inputMessages: diagramMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
             promptHash: fingerprintPrompt(diagramMessages),
             retrievedChunkIds: [],
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           },
           cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });

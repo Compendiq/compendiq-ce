@@ -98,4 +98,9 @@ text/image parts and their order; the CE writer persists that digest unchanged.
 Hashes from before #1790 used length summaries and are not comparable to new
 fingerprints. Cache replay is not an inference audit event.
 
+Every route that dispatches through `streamSSE` passes `promptInjectionDetected`
+and `sanitized` as defined booleans in `audit`. `promptInjectionDetected` is true
+when the sanitizer reports warnings for any model input, including web sources
+and diagram instructions; `sanitized` is true when that input changed.
+
 **Removed (do not revive):** `LLM_PROVIDER` was the legacy two-slot toggle and is gone — replaced wholesale by the `llm_providers` table + per-use-case assignments.

@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Summarize, quality, and diagram audits record prompt-injection flags (#1726):**
+  the LLM audit entries for the summarize, quality, and diagram routes now set
+  `promptInjectionDetected` and `sanitized` from the sanitizer result, matching
+  generate and improve. Previously these fields were omitted, so the audit trail
+  could not show that injected content reached the model.
+
 - **Vision probe ignores reasoning and no longer caches a cut-off reply (#1727):**
   the probe now matches colours in the visible reply only, so colours named
   inside `<think>…</think>` no longer count. A reply that ends inside a
