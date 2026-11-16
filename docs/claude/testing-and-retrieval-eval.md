@@ -18,6 +18,14 @@ For independent serial runs, set a unique namespace and use
 Redis logical DBs and pub/sub prefixes are unchanged: serialize runs sharing
 the same Redis server, and provision only the run's owned Postgres database.
 
+Files on one worker share its Redis DB, and `processDirtyPages` backs off while
+a foreign `embedding:lock:*` holder is listed in `embedding:locks:active`
+(#2003). A test that needs such a holder uses `holdEmbeddingLease` /
+`holdOtherEmbeddingLease` (`routes/knowledge/pages.test-helpers.ts`), which
+release it in `onTestFinished`; any other raw `embedding:lock:*` key is released
+the same way. Such files declare `expectNoEmbeddingLeaseLeak()` as their first
+`afterAll` (hooks run last-declared first) so a leaked lease fails its own file.
+
 The notification bell uses the global `/notifications/count` for its badge
 and mark-all action, not the current list page. Its paginated list and count
 queries must both be invalidated after read mutations.

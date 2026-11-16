@@ -14,7 +14,7 @@ import { cancelPageWriteIntentBeforeEffect, reservePageWriteIntent } from '../..
 import { runNotionImport } from '../../domains/knowledge/services/notion-import-service.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from '../../domains/knowledge/services/notion-client.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
-import { buildKnowledgeTestApp, holdOtherEmbeddingLease } from './pages.test-helpers.js';
+import { buildKnowledgeTestApp, expectNoEmbeddingLeaseLeak, holdOtherEmbeddingLease } from './pages.test-helpers.js';
 import { pagesCrudRoutes } from './pages-crud.js';
 import { notionRoutes } from './notion.js';
 
@@ -236,6 +236,12 @@ beforeEach(async () => {
   other = await insertUser('identity-other');
   actor = owner;
   await query("INSERT INTO spaces (space_key,space_name,source) VALUES ('LOCAL','Local','local')");
+});
+
+// Declared first on purpose: afterAll hooks run last-declared first, so this
+// runs after the teardown below and a failure here cannot skip that teardown.
+afterAll(async () => {
+  await expectNoEmbeddingLeaseLeak();
 });
 
 afterAll(async () => {
