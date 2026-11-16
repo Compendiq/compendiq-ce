@@ -26,7 +26,7 @@ import { registerPageRelocateReconciler } from '../../domains/knowledge/services
 import { runNotionImport } from '../../domains/knowledge/services/notion-import-service.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from '../../domains/knowledge/services/notion-client.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
-import { buildKnowledgeTestApp, holdOtherEmbeddingLease } from './pages.test-helpers.js';
+import { buildKnowledgeTestApp, expectNoEmbeddingLeaseLeak, holdOtherEmbeddingLease } from './pages.test-helpers.js';
 import { pagesRelocateRoutes } from './pages-relocate.js';
 import { pagesCrudRoutes } from './pages-crud.js';
 import { notionRoutes } from './notion.js';
@@ -405,6 +405,12 @@ afterEach(async () => {
   // Every individual barrier test releases and awaits its request in finally
   // before this shared test-owned data can be reset.
   expect(JSON.stringify(notion.requests)).not.toContain('api.notion.com');
+});
+
+// Declared first on purpose: afterAll hooks run last-declared first, so this
+// runs after the teardown below and a failure here cannot skip that teardown.
+afterAll(async () => {
+  await expectNoEmbeddingLeaseLeak();
 });
 
 afterAll(async () => {

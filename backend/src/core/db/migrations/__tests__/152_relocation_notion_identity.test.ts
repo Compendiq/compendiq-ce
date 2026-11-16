@@ -32,7 +32,7 @@ import { registerPageRelocateReconciler } from '../../../../domains/knowledge/se
 import { runNotionImport } from '../../../../domains/knowledge/services/notion-import-service.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from '../../../../domains/knowledge/services/notion-client.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
-import { buildKnowledgeTestApp, holdOtherEmbeddingLease } from '../../../../routes/knowledge/pages.test-helpers.js';
+import { buildKnowledgeTestApp, expectNoEmbeddingLeaseLeak, holdOtherEmbeddingLease } from '../../../../routes/knowledge/pages.test-helpers.js';
 import { pagesCrudRoutes } from '../../../../routes/knowledge/pages-crud.js';
 import { notionRoutes } from '../../../../routes/knowledge/notion.js';
 
@@ -517,6 +517,12 @@ beforeAll(async () => {
   beforeIntents = (await query('SELECT to_jsonb(i) AS value FROM page_write_intents i ORDER BY id')).rows;
   beforeCapacity = await capacity();
   await runMigrations(); // origin: real successful no-op, NOT missing152.
+});
+
+// Declared first on purpose: afterAll hooks run last-declared first, so this
+// runs after the teardown below and a failure here cannot skip that teardown.
+afterAll(async () => {
+  await expectNoEmbeddingLeaseLeak();
 });
 
 afterAll(async () => {

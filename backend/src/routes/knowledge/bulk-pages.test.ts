@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type * as Undici from 'undici';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 const mockUndiciRequest = vi.hoisted(() => vi.fn());
 vi.mock('undici', async (importOriginal) => ({
@@ -29,6 +29,9 @@ import {
   activeEmbeddingHolders,
   buildKnowledgeTestApp,
   holdOtherEmbeddingLease,
+  expectNoEmbeddingLeaseLeak,
+  holdEmbeddingLease,
+  releaseEmbeddingLeases,
   insertConfluencePage,
   insertLocalSpace,
   insertStandalonePage,
@@ -136,6 +139,12 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
       const { attachmentRoutes } = await import('../confluence/attachments.js');
       await instance.register(attachmentRoutes, { prefix: '/api' });
     });
+  });
+
+  // Declared first on purpose: afterAll hooks run last-declared first, so this
+  // runs after the teardown below and a failure here cannot skip that teardown.
+  afterAll(async () => {
+    await expectNoEmbeddingLeaseLeak();
   });
 
   afterAll(async () => {
@@ -551,8 +560,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     // The route must still enqueue through the real embedding service. Hold an
     // unrelated production lease so that global scanner backs off immediately
     // after the route mutation, without replacing the worker with a test fake.
-    await redis.set('embedding:lock:other-bulk-test-user', 'other-runtime', { EX: 60 });
-    await redis.sAdd('embedding:locks:active', 'other-bulk-test-user');
+    await holdEmbeddingLease(redis, 'other-bulk-test-user');
 
     const embed = await app.inject({
       method: 'POST',
@@ -566,6 +574,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
 
     // Keep the actual worker from racing the route-level mutation assertion.
     // Its distributed lease is the production exclusion mechanism, not a mock.
+    onTestFinished(async () => { await redis.del('worker:lock:quality-worker'); });
     await redis.set('worker:lock:quality-worker', 'another-runtime', { EX: 60 });
     const quality = await app.inject({
       method: 'POST',
@@ -712,6 +721,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     {
       guard: 'the caller already has an embedding run',
       arrange: async () => {
+        onTestFinished(() => releaseEmbeddingLeases(redis, [actorId]));
         await redis.set(`embedding:lock:${actorId}`, 'running', { EX: 60 });
       },
       error: 'Embedding processing is already in progress for this user',
