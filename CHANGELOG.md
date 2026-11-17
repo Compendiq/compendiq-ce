@@ -841,6 +841,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborting the export; and a failed export shows an error toast naming the
   report instead of failing silently.
 
+### Security
+
+- **Hono raised to 4.13.16 in the root and sidecar lockfiles (#1989):** `hono`
+  4.13.13 → 4.13.16 (overrides `^4.13.16` in `package.json` and
+  `mcp-docs/package.json`) fixes GHSA-46wx-v44x-9hh2 (`csrf()` skipped
+  `text/ping` requests), GHSA-4h7h-rv7c-7m2v (`validator('form')` skipped
+  multipart requests with extra parameters), GHSA-4m76-xfj5-7975 (`mount()`
+  path bypass of prefix-scoped middleware), GHSA-h7mg-cq63-vhpq (RegExpRouter
+  skipped wildcard middleware) and GHSA-3gg2-335m-rxc6 (`css` helper HTML
+  injection). Hono is transitive through `@modelcontextprotocol/sdk`; the
+  application has no first-party Hono router, `csrf`, validator or CSS use.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed

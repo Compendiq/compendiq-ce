@@ -136,6 +136,11 @@ describe('npm advisory floors', () => {
     expect(belowFloor('sharp', '0.35.5')).toEqual([]);
   });
 
+  it('resolves hono past the 4.13.16 advisories in both lockfiles (GHSA-46wx-v44x-9hh2, GHSA-4h7h-rv7c-7m2v, GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq, GHSA-3gg2-335m-rxc6)', () => {
+    expect(belowFloor('hono', '4.13.16')).toEqual([]);
+    expect(belowFloor('hono', '4.13.16', sidecarLockfile)).toEqual([]);
+  });
+
   it('resolves shell-quote past the quote() comment injection (GHSA-pqg4-j6r4-53mv)', () => {
     expect(belowFloor('shell-quote', '1.11.0')).toEqual([]);
   });
