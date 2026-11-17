@@ -360,7 +360,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
             onClick={handleToggle}
             // z-10: see the twin in SidebarTreeNode — the guide's click target
             // and a child chevron share ~6px of column at a 12px indent.
-            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             style={{ left: `${level * 12 + 2}px` }}
             // Mouse-only, out of the tab order and the a11y tree — see the twin
             // in SidebarTreeNode for why (it was defeating the roving tabindex

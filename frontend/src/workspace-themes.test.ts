@@ -272,7 +272,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#f5f5f5',
+    '--app-chassis': '#fbfbfd',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
@@ -281,18 +281,26 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // The left destination rail paints Canvas, and its inactive labels are 12px
-  // --color-muted-foreground on it — normal text, so 1.4.3 wants 4.5:1. This is
-  // the constraint that sets HOW GREY the frame may go: at #ebeae8 the pair
-  // measures 4.51:1, so the next step of grey has to be paid for by darkening
-  // the secondary ink first. Without this guard the rail loses its labels to a
-  // chassis retune nothing else in the suite would notice, because every other
-  // muted-foreground measurement is taken against Pane and Raised.
-  it('keeps the destination rail labels readable on the frame', () => {
+  // The left destination rail paints the shell gradient, and its inactive labels
+  // are --shell-muted on it — normal text, so 1.4.3 wants 4.5:1 against the
+  // worst-case stop (darkest bottom-left stop in Paper, lightest stop in Graphite).
+  it('keeps the destination rail labels readable on the frame and gradient stops', () => {
     expectContrast(
       'muted foreground on Canvas (rail labels)',
       token(lightBlock, '--color-muted-foreground'),
       token(lightBlock, '--app-chassis'),
+      4.5,
+    );
+    expectContrast(
+      'shell-muted on darkest light gradient stop (--shell-grad-1)',
+      token(lightBlock, '--shell-muted'),
+      token(lightBlock, '--shell-grad-1'),
+      4.5,
+    );
+    expectContrast(
+      'shell-muted on lightest dark gradient stop (--shell-grad-1)',
+      token(darkBlock, '--shell-muted'),
+      token(darkBlock, '--shell-grad-1'),
       4.5,
     );
   });
@@ -792,6 +800,12 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--app-chassis',
     '--app-shell-bg',
     '--app-rail-bg',
+    '--shell-grad-1',
+    '--shell-grad-2',
+    '--shell-grad-3',
+    '--shell-grad-4',
+    '--shell-grad-5',
+    '--shell-muted',
   ];
 
   for (const name of required) {
@@ -801,6 +815,25 @@ describe('Both themes declare a complete, symmetric token set', () => {
       // value that resolves" — a missing declaration still throws.
       expect(() => resolveToken(darkBlock, name)).not.toThrow();
       expect(() => resolveToken(lightBlock, name)).not.toThrow();
+    });
+  }
+
+  const requiredComposite = [
+    '--shell-pool',
+    '--shell-pool-soft',
+    '--panel-bg',
+    '--panel-bg-fallback',
+    '--panel-border',
+    '--panel-shadow',
+    '--nav-hover',
+    '--nav-active',
+    '--nav-active-shadow',
+  ];
+
+  for (const name of requiredComposite) {
+    it(`declares ${name} in both themes`, () => {
+      expect(darkBlock).toMatch(new RegExp(`${name}:\\s*[^;]+;`));
+      expect(lightBlock).toMatch(new RegExp(`${name}:\\s*[^;]+;`));
     });
   }
 
@@ -976,7 +1009,7 @@ describe('Flat depth model', () => {
         // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
         if (/^none$/.test(value)) continue;
         if (/^0 0 0 \d+px/.test(value)) continue;
-        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow)\)/.test(value)) continue;
+        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow|panel-shadow|nav-active-shadow)\)/.test(value)) continue;
         // Retired tokens resolve to `transparent`, so they paint nothing.
         if (/var\(--nm-(shadow|highlight)/.test(value)) continue;
         offenders.push(`${selector} → ${value}`);

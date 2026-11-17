@@ -516,6 +516,29 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
   --app-chassis: #09090a;
+  /* Shell diagonal colour-gradient + bottom-left shade pool (Graphite dark).
+     Ramp is inverted in lightness from Paper: cool slate/navy tint at the
+     bottom-left (--shell-grad-1) fading to the dark canvas (--shell-grad-5 =
+     --app-chassis) at top-right. --shell-muted clears 4.5:1 against the
+     lightest stop (#1a222d, 7.05:1) and the pool composite (6.46:1). */
+  --shell-grad-1: #1a222d;
+  --shell-grad-2: #151b24;
+  --shell-grad-3: #10141b;
+  --shell-grad-4: #0c0e12;
+  --shell-grad-5: #09090a;
+  --shell-pool: rgb(38 50 68 / 0.42);
+  --shell-pool-soft: rgb(28 38 52 / 0.18);
+  --shell-muted: #a3adba;
+  --panel-bg: rgb(255 255 255 / 0.05);
+  --panel-bg-fallback: rgb(25 25 26 / 0.92);
+  --panel-border: rgb(255 255 255 / 0.08);
+  --panel-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 2px 6px rgb(0 0 0 / 45%),
+    0 12px 28px -4px rgb(0 0 0 / 65%);
+  --nav-hover: rgb(255 255 255 / 0.06);
+  --nav-active: rgb(255 255 255 / 0.10);
+  --nav-active-shadow: 0 1px 2px rgb(0 0 0 / 35%);
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
@@ -527,7 +550,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --app-header-bg: #0c0c0d;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
-  --app-workspace-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px -4px rgba(0, 0, 0, 0.6);
+  --app-workspace-shadow: var(--panel-shadow);
   --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
@@ -932,8 +955,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      THE SECONDARY INK SETS THE FLOOR UNDER HOW GREY THIS MAY GO — never a
      ceiling on how light. The left navigation's 12px secondary labels are
      --color-muted-foreground on this surface, so 1.4.3 applies at 4.5:1, and
-     #616878 clears that floor here (5.12:1 on #f5f5f5; 4.70:1 on the prior
-     #e8ecf0). Lighter is always safe for them; any deeper grey needs
+     #616878 clears that floor here (5.44:1 on #fbfbfd; 5.12:1 on the prior
+     #f5f5f5 and 4.70:1 on the prior #e8ecf0). Lighter is always safe for them; any deeper grey needs
      --color-muted-foreground darkened first, and workspace-themes.test.ts pins
      that relationship so the labels cannot be lost to a later retune.
      --color-border-interactive on Canvas is over the 1.4.11 floor. Every
@@ -941,7 +964,29 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      why the ramp reads near-neutral rather than beige. The rail's destinations
      are unaffected: they carry hover and selection with ink and a Steel marker
      line, never a fill. */
-  --app-chassis: #f5f5f5;
+  --app-chassis: #fbfbfd;
+  /* Shell diagonal colour-gradient + bottom-left shade pool (Paper light).
+     Darkest stop is bottom-left (#d0d4da), lightest is top-right (#fbfbfd =
+     --app-chassis). --shell-muted (#4b525c) clears 4.5:1 against the darkest
+     stop (5.30:1) and the pool composite (4.98:1). */
+  --shell-grad-1: #d0d4da;
+  --shell-grad-2: #dbdfe4;
+  --shell-grad-3: #eceef1;
+  --shell-grad-4: #f6f7f9;
+  --shell-grad-5: #fbfbfd;
+  --shell-pool: rgb(196 201 208 / 0.56);
+  --shell-pool-soft: rgb(206 211 217 / 0.24);
+  --shell-muted: #4b525c;
+  --panel-bg: rgb(255 255 255 / 0.68);
+  --panel-bg-fallback: rgb(255 255 255 / 0.92);
+  --panel-border: rgb(255 255 255 / 0.62);
+  --panel-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.75),
+    0 1px 3px rgb(20 42 66 / 7%),
+    0 8px 24px -4px rgb(20 42 66 / 10%);
+  --nav-hover: rgb(255 255 255 / 0.45);
+  --nav-active: rgb(255 255 255 / 0.78);
+  --nav-active-shadow: 0 1px 2px rgb(20 42 66 / 7%);
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
@@ -966,7 +1011,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
-  --app-workspace-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px -2px rgba(0, 0, 0, 0.06);
+  --app-workspace-shadow: var(--panel-shadow);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -1101,10 +1146,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-chassis {
-  /* One flat colour on every side of the workspace card. The tree column and
-     the header are transparent over it, so any image here (the retired
-     diagonal wash) showed as a tonal band around the card's left corners. */
-  background: var(--app-chassis);
+  /* Diagonal colour-gradient + bottom-left radial shade pool on the shell root.
+     Solid fallback equals the lightest/end stop (--shell-grad-5 = --app-chassis). */
+  background-color: var(--shell-grad-5);
+  background-image:
+    radial-gradient(64% 58% at 17% 83%,
+      var(--shell-pool) 0%,
+      var(--shell-pool-soft) 46%,
+      transparent 82%),
+    linear-gradient(to top right,
+      var(--shell-grad-1) 0%,
+      var(--shell-grad-2) 33.333%,
+      var(--shell-grad-3) 62%,
+      var(--shell-grad-4) 84%,
+      var(--shell-grad-5) 100%);
   padding-inline-start: 0;
   padding-inline-end: var(--app-inset);
   padding-bottom: var(--app-inset);
@@ -1116,17 +1171,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding-top: 4px;
 }
 
-/* The workspace card is defined by value and shape, not by a line: the chassis
-   inset holds it off the frame, the radius cuts its corners, and Pane sits a
-   step above Canvas in both themes (1.101:1 Graphite, 1.171:1 Paper). The 1px
-   hairline that used to trace all four sides was a third statement of the same
-   boundary, and it read as a frame drawn around the work. Do not add it back:
-   retune --app-chassis if the card stops reading as a card. */
+/* The content panel is a frosted, elevated surface floating on the shell gradient. */
 @utility app-workspace {
-  background: var(--app-shell-bg);
+  background: var(--panel-bg);
+  backdrop-filter: blur(16px) saturate(112%);
+  border: 1px solid var(--panel-border);
   border-radius: var(--app-shell-radius);
-  box-shadow: var(--app-workspace-shadow);
+  box-shadow: var(--panel-shadow);
   min-width: 0;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .app-workspace {
+    background: var(--panel-bg-fallback);
+  }
 }
 
 /* The inspector is attached inside the workspace card, beside <main>. The
@@ -1159,11 +1217,9 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 /* Shell surfaces carry the palette without competing with content. The top
-   app header continues the Canvas around the workspace on all four sides.
-   The left navigation pane — title, tree, and footer — paints the same
-   surface as main so the workspace reads as one card split by a hairline,
-   not a chrome band beside a reading pane. The detached context rail is the
-   same composition: one pane, its own first row, no band. */
+   app header and desktop left sidebar are transparent so the shell gradient
+   shows through; below the `md` sidebar breakpoint the mobile drawer gets an
+   opaque theme-aware canvas background. */
 @utility app-header {
   /* Let the chassis wash continue through the header without restarting. */
   background: transparent;
@@ -1179,16 +1235,44 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   border-color: var(--color-border);
 }
 
+@media (max-width: 767px) {
+  .app-sidebar {
+    background: var(--app-chassis);
+  }
+}
+
+/* Text and nav items sitting directly on the shell gradient use --shell-muted
+   for WCAG AA contrast against the worst-case gradient stop, and translucent
+   --nav-hover / --nav-active fills for state. */
+.app-header,
+.app-sidebar {
+  --color-muted-foreground: var(--shell-muted);
+  --glass-pill-hover: var(--nav-hover);
+}
+
+.app-header .nm-icon-button:hover,
+.app-sidebar .nm-icon-button:hover {
+  background-color: var(--nav-hover);
+  color: var(--color-foreground);
+}
+
+.app-header [aria-current='page'],
+.app-sidebar .nav-selection,
+.app-sidebar [aria-current='page'] {
+  background: var(--nav-active);
+  box-shadow: var(--nav-active-shadow);
+  color: var(--color-foreground);
+}
+
 /* Title and footer bands inherit the pane; they must not reintroduce Chrome. */
 .app-sidebar .panel-toolbar {
   background: transparent;
 }
 
-/* Route content is the page users are working on. It shares --color-card with
-   the left pane so the workspace is one surface; the hairline on the sidebar
-   is the only split. The workspace clips both to the shared outer radius. */
+/* Route content sits inside the frosted .app-workspace plate; keep it
+   transparent so the workspace's translucent fill and blur show through. */
 @utility app-content-pane {
-  background: var(--color-card);
+  background: transparent;
 }
 /* Panel composition primitives. Sidebars share the same chassis, but their
    internal hierarchy comes from quiet chrome, a single context control, and
@@ -1975,8 +2059,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .nm-button-destructive,
   .nm-button-ghost,
   .nm-icon-button,
-  .nm-input {
+  .nm-input,
+  .app-workspace {
     border: 2px solid ButtonText;
+  }
+  .app-workspace {
+    background: Canvas;
+    backdrop-filter: none;
   }
   .nm-button-primary,
   .nm-button-destructive {
@@ -1994,6 +2083,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .nm-popover-glass,
   .app-context-rail .panel-toolbar.nm-popover-glass {
     background-color: var(--color-card-elevated);
+    backdrop-filter: none;
+  }
+  .app-workspace {
+    background: var(--color-card);
     backdrop-filter: none;
   }
 }
