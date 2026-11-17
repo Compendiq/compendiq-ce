@@ -912,6 +912,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the override once the proxy chain reaches `get-uri` ≥ 8.0.2. Dev-only tooling path, reached only when an
   operator points `lhci` at a `pac+ftp://` proxy URL; the product has no FTP use.
   A loopback FTP regression test covers the `get-uri` download path.
+- **`soupsieve` 2.9.2 → 4.0** in the eval-corpus builder
+  (`tools/eval-corpus-images/`; GHSA-mmhr-3c5m-f64f: polynomial-time descendant
+  combinator, GHSA-6655-6qjp-jx7x: selector-compilation ReDoS,
+  GHSA-7g44-g9rc-x53w: unbounded recursion on nested pseudo-classes,
+  GHSA-4j63-6c4x-wfg4: quadratic `:has()` with the general sibling combinator;
+  Dependabot alerts #404–#407). Developer tooling only: it is not part of the
+  application, the images or any runtime path, and the builder only selects
+  with its own constant selectors over Wikipedia HTML. The tool now needs
+  Python 3.11.5 or newer (soupsieve 4.0's minimum). Parsing, selection and
+  Markdown output were compared on identical saved HTML under 2.9.2 and 4.0 and
+  are byte-identical; the vendored corpus is unchanged. The new
+  `test_build.py` cases are local evidence only — no workflow runs the
+  Python tests.
 
 ## [0.9.2] - 2026-10-29
 
