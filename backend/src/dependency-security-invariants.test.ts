@@ -148,6 +148,10 @@ describe('npm advisory floors', () => {
     expect(belowFloor('katex', '0.18.2')).toEqual([]);
   });
 
+  it('resolves @vitest/mocker past the mocker-plugin advisories (GHSA-qxg6-89mg-rqv8, GHSA-xp26-3454-mjgp)', () => {
+    expect(belowFloor('@vitest/mocker', '5.0.3')).toEqual([]);
+  });
+
   it('does not install extract-zip (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv)', () => {
     expect(installed(lockPackages(), 'extract-zip')).toEqual([]);
   });
