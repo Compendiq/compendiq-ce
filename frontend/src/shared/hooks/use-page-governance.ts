@@ -22,6 +22,22 @@ export function governanceProposalKey(proposalId: string) {
   return ['page-governance-proposal', proposalId] as const;
 }
 
+/**
+ * The overlay's refusal when the live `document_sign_off_governance`
+ * entitlement is absent. It is not `governance_unavailable` (the workflow
+ * could not be reached): the workflow answered and said the licence is gone.
+ */
+export const GOVERNANCE_LICENSE_REQUIRED = 'governance_license_required';
+
+/**
+ * `finalizeError` holds a reason slug; rows written before the overlay
+ * stored slugs hold the server's prose, which is shown as written rather
+ * than dressed as a refusal code.
+ */
+export function isRefusalSlug(value: string): boolean {
+  return /^[a-z][a-z0-9_]{0,63}$/.test(value);
+}
+
 export function useGovernanceProposal(proposalId: string | null | undefined, enabled: boolean) {
   return useQuery<PageGovernanceProposal, PageBaselineError>({
     queryKey: governanceProposalKey(proposalId ?? 'none'),
@@ -44,6 +60,12 @@ export function useGovernanceProposal(proposalId: string | null | undefined, ena
  * the page's own lifecycle: the last approval finalizes the freeze inside the
  * same transaction, and a withdrawal or rejection changes what the page's
  * capability fields say the viewer may do next.
+ *
+ * It runs when the request SETTLES, not only on success: a refusal can still
+ * have moved server state (an approve refused as `stale_manifest` commits the
+ * invalidation of the votes; a failed finalize retry records its reason). The
+ * one exception is a lapsed licence — re-reading the proposal would only be
+ * refused again, and the section stops asking the moment it sees the reason.
  */
 function useGovernanceMutation<TVariables>(
   pageId: string,
@@ -65,13 +87,13 @@ function useGovernanceMutation<TVariables>(
         throw toBaselineError(err);
       }
     },
-    onSuccess: async (proposal) => {
+    onSettled: async (proposal, error) => {
+      const proposalKeys = error?.reason === GOVERNANCE_LICENSE_REQUIRED
+        ? []
+        : [...new Set([proposal?.id, proposalId].filter((id): id is string => Boolean(id)))];
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['pages', pageId] }),
-        queryClient.invalidateQueries({ queryKey: governanceProposalKey(proposal.id) }),
-        ...(proposalId && proposalId !== proposal.id
-          ? [queryClient.invalidateQueries({ queryKey: governanceProposalKey(proposalId) })]
-          : []),
+        ...proposalKeys.map((id) => queryClient.invalidateQueries({ queryKey: governanceProposalKey(id) })),
       ]);
     },
   });
@@ -158,6 +180,20 @@ export function governanceRefusal(reason: string | null | undefined): string | n
       return 'Retained evidence has filled this deployment’s archive. An administrator has to raise the cap — nothing is ever evicted to make room.';
     case 'proposal_page_mismatch':
       return 'That proposal belongs to another article.';
+    case 'duplicate_approval':
+      return 'That role is already approved, or you have already approved this proposal.';
+    case 'approval_required':
+      return 'Not every required role holds a current approval, so the freeze could not complete.';
+    case 'approver_not_distinct':
+      return 'One person approved two roles. Each required role needs a different approver.';
+    case 'governance_evidence_incomplete':
+      return 'The signed or archived evidence this deployment requires could not be produced, so the article was not frozen.';
+    case 'governance_policy_changed':
+      return 'This space no longer requires approvals, so the proposal cannot complete the freeze.';
+    case 'finalize_failed':
+      return 'The freeze failed for a reason the server did not name. The approvals are kept; retry, or ask an administrator to check the server log.';
+    case GOVERNANCE_LICENSE_REQUIRED:
+      return 'New proposals, votes and finalization need an active Enterprise licence, which is unavailable right now. Recorded approvals, retained evidence and an authorized thaw are unaffected.';
     default:
       return `Refused: ${reason}.`;
   }

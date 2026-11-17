@@ -5,6 +5,7 @@ import {
   PageFreezeDetailFieldsSchema,
   PageFreezeHistoryEntrySchema,
   PageFreezePreviewResponseSchema,
+  PageGovernanceProposalResponseSchema,
   PageLifecycleDenialReasonSchema,
 } from './page-baselines.js';
 
@@ -93,6 +94,44 @@ describe('page baseline contracts', () => {
     expect(PageFreezeDetailFieldsSchema.parse({
       ...state, governanceEnabled: true, governanceProposalId: ID,
     }).governanceProposalId).toBe(ID);
+  });
+
+  it('parses a finalized governed proposal and an approved one whose freeze failed', () => {
+    const proposal = {
+      id: ID,
+      pageId: 7,
+      originalPageId: 7,
+      spaceKey: 'LOCAL',
+      status: 'finalized',
+      expectedManifestDigest: DIGEST,
+      expectedContentRevision: '12',
+      requirementsRevision: '3',
+      requiredRoles: ['quality'],
+      requestedBy: ACTOR_ID,
+      requestedByName: 'Example Admin',
+      contentAuthorName: 'Example Admin',
+      baselineId: ID,
+      finalizeError: null,
+      decisionReason: null,
+      createdAt: '2026-09-18T12:00:00.000Z',
+      updatedAt: '2026-09-18T12:05:00.000Z',
+      approvals: [],
+    };
+    // The overlay answers `finalized` once the last approval froze the page;
+    // a shared bundle that refused it would report a completed freeze as a
+    // failed request.
+    expect(PageGovernanceProposalResponseSchema.parse({ proposal }).proposal.status).toBe('finalized');
+    expect(PageGovernanceProposalResponseSchema.parse({
+      proposal: { ...proposal, status: 'approved', baselineId: null, finalizeError: 'freeze_busy' },
+    }).proposal.finalizeError).toBe('freeze_busy');
+    expect(PageGovernanceProposalResponseSchema.safeParse({
+      proposal: { ...proposal, status: 'frozen' },
+    }).success).toBe(false);
+  });
+
+  it('types a lapsed governance licence as its own approval denial', () => {
+    expect(PageLifecycleDenialReasonSchema.parse('governance_license_required'))
+      .toBe('governance_license_required');
   });
 
   it('keeps signatory email out of ordinary history while retaining it in admin evidence', () => {

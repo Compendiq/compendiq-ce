@@ -27,6 +27,14 @@ export const PageLifecycleDenialReasonSchema = z.enum([
   'freeze_busy',
   'governance_required',
   'governance_unavailable',
+  /**
+   * The Enterprise workflow is reachable but its live
+   * `document_sign_off_governance` entitlement is absent (#277). Distinct
+   * from `governance_unavailable`, which means the workflow could not be
+   * reached at all: a lapsed licence stops new proposals, votes and
+   * finalization, and nothing else.
+   */
+  'governance_license_required',
   'approval_required',
   'stale_manifest',
   'stale_lifecycle',
@@ -247,11 +255,17 @@ export type PageBaselineActivationState = z.infer<typeof PageBaselineActivationS
  * newer Enterprise overlay may add a field, and a shared bundle that refuses
  * to render a vote list because of an unknown key would turn an additive
  * server change into a blank governance panel. Unknown keys are stripped.
+ *
+ * `finalized` is terminal: the final approval (or an explicit finalize retry)
+ * froze the article inside the server's transaction. `approved` means every
+ * role voted but the freeze has not completed; its `finalizeError` then names
+ * why with a reason slug (older rows may hold prose).
  */
 export const PageGovernanceProposalStateSchema = z.enum([
   'draft',
   'in_review',
   'approved',
+  'finalized',
   'rejected',
   'withdrawn',
 ]);

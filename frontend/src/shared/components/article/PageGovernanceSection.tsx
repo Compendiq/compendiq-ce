@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Check, Loader2 } from 'lucide-react';
 import type { PageGovernanceProposal, PageLifecycleState } from '@compendiq/contracts';
@@ -6,7 +6,9 @@ import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
 import { denialExplanation, type PageBaselineError } from '../../hooks/use-page-lifecycle';
 import {
+  GOVERNANCE_LICENSE_REQUIRED,
   governanceRefusal,
+  isRefusalSlug,
   useApproveProposal,
   useCreateProposal,
   useFinalizeProposal,
@@ -14,6 +16,7 @@ import {
   useRejectProposal,
   useWithdrawProposal,
 } from '../../hooks/use-page-governance';
+import type { LicenseInfo } from '../../enterprise/types';
 import { BASELINE_SETTINGS_PATH } from '../../lib/routes';
 
 /**
@@ -30,7 +33,9 @@ import { BASELINE_SETTINGS_PATH } from '../../lib/routes';
  *   2. **Licence loss stops new voting and nothing else.** The article stays
  *      locked, its retained evidence stays readable, and an authorized thaw
  *      is still available — so the unentitled branch says exactly that and
- *      issues no request at all.
+ *      issues no request at all. The client's licence view can be stale, so
+ *      a `governance_license_required` refusal from the server latches the
+ *      same branch until the licence the client sees changes.
  *   3. **Nothing is optimistic.** The last approval finalizes the freeze
  *      inside the server's own transaction and can legitimately fail there
  *      (`freeze_busy`, a missing signing key). A failure is reported as one,
@@ -43,10 +48,37 @@ const STATUS_COPY: Record<string, string> = {
   draft: 'A proposal is open and has no current approvals.',
   in_review: 'A proposal is in review and is collecting approvals.',
   approved: 'Every required role has approved; the freeze has not completed yet.',
+  finalized: 'Every required role approved, and the approvals froze the article.',
   rejected: 'The last proposal was rejected.',
   withdrawn: 'The last proposal was withdrawn.',
   unavailable: 'The approval workflow could not be reached, so its state is unknown.',
 };
+
+/**
+ * What the licence-loss latch is keyed to: the licence as the client last
+ * read it. A routine token refresh re-reads an identical licence and keeps
+ * the latch; a restored, replaced or expired licence clears it.
+ */
+function licenceIdentity(license: LicenseInfo | null): string {
+  if (!license) return 'none';
+  return JSON.stringify([
+    license.edition,
+    license.tier,
+    license.valid,
+    license.licenseId ?? null,
+    license.expiresAt ?? null,
+    license.displayKey ?? null,
+    license.features ?? [],
+  ]);
+}
+
+function approvalAnnouncement(result: PageGovernanceProposal): string {
+  if (result.status === 'finalized') return 'Your approval was recorded and the article is now frozen.';
+  if (result.status === 'approved' && result.finalizeError) {
+    return 'Your approval was recorded, but the freeze did not complete.';
+  }
+  return 'Your approval was recorded.';
+}
 
 function formatWhen(value: string): string {
   const date = new Date(value);
@@ -59,14 +91,32 @@ function pendingLabel(busy: boolean, idle: string, working: string) {
 }
 
 export function PageGovernanceSection({ pageId, page }: { pageId: string; page: LifecycleFields | undefined }) {
-  const { isEnterprise, hasFeature } = useEnterprise();
+  const { isEnterprise, hasFeature, license } = useEnterprise();
   const currentUser = useAuthStore((state) => state.user);
-  const entitled = isEnterprise && hasFeature('document_sign_off_governance');
   const governed = page?.governanceEnabled === true;
+
+  // Set when the server refuses with `governance_license_required`; cleared
+  // only when the licence the client sees changes. Adjusted during render so
+  // a cleared latch never paints one frame of the stale branch.
+  const identity = licenceIdentity(license);
+  const [licenceLost, setLicenceLost] = useState(false);
+  const [latchIdentity, setLatchIdentity] = useState(identity);
+  if (latchIdentity !== identity) {
+    setLatchIdentity(identity);
+    setLicenceLost(false);
+  }
+  const entitled = isEnterprise && hasFeature('document_sign_off_governance') && !licenceLost;
 
   const proposalId = page?.governanceProposalId ?? null;
   const proposalQuery = useGovernanceProposal(proposalId, governed && entitled);
   const proposal = proposalQuery.data;
+
+  // Keyed on the error's timestamp, not only its presence: once the licence
+  // changes, the cached refusal must not re-latch before the re-read lands.
+  const readLicenceLost = proposalQuery.error?.reason === GOVERNANCE_LICENSE_REQUIRED;
+  useEffect(() => {
+    if (readLicenceLost) setLicenceLost(true);
+  }, [readLicenceLost, proposalQuery.errorUpdatedAt]);
 
   const [error, setError] = useState<PageBaselineError | null>(null);
   const [announcement, setAnnouncement] = useState('');
@@ -87,16 +137,20 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
     return proposal.requiredRoles[0] ?? '';
   }, [proposal, role]);
 
-  const run = useCallback(async (action: () => Promise<PageGovernanceProposal>, announce: string) => {
+  const run = useCallback(async (
+    action: () => Promise<PageGovernanceProposal>,
+    announce: (result: PageGovernanceProposal) => string,
+  ) => {
     setError(null);
     try {
-      await action();
-      setAnnouncement(announce);
+      setAnnouncement(announce(await action()));
       return true;
     } catch (err) {
       // The typed text stays: a refusal here is usually something the user
       // retries with the same words once the server's state has moved.
-      setError(err as PageBaselineError);
+      const refusal = err as PageBaselineError;
+      if (refusal.reason === GOVERNANCE_LICENSE_REQUIRED) setLicenceLost(true);
+      setError(refusal);
       return false;
     }
   }, []);
@@ -105,7 +159,13 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
 
   if (!entitled) {
     return (
-      <div className="mt-3 text-xs text-muted-foreground" data-testid="governance-unlicensed">
+      <div
+        className="mt-3 text-xs text-muted-foreground"
+        // Announced only when a refusal just revealed it; on mount it is
+        // ordinary content, not news.
+        role={licenceLost ? 'alert' : undefined}
+        data-testid="governance-unlicensed"
+      >
         <p className="font-medium text-foreground/85">Approval required</p>
         <p className="mt-1">
           This space requires approvals before an article can be frozen. New proposals, votes and
@@ -119,9 +179,14 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
     );
   }
 
-  const status = page?.governanceProposalStatus ?? 'none';
+  // The loaded proposal is the record the votes below come from, and the only
+  // place `finalized` appears; the page's own status covers the rest.
+  const status = proposal?.status ?? page?.governanceProposalStatus ?? 'none';
+  // A finalized proposal is a record of what was approved; the article
+  // moving on afterwards does not make it stale.
   const proposalStale = Boolean(
-    proposal && page?.contentRevision && proposal.expectedContentRevision !== page.contentRevision,
+    proposal && proposal.status !== 'finalized' && page?.contentRevision
+    && proposal.expectedContentRevision !== page.contentRevision,
   );
   const open = proposal?.status === 'draft' || proposal?.status === 'in_review';
   const canWithdraw = Boolean(
@@ -195,7 +260,9 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
             >
               <p>
                 Every required role approved, but the freeze did not complete:{' '}
-                {governanceRefusal(proposal.finalizeError) ?? proposal.finalizeError}
+                {isRefusalSlug(proposal.finalizeError)
+                  ? governanceRefusal(proposal.finalizeError)
+                  : proposal.finalizeError}
               </p>
               <p className="mt-1 text-muted-foreground">
                 Nothing is scheduled — the proposal keeps its approvals until someone retries.
@@ -207,7 +274,12 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
                 data-testid="governance-finalize-retry"
                 onClick={() => {
                   if (busy) return;
-                  void run(() => finalize.mutateAsync(), 'Finalization was retried.');
+                  void run(
+                    () => finalize.mutateAsync(),
+                    (result) => (result.status === 'finalized'
+                      ? 'The approvals froze the article.'
+                      : 'Finalization was retried.'),
+                  );
                 }}
               >
                 {finalize.isPending && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
@@ -259,7 +331,7 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
                   expectedRequirementsRevision: proposal.requirementsRevision,
                   ...(comment.trim() ? { comment: comment.trim() } : {}),
                 }),
-                'Your approval was recorded.',
+                approvalAnnouncement,
               ).then((ok) => { if (ok) setComment(''); });
             }}
           >
@@ -284,7 +356,7 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
             data-testid="governance-request"
             onClick={() => {
               if (busy) return;
-              void run(() => create.mutateAsync(), 'An approval proposal was opened.');
+              void run(() => create.mutateAsync(), () => 'An approval proposal was opened.');
             }}
           >
             {create.isPending && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
@@ -351,7 +423,7 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
                 const mutation = decision === 'reject' ? reject : withdraw;
                 void run(
                   () => mutation.mutateAsync({ reason }),
-                  decision === 'reject' ? 'The proposal was rejected.' : 'The proposal was withdrawn.',
+                  () => (decision === 'reject' ? 'The proposal was rejected.' : 'The proposal was withdrawn.'),
                 ).then((ok) => { if (ok) { setDecision(null); setDecisionReason(''); } });
               }}
             >
@@ -369,7 +441,7 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
       )}
 
       {error && (
-        <p className="mt-2 text-destructive" data-testid="governance-error">
+        <p role="alert" className="mt-2 text-destructive" data-testid="governance-error">
           {governanceRefusal(error.reason) ?? error.message}
         </p>
       )}

@@ -235,7 +235,19 @@ enters the viewport, not on ordinary re-renders or background refetches.
   marked stale in amber and offers no vote; an `approved` proposal carrying a
   `finalizeError` reports the named failure and the explicit retry the server
   requires, because the freeze happens inside the final approval and nothing
-  reschedules it.
+  reschedules it. That error is a reason slug rendered through
+  `governanceRefusal`; an older row holding prose is shown verbatim. A final
+  vote answers `finalized` when its freeze completed — the status line says
+  so and the votes stay as a record with no controls — or `approved` with a
+  `finalizeError` when it did not, which is a recorded vote, not a refusal.
+  Every governed mutation invalidates the page and the proposal when it
+  **settles**, success or refusal, because a refusal can still have moved
+  server state. The one exception is `governance_license_required`: the
+  client's licence view can be stale, so that refusal (from a mutation or
+  the proposal read) latches the unlicensed branch with no further
+  governance request — the proposal is not re-read on settle — until the
+  licence `useEnterprise()` reports changes identity or validity. It is not
+  `governance_unavailable`, which means the workflow could not be reached.
 - **Retained evidence is a disclosure, not a second list** (`PageBaselineHistory`).
   It fetches only once opened, pages on the server's cursor, and keeps the
   same three claims apart as the section above it: the server's immutable
