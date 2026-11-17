@@ -896,6 +896,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross a major their parent does not admit yet (`//glob-deps-note`); no
   first-party code takes a glob pattern from a request. glob 7 and
   minimatch 3 predate both ranges and stay installed.
+- **`vitest` / `@vitest/mocker` 5.0.0 → 5.0.3** (GHSA-qxg6-89mg-rqv8,
+  GHSA-xp26-3454-mjgp), dev-only test tooling that is not shipped in any image.
+  Only `mockerPlugin()` / `interceptorPlugin()` users are exposed and no
+  vite/vitest config here configures either, so the repository was not
+  reachable. The `@vitest/coverage-v8` provider moves from 4.1.11 to 5.0.3
+  in `backend` and `frontend`, aligning it with the runner (it previously
+  sat beside vitest 5 as an invalid peer). The `mcp-docs` sidecar already
+  resolves 5.0.5 and is unchanged.
 
 ## [0.9.2] - 2026-10-29
 
