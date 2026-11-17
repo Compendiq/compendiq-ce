@@ -11,13 +11,16 @@ import { describe, expect, it } from 'vitest';
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+/** The MCP docs sidecar installs from its own lockfile, outside the root workspace. */
+const sidecarLockfile = 'mcp-docs/package-lock.json';
+
 type LockPackages = Record<
   string,
   { version?: string; dependencies?: Record<string, string> } | undefined
 >;
 
-function lockPackages(): LockPackages {
-  return JSON.parse(readFileSync(join(repoRoot, 'package-lock.json'), 'utf8'))
+function lockPackages(lockfile = 'package-lock.json'): LockPackages {
+  return JSON.parse(readFileSync(join(repoRoot, lockfile), 'utf8'))
     .packages as LockPackages;
 }
 
@@ -37,8 +40,8 @@ function versionAtLeast(version: string, floor: string): boolean {
   return true;
 }
 
-function belowFloor(name: string, floor: string): string[] {
-  const versions = installed(lockPackages(), name);
+function belowFloor(name: string, floor: string, lockfile?: string): string[] {
+  const versions = installed(lockPackages(lockfile), name);
   expect(versions.length).toBeGreaterThan(0);
   return versions.filter((version) => !versionAtLeast(version, floor));
 }
@@ -130,6 +133,11 @@ function rangeAdmitsAtLeast(spec: string, floor: string): boolean {
 describe('npm advisory floors', () => {
   it('resolves smol-toml past the quadratic parseKey scan (GHSA-r4xh-jqrq-34v2)', () => {
     expect(belowFloor('smol-toml', '1.9.0')).toEqual([]);
+  });
+
+  it('resolves @hono/node-server past the path-normalisation and upgrade-reset advisories in both lockfiles (GHSA-jpvv-r467-5p4w, GHSA-qv5m-9pm6-hqp3)', () => {
+    expect(belowFloor('@hono/node-server', '2.1.6')).toEqual([]);
+    expect(belowFloor('@hono/node-server', '2.1.6', sidecarLockfile)).toEqual([]);
   });
 
   it('resolves sharp past the bundled-librsvg advisory (GHSA-wq5f-xc86-pv6w)', () => {
