@@ -43,6 +43,15 @@ function belowFloor(name: string, floor: string): string[] {
   return versions.filter((version) => !versionAtLeast(version, floor));
 }
 
+/** Installed versions of `name` inside an advisory's affected range `[from, patched)`. */
+function inAffectedRange(name: string, from: string, patched: string): string[] {
+  const versions = installed(lockPackages(), name);
+  expect(versions.length).toBeGreaterThan(0);
+  return versions.filter(
+    (version) => versionAtLeast(version, from) && !versionAtLeast(version, patched),
+  );
+}
+
 type Version = [number, number, number];
 type UpperBound = { version: Version; inclusive: boolean };
 
@@ -144,6 +153,12 @@ describe('npm advisory floors', () => {
     expect(belowFloor('postcss-selector-parser', '7.1.6')).toEqual([]);
   });
 
+  it('installs no glob or minimatch inside the walk-abort / pattern-amplification ranges (GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249)', () => {
+    // glob 7 (rimraf 3 ← @lhci/cli) and minimatch 3 (eslint) predate both ranges and stay installed.
+    expect(inAffectedRange('glob', '9.0.0', '14.0.2')).toEqual([]);
+    expect(inAffectedRange('minimatch', '7.0.0', '11.0.1')).toEqual([]);
+  });
+
   it('resolves katex past the inherited-trust prototype gadget (GHSA-238p-pmpm-9mq7)', () => {
     expect(belowFloor('katex', '0.18.2')).toEqual([]);
   });
@@ -155,25 +170,30 @@ describe('npm advisory floors', () => {
 
 /**
  * Root overrides that exist only because the parent's own range excludes every
- * patched release (see `//tooling-deps-note` in the root package.json). Once
+ * patched release (see the `//…-deps-note` keys in the root package.json). Once
  * the parent widens that range the override is dead weight — and can force a
  * downgrade below what the parent now asks for — so it has to be dropped.
+ * A `scoped` row is nested under its parent's key (`"parent": { "dep": … }`),
+ * so it replaces that parent's copy only.
  */
 const parentBlockedOverrides = [
   { dep: 'katex', parent: 'mermaid', patched: '0.18.2' },
+  { dep: 'rimraf', parent: 'gaxios', patched: '6.1.4', scoped: true },
+  { dep: 'minimatch', parent: '@typescript-eslint/typescript-estree', patched: '11.0.1', scoped: true },
   { dep: 'postcss-selector-parser', parent: '@tailwindcss/typography', patched: '7.1.6' },
 ];
 
 describe('root overrides waiting on a parent range', () => {
-  const rootManifest: { overrides?: Record<string, string> } = JSON.parse(
+  const rootManifest: { overrides?: Record<string, string | Record<string, string>> } = JSON.parse(
     readFileSync(join(repoRoot, 'package.json'), 'utf8'),
   );
   const overrides = rootManifest.overrides ?? {};
 
   it.each(parentBlockedOverrides)(
     '$dep is overridden only while $parent still excludes a patched release',
-    ({ dep, parent, patched }) => {
-      expect(overrides, `the ${dep} override is gone — remove its row here`).toHaveProperty(dep);
+    ({ dep, parent, patched, scoped }) => {
+      const holder = scoped ? overrides[parent] : overrides;
+      expect(holder, `the ${dep} override is gone — remove its row here`).toHaveProperty(dep);
       const spec = lockPackages()[`node_modules/${parent}`]?.dependencies?.[dep];
       expect(spec, `${parent} no longer depends on ${dep} — drop the override in package.json`)
         .toBeTypeOf('string');

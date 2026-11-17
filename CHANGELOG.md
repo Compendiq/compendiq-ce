@@ -841,6 +841,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborting the export; and a failed export shows an error toast naming the
   report instead of failing silently.
 
+### Security
+
+- **`glob` / `minimatch` past the walk-abort and pattern-amplification
+  advisories** (GHSA-3g3m-2fjr-6pw4: glob ≤ 14.0.1 keeps reading directories
+  after its `signal` aborts; GHSA-g3hv-75wg-m249: minimatch < 11.0.1 amplifies
+  crafted patterns). `@fastify/swagger-ui` 6.1.1 → 6.1.3 and `@fastify/static`
+  10.1.2 → 10.1.11 (the stale root override `^9.1.1` becomes `^10.1.11`) bring
+  glob 13.0.6 → 14.0.6 and minimatch 10.2.6 → 11.0.9 under the non-production
+  `/api/docs` Swagger UI. Scoped overrides replace OpenTelemetry's GCP-detector
+  `gaxios` → `rimraf` 5.0.10 with 6.1.4 (glob 10.5.0 / minimatch 9.0.9 →
+  14.0.6 / 11.0.9; installed, not called by gaxios) and the dev-only
+  `@typescript-eslint/typescript-estree` minimatch 10.2.5 with 11.0.1. Both
+  cross a major their parent does not admit yet (`//glob-deps-note`); no
+  first-party code takes a glob pattern from a request.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
