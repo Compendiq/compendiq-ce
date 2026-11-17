@@ -29,7 +29,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from build import committed_image_digests, drop_orphan_markers, image_drift, lost_since
+from bs4 import BeautifulSoup
+
+from build import (
+    collect_figures,
+    committed_image_digests,
+    drop_orphan_markers,
+    hoist_boxed_figures,
+    image_drift,
+    lost_since,
+    strip_noise,
+    to_markdown,
+)
 
 
 class DropOrphanMarkers(unittest.TestCase):
@@ -210,6 +221,69 @@ class ImageDrift(unittest.TestCase):
         manifest = {"pages": [page("seite.md", [image_entry(present, b""), image_entry(missing, b"")])]}
 
         self.assertEqual(set(committed_image_digests(manifest, self.corpus)), {present})
+
+
+# Rendered-article shapes that soupsieve's selector semantics decide. soupsieve
+# is the engine behind `DROP_SELECTORS`, the boxed-figure hoist and the figure
+# collection, and it is pinned because a semantics change moves page bytes.
+# 4.0 changed what `<template>` contents match, so these run on a small inline
+# sample rather than on a network fetch. NO workflow runs this file: it is local
+# evidence for the pin, not CI coverage.
+SELECTOR_SAMPLE = """<div class="mw-parser-output">
+<p>Intro.</p>
+<div class="thumb tright"><div class="thumbinner">
+<a class="image" href="/wiki/Datei:Foo.jpg"><img src="x.jpg"></a>
+<div class="thumbcaption"><div class="magnify"><a>vergroessern</a></div>Eine ausreichend lange Bildunterschrift.</div>
+</div></div>
+<table class="infobox"><tr><td><figure><a href="/wiki/Datei:Box.jpg"><img></a>
+<figcaption>Boxed figure caption text</figcaption></figure></td></tr></table>
+<div class="toc">Inhalt</div><div style="display:none">versteckt</div>
+<p>Ende</p>
+%s</div>"""
+
+TEMPLATE_BLOCK = (
+    '<template><div class="infobox">im template</div>'
+    '<figure><a href="/wiki/Datei:Tpl.png"><img></a>'
+    "<figcaption>Template caption long enough</figcaption></figure></template>"
+)
+
+
+def sweep(extra: str = ""):
+    soup = BeautifulSoup(SELECTOR_SAMPLE % extra, "html.parser")
+    root = soup.select_one(".mw-parser-output")
+    hoist_boxed_figures(root)
+    strip_noise(soup)
+    return root
+
+
+class SelectorSemantics(unittest.TestCase):
+    def test_drop_sweep_and_descendant_selector(self):
+        root = sweep()
+        # `.thumbinner .magnify` is a descendant selector: the magnifier inside
+        # the caption goes, the caption text beside it stays.
+        self.assertIsNone(root.select_one(".magnify"))
+        self.assertIn("Eine ausreichend lange Bildunterschrift.", root.select_one(".thumbcaption").get_text())
+        self.assertIsNone(root.select_one(".toc"))
+        self.assertNotIn("versteckt", root.get_text())
+        # `<iframe>` is deliberately not sampled: html.parser tokenises its body
+        # as text on newer Pythons and as elements on 3.11.5, so the result
+        # depends on the interpreter, not on soupsieve.
+
+    def test_boxed_figure_is_hoisted_and_figures_collected_in_order(self):
+        root = sweep()
+        # The infobox figure lands at the top of the article before the box goes.
+        self.assertEqual(root.find("figure").find("a")["href"], "/wiki/Datei:Box.jpg")
+        self.assertIsNone(root.select_one("table"))
+        self.assertEqual([f.file_title for f in collect_figures(root)], ["File:Box.jpg", "File:Foo.jpg"])
+        self.assertNotIn("Inhalt", to_markdown(root))
+
+    def test_template_contents_are_not_swept_by_selectors(self):
+        # soupsieve 4.0 does not match inside `<template>` (2.9.2 did), so a
+        # `.infobox` there survives the drop sweep. This is the one semantic the
+        # upgrade changes for the builder's selectors: it fails on 2.9.2 and
+        # pins what the vendored corpus was re-verified against.
+        root = sweep(TEMPLATE_BLOCK)
+        self.assertIn("im template", root.find("template").get_text())
 
 
 if __name__ == "__main__":
