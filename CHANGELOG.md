@@ -841,6 +841,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborting the export; and a failed export shows an error toast naming the
   report instead of failing silently.
 
+### Security
+
+- **`@hono/node-server` 2.1.5 → 2.1.8** in the backend (root lockfile) and the
+  `mcp-docs` sidecar (GHSA-jpvv-r467-5p4w: a raw backslash in the request path
+  was parsed as a separator, bypassing path-based access control at a reverse
+  proxy; GHSA-qv5m-9pm6-hqp3: a client reset during an asynchronous WebSocket
+  upgrade crashed the process). Transitive via the MCP SDK's
+  `StreamableHTTPServerTransport`; no first-party code imports the package or
+  uses `upgradeWebSocket`, so the WebSocket advisory is not reachable. In the
+  sidecar a raw-backslash path is answered `404` by Express routing before it
+  reaches the token guard or the adapter; a `%5C` path is also `404` (no
+  route), and only a backslash in the query string is accepted as before.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
