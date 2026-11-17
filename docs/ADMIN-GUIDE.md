@@ -2137,6 +2137,26 @@ The backend auto-instruments HTTP (including incoming Fastify requests, as HTTP
 server spans), undici, `pg` and Redis. There is no Fastify-specific route
 instrumentation.
 
+#### Query-string credentials in spans (GHSA-3v2p-hm54-8qcq)
+
+HTTP server spans carry the request's query string in `url.query`
+(outgoing client spans carry `url.full`). Before `@opentelemetry/instrumentation-http` 0.222.0 the value
+was exported verbatim, so `GET /api/internal/health?token=<secret>` sent the
+persistent health token to the collector. The backend now configures the
+instrumentation's `redactedQueryParamsServer` option (experimental upstream;
+it replaces the built-in list, so the defaults are re-listed) to replace the
+values of `token` and the seven built-in names (`sig`, `Signature`,
+`AWSAccessKeyId`, `X-Goog-Signature`, `X-Amz-Signature`, `X-Amz-Credential`,
+`X-Amz-Security-Token`) with `REDACTED`; parameter names and every other
+parameter stay visible. The list lives in `backend/src/telemetry.ts` and
+covers the Community Edition routes only. Routes added by an Enterprise
+overlay, and any other credential passed in a query string (for example
+through a reverse proxy), are not covered — keep a collector-side redaction
+rule for `url.query` (and `url.full` on client spans) (for example the OpenTelemetry Collector
+`redaction` or `attributes` processor). A health token exported by an earlier
+release with tracing enabled should be rotated
+(`POST /api/admin/health-api/rotate`).
+
 #### Stable semantic conventions (since the 0.221 OTel release)
 
 The OpenTelemetry instrumentations now emit **only** the stable semantic

@@ -166,6 +166,7 @@ Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-
    boundaries* in `docs/claude/pages-and-confluence.md`.
 5. **Auth** — `fastify.authenticate` on every protected route. Public exceptions: `/api/health`, `/api/auth/*`. Access and refresh JWTs share `JWT_SECRET` and issuer, so purpose lives in the signed `typ` header: access `at+jwt`, refresh `rt+jwt`. `verifyToken()` is the only bearer verifier (HTTP, collab socket, logout) and requires `at+jwt`; the refresh decoder requires `rt+jwt` plus `jti` + `family`, with no exception for unmarked tokens (#1683). A new token kind signed with `JWT_SECRET` needs its own `typ` and verifier.
 6. **Infra isolation** — Postgres / Redis / Ollama must not bind `0.0.0.0` in production. Use Docker internal networks.
+7. **Query-string credentials** — a route that reads a credential from the query string must add its parameter name to `REDACTED_SERVER_QUERY_PARAMS` in `backend/src/telemetry.ts`, or OpenTelemetry exports it in the server span's `url.query`.
 
 **Page date filters (#1738).** Lists, search and bulk filters use the shared
 contracts `PageDateFilterSchema`; invalid/out-of-profile dates return400 before
