@@ -68,6 +68,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Popovers and dropdowns had no blur in Chrome and Firefox (#2042):**
+  `nm-popover-glass`, the context-rail toolbar and the Draw.io node buttons
+  declared `backdrop-filter` and `-webkit-backdrop-filter` side by side, and
+  Lightning CSS collapsed the pair to the prefixed declaration only. Safari
+  read it; Chrome and Firefox did not, so popups showed page content straight
+  through. The source now declares the unprefixed property only and the build
+  emits both. `popover-glass-compiled-css.test.ts` compiles the real stylesheet
+  and asserts the shipped CSS.
+
 - **Summarize, quality, and diagram audits record prompt-injection flags (#1726):**
   the LLM audit entries for the summarize, quality, and diagram routes now set
   `promptInjectionDetected` and `sanitized` from the sanitizer result, matching
