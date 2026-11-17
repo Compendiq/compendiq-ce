@@ -841,6 +841,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborting the export; and a failed export shows an error toast naming the
   report instead of failing silently.
 
+### Security
+
+- **`basic-ftp` 6.2.6 (#1991, GHSA-5pm8-86m8-9m6r):** a scoped root override
+  moves the copy under `get-uri` (Lighthouse CI's proxy stack, `@lhci/cli` →
+  `proxy-agent` → `pac-proxy-agent`) from 5.3.1 to 6.2.6, since `get-uri` ≤ 8.0.1
+  still pins `basic-ftp ^5`. Dev-only tooling path, reached only when an
+  operator points `lhci` at a `pac+ftp://` proxy URL; the product has no FTP use.
+  A loopback FTP regression test covers the `get-uri` download path.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed

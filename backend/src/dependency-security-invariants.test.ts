@@ -151,29 +151,37 @@ describe('npm advisory floors', () => {
   it('does not install extract-zip (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv)', () => {
     expect(installed(lockPackages(), 'extract-zip')).toEqual([]);
   });
+
+  it('resolves basic-ftp past the MLSD fact parsing flaw (GHSA-5pm8-86m8-9m6r)', () => {
+    expect(belowFloor('basic-ftp', '6.2.4')).toEqual([]);
+  });
 });
 
 /**
  * Root overrides that exist only because the parent's own range excludes every
- * patched release (see `//tooling-deps-note` in the root package.json). Once
+ * patched release (see the `//…-deps-note` keys in the root package.json). Once
  * the parent widens that range the override is dead weight — and can force a
  * downgrade below what the parent now asks for — so it has to be dropped.
+ * A `scoped` row is nested under its parent's key (`"parent": { "dep": … }`),
+ * so it replaces that parent's copy only.
  */
 const parentBlockedOverrides = [
   { dep: 'katex', parent: 'mermaid', patched: '0.18.2' },
   { dep: 'postcss-selector-parser', parent: '@tailwindcss/typography', patched: '7.1.6' },
+  { dep: 'basic-ftp', parent: 'get-uri', patched: '6.2.4', scoped: true },
 ];
 
 describe('root overrides waiting on a parent range', () => {
-  const rootManifest: { overrides?: Record<string, string> } = JSON.parse(
+  const rootManifest: { overrides?: Record<string, string | Record<string, string>> } = JSON.parse(
     readFileSync(join(repoRoot, 'package.json'), 'utf8'),
   );
   const overrides = rootManifest.overrides ?? {};
 
   it.each(parentBlockedOverrides)(
     '$dep is overridden only while $parent still excludes a patched release',
-    ({ dep, parent, patched }) => {
-      expect(overrides, `the ${dep} override is gone — remove its row here`).toHaveProperty(dep);
+    ({ dep, parent, patched, scoped }) => {
+      const holder = scoped ? overrides[parent] : overrides;
+      expect(holder, `the ${dep} override is gone — remove its row here`).toHaveProperty(dep);
       const spec = lockPackages()[`node_modules/${parent}`]?.dependencies?.[dep];
       expect(spec, `${parent} no longer depends on ${dep} — drop the override in package.json`)
         .toBeTypeOf('string');
