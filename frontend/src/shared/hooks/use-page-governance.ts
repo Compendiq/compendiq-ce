@@ -160,6 +160,8 @@ export function governanceRefusal(reason: string | null | undefined): string | n
       return 'This article already has an open proposal.';
     case 'stale_manifest':
       return 'The article changed after this proposal was opened, so the approvals were dropped. Open a new proposal.';
+    case 'stale_lifecycle':
+      return 'The article was frozen or thawed while the freeze was being completed, so it did not complete. Reload the article before retrying.';
     case 'requirements_changed':
       return 'The approval policy changed while you were voting, so the votes were dropped.';
     case 'requirements_missing':

@@ -129,9 +129,37 @@ describe('page baseline contracts', () => {
     }).success).toBe(false);
   });
 
-  it('types a lapsed governance licence as its own approval denial', () => {
-    expect(PageLifecycleDenialReasonSchema.parse('governance_license_required'))
-      .toBe('governance_license_required');
+  it('parses the lifecycle detail of a page its approvals froze, licensed and unlicensed', () => {
+    const frozen = {
+      isFrozen: true,
+      baselineId: ID,
+      frozenVersion: 3,
+      frozenAt: '2026-09-18T12:05:00.000Z',
+      frozenBy: ACTOR_ID,
+      frozenByName: 'Example Admin',
+      freezeReason: 'Approved by every required role',
+      provenance: 'authenticated_approval',
+      contentRevision: '12',
+      lifecycleRevision: '9',
+      canFreeze: false,
+      freezeDeniedReason: 'page_is_frozen',
+      canUnfreeze: true,
+      unfreezeDeniedReason: null,
+      canApprove: false,
+      approveDeniedReason: 'page_is_frozen',
+      canMutateContent: false,
+      mutateContentDeniedReason: 'page_is_frozen',
+      governanceEnabled: true,
+      governanceProposalStatus: 'finalized',
+      governanceProposalId: ID,
+    };
+    // After the final approval the page detail names the proposal that froze
+    // it; a bundle that refused `finalized` here would lose the whole detail.
+    expect(PageFreezeDetailFieldsSchema.parse(frozen)).toEqual(frozen);
+
+    // A lapsed licence is its own denial, not an unreachable workflow.
+    const unlicensed = { ...frozen, approveDeniedReason: 'governance_license_required' };
+    expect(PageFreezeDetailFieldsSchema.parse(unlicensed)).toEqual(unlicensed);
   });
 
   it('keeps signatory email out of ordinary history while retaining it in admin evidence', () => {

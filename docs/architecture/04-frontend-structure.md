@@ -207,9 +207,12 @@ enters the viewport, not on ordinary re-renders or background refetches.
   manifest identity (`expectedManifestDigest` + `expectedContentRevision`),
   and the badge, the editor gate and the tree follow the re-read page. A
   refusal keeps the operator's typed text so a stale preview or a busy room
-  is retried, not retyped. The dialogs restore focus to the control that
-  opened them **after** the portal unmounts — focusing in the same tick lands
-  on `body`, which a browser run caught and jsdom did not.
+  is retried, not retyped. Focus moves only **after** the portal unmounts:
+  a dismissal returns it to the control that opened the dialog, and a
+  success hands it to the section heading if the pressed confirm still owned
+  it (decided when the dialog closes). Focusing while the modal is mounted is
+  pulled back by its focus trap and then lands on `body` — a browser run
+  caught both paths, after a keyboard-confirmed thaw for the second.
 - `FrozenBadge` is neutral ink plus a lock glyph in both forms. It is not a
   status hue: amber, green and red stay reserved pipeline signals, and the
   glyph is the channel that survives `forced-colors` and colour blindness.
@@ -237,17 +240,27 @@ enters the viewport, not on ordinary re-renders or background refetches.
   requires, because the freeze happens inside the final approval and nothing
   reschedules it. That error is a reason slug rendered through
   `governanceRefusal`; an older row holding prose is shown verbatim. A final
-  vote answers `finalized` when its freeze completed — the status line says
-  so and the votes stay as a record with no controls — or `approved` with a
+  vote answers `finalized` when its freeze completed, or `approved` with a
   `finalizeError` when it did not, which is a recorded vote, not a refusal.
+  After a completed freeze the re-read page detail reports
+  `governanceProposalStatus: 'finalized'` with the id of the proposal whose
+  approvals froze its **current** baseline, so the section reads that
+  proposal, says the approvals froze the article and lists the votes as a
+  record with no controls; after a thaw the page reports `none` again. A
+  frozen page never offers **Request approval**, whatever its status says
+  (one frozen while the space was ungoverned reports `none`), because the
+  server refuses a proposal on it.
   Every governed mutation invalidates the page and the proposal when it
   **settles**, success or refusal, because a refusal can still have moved
   server state. The one exception is `governance_license_required`: the
   client's licence view can be stale, so that refusal (from a mutation or
   the proposal read) latches the unlicensed branch with no further
   governance request — the proposal is not re-read on settle — until the
-  licence `useEnterprise()` reports changes identity or validity. It is not
-  `governance_unavailable`, which means the workflow could not be reached.
+  licence `useEnterprise()` reports changes identity or validity. A latch
+  taken from the proposal read is also released by a later successful read
+  (a remount can start from the cached refusal while a fresh read is in
+  flight). It is not `governance_unavailable`, which means the workflow
+  could not be reached.
 - **Retained evidence is a disclosure, not a second list** (`PageBaselineHistory`).
   It fetches only once opened, pages on the server's cursor, and keeps the
   same three claims apart as the section above it: the server's immutable

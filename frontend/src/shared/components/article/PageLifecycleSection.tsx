@@ -75,14 +75,18 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
   //    the opener is captured explicitly.
   //  - SUCCEEDED: freezing removes `Freeze article` and thawing removes
   //    `Thaw article`, so focus is handed to the section heading — and only
-  //    if the pressed control still owns it (the RetrievalTab recipe).
+  //    if the pressed control still owns it (the RetrievalTab recipe). That
+  //    ownership is decided when the dialog closes, while the control exists.
+  //
+  // Either way the focus moves after the portal unmounts, not before: while
+  // the modal is mounted its focus trap pulls an outside focus back in, and
+  // its teardown then blurs on the way out, so focusing in the same tick
+  // lands on `body` (a keyboard-confirmed thaw did exactly that).
   const openerRef = useRef<HTMLElement | null>(null);
   const captureOpener = useCallback((event: { currentTarget: HTMLElement }) => {
     openerRef.current = event.currentTarget;
   }, []);
   const restoreOpener = useCallback(() => {
-    // After the portal unmounts, not before: Radix's own teardown blurs on
-    // the way out, so focusing in the same tick lands on `body`.
     requestAnimationFrame(() => {
       const opener = openerRef.current;
       if (opener?.isConnected) opener.focus();
@@ -91,7 +95,7 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
   }, []);
   const handOffFocus = useCallback((pressed: Element | null) => {
     if (document.activeElement !== pressed) return;
-    headingRef.current?.focus();
+    requestAnimationFrame(() => headingRef.current?.focus());
   }, []);
 
   if (!page) {

@@ -41,11 +41,17 @@ export const PageLifecycleDenialReasonSchema = z.enum([
 ]);
 export type PageLifecycleDenialReason = z.infer<typeof PageLifecycleDenialReasonSchema>;
 
+/**
+ * The page detail's view of its governed proposal. `finalized` names the
+ * proposal whose approvals froze the page's CURRENT baseline (#277); after a
+ * thaw the page reports `none` again.
+ */
 export const PageGovernanceProposalStatusSchema = z.enum([
   'none',
   'draft',
   'in_review',
   'approved',
+  'finalized',
   'rejected',
   'withdrawn',
   'unavailable',

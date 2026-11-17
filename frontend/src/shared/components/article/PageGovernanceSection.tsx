@@ -96,27 +96,31 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
   const governed = page?.governanceEnabled === true;
 
   // Set when the server refuses with `governance_license_required`; cleared
-  // only when the licence the client sees changes. Adjusted during render so
-  // a cleared latch never paints one frame of the stale branch.
+  // when the licence the client sees changes (adjusted during render so a
+  // cleared latch never paints one frame of the stale branch) or when a
+  // proposal read succeeds after a read-based latch.
   const identity = licenceIdentity(license);
-  const [licenceLost, setLicenceLost] = useState(false);
+  const [licenceLost, setLicenceLost] = useState<'mutation' | 'read' | null>(null);
   const [latchIdentity, setLatchIdentity] = useState(identity);
   if (latchIdentity !== identity) {
     setLatchIdentity(identity);
-    setLicenceLost(false);
+    setLicenceLost(null);
   }
-  const entitled = isEnterprise && hasFeature('document_sign_off_governance') && !licenceLost;
+  const entitled = isEnterprise && hasFeature('document_sign_off_governance') && licenceLost === null;
 
   const proposalId = page?.governanceProposalId ?? null;
   const proposalQuery = useGovernanceProposal(proposalId, governed && entitled);
   const proposal = proposalQuery.data;
 
-  // Keyed on the error's timestamp, not only its presence: once the licence
-  // changes, the cached refusal must not re-latch before the re-read lands.
+  // A cached refusal can latch a remounted panel whose fresh read is already
+  // in flight; the read that then succeeds is the newer server answer and
+  // releases it. A mutation's refusal is not answered by an older read.
   const readLicenceLost = proposalQuery.error?.reason === GOVERNANCE_LICENSE_REQUIRED;
+  const readSucceeded = proposalQuery.isSuccess;
   useEffect(() => {
-    if (readLicenceLost) setLicenceLost(true);
-  }, [readLicenceLost, proposalQuery.errorUpdatedAt]);
+    if (readLicenceLost) setLicenceLost((latched) => latched ?? 'read');
+    else if (readSucceeded) setLicenceLost((latched) => (latched === 'read' ? null : latched));
+  }, [readLicenceLost, readSucceeded, proposalQuery.errorUpdatedAt, proposalQuery.dataUpdatedAt]);
 
   const [error, setError] = useState<PageBaselineError | null>(null);
   const [announcement, setAnnouncement] = useState('');
@@ -149,7 +153,7 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
       // The typed text stays: a refusal here is usually something the user
       // retries with the same words once the server's state has moved.
       const refusal = err as PageBaselineError;
-      if (refusal.reason === GOVERNANCE_LICENSE_REQUIRED) setLicenceLost(true);
+      if (refusal.reason === GOVERNANCE_LICENSE_REQUIRED) setLicenceLost('mutation');
       setError(refusal);
       return false;
     }
@@ -179,9 +183,15 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
     );
   }
 
-  // The loaded proposal is the record the votes below come from, and the only
-  // place `finalized` appears; the page's own status covers the rest.
+  // The loaded proposal is the record the votes below come from; the page's
+  // own status covers the rest, including a `finalized` proposal the page
+  // names as the one that froze its current baseline.
   const status = proposal?.status ?? page?.governanceProposalStatus ?? 'none';
+  // A frozen article cannot be proposed again (the server refuses with
+  // `page_is_frozen`), whatever the status says: a page frozen while the
+  // space was ungoverned reports `none`.
+  const canRequest = page?.isFrozen !== true
+    && (status === 'none' || status === 'rejected' || status === 'withdrawn');
   // A finalized proposal is a record of what was approved; the article
   // moving on afterwards does not make it stale.
   const proposalStale = Boolean(
@@ -348,7 +358,7 @@ export function PageGovernanceSection({ pageId, page }: { pageId: string; page: 
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        {(status === 'none' || status === 'rejected' || status === 'withdrawn') && (
+        {canRequest && (
           <button
             type="button"
             className="nm-button-ghost inline-flex h-8 items-center gap-1.5 px-2 text-xs"

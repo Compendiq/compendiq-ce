@@ -7,7 +7,7 @@
  * lapsed is not data loss, and a freeze that failed inside the final approval
  * is reported as a failure with the retry the server actually requires.
  */
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +34,7 @@ let licence: LicenseInfo | null = LICENCE;
 
 const APPROVER_ID = '11111111-1111-4111-8111-111111111111';
 const REQUESTER_ID = '22222222-2222-4222-8222-222222222222';
+const SECOND_APPROVER_ID = '44444444-4444-4444-8444-444444444444';
 const PROPOSAL_ID = '33333333-3333-4333-8333-333333333333';
 const DIGEST = 'a'.repeat(64);
 
@@ -91,8 +92,10 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function renderSection(page: Partial<PageLifecycleState> | undefined) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderSection(
+  page: Partial<PageLifecycleState> | undefined,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   const tree = () => (
     <QueryClientProvider client={client}>
       <MemoryRouter>
@@ -103,6 +106,15 @@ function renderSection(page: Partial<PageLifecycleState> | undefined) {
   const result = render(tree());
   // Same client, same page: only what `useEnterprise()` reports has moved.
   return { ...result, rerenderSection: () => result.rerender(tree()) };
+}
+
+/** The page detail as the article view holds it: a `['pages', id]` query the mutations re-read. */
+function ReReadSection() {
+  const pageQuery = useQuery<Partial<PageLifecycleState>>({
+    queryKey: ['pages', '42'],
+    queryFn: async () => (await fetch('/api/pages/42')).json(),
+  });
+  return <PageGovernanceSection pageId="42" page={pageQuery.data} />;
 }
 
 function governanceCalls(): string[] {
@@ -231,37 +243,86 @@ describe('governed sign-off section', () => {
     });
   });
 
-  it('reports a final approval that froze the article as done, with its votes as a record', async () => {
-    renderSection(GOVERNED);
-    await screen.findByTestId('governance-vote-quality');
-
+  it('reports a final approval that froze the article as done, from the re-read page', async () => {
     const finalized: PageGovernanceProposal = {
       ...PROPOSAL,
       status: 'finalized',
       baselineId: PROPOSAL_ID,
       approvals: [...PROPOSAL.approvals, {
         role: 'regulatory',
-        approverUserId: APPROVER_ID,
-        approverName: 'Mina Okafor',
+        approverUserId: SECOND_APPROVER_ID,
+        approverName: 'Sam Reyes',
         manifestDigest: DIGEST,
         signedAt: '2026-05-03T08:00:00.000Z',
         comment: null,
       }],
     };
-    fetchMock.mockImplementation(async () => json({ proposal: finalized }));
+    // The page detail EE reports after the final approval froze the article.
+    const frozenDetail: Partial<PageLifecycleState> = {
+      ...GOVERNED,
+      isFrozen: true,
+      baselineId: PROPOSAL_ID,
+      frozenVersion: 3,
+      canMutateContent: false,
+      mutateContentDeniedReason: 'page_is_frozen',
+      canApprove: false,
+      approveDeniedReason: 'page_is_frozen',
+      governanceProposalStatus: 'finalized',
+      governanceProposalId: PROPOSAL_ID,
+    };
+    let detail: Partial<PageLifecycleState> = GOVERNED;
+    let current: PageGovernanceProposal = PROPOSAL;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url) === '/api/pages/42') return json(detail);
+      if (String(url).endsWith('/sign-off')) {
+        detail = frozenDetail;
+        current = finalized;
+        return json({ proposal: finalized });
+      }
+      return json({ proposal: current });
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
+          <ReReadSection />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('governance-vote-quality');
+
     fireEvent.change(screen.getByTestId('governance-role'), { target: { value: 'regulatory' } });
     fireEvent.click(screen.getByTestId('governance-approve-btn'));
 
     await waitFor(() => {
       expect(screen.getByTestId('governance-status').textContent).toMatch(/froze the article/i);
     });
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]) === '/api/pages/42')).toHaveLength(2);
     expect(screen.getByTestId('governance-announcer').textContent).toMatch(/now frozen/i);
     expect(screen.queryByTestId('governance-error')).toBeNull();
     expect(screen.getByTestId('governance-section').textContent).not.toMatch(/refused/i);
-    expect(screen.getByTestId('governance-vote-regulatory').textContent).toContain('Mina Okafor');
+    expect(screen.getByTestId('governance-vote-quality').textContent).toContain('Mina Okafor');
+    expect(screen.getByTestId('governance-vote-regulatory').textContent).toContain('Sam Reyes');
     for (const control of ['governance-approve-btn', 'governance-reject', 'governance-withdraw', 'governance-request']) {
       expect(screen.queryByTestId(control)).toBeNull();
     }
+  });
+
+  it('never offers a new proposal on a frozen article, even one reporting no proposal', async () => {
+    // A page frozen while its space was ungoverned has no finalized proposal
+    // to name; the server would refuse a new one with `page_is_frozen`.
+    renderSection({
+      ...GOVERNED,
+      isFrozen: true,
+      baselineId: PROPOSAL_ID,
+      canApprove: false,
+      approveDeniedReason: 'page_is_frozen',
+      governanceProposalStatus: 'none',
+      governanceProposalId: null,
+    });
+
+    expect(await screen.findByTestId('governance-status')).toHaveTextContent(/no approval proposal/i);
+    expect(screen.queryByTestId('governance-request')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('keeps a final vote whose freeze failed as a recorded vote with an explicit retry', async () => {
@@ -374,6 +435,31 @@ describe('governed sign-off section', () => {
 
     expect(screen.getByTestId('governance-unlicensed')).toBeInTheDocument();
     expect(governanceCalls()).toEqual([`/api/enterprise/page-governance/proposals/${PROPOSAL_ID}`]);
+  });
+
+  it('lets go of a latch taken from a cached refusal once the newer read succeeds', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const first = renderSection(GOVERNED, client);
+    await screen.findByTestId('governance-vote-quality');
+
+    // A later re-read is refused: the cache now holds the votes AND the
+    // refusal, which is what a remount starts from.
+    fetchMock.mockImplementation(async () => json({
+      error: 'EnterpriseRequired', reason: 'governance_license_required', message: 'licence', statusCode: 403,
+    }, 403));
+    await act(async () => { await client.invalidateQueries(); });
+    expect(await screen.findByTestId('governance-unlicensed')).toBeInTheDocument();
+    first.unmount();
+
+    // The licence is restored while the user is elsewhere; returning to the
+    // article mounts over the cached refusal while a fresh read is in flight.
+    licence = { ...LICENCE, licenseId: 'CPQ9f8e7d6c' };
+    fetchMock.mockImplementation(async () => json({ proposal: PROPOSAL }));
+    renderSection(GOVERNED, client);
+    await settle();
+
+    expect(screen.queryByTestId('governance-unlicensed')).toBeNull();
+    expect(screen.getByTestId('governance-vote-quality')).toHaveTextContent('Mina Okafor');
   });
 
   it('never reports an unreachable workflow as "no proposal is open"', async () => {

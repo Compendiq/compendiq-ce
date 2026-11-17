@@ -71,19 +71,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Governed sign-off matches the Enterprise workflow (#277):** a final
   approval that froze the article answered `status: 'finalized'`, which the
   shared contract did not list, so the panel reported "Refused:
-  request_failed." after a freeze that had happened. `finalized` is now a
-  proposal status and the panel shows it with the votes as a record. A final
-  vote whose freeze failed (`approved` with a `finalizeError` reason slug)
-  shows the retry instead of a refusal; older prose errors are shown as
-  written. A lapsed `document_sign_off_governance` licence is reported as
+  request_failed." after a freeze that had happened. `finalized` is now both
+  a proposal status and a page-detail `governanceProposalStatus`: the page
+  detail names the proposal whose approvals froze its current baseline, and
+  the panel says the approvals froze the article and lists the votes as a
+  record with no controls. A frozen article no longer offers **Request
+  approval** (the server refused it with `page_is_frozen`). A final vote
+  whose freeze failed (`approved` with a `finalizeError` reason slug) shows
+  the retry instead of a refusal; older prose errors are shown as written. A
+  lapsed `document_sign_off_governance` licence is reported as
   `governance_license_required` (new approval denial reason, distinct from
   `governance_unavailable`) and switches the panel to the licence notice
-  without further governance requests until the licence changes. Governed
-  writes now refresh the page and proposal after a refusal too, and the
-  finalize-path refusals (`finalize_failed`, `duplicate_approval`,
-  `approval_required`, `approver_not_distinct`,
-  `governance_evidence_incomplete`, `governance_policy_changed`) have their
-  own wording.
+  without further governance requests until the licence changes or, for a
+  refused proposal read, a later read succeeds. Governed writes now refresh
+  the page and proposal after a refusal too, and the finalize-path refusals
+  (`finalize_failed`, `duplicate_approval`, `approval_required`,
+  `approver_not_distinct`, `governance_evidence_incomplete`,
+  `governance_policy_changed`, `stale_lifecycle`) have their own wording.
+  After a successful freeze or thaw confirmed from the keyboard, focus now
+  lands on the Document lifecycle heading instead of the page body.
 
 - **Popovers and dropdowns had no blur in Chrome and Firefox (#2042):**
   `nm-popover-glass`, the context-rail toolbar and the Draw.io node buttons
