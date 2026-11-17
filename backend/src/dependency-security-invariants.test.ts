@@ -187,6 +187,10 @@ describe('npm advisory floors', () => {
   it('does not install extract-zip (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv)', () => {
     expect(installed(lockPackages(), 'extract-zip')).toEqual([]);
   });
+
+  it('resolves basic-ftp past the MLSD fact parsing flaw (GHSA-5pm8-86m8-9m6r)', () => {
+    expect(belowFloor('basic-ftp', '6.2.4')).toEqual([]);
+  });
 });
 
 /**
@@ -202,6 +206,7 @@ const parentBlockedOverrides = [
   { dep: 'rimraf', parent: 'gaxios', patched: '6.1.4', scoped: true },
   { dep: 'minimatch', parent: '@typescript-eslint/typescript-estree', patched: '11.0.1', scoped: true },
   { dep: 'postcss-selector-parser', parent: '@tailwindcss/typography', patched: '7.1.6' },
+  { dep: 'basic-ftp', parent: 'get-uri', patched: '6.2.4', scoped: true },
 ];
 
 describe('root overrides waiting on a parent range', () => {
