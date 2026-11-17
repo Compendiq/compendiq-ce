@@ -3607,7 +3607,11 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
           expect(await activePurposes(pageId)).toEqual([]);
         }, { timeout: 5_000 });
         await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
-        expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+        // The heap drop follows the admission release on the room's ownership
+        // chain, after more awaited I/O: wait for it rather than racing it (#2044).
+        await vi.waitFor(() => {
+          expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+        }, { timeout: 5_000 });
       } finally {
         put.release();
         await save;
@@ -3648,7 +3652,11 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
           await vi.waitFor(async () => {
             expect(await activePurposes(pageId)).toEqual([]);
           }, { timeout: 5_000 });
-          expect(podA.getRoom(pageId)).toBeUndefined();
+          // The room is dropped after the admission's release commits, behind a
+          // Redis SREM on the same ownership chain: wait for it (#2044).
+          await vi.waitFor(() => {
+            expect(podA.getRoom(pageId)).toBeUndefined();
+          }, { timeout: 5_000 });
         } finally {
           put.release();
           await save;
