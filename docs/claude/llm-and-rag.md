@@ -44,6 +44,15 @@ reasoning as ghost text or raise the inline token budget to compensate for
 an ignored thinking hint. Troubleshooting is in the client inference
 runbook, including stale server-model assignments.
 
+Provider reasoning is removed with `think-blocks.ts` (`stripThinkBlocks`, or
+`stripClosedThinkBlocks` where only closed blocks matter); never add a local
+`<think>` expression. A conversation title cut inside reasoning keeps the
+question-derived title.
+
+The vision probe matches visible text only (reasoning never counts as having
+read the image); a reply cut inside reasoning or by the token limit without an
+in-order answer is `null`, never `false`.
+
 **Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`, `RAG_EF_SEARCH`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. `EMBEDDING_MODEL` is one rung further gone: it is **fully inert** since migration 054 (#1114) — `llm-provider-bootstrap.ts` keeps it in `DEPRECATED_VARS` only so that setting it logs a notice, and nothing reads its value, so a fresh install resolves the `embedding` use case to the default provider's `default_model` until an admin assigns it. (`EMBEDDING_DIMENSIONS` is unaffected — it is still the fallback for a missing `admin_settings.embedding_dimensions` row.) Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
 
 **Deep search reuses `chat` — do not give it a use case (#1112).** Multi-query expansion asks the `chat` model for two paraphrases of the question, retrieves all three phrasings and fuses them (`multi-query-search.ts`, in front of `hybridSearch` — `/api/search` paginates and must never expand). It is one extra completion for a one-sentence rewrite, so a sixth ADR-021 assignment would be a knob every operator has to set before the feature works at all. It is per-request and **default off** (`deepSearch`, the `searchWeb` precedent), it never expands an exact-identifier or pasted-error query (#1107 pins the first, and the second IS the literal FTS matches), and every failure — timeout, open breaker, no assignment, unparseable reply — soft-fails to the original query alone. Design of record: `docs/architecture/09-flow-rag-chat.md`.
@@ -71,11 +80,27 @@ never by name or size. Only history-free
 asks write the `/llm/ask` cache; a follow-up is grounded in the asker's own
 thread, which the key does not carry.
 
+A streaming route aborts its provider request on the response's `close`
+(`reply.raw`), as `streamSSE` does, and seeds the abort from
+`reply.raw.destroyed`; a POST's `request.raw` has already closed and never
+reports socket loss (#1719). A disconnected ask persists, caches and titles
+nothing and records one `error` / `Client disconnected` audit entry.
+
+A provider `error` frame inside a 200 stream is `ProviderStreamError`; the
+provider's text stays on its `detail`. Only a stream that reached `[DONE]`
+without one is a result. Client-facing failure text comes from
+`streamFailureMessage`, and a blank assistant turn is not grounding (#1728).
+
 LLM inference audit hooks receive message role/length summaries and
 `promptHash`, never prompt plaintext. Producers hash the actual provider
 messages as ordered JSON tuples of role and content, retaining structured
 text/image parts and their order; the CE writer persists that digest unchanged.
 Hashes from before #1790 used length summaries and are not comparable to new
 fingerprints. Cache replay is not an inference audit event.
+
+Every route that dispatches through `streamSSE` passes `promptInjectionDetected`
+and `sanitized` as defined booleans in `audit`. `promptInjectionDetected` is true
+when the sanitizer reports warnings for any model input, including web sources
+and diagram instructions; `sanitized` is true when that input changed.
 
 **Removed (do not revive):** `LLM_PROVIDER` was the legacy two-slot toggle and is gone — replaced wholesale by the `llm_providers` table + per-use-case assignments.

@@ -36,7 +36,7 @@ sequenceDiagram
         note right of BE: SKIPPED (never failed) for an exact-identifier query —<br/>#35;1107 pins those — for pasted error text, and for a paste<br/>over 1,000 chars#59; rag.expansion_skip_reason records which
         BE->>PROV: chat(resolveUsecase('chat')) — ONE call, 5s budget<br/>"rewrite this query 2 ways, same meaning"
         PROV-->>BE: 2 paraphrases (unusable reply = no expansion)
-        note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases),<br/>each leg 20 wide with a 20-document rerank pool,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
+        note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases)<br/>— except the #35;1107 pin stage: paraphrase legs pass<br/>pinIdentifiers false (#35;1718), only the original may pin —<br/>each leg 20 wide with a 20-document rerank pool,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
     end
     BE->>PROV: resolveUsecase('chat') → { config, model } (#35;282 — BEFORE retrieval)
     BE->>PG: loadProviderMetadata(chat providerId)<br/>SELECT locality, locality_config_revision, config_revision, …
@@ -146,6 +146,7 @@ sequenceDiagram
             PROV-->>BE: delta
             BE-->>FE: SSE { content: delta }
         end
+        note right of BE: #35;1719 client disconnect: the RESPONSE's close (reply.raw, never request.raw —<br/>a POST's request has already closed) aborts streamChat, so the provider socket<br/>closes#59; nothing is cached, appended or titled, one audit row error /<br/>Client disconnected, lock and stream slot released. A client gone before<br/>dispatch gets no provider request and no audit row
         PROV-->>BE: done
         BE->>CACHE: setCachedResponse(key, answer)<br/>(history-free asks only — a follow-up is<br/>grounded in the asker's own thread)
         BE->>CONV: append user turn + answer + sources (atomic jsonb ||)<br/>assistant turn carries aiProvenance { version:1, providerId, configRevision,<br/>locality, pages[{pageId, policy, policyRevision, contentRevision}] } (#35;282)#59; row columns<br/>ai_provenance_complete=TRUE, ai_provenance_version, provider_config_revision, provider_locality
@@ -419,7 +420,13 @@ hold across all five:
    a prefix as the finished output. Generate's audit entry comes from this
    outcome (one `error` row for a truncated stream, one `success` for a
    completed one, none for a replay); the route's own catch covers only a
-   failure before dispatch.
+   failure before dispatch. A provider `error` frame is the same kind of
+   failure (#1728): the parser stops at the first one, ignores everything
+   after it including `[DONE]`, and throws `ProviderStreamError` (the
+   provider's text only on its `detail`) with the same `</think>` close,
+   silent return and breaker rules; the wire says `Provider error`
+   (`streamFailureMessage`), Ask persists, caches and titles nothing, and a
+   blank assistant turn no longer counts as grounding for the refusal gate.
 3. **Durable output is written under admission, on the held client.**
    Improve's `llm_improvements … status = 'completed'` write runs inside
    `admitArticleStage(provenance, userId, 'chat', publish, context,
@@ -698,10 +705,10 @@ flowchart LR
   `chunk_tsv @@ q` hit, so "find the page called X" keeps the
   `rag_context_chars_per_page`-sized excerpt #1273 F9 gave it, while an
   OCR-only `INC-2203` now cites the description that contains the key.
-- **`/api/search?mode=keyword` is a separate SQL path and is unchanged**
-  (erratum #1617/Q2): an image-only page is findable by `mode=hybrid` and by
-  `/llm/ask` and is invisible in the default keyword box. Recorded asymmetry —
-  see `docs/runbooks/retrieval-eval.md`.
+- **`/api/search?mode=keyword` is a separate SQL path that reads no derived
+  chunks** (erratum #1617/Q2): an image-only page is findable by `mode=hybrid`
+  and by `/llm/ask` and is invisible in the default keyword box. Recorded
+  asymmetry — see `docs/runbooks/retrieval-eval.md`.
 - **Provenance is `metadata`, never position or text shape.**
   `derived-provenance.ts` is the only reader; `SearchResult.derived` carries
   `{ attachmentSource, attachmentKey, contentHash, analysisId, analysisVersion,
@@ -1599,8 +1606,10 @@ a need for a partial one.
 run can leave stale — over what `embedPage` will actually embed: non-deleted,
 non-folder, `body_html` present, and at least `MIN_EMBEDDABLE_TEXT_CHARS` (20)
 of extracted text. That last filter matters: `embedPage` permanently settles
-shorter pages with zero embedding rows, so counting them would leave a corpus
-with a few structural stub pages "degraded" forever. It replaced a boolean
+shorter pages with zero embedding rows (since #1714 a page edited down to
+nothing to embed loses its chunks, averages and similarity edges in the
+settling transaction), so counting them would leave a corpus with a few
+structural stub pages "degraded" forever. It replaced a boolean
 EXISTS probe that flipped healthy the moment ONE visible page had an embedding
 row, so 1% coverage rendered identically to 100%. `/api/search` runs it once
 for semantic/hybrid modes, exposes `embeddingCoverage` + `degradedReason` on
@@ -1891,8 +1900,9 @@ row (#1184), not here.
 
 **Selection is round-robin, not best-first.** Every page contributes its best
 image before any page contributes a second, ordered within a round by the
-carrying row's fused rank (or, on the legacy fallback, by the image's own
-cross-modal similarity). A flat sort over the flattened candidates would
+carrying row's position in the final result array — best final result order
+first (array position; reranking and identifier pins included), never by the
+row's `score` (#1716). A flat sort over the flattened candidates would
 let one gallery page take both slots at the default cap and hide the second
 page entirely — image COUNT beating image BREADTH, which is the head dilution
 `MAX_IMAGE_HITS_PER_PAGE` bounds inside a page and #1106's best-chunk-only
@@ -2270,8 +2280,12 @@ data: { "content": "more tokens" }
 data: { "done": true, "conversationId": "…", "sources": [ … ] }
 ```
 
-On abort (client disconnect) the backend aborts the upstream LLM request —
-see `backend/src/routes/llm/sse-abort.test.ts` for the behaviour we rely on.
+On abort (client disconnect) the backend aborts the upstream LLM request.
+The signal is the response's `close` (`reply.raw`), never `request.raw`: a
+POST's request has already closed when the handler runs (#1719). A
+disconnected ask persists, caches and titles nothing and is audited
+`error` / `Client disconnected`; see
+`backend/src/routes/llm/ask-disconnect.integration.test.ts`.
 
 ### Source objects (#1125)
 
@@ -2288,8 +2302,10 @@ the same shape:
 
 An **image source** (`kind: 'image'`, ADR-025 D8 / ADR-027 D12) is appended
 after the page and web entries, one per distinct `(pageId, attachmentSource,
-attachmentKey)` among the answer's top-K derived rows, best fused rank first
-and capped at `MAX_IMAGE_SOURCES` (4). It carries `attachmentUrl` (from
+attachmentKey)` among the answer's top-K derived rows, best final result
+order first (array position; reranking and identifier pins included) and
+capped at `MAX_IMAGE_SOURCES` (4); a picture two rows carry is cited once,
+from the earlier row (#1716). It carries `attachmentUrl` (from
 `buildPageImageUrl`, so `SourceThumbnail`, the `ATTACHMENT_URL_PATTERN` guard
 and the attachment sweep's persisted-URL walk keep working), `similarity:
 null` — there is no cross-modal score to fabricate, and the page's own cosine

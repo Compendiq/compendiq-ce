@@ -439,9 +439,10 @@ beside the knob says so: Settings is the only place this fact is ever stated.
 ### Which pictures, and how many
 
 Selection is **round-robin across pages**: every page contributes its best
-image before any page contributes a second, ordered within each round by the
-row's own rank. A page carrying three near-identical screenshots therefore
-cannot take both slots at the default cap and hide the second page.
+image before any page contributes a second, ordered within each round by where
+the picture's row sits in the answer's final result order (reranking and
+identifier pins included). A page carrying three near-identical screenshots
+therefore cannot take both slots at the default cap and hide the second page.
 
 A picture is attached **once**, however many pages carry it. Analyses are per
 page, so one diagram reused across five pages is five candidates with
@@ -461,8 +462,8 @@ it). Above a cap of 4 the model **can be** shown a picture the reader gets no
 chip for — ADR-025 D8b's wording, and the accurate one: it takes more than four
 usable candidates to reach, so a cap of 8 over a corpus that offers two diverges
 from nothing. It can also happen below 4, because the source list is a flat
-best-first sort across pages while the attachments are picked round-robin, so a
-round-robin slot can land on a page the flat sort has already filled past. The
+list in final result order while the attachments are picked round-robin, so a
+round-robin slot can land on a page the flat list has already filled past. The
 page is still cited either way — what is missing is the chip for that particular
 picture. At the default cap of 2 it cannot happen. If the reader seeing every
 attached picture matters more to you than breadth, keep the cap at 4 or below.

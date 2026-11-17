@@ -32,6 +32,7 @@ import {
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
+import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
   cancelPageWriteIntentBeforeEffect,
@@ -185,7 +186,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
    * so an unreadable page is indistinguishable from a missing one.
    */
   async function resolveAndAuthorize(userId: string, id: string): Promise<PageContext | null> {
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
     const result = await query<{
       id: number;
@@ -201,10 +202,10 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
               cp.content_revision::text AS "contentRevision",
               cp.lifecycle_revision::text AS "lifecycleRevision"
          FROM pages cp
-        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
+        WHERE ${primaryKey !== null ? 'cp.id = $1' : 'cp.confluence_id = $1'}
           AND cp.deleted_at IS NULL
           AND ${visiblePagesPredicate(2, 3)}`,
-      [isNumericId ? parseInt(id, 10) : id, accessibleSpaces, userId],
+      [primaryKey ?? id, accessibleSpaces, userId],
     );
     if (result.rows.length === 0) return null;
     const page = result.rows[0]!;

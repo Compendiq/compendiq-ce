@@ -88,14 +88,20 @@ export async function validateEmbeddingPublicationOnClient(
   await validateEmbeddingSourceOnClient(client, page);
 }
 
-/** Non-inference settlement must not overwrite successor article/job state. */
+/** Non-inference settlement must not overwrite successor article/job state.
+ * `lockVectorTables` is for a settlement that also deletes the page's vectors
+ * (#1714): it takes publication's table locks first — page_embeddings, then
+ * pages, the order every #1116 swap/rollback/cleanup DDL locks them in — so it
+ * can never hold the page row while queueing behind that DDL. */
 export async function settleEmbeddingArticle(
   page: EmbeddingArticle,
   publish: (client: PoolClient) => Promise<void>,
+  opts: { lockVectorTables?: boolean } = {},
 ): Promise<boolean> {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    if (opts.lockVectorTables) await client.query('LOCK TABLE page_embeddings, pages IN ROW EXCLUSIVE MODE');
     await client.query('SELECT pg_advisory_xact_lock_shared($1, $2)', [AI_POLICY_LOCK_NAMESPACE, page.pageId]);
     await validateEmbeddingSourceOnClient(client, page);
     await publish(client);

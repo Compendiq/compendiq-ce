@@ -160,10 +160,12 @@ jobs:
       # Builds succeed in that case; containers crash on boot. The
       # historically-hoisted four (`p-limit`, `ipaddr.js`, two OpenTelemetry
       # packages) are not sufficient: collab TipTap packages demote and
-      # `collab-schema.js` imports them on boot.
+      # `collab-schema.js` imports them on boot. The PDF render reads every
+      # vendored font from dist (#1729): an image built without the backend's
+      # build script has none, and every export would fail.
       smoke_test: |
         docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
-          "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); console.log('runtime require smoke ok');"
+          "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); const { generatePdf } = await import('./dist/core/services/pdf-service.js'); await generatePdf('<p>Установка 手順 한국어</p>', {}); console.log('runtime require smoke ok');"
 
   docker-frontend:
     name: Frontend Image

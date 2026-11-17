@@ -118,9 +118,8 @@ export function useBulkPageAction(onSettled?: () => void) {
       }
 
       // Neither succeeded nor failed: the server accepted the request and did
-      // nothing. Re-embed does this for a selection with no Confluence-sourced
-      // pages, since embedding requires a confluence_id. Silence would read as
-      // success.
+      // nothing — re-sync does this for pages without a Confluence id. Silence
+      // would read as success.
       if (succeeded === 0 && failed === 0) {
         toast.warning(`No pages were ${PAST_TENSE[action]}.`);
       }

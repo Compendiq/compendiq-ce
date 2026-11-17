@@ -36,6 +36,16 @@ export interface StageBackupOptions {
   attachmentsRoot: string;
   force?: boolean;
   newestMigration?: string;
+  /**
+   * Newest `_migrations.name` of the restore target (#1711). A string refuses
+   * an archive older than that level; `null` is an empty target (allowed).
+   * Omitted means different things per entry point:
+   * - `stageAndValidateBackup`: no restore target, the check is skipped (for
+   *   callers that validate without restoring over the live schema);
+   * - `restoreBackup`: read from the database via `readTargetSchemaMigration`,
+   *   which requires `POSTGRES_URL` to equal `postgresUrl`.
+   */
+  targetMigration?: string | null;
 }
 
 export interface CommitBackupOptions {
@@ -223,6 +233,15 @@ export async function stageAndValidateBackup(
       );
     }
 
+    // #1711: `pg_restore --clean` cannot restore an older schema over a newer
+    // one (newer-only tables hold foreign keys to restored tables), so refuse
+    // before any live mutation. Names carry zero-padded numeric prefixes.
+    if (opts.targetMigration && manifest.schemaMigration < opts.targetMigration) {
+      throw new BackupRestoreError(
+        `Backup migration ${manifest.schemaMigration} is older than the target database (${opts.targetMigration}). Restore into an empty database and let the application migrations run; see ADMIN-GUIDE "Restoring an older archive".`,
+      );
+    }
+
     return { root, dumpPath, attachmentsPath, manifest };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
@@ -308,6 +327,25 @@ export async function reconcileInterruptedBackupRuns(
   );
 }
 
+/**
+ * Newest applied migration of the database behind `queryFn`, or `null` for an
+ * empty target (no `_migrations` relation, or no rows). Any other database
+ * error propagates: an unknown target state must never read as "empty".
+ */
+export async function readTargetSchemaMigration(
+  queryFn: (sql: string, params?: unknown[]) => Promise<unknown> = query,
+): Promise<string | null> {
+  const relation = (await queryFn(`SELECT to_regclass('_migrations') AS relation`)) as {
+    rows: Array<{ relation: string | null }>;
+  };
+  if (!relation.rows[0]?.relation) return null;
+
+  const newest = (await queryFn(`SELECT name FROM _migrations ORDER BY name DESC LIMIT 1`)) as {
+    rows: Array<{ name: string }>;
+  };
+  return newest.rows[0]?.name ?? null;
+}
+
 export async function commitValidatedBackup(
   stage: ValidatedBackupStage,
   opts: CommitBackupOptions,
@@ -368,8 +406,40 @@ export async function commitValidatedBackup(
   await rm(stage.root, { recursive: true, force: true });
 }
 
+async function resolveTargetMigration(opts: RestoreOptions): Promise<string | null> {
+  // An explicit targetMigration lets a dry run skip the database; a real
+  // restore always needs the URL pg_restore writes to.
+  if (!opts.postgresUrl && (!opts.dryRun || opts.targetMigration === undefined)) {
+    throw new BackupRestoreError('POSTGRES_URL is required (also for --dry-run)');
+  }
+  if (opts.targetMigration !== undefined) return opts.targetMigration;
+
+  // The level is read through the pool (POSTGRES_URL) while pg_restore writes
+  // to postgresUrl; runMigrations and the backup_runs reconciliation already
+  // assume they are one database. Refuse rather than compare against another.
+  if (!process.env.POSTGRES_URL) {
+    throw new BackupRestoreError(
+      'POSTGRES_URL is not set; the target database schema level cannot be read',
+    );
+  }
+  if (process.env.POSTGRES_URL !== opts.postgresUrl) {
+    throw new BackupRestoreError(
+      'POSTGRES_URL does not match the restore target URL; the target database schema level would be read from another database',
+    );
+  }
+  try {
+    return await readTargetSchemaMigration(opts.queryFn);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new BackupRestoreError(`Could not read the target database schema level: ${message}`, {
+      cause: error,
+    });
+  }
+}
+
 export async function restoreBackup(opts: RestoreOptions): Promise<BackupManifest> {
-  const stage = await stageAndValidateBackup(opts);
+  const targetMigration = await resolveTargetMigration(opts);
+  const stage = await stageAndValidateBackup({ ...opts, targetMigration });
   if (opts.dryRun) {
     await rm(stage.root, { recursive: true, force: true });
     return stage.manifest;

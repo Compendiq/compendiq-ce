@@ -497,9 +497,10 @@ export function BackupTab() {
         ) : (
           <ul className="space-y-1 text-sm" data-testid="backup-history">
             {data.history.map((run) => (
-              <li key={run.id}>
+              <li key={run.id} className="break-words">
                 {run.createdAt} — {run.destination} — {run.status}
                 {run.objectKey ? ` — ${run.objectKey}` : ''}
+                {run.warning ? ` — warning: ${run.warning}` : ''}
               </li>
             ))}
           </ul>

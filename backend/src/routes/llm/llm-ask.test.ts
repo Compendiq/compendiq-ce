@@ -2,9 +2,13 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi, beforeEach } 
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { once } from 'events';
+import type { ServerResponse } from 'http';
+import { setTimeout as delay } from 'timers/promises';
 import os from 'os';
 import path from 'path';
 import { logger } from '../../core/utils/logger.js';
+import { ProviderStreamError, StreamIncompleteError } from '../../domains/llm/services/provider-stream-error.js';
 
 // --- Mock: llm-provider-resolver (resolveUsecase) ---
 const mockResolveUsecase = vi.fn().mockResolvedValue({
@@ -391,6 +395,8 @@ async function* singleChunkGenerator(content: string) {
 
 describe('POST /api/llm/ask', () => {
   let app: ReturnType<typeof Fastify>;
+  /** The response of the latest request, so a test can make its client leave. */
+  let lastReplyRaw: ServerResponse | undefined;
 
   beforeAll(async () => {
     app = Fastify({ logger: false });
@@ -401,9 +407,10 @@ describe('POST /api/llm/ask', () => {
     app.decorate('requireAdmin', async () => {});
     app.decorate('redis', {});
     app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
+    app.addHook('onRequest', async (request, reply) => {
       request.userId = 'test-user-123';
       request.userCan = async () => true;
+      lastReplyRaw = reply.raw;
     });
     // #282: the route refuses a body that names neither an article nor an
     // explicit `independent` question (400 `ask_identity_required`). The
@@ -953,6 +960,42 @@ describe('POST /api/llm/ask', () => {
       expect(mockStreamChatClient).toHaveBeenCalled();
       const finals = parseSseBody(response.body) as Array<Record<string, unknown>>;
       expect(finals.some((f) => f.refused === true)).toBe(false);
+    });
+
+    /** A follow-up in a thread whose single answer is `answer`, during an embedding outage. */
+    async function askFollowUpDuringOutage(answer: unknown) {
+      searchWithMeta(OUTAGE_META);
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'How do I rotate a token?' }, { role: 'assistant', content: answer }])] };
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+      mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('Ungrounded answer.'));
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'And then?', conversationId: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' },
+      });
+      expect(response.statusCode).toBe(200);
+      return parseSseBody(response.body) as Array<Record<string, unknown>>;
+    }
+
+    it.each([
+      ['empty', ''],
+      ['whitespace only', ' \n\t '],
+    ])('a thread whose only answer is %s grounds nothing — refuses during an outage (#1728)', async (_label, answer) => {
+      // The shape a provider error frame followed by [DONE] persisted before
+      // #1728: a successful-looking assistant turn without content.
+      const events = await askFollowUpDuringOutage(answer);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(events.find((f) => f.final === true)).toMatchObject({ refused: true, refusalReason: 'semantic_index_unavailable' });
+    });
+
+    it('a thread with a real answer still stands the gate down during an outage (#1728 control)', async () => {
+      const events = await askFollowUpDuringOutage('Revoke the old token, then issue a new one.');
+      expect(mockStreamChatClient).toHaveBeenCalled();
+      expect(events.some((f) => f.refused === true)).toBe(false);
     });
 
     it('refusal is persisted as a real assistant turn, without a source-list promise (#1268 M1)', async () => {
@@ -1974,7 +2017,8 @@ describe('POST /api/llm/ask', () => {
         // found by the TEXT legs, and the page's own cosine is already on the
         // page entry beside this one (ADR-027 `:4323`).
         similarity: null,
-        // `score` is the PAGE's fused ordering value, like every other entry.
+        // `score` is the carrying row's `score`, unchanged — the value its
+        // page entry carries too — and never the image's rank (#1716).
         score: 0.0328,
         // ADR-027 D12's four provenance fields, and they travel TOGETHER —
         // `SourceSchema` rejects a subset and rejects any of them on a
@@ -2008,7 +2052,9 @@ describe('POST /api/llm/ask', () => {
       expect(sources[0].similarity).toBe(0.5);
     });
 
-    it('caps the answer at MAX_IMAGE_SOURCES, best image first across pages', async () => {
+    it('caps the answer at MAX_IMAGE_SOURCES, in the final result order — not by score (#1716)', async () => {
+      // Page 2's rows carry the higher scores but come second in the array
+      // hybridSearch returned, and that order is the pipeline's verdict.
       mockHybridSearch.mockResolvedValue([
         pageWithImages(1, [
           { key: 'a1.png', rank: 0.40 },
@@ -2034,10 +2080,10 @@ describe('POST /api/llm/ask', () => {
 
       expect(images).toHaveLength(4);
       expect(images.map((i) => i.attachmentUrl)).toEqual([
-        '/api/attachments/2/b1.png',
-        '/api/attachments/2/b2.png',
         '/api/attachments/1/a1.png',
         '/api/attachments/1/a2.png',
+        '/api/attachments/1/a3.png',
+        '/api/attachments/2/b1.png',
       ]);
     });
 
@@ -4229,6 +4275,161 @@ describe('POST /api/llm/ask', () => {
       });
 
       expect(response.statusCode).toBe(410);
+    });
+  });
+
+  describe('client disconnect (#1719)', () => {
+    /**
+     * Destroys the response the way a vanished client does (light-my-request
+     * emits its `close` on the next tick) and waits for the route's abort.
+     * The bound only matters if the route never listens: then the generator
+     * goes on as if the client were still there.
+     */
+    async function disconnectClient(signal: AbortSignal): Promise<void> {
+      lastReplyRaw!.destroy();
+      await Promise.race([once(signal, 'abort'), delay(1_000)]);
+    }
+
+    async function askAndSettle(): Promise<void> {
+      // The client is gone, so `inject` itself rejects; the handler goes on.
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } }).catch(() => undefined);
+      await vi.waitFor(() => expect(lastReplyRaw!.writableEnded).toBe(true), { timeout: 5_000 });
+    }
+
+    it('records one Client disconnected entry when streamChat returns silently after the abort', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockImplementation(async function* (_c: unknown, _m: unknown, _msgs: unknown, signal: AbortSignal) {
+        await disconnectClient(signal);
+        // `streamChat` returns without a chunk for an aborted caller.
+        if (signal.aborted) return;
+        yield { content: 'answer', done: true };
+      });
+
+      await askAndSettle();
+
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({
+        action: 'ask', status: 'error', errorMessage: 'Client disconnected', outputTokens: 0,
+      });
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
+    it('records no entry when the abort coincides with a beforeDispatch refusal', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      let abortedAtRefusal = false;
+      mockStreamChatClient.mockImplementation(async function* (
+        _c: unknown, _m: unknown, _msgs: unknown, signal: AbortSignal, opts: { beforeDispatch: () => Promise<void> },
+      ) {
+        await disconnectClient(signal);
+        abortedAtRefusal = signal.aborted;
+        // The grounding moved: the pre-dispatch proof refuses (a policy
+        // decision, no inference), just as the client leaves.
+        mockProvenancePagesStillAdmitted.mockResolvedValue(false);
+        await opts.beforeDispatch();
+        yield { content: 'answer', done: true };
+      });
+
+      await askAndSettle();
+
+      expect(abortedAtRefusal).toBe(true);
+      expect(mockEmitLlmAudit).not.toHaveBeenCalled();
+    });
+
+    /** A promise the test resolves, and one that settles when the route reaches it. */
+    function heldStep() {
+      let markReached!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>((resolve) => { markReached = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      return { reached, released, markReached, release };
+    }
+
+    it('keeps the single success entry when the client leaves while the completed answer is published', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      let signal!: AbortSignal;
+      mockStreamChatClient.mockImplementation(async function* (_c: unknown, _m: unknown, _msgs: unknown, s: AbortSignal) {
+        signal = s;
+        yield { content: 'answer', done: true };
+      });
+      const publication = heldStep();
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (String(sql).includes('INSERT INTO llm_conversations')) {
+          publication.markReached();
+          await publication.released;
+        }
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+
+      const asked = askAndSettle();
+      await publication.reached;
+      await disconnectClient(signal);
+      expect(signal.aborted).toBe(true);
+      publication.release();
+      await asked;
+
+      // The answer was complete: it is published and audited `success`, and
+      // the disconnect during publication adds no second entry.
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({ action: 'ask', status: 'success' });
+    });
+
+    it('records one Client disconnected entry when publication is refused after the client left', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      let signal!: AbortSignal;
+      const proof = heldStep();
+      mockStreamChatClient.mockImplementation(async function* (_c: unknown, _m: unknown, _msgs: unknown, s: AbortSignal) {
+        signal = s;
+        yield { content: 'answer', done: false };
+        // The grounding moves during inference: the publication proof refuses.
+        mockProvenancePagesStillAdmitted.mockImplementation(async () => {
+          proof.markReached();
+          await proof.released;
+          return false;
+        });
+        yield { content: '', done: true };
+      });
+
+      const asked = askAndSettle();
+      await proof.reached;
+      await disconnectClient(signal);
+      expect(signal.aborted).toBe(true);
+      proof.release();
+      await asked;
+
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({
+        action: 'ask', status: 'error', errorMessage: 'Client disconnected',
+      });
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('provider stream failures (#1728)', () => {
+    it.each([
+      ['a provider error frame', new ProviderStreamError(3, 'upstream worker crashed: CUDA out of memory'), 'Provider error'],
+      ['an incomplete stream', new StreamIncompleteError(3), 'Stream ended before completion'],
+      ['any other stream error', new Error('socket hang up'), 'Stream error'],
+    ])('answers %s with the shared failure text and persists nothing', async (_label, error, wireText) => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockImplementation(async function* () {
+        yield { content: 'Hel', done: false };
+        throw error;
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.at(-1)).toEqual({ error: wireText, done: true });
+      expect(events.some((f) => f.final === true)).toBe(false);
+      expect(response.body).not.toContain('CUDA');
+      expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
+      expect(mockEmitLlmAudit.mock.calls[0]![0]).toMatchObject({ action: 'ask', status: 'error', errorMessage: error.message });
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
     });
   });
 });

@@ -4,18 +4,17 @@ import { generatePdf } from '../../core/services/pdf-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { PDFDocument } from 'pdf-lib';
-import { BatchExportBodySchema } from '@compendiq/contracts';
+import { BatchExportBodySchema, PagePrimaryKeySchema } from '@compendiq/contracts';
 import { z } from 'zod';
 
-const IdParamSchema = z.object({ id: z.string().min(1) });
+const IdParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 export async function pagesExportRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
   // POST /api/pages/:id/export/pdf - single article PDF
   fastify.post('/pages/:id/export/pdf', async (request, reply) => {
-    const { id } = IdParamSchema.parse(request.params);
-    const pageId = parseInt(id, 10);
+    const { id: pageId } = IdParamSchema.parse(request.params);
 
     // Access control is the list definition (space access, standalone
     // ownership or sharing, page restrictions): an unreadable page answers

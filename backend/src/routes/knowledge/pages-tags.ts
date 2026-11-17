@@ -19,12 +19,13 @@ import {
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
+import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
 /**
- * #733: resolve a page id (integer PK or confluence_id — same resolution as
- * the auto-tagger service) and enforce the caller's RBAC access to it.
+ * #733: resolve a page id with bounded PK precedence over confluence_id and
+ * enforce the caller's RBAC access to it.
  * Throws 404 for both missing and inaccessible pages so restricted pages are
  * indistinguishable from nonexistent ones (no existence oracle).
  */
@@ -32,15 +33,16 @@ async function assertPageAccess(
   fastify: FastifyInstance,
   userId: string,
   pageId: string,
-): Promise<void> {
-  const isNumericId = /^\d+$/.test(pageId);
+): Promise<number> {
+  const primaryKey = toPageIdInt4(pageId);
   const result = await query<{ id: number }>(
-    `SELECT id FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
-    [isNumericId ? parseInt(pageId, 10) : pageId],
+    `SELECT id FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
+    [primaryKey ?? pageId],
   );
   if (result.rows.length === 0 || !(await userCanAccessPage(userId, result.rows[0]!.id))) {
     throw fastify.httpErrors.notFound('Page not found');
   }
+  return result.rows[0]!.id;
 }
 
 /**
@@ -97,7 +99,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
 
     // #733: RBAC — reject before reading page content or shipping it to the LLM.
-    await assertPageAccess(fastify, userId, id);
+    const pageId = await assertPageAccess(fastify, userId, id);
 
     // Resolve the use-case to determine the concrete model when the caller
     // omits one. The auto-tagger itself resolves the provider config
@@ -113,7 +115,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await autoTagPage(userId, id, model);
+      const result = await autoTagPage(userId, String(pageId), model);
       return result;
     } catch (err) {
       if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
@@ -152,7 +154,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     const { tags } = ApplyTagsBodySchema.parse(request.body);
 
     // #733: RBAC — reject before mutating labels or syncing to Confluence.
-    await assertPageAccess(fastify, userId, id);
+    const pageId = await assertPageAccess(fastify, userId, id);
 
     // Validate tags against allowed list
     const allowedSet = new Set<string>(ALLOWED_TAGS);
@@ -163,7 +165,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
 
     let mergedLabels: string[];
     try {
-      mergedLabels = await concealLabelWriteDenial(fastify, applyTags(userId, id, validTags));
+      mergedLabels = await concealLabelWriteDenial(fastify, applyTags(userId, String(pageId), validTags));
     } catch (err) {
       if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
       throw err;
@@ -188,10 +190,10 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     // Authority remains source-aware and is checked before reserving a remote
     // effect. The service re-resolves the page, re-checks page-edit authority
     // for a local write, and performs the mutation under the lifecycle fence.
-    await assertPageAccess(fastify, userId, id);
+    const pageId = await assertPageAccess(fastify, userId, id);
     let labels: string[];
     try {
-      labels = await concealLabelWriteDenial(fastify, applyLabelChanges(userId, id, {
+      labels = await concealLabelWriteDenial(fastify, applyLabelChanges(userId, String(pageId), {
         add: addLabels,
         remove: removeLabels,
       }));

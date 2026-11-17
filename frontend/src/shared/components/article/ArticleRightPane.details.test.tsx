@@ -45,18 +45,29 @@ const noteFixture = {
   resolved: false,
 };
 
-function renderDetails(overrides: Partial<typeof pageFixture> = {}) {
+let autoTagModel: string | null = null;
+
+const versionsFixture = {
+  pageId: '1',
+  versions: [
+    { versionNumber: 2, title: 'Engineering handbook', editedAt: '2026-09-01T12:00:00Z', syncedAt: null, author: null, message: null, isCurrent: true },
+    { versionNumber: 1, title: 'Engineering handbook', editedAt: '2026-08-01T12:00:00Z', syncedAt: null, author: null, message: null, isCurrent: false },
+  ],
+};
+
+function renderDetails(overrides: Partial<typeof pageFixture> & { isFrozen?: boolean } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
     let data: unknown;
     if (url.pathname.endsWith('/comments')) data = [noteFixture];
     else if (url.pathname === '/api/pages/pinned') data = { items: [] };
+    else if (url.pathname === '/api/pages/1/versions') data = versionsFixture;
     else if (/^\/api\/pages\/\d+$/.test(url.pathname)) {
       data = { ...pageFixture, ...overrides, id: url.pathname.split('/').at(-1) };
     } else if (url.pathname === '/api/settings') {
       data = { confluenceUrl: 'https://confluence.example.com' };
     } else if (url.pathname === '/api/permissions/check') data = { allowed: true };
-    else if (url.pathname === '/api/llm/usecase-default') data = { model: null };
+    else if (url.pathname === '/api/llm/usecase-default') data = { model: autoTagModel };
     else if (url.pathname === '/api/spaces' || url.pathname === '/api/spaces/local') data = [];
     else return new Response(JSON.stringify({ error: `Unexpected request: ${url.pathname}` }), { status: 404 });
     return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
@@ -77,6 +88,7 @@ function renderDetails(overrides: Partial<typeof pageFixture> = {}) {
 }
 
 beforeEach(() => {
+  autoTagModel = null;
   window.innerWidth = 1280;
   useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarLaptopExpanded: true, articleSidebarWidth: 400 });
   useArticleViewStore.setState({ headings: [], editing: false });
@@ -156,3 +168,56 @@ describe('Details trust and draft continuity', () => {
     expect(screen.getByTestId('comment-textarea')).toHaveValue('');
   });
 });
+
+describe('protected writes on a frozen article (#277)', () => {
+  const standalone = { source: 'standalone', confluenceId: null as unknown as string, spaceKey: 'LOCAL' };
+
+  async function openActions() {
+    const actions = await screen.findByTestId('article-actions');
+    // Auto-tag waits on its model lookup; Pin is there from the first paint.
+    await waitFor(() => expect(within(actions).getByRole('button', { name: /^Pin/ })).toBeInTheDocument());
+    return actions;
+  }
+
+  async function restoreOffered() {
+    fireEvent.click(within(screen.getByTestId('article-actions')).getByRole('button', { name: 'Version history' }));
+    await screen.findByText('v1');
+    return screen.queryByRole('button', { name: 'Restore version 1' }) !== null;
+  }
+
+  it('offers none of the writes the server refuses, and keeps reading and export', async () => {
+    autoTagModel = 'tagger';
+    renderDetails({ ...standalone, isFrozen: true });
+    const actions = await openActions();
+    // Give the auto-tag model lookup time to settle so its absence is a decision.
+    await waitFor(() => expect(fetchCalls('/api/llm/usecase-default')).toBeGreaterThan(0));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(within(actions).queryByRole('button', { name: /Move to trash/ })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole('button', { name: /Auto-tag/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('danger-zone')).not.toBeInTheDocument();
+    expect(within(actions).getByRole('button', { name: /Export PDF/ })).toBeInTheDocument();
+    expect(within(actions).getByTestId('show-in-graph-btn')).toBeInTheDocument();
+
+    // History stays readable; restoring an old version is a write.
+    expect(await restoreOffered()).toBe(false);
+  });
+
+  it('still offers them on an editable article', async () => {
+    autoTagModel = 'tagger';
+    renderDetails({ ...standalone, isFrozen: false });
+    const actions = await openActions();
+
+    expect(await within(actions).findByRole('button', { name: /Auto-tag/ })).toBeInTheDocument();
+    expect(within(actions).getByRole('button', { name: /Move to trash/ })).toBeInTheDocument();
+    expect(await screen.findByTestId('relocate-btn')).toBeInTheDocument();
+    expect(await restoreOffered()).toBe(true);
+  });
+});
+
+function fetchCalls(pathname: string): number {
+  return vi.mocked(globalThis.fetch).mock.calls
+    .filter(([input]) => new URL(input instanceof Request ? input.url : String(input), 'http://localhost').pathname === pathname)
+    .length;
+}

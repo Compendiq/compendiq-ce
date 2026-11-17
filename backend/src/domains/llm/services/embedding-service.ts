@@ -24,6 +24,7 @@ import { visiblePagesPredicate } from '../../../core/services/page-visibility.js
 import { authorizedPageIds } from '../../../core/services/authorized-pages.js';
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
+import { runtimeShadowAverageColumns } from '../../../core/services/ai-policy-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
 import {
   getActiveShadowTarget,
@@ -594,6 +595,61 @@ export async function getAdminChunkSettings(): Promise<{ chunkSize: number; chun
 export const MIN_EMBEDDABLE_TEXT_CHARS = 20;
 
 /**
+ * #1714 — settle a page with nothing to embed (below the floor, or a
+ * composition with no chunk) and clear the derived vector state an earlier,
+ * longer version left, in the transaction that clears its dirty flag: the
+ * chunk rows, the live and runtime-shadow averages, `embedded_at` and its
+ * similarity edges in both directions — `purgeDerivedAiState`'s set.
+ *
+ * Fenced like publication. page_embeddings and pages are locked first (the
+ * #1116 DDL order), then `settleEmbeddingArticle` takes the policy lock and the
+ * page row and validates the claimed source. Under that row lock the snapshot
+ * `content_revision` is checked exactly as publication checks it: a stale
+ * snapshot rolls back, deleting nothing and leaving the new dirty flag raised.
+ */
+async function settleUnembeddablePage(
+  article: EmbeddingArticle,
+  snapshot: { pageId: number; pageTitle: string; bodyHtml: string; contentRevision: string; imageRevision: number },
+): Promise<boolean> {
+  const { pageId } = snapshot;
+  return settleEmbeddingArticle(article, async (client) => {
+    // The publication fence's SQL and predicate (CLAUDE.md): a moved revision
+    // only rejects when the title or body_html differ from the locked row.
+    const source = await client.query<{ content_revision: string; title: string; body_html: string | null }>(
+      'SELECT content_revision::text, title, body_html FROM pages WHERE id = $1 FOR UPDATE',
+      [pageId],
+    );
+    const current = source.rows[0];
+    if (current?.content_revision !== snapshot.contentRevision
+      && (current === undefined || current.title !== snapshot.pageTitle || current.body_html !== snapshot.bodyHtml)) {
+      logger.info({ pageId }, 'Page content changed before the settle — nothing cleared');
+      throw new ArticleStageRefusedError();
+    }
+    const shadowAverages = (await runtimeShadowAverageColumns(client))
+      .map((column) => `, ${column} = NULL`).join('');
+    // ADR-027 D6.3 on the settle path too: an analysis committing between
+    // `planDerivedChunks` and this write re-raised `embedding_dirty` with a
+    // new revision; clearing it unconditionally would hide that page from the
+    // next pass until another writer touched it. Same guard as the embed write.
+    await client.query(
+      `UPDATE pages SET embedding_dirty = FALSE,
+              embedding_status = 'not_embedded', embedding_error = NULL,
+              embedded_at = NULL, page_avg_embedding = NULL${shadowAverages}
+        WHERE id = $1 AND image_analysis_revision = $2`,
+      [pageId, snapshot.imageRevision],
+    );
+    await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
+    // Similarity edges are a persisted derivative of the average just cleared,
+    // in both directions; label/link edges are authored facts and stay.
+    await client.query(
+      `DELETE FROM page_relationships
+        WHERE relationship_type = 'embedding_similarity' AND (page_id_1 = $1 OR page_id_2 = $1)`,
+      [pageId],
+    );
+  }, { lockVectorTables: true });
+}
+
+/**
  * Embed a single page's content.
  * Tables are shared (no user_id); access control is at the query layer.
  * @param pageId - The integer primary key of the page in the `pages` table (pages.id)
@@ -680,28 +736,20 @@ export async function embedPage(
     return 0;
   }
 
-  if (authoredChars + derived.substantiveChars < MIN_EMBEDDABLE_TEXT_CHARS) {
-    // No inference is needed, but that is not permission to clear a stored
-    // policy block or mark a prohibited article as successfully processed.
-    if (article.policy === 'none') {
-      policyBlockedInRun.add(pageId);
-      return 0;
-    }
-    logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
-    // ADR-027 D6.3 on the settle path too: an analysis committing between
-    // `planDerivedChunks` and this write re-raised `embedding_dirty` with a
-    // new revision; clearing it unconditionally would hide that page from the
-    // next pass until another writer touched it. Same guard as the embed write.
-    const settled = await settleEmbeddingArticle(article, async (client) => {
-      await client.query(
-        `UPDATE pages SET embedding_dirty = FALSE,
-                embedding_status = 'not_embedded', embedding_error = NULL
-          WHERE id = $1 AND image_analysis_revision = $2`,
-        [pageId, derived.revision],
-      );
-    });
-    if (!settled) policyBlockedInRun.add(pageId);
-    return 0;
+  // Callers which already selected the page carry that same row's revision.
+  // Other callers must bind their supplied source to a current database row;
+  // reading a revision alone could bless an already-stale body. Bound before
+  // the no-work branch: its settle deletes rows, so it fences on the same
+  // snapshot as publication (#1714).
+  let contentRevision = opts?.contentRevision;
+  if (contentRevision === undefined) {
+    const source = await query<{ content_revision: string }>(
+      `SELECT content_revision::text FROM pages
+       WHERE id = $1 AND body_html IS NOT DISTINCT FROM $2 AND title = $3`,
+      [pageId, bodyHtml, pageTitle],
+    );
+    contentRevision = source.rows[0]?.content_revision;
+    if (contentRevision === undefined) return 0;
   }
 
   const authored: Array<{ text: string; metadata: PageChunkMetadata }> =
@@ -712,20 +760,22 @@ export async function embedPage(
   // authored index, allocated in this one composition, so `UNIQUE (page_id,
   // chunk_index)` cannot collide and sibling assembly's boundary holds.
   const chunks: Array<{ text: string; metadata: PageChunkMetadata }> = [...authored, ...derived.chunks];
-  if (chunks.length === 0) return 0;
 
-  // Callers which already selected the page carry that same row's revision.
-  // Other callers must bind their supplied source to a current database row;
-  // reading a revision alone could bless an already-stale body.
-  let contentRevision = opts?.contentRevision;
-  if (contentRevision === undefined) {
-    const source = await query<{ content_revision: string }>(
-      `SELECT content_revision::text FROM pages
-       WHERE id = $1 AND body_html IS NOT DISTINCT FROM $2 AND title = $3`,
-      [pageId, bodyHtml, pageTitle],
-    );
-    contentRevision = source.rows[0]?.content_revision;
-    if (contentRevision === undefined) return 0;
+  // Nothing to embed: below the floor, or (defensively) a composition with no
+  // chunk. Both settle, and clear what an earlier, longer version left (#1714).
+  if (authoredChars + derived.substantiveChars < MIN_EMBEDDABLE_TEXT_CHARS || chunks.length === 0) {
+    // No inference is needed, but that is not permission to clear a stored
+    // policy block or mark a prohibited article as successfully processed.
+    if (article.policy === 'none') {
+      policyBlockedInRun.add(pageId);
+      return 0;
+    }
+    logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
+    const settled = await settleUnembeddablePage(article, {
+      pageId, pageTitle, bodyHtml, contentRevision, imageRevision: derived.revision,
+    });
+    if (!settled) policyBlockedInRun.add(pageId);
+    return 0;
   }
 
   // Schema-epoch snapshot (#1116, review r1): taken BEFORE any model is

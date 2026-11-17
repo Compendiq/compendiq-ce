@@ -40,6 +40,7 @@ import { visiblePagesPredicate } from '../../../core/services/page-visibility.js
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
+import { stripClosedThinkBlocks } from '../../llm/services/think-blocks.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import { admitPageForProvider, isPersistableBlockReason } from '../../llm/services/ai-policy-admission.js';
 import { recoverPolicyBlockedStage } from '../../llm/services/ai-policy-worker-recovery.js';
@@ -109,7 +110,7 @@ interface QualityScores {
  */
 export function parseQualityScores(text: string): QualityScores | null {
   // Strip <think>...</think> blocks from thinking models (e.g., qwen3, deepseek-r1)
-  const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const cleaned = stripClosedThinkBlocks(text).trim();
 
   const overallMatch = cleaned.match(/##?\s*Overall\s+Quality\s+Score:\s*(\d+)\s*\/\s*100/i);
   const completenessMatch = cleaned.match(/##?\s*Completeness:\s*(\d+)\s*\/\s*100/i);

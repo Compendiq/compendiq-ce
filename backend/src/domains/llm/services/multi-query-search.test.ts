@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SearchResult } from './rag-service.js';
+// #1718 — the pin stage's own trigger, unstubbed: a stub leg pins exactly
+// when the real stage would (see `pinStageLeg` below).
+import { detectIdentifiers } from './identifier-shortcircuit.js';
 
 // Closed stubs: this suite is about the wrapper, so retrieval and the chat
 // client are boundaries. Nothing below them is exercised here — the legs'
@@ -382,12 +385,16 @@ describe('multiQuerySearch (#1112)', () => {
       expect(call[4]).toMatchObject({
         rerank: true,
         assembleContext: true,
-        pinIdentifiers: true,
         rerankCandidatesOverride: DEEP_SEARCH_RERANK_CANDIDATES,
         // One gesture, one analytics row — see below.
         recordAnalytics: false,
       });
     }
+    // #1718: the caller's pin request reaches the ORIGINAL leg only; a
+    // paraphrase leg is a model's words, and never pins.
+    expect(mockHybridSearch.mock.calls[0]![4].pinIdentifiers).toBe(true);
+    expect(mockHybridSearch.mock.calls[1]![4].pinIdentifiers).toBe(false);
+    expect(mockHybridSearch.mock.calls[2]![4].pinIdentifiers).toBe(false);
     expect(mockHybridSearch.mock.calls[0]![4].onRetrievalMeta).toBeTypeOf('function');
     expect(mockHybridSearch.mock.calls[1]![4].onRetrievalMeta).toBeUndefined();
     expect(mockHybridSearch.mock.calls[2]![4].onRetrievalMeta).toBeUndefined();
@@ -609,5 +616,188 @@ describe('multiQuerySearch (#1112)', () => {
       onExpansion: () => { throw new Error('observer blew up'); },
     });
     expect(out).toEqual([row(1)]);
+  });
+});
+
+/**
+ * #1718 — a stand-in for `hybridSearch` that reproduces its #1107 pin stage
+ * on exactly the two facts the wrapper controls: the stage runs only when the
+ * leg's options carry `pinIdentifiers`, and it pins only when the leg's OWN
+ * text detects a non-spaceKey identifier (`rag-service.ts`, the
+ * `opts?.pinIdentifiers && …` branch, and `detectIdentifiers` itself,
+ * unstubbed). Verification always succeeds here, and the pinned page MOVES to
+ * the head keeping its row — the stage's own rule. Every leg reports healthy
+ * retrieval, so the confidence verdict depends on the rows alone.
+ */
+function pinStageLeg(rankings: Record<string, SearchResult[]>, pinPageId: number) {
+  return async (
+    _u: string,
+    q: string,
+    _k: number,
+    _c: unknown,
+    opts?: { pinIdentifiers?: boolean; onRetrievalMeta?: (m: unknown) => void },
+  ): Promise<SearchResult[]> => {
+    opts?.onRetrievalMeta?.({
+      degradedReason: null, healthCaveat: null, searchType: 'hybrid',
+      embeddingCoverage: 1, aclEmptied: false,
+    });
+    const ranked = rankings[q] ?? [];
+    const pins = opts?.pinIdentifiers === true && detectIdentifiers(q).some((d) => d.kind !== 'spaceKey');
+    if (!pins) return ranked;
+    const hit = ranked.find((r) => r.pageId === pinPageId) ?? row(pinPageId, { vectorScore: null });
+    return [{ ...hit, pinned: true as const }, ...ranked.filter((r) => r.pageId !== pinPageId)];
+  };
+}
+
+describe('multiQuerySearch (#1718) — paraphrase legs never pin', () => {
+  /*
+   * The RF4 fixture: an 11-token question that detects nothing (so it
+   * expands), and two paraphrases that each introduce `INC-2203` — an
+   * identifier the user never typed. Page 99 is the INC page; the paraphrase
+   * legs reach it unpinned through the ordinary legs, below the template
+   * pages 3 and 4. The original leg never sees it.
+   */
+  const QUESTION = 'what did we learn from the database failover incident last spring';
+  const PARAPHRASES = ['INC-2203 postmortem review', 'INC-2203 incident postmortem'];
+  const INC_PAGE = 99;
+  const PARAPHRASE_RANKING = [
+    row(3, { vectorScore: 0.6 }),
+    row(4, { vectorScore: 0.58 }),
+    row(INC_PAGE, { vectorScore: null, keywordRank: 0.4, pageTitle: 'INC-2203 postmortem' }),
+  ];
+  const RF4_RANKINGS: Record<string, SearchResult[]> = {
+    [QUESTION]: [row(1, { vectorScore: 0.7 }), row(2, { vectorScore: 0.65 })],
+    [PARAPHRASES[0]!]: PARAPHRASE_RANKING,
+    [PARAPHRASES[1]!]: PARAPHRASE_RANKING,
+  };
+  const optsIn = { rerank: true, assembleContext: true, pinIdentifiers: true };
+
+  beforeEach(() => {
+    mockChat.mockResolvedValue(PARAPHRASES.join('\n'));
+    mockHybridSearch.mockImplementation(pinStageLeg(RF4_RANKINGS, INC_PAGE));
+  });
+
+  it('passes pinIdentifiers true to the original leg and false to each paraphrase leg, other options unchanged', async () => {
+    // `deepSearch` is the ask-body flag that selects this wrapper; carried
+    // here as the criterion states it, and spread through like any other key.
+    const callerOpts = { ...optsIn, deepSearch: true };
+    await multiQuerySearch('u1', QUESTION, 5, undefined, callerOpts);
+
+    expect(mockHybridSearch.mock.calls.map((c) => c[1])).toEqual([QUESTION, ...PARAPHRASES]);
+    const [original, ...paraphraseLegs] = mockHybridSearch.mock.calls.map((c) => c[4]);
+    expect(original).toEqual({
+      ...callerOpts,
+      rerankCandidatesOverride: DEEP_SEARCH_RERANK_CANDIDATES,
+      recordAnalytics: false,
+      onRetrievalMeta: expect.any(Function),
+    });
+    expect(paraphraseLegs).toHaveLength(2);
+    for (const opts of paraphraseLegs) {
+      expect(opts).toEqual({
+        ...callerOpts,
+        rerankCandidatesOverride: DEEP_SEARCH_RERANK_CANDIDATES,
+        recordAnalytics: false,
+        onRetrievalMeta: undefined,
+        pinIdentifiers: false,
+      });
+    }
+  });
+
+  it.each([true, false, undefined])(
+    'the original leg keeps the caller\'s pinIdentifiers (%s); paraphrase legs always pass false',
+    async (callerValue) => {
+      await multiQuerySearch('u1', QUESTION, 5, undefined, { rerank: true, pinIdentifiers: callerValue });
+
+      expect(mockHybridSearch).toHaveBeenCalledTimes(3);
+      expect(mockHybridSearch.mock.calls[0]![4].pinIdentifiers).toBe(callerValue);
+      expect(mockHybridSearch.mock.calls[1]![4].pinIdentifiers).toBe(false);
+      expect(mockHybridSearch.mock.calls[2]![4].pinIdentifiers).toBe(false);
+    },
+  );
+
+  it('a paraphrase that detects an identifier pins nothing and leaves confidence measurable (RF4)', async () => {
+    // The fixture is the RF4 shape only if the original detects nothing and
+    // each paraphrase does — otherwise this test proves nothing.
+    expect(shouldExpandQuery(QUESTION)).toEqual({ expand: true });
+    for (const p of PARAPHRASES) expect(detectIdentifiers(p).map((d) => d.kind)).toContain('issueKey');
+
+    const merged = await multiQuerySearch('u1', QUESTION, 5, undefined, { ...optsIn, surface: 'ask' });
+
+    expect(merged.filter((r) => r.pinned === true)).toEqual([]);
+    // The single-query path on the same question, same options.
+    const single = await pinStageLeg(RF4_RANKINGS, INC_PAGE)('u1', QUESTION, 5, undefined, optsIn);
+    const singleConfidence = computeRetrievalConfidence(single, null);
+    expect(singleConfidence).toEqual({ score: 0.7, basis: 'similarity' });
+    expect(computeRetrievalConfidence(merged, null)).toEqual(singleConfidence);
+    // …and the verdict the one analytics row records is that same one.
+    const [, , , , , extras] = mockTrackSearchAnalytics.mock.calls[0]!;
+    expect(extras).toMatchObject({ confidence: 0.7, confidenceBasis: 'similarity', surface: 'ask' });
+  });
+
+  it('the identifier page stays reachable at its plain RRF position — no pin bonus', async () => {
+    const merged = await multiQuerySearch('u1', QUESTION, 5, undefined, optsIn);
+
+    // What the merge makes of the legs as they rank WITHOUT a pin stage.
+    const expected = mergeMultiQueryResults(
+      [
+        { results: RF4_RANKINGS[QUESTION]!, weight: ORIGINAL_QUERY_WEIGHT },
+        { results: PARAPHRASE_RANKING, weight: PARAPHRASE_QUERY_WEIGHT },
+        { results: PARAPHRASE_RANKING, weight: PARAPHRASE_QUERY_WEIGHT },
+      ],
+      5,
+    );
+    expect(merged).toEqual(expected);
+    expect(merged.map((r) => r.pageId)).toEqual([3, 4, INC_PAGE, 1, 2]);
+    const inc = merged.find((r) => r.pageId === INC_PAGE)!;
+    expect(inc.pinned).toBeUndefined();
+    // Rank 3 in both paraphrase legs, the score rewritten by the merge.
+    expect(inc.score).toBeCloseTo((2 * PARAPHRASE_QUERY_WEIGHT) / (MULTI_QUERY_RRF_K + 3), 12);
+  });
+
+  it('an identifier query still skips expansion and keeps its caller-requested pinned head', async () => {
+    mockHybridSearch.mockImplementation(
+      pinStageLeg({ 'INC-2203': [row(5, { vectorScore: 0.8 }), row(INC_PAGE, { vectorScore: 0.4 })] }, INC_PAGE),
+    );
+    const onExpansion = vi.fn();
+    const callerOpts = { ...optsIn, onExpansion };
+
+    const out = await multiQuerySearch('u1', 'INC-2203', 5, undefined, callerOpts);
+
+    expect(onExpansion).toHaveBeenCalledWith({ expanded: false, reason: 'identifier' });
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(mockHybridSearch).toHaveBeenCalledTimes(1);
+    expect(mockHybridSearch).toHaveBeenCalledWith('u1', 'INC-2203', 5, undefined, callerOpts);
+    expect(out.map((r) => [r.pageId, r.pinned])).toEqual([[INC_PAGE, true], [5, undefined]]);
+    // #1107's guard, untouched: a pinned head is never auto-refused.
+    expect(computeRetrievalConfidence(out, null)).toEqual({ score: null, basis: 'none' });
+  });
+
+  it('leaves the merged order unchanged when no leg detects an identifier', async () => {
+    const q = 'how do I restart the ingest worker';
+    const p = ['restarting the ingest worker', 'ingest worker restart procedure'];
+    mockChat.mockResolvedValue(p.join('\n'));
+    const rankings: Record<string, SearchResult[]> = {
+      [q]: [row(1), row(2), row(3)],
+      [p[0]!]: [row(2), row(1), row(5)],
+      [p[1]!]: [row(2), row(1), row(6)],
+    };
+    mockHybridSearch.mockImplementation(pinStageLeg(rankings, INC_PAGE));
+
+    const merged = await multiQuerySearch('u1', q, 5, undefined, optsIn);
+
+    // Order as recorded on dev before #1718; pages 5 and 6 tie on score and
+    // break toward the earlier leg.
+    expect(merged.map((r) => r.pageId)).toEqual([2, 1, 3, 5, 6]);
+    expect(merged).toEqual(
+      mergeMultiQueryResults(
+        [
+          { results: rankings[q]!, weight: ORIGINAL_QUERY_WEIGHT },
+          { results: rankings[p[0]!]!, weight: PARAPHRASE_QUERY_WEIGHT },
+          { results: rankings[p[1]!]!, weight: PARAPHRASE_QUERY_WEIGHT },
+        ],
+        5,
+      ),
+    );
+    expect(merged.some((r) => r.pinned === true)).toBe(false);
   });
 });

@@ -2687,7 +2687,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       expect((await getRow(id)).confluence_id).toBe('900010');
     });
 
-    it('rechecks actor authority after reservation waits and starts no upstream effect', async () => {
+    it('rechecks actor authority after admission waits and starts no upstream effect', async () => {
       const id = await createPage({
         title: 'Revoked while waiting',
         source: 'standalone',
@@ -2709,12 +2709,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         const response = await pending;
         expect(response.statusCode).toBe(403);
         expect(h.client.createPage).not.toHaveBeenCalled();
-        expect(await latestRelocateIntent(id)).toMatchObject({
-          status: 'cancelled',
-          effect_started_at: null,
-          effect_finished_at: null,
-          settled_at: expect.any(String),
-        });
+        expect(await latestRelocateIntent(id)).toBeUndefined();
         expect((await getRow(id)).source).toBe('standalone');
       } finally {
         await holder.query('ROLLBACK').catch(() => undefined);

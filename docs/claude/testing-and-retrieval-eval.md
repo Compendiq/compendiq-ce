@@ -6,6 +6,26 @@ Moved verbatim from `CLAUDE.md`. Paths are relative to the repository root.
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
 
+Backend tests use `kb_creator_test_wN` by default. Optional
+`TEST_DATABASE_NAMESPACE` adds a validated namespace:
+`kb_creator_test_<namespace>_wN`. Supplied values must match
+`/^[a-z][a-z0-9_]{0,31}$/` exactly; omitted/actual undefined keeps the legacy
+name, but an empty value is invalid and the literal string `undefined` is valid.
+Both Postgres env URLs are rewritten; namespaced CREATE accepts only the active
+namespace and worker, before importing pg or opening a connection.
+For independent serial runs, set a unique namespace and use
+`npm test -w backend -- --maxWorkers=1 --no-file-parallelism <test-file>`.
+Redis logical DBs and pub/sub prefixes are unchanged: serialize runs sharing
+the same Redis server, and provision only the run's owned Postgres database.
+
+Files on one worker share its Redis DB, and `processDirtyPages` backs off while
+a foreign `embedding:lock:*` holder is listed in `embedding:locks:active`
+(#2003). A test that needs such a holder uses `holdEmbeddingLease` /
+`holdOtherEmbeddingLease` (`routes/knowledge/pages.test-helpers.ts`), which
+release it in `onTestFinished`; any other raw `embedding:lock:*` key is released
+the same way. Such files declare `expectNoEmbeddingLeaseLeak()` as their first
+`afterAll` (hooks run last-declared first) so a leaked lease fails its own file.
+
 The notification bell uses the global `/notifications/count` for its badge
 and mark-all action, not the current list page. Its paginated list and count
 queries must both be invalidated after read mutations.
@@ -445,7 +465,7 @@ other value went the other way and must stay there**: `TRGM_SIMILARITY_THRESHOLD
 in `routes/knowledge/search.ts` is FIXED at 0.3 because the fuzzy-title query is
 sargable only through pg_trgm's `%` operator, which compares against the
 `pg_trgm.similarity_threshold` GUC — so the constant must equal the GUC's
-default or the retained `similarity() > $4` stops being exact, and making it a
+default or the retained `similarity()` check stops being exact, and making it a
 knob means moving the GUC too (a `SET LOCAL` per search, i.e. a checked-out
 client where a pooled `query()` does now). Documented as deliberately fixed in
 its JSDoc, in ADMIN-GUIDE's Retrieval section and on the panel's Keyword index

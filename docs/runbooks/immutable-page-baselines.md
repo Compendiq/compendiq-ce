@@ -852,6 +852,50 @@ kind-specific reconciliation.
 Never use a heartbeat, Redis TTL, pod age, operator assertion, or a fabricated
 acknowledgment as a fence. There is no force-clear endpoint.
 
+### One-time152 Notion identity snapshot upgrade
+
+1. Inventory EVERY old backend/writer process, deployment identity, registered
+   runtime epoch and unreleased writable admission before the first152 run.
+   Stop accepting new old-image work. Close collaboration connections cleanly
+   and let flush/release finish; never fabricate released admissions.
+2. For each live owner, use the existing owning-process
+   `POST /api/admin/page-write-recovery/runtime/quiesce` request with its exact
+   expectedRuntimeId and10–1000-character audit reason. Route directly to that
+   owner, not a random load-balanced process. Retain the response's runtimeId,
+   acknowledgmentId and deploymentIdentity.
+3. Persist the existing owner_ack fence with that EXACT acknowledgment through
+   `/api/admin/page-write-recovery/runtimes/<runtimeId>/fence`. If the owner is
+   gone, use only the existing server-verified retirement mode that applies:
+   durable_no_started_effects for genuinely unstarted work, or supported local
+   kernel verified_local_termination for started work. No age/heartbeat/TTL,
+   operator assertion, made-up acknowledgment or force-clear is proof.
+4. Retain and inspect the fence/quiescence/admission observations AND independently
+   observe old processes/images stopped. Disable old-image restart and HOLD
+   THEM STOPPED until only152-compatible replacements are running.
+5. Durable started/unknown pending intents are NOT an active execution:
+   failed phases can drain, be acknowledged/fenced and remain pending with exact
+   progress/preparation/capacity for kind-specific recovery. The old Notion-index
+   failure is not a reason to clear intent. Existing quiescence cancels only its
+   proven pre-effect reservations; migration152 itself cancels/settles nothing.
+6. Normal startup's real migration runner must execute BEFORE new page-writer
+   runtime registration. Its read-only guard refuses an unretired writable
+   epoch or unreleased admission with
+   `relocation_notion_upgrade_requires_retired_writers`. On refusal, finish the
+   supported retirement/hold-stopped steps; do not skip the migration or edit
+   registry/admission/intent rows to bypass it.
+7. Migration152 runs atomically under the existing migration/hierarchy/table
+   locks: add nullable original token; backfill every retained preparation from
+   its same immutable-token FK row; clear all Confluence metadata and only
+   provenance-matching retained local cutovers; recreate the standalone-only
+   normalized index. Other page fields/status/progress/ACL/receipts/files/
+   capacity remain. An identity near-match is left alone, not a whole-upgrade
+   classifier abort. Known out-of-band token edits invalidate the history proof:
+   stop for investigation, not body/ACL guessing.
+8. Applied152 is recorded and SKIPPED on subsequent normal startup. Do not
+   replay its repair statements manually on every boot: exact compensated
+   Confluence/nonNULL metadata is permitted and ignored by the source policy.
+   Do not roll an old binary/image back into service after this snapshot cutover.
+
 ## Reconciling a fenced intent
 
 Reconciliation requires the original runtime to have a server-proven fence.
@@ -1066,6 +1110,16 @@ binds its count and ordered digest. It does not impose a new attachment-count
 limit. Compact-create readbacks resolve current mode and credentials again.
 With no remaining provider mutation, a failed readback can be retried read-only
 after fencing the owner; an unknown later upload still cannot be replayed.
+
+Original Notion NULL/spelling is captured and restored exactly. Applied
+publication proves current NULL plus ALL existing receipts/content/ACL/child/
+attachment fences. A proven-live rollback restores source/owner/token in ONE
+root UPDATE before any destructive child/ACE/prepared-file cleanup; the
+standalone index excludes its Confluence destination even if the former owner
+has imported meanwhile. No original/no-cutover ACL is reapplied merely because
+migration cleared metadata. Unknown provider outcome still remains pending;
+known successful Confluence publication is never compensated to standalone.
+
 A failure between a provider acknowledgment and that immediate receipt commit
 can still leave the effect unknown. No subsequent work widens that unavoidable
 durability window.

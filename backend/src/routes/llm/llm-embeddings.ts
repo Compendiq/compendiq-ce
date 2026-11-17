@@ -143,6 +143,9 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     // it refuses by naming the integration rather than asking for the
     // credentials that are still on file. Local embedding is unaffected —
     // `POST /embeddings/process` and the dirty-page worker keep running.
+    // #1717 — discovery is remote, content is local: the walk supplies ids and
+    // titles only (no `getPage` beyond the root, `body.storage` never read), and
+    // each page is embedded from its live local row.
     if (!(await isConfluenceEnabled(userId))) {
       throw fastify.httpErrors.badRequest(CONFLUENCE_DISABLED_MESSAGE);
     }
@@ -150,6 +153,12 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence credentials not configured');
+    }
+
+    // Same static lock check as /embeddings/process and /embeddings/retry-failed:
+    // after the two 400s above, before any SSE byte.
+    if (await isProcessingUser(userId)) {
+      throw fastify.httpErrors.conflict(await conflictMessage());
     }
 
     // Set up SSE response
@@ -185,76 +194,54 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
       for (const page of allPages) {
         if (controller.signal.aborted) break;
 
+        let warning: string | undefined;
         try {
-          // Fetch full page content if not already expanded
-          const fullPage = page.body?.storage?.value ? page : await client.getPage(page.id);
-          const storageXhtml = fullPage.body?.storage?.value ?? '';
-
-          if (storageXhtml) {
-            // Try to get id, space_key and cached HTML from local DB first
-            const cachedRow = await query<{ id: number; title: string; space_key: string; body_html: string | null; content_revision: string }>(
-              'SELECT id, title, space_key, body_html, content_revision::text FROM pages WHERE confluence_id = $1',
+          // Local wins (#1717). Source-aware identity: a standalone row that
+          // kept this Confluence id as history is not this page.
+          const local = await query<{ id: number; title: string; space_key: string; body_html: string | null; content_revision: string }>(
+            "SELECT id, title, space_key, body_html, content_revision::text FROM pages WHERE confluence_id = $1 AND source = 'confluence' AND deleted_at IS NULL",
+            [page.id],
+          );
+          const row = local.rows[0];
+          if (!row) {
+            // Only on a miss: is the Confluence row in the trash (sync soft-deletes)?
+            const trashed = await query(
+              "SELECT 1 FROM pages WHERE confluence_id = $1 AND source = 'confluence' AND deleted_at IS NOT NULL",
               [page.id],
             );
-
-            if (!cachedRow.rows[0]?.id) {
-              // Page not yet synced to local DB — skip with warning
+            if (trashed.rows.length > 0) {
+              logger.warn({ confluenceId: page.id, title: page.title }, 'Page is in the trash, skipping embedding');
+              warning = 'Page is in the trash, skipping';
+            } else {
               logger.warn({ confluenceId: page.id, title: page.title }, 'Page not in local DB, skipping embedding (sync first)');
-              completed++;
-              reply.raw.write(`data: ${JSON.stringify({
-                phase: 'embedding',
-                total,
-                completed,
-                errors,
-                currentPage: page.title,
-                warning: 'Page not yet synced to local DB, skipping',
-                done: false,
-              })}\n\n`);
-              continue;
+              warning = 'Page not yet synced to local DB, skipping';
             }
-
-            const resolvedSpaceKey = cachedRow.rows[0].space_key ?? '';
-
-
+          } else if (row.body_html === null) {
+            logger.warn({ confluenceId: page.id }, 'Page has no cached body, skipping embedding (sync first)');
+            warning = 'Page has no cached body, skipping (sync first)';
+          } else {
             // Same admin chunk options the dirty-page worker passes — without
             // them the two paths chunk the same page differently, and the
             // admin setting looks intermittently broken (#1265 verification).
-            if (cachedRow.rows[0].body_html !== null) {
-              const chunks = await embedPage(userId, cachedRow.rows[0].id, cachedRow.rows[0].title, resolvedSpaceKey, cachedRow.rows[0].body_html, {
-                ...chunkOpts, contentRevision: cachedRow.rows[0].content_revision,
-              });
-              if (chunks === 0) {
-                reply.raw.write(`data: ${JSON.stringify({ phase: 'embedding', total, completed, errors,
-                  currentPage: page.title, warning: 'No new embeddings published (blocked, deferred, or no work)', done: false })}\n\n`);
-                continue;
-              }
-            } else {
-              logger.warn({ confluenceId: page.id }, 'Page has no cached body, skipping embedding (sync first)');
-              reply.raw.write(`data: ${JSON.stringify({
-                phase: 'embedding',
-                total,
-                completed: completed + 1,
-                errors,
-                currentPage: page.title,
-                warning: 'Page has no cached body, skipping (sync first)',
-                done: false,
-              })}\n\n`);
-            }
+            const chunks = await embedPage(userId, row.id, row.title, row.space_key ?? '', row.body_html, {
+              ...chunkOpts, contentRevision: row.content_revision,
+            });
+            if (chunks === 0) warning = 'No new embeddings published (blocked, deferred, or no work)';
           }
-
-          completed++;
         } catch (err) {
           errors++;
-          completed++;
           logger.error({ err, pageId: page.id, title: page.title }, 'Failed to embed page in tree');
         }
 
+        // Exactly one progress event per discovered page; every branch counts.
+        completed++;
         reply.raw.write(`data: ${JSON.stringify({
           phase: 'embedding',
           total,
           completed,
           errors,
           currentPage: page.title,
+          ...(warning ? { warning } : {}),
           done: false,
         })}\n\n`);
       }

@@ -172,6 +172,8 @@ export function denialExplanation(reason: string | null | undefined): string | n
       return 'This space requires approvals; a direct freeze is not available.';
     case 'governance_unavailable':
       return 'The approval workflow could not be reached, so freezing is unavailable.';
+    case 'governance_license_required':
+      return 'Approving needs an active Enterprise licence, which is unavailable right now. Recorded approvals, retained evidence and an authorized thaw are unaffected.';
     case 'approval_required':
       return 'The required approvals are not complete.';
     case 'stale_manifest':

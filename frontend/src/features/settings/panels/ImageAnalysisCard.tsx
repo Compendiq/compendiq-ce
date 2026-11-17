@@ -74,7 +74,7 @@ const MAX_OUTPUT_TOKENS_FIELD: NumericField<'imageAnalysisMaxOutputTokens'> = {
 const RESULT_MESSAGE: Record<'yes' | 'no' | 'unknown', string> = {
   yes: 'Image support confirmed — this model reads page images.',
   no: 'This model refused the test image. Image analysis stays paused until a vision-capable model is assigned.',
-  unknown: "Couldn't establish image support — the provider did not answer. That is not a text-only verdict; see why below.",
+  unknown: "Couldn't establish image support — the provider did not answer, or its reply was cut off before a visible answer. That is not a text-only verdict; see the probe error below.",
 };
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -262,8 +262,9 @@ export function ImageAnalysisCard({
         {assigned && capability?.vision === null && capability.probedAt !== null && (
           <p className="text-muted-foreground text-xs" data-testid="image-analysis-unconfirmed-note">
             The provider did not answer the probe — unreachable, an authentication or rate-limit error,
-            or an open breaker. That is not evidence the model is text-only. No image is analyzed
-            until a re-check confirms it.
+            or an open breaker — or it answered but the reply was cut off before a visible answer (a
+            reasoning model that used up the probe's token budget). That is not evidence the model is
+            text-only; see the probe error. No image is analyzed until a re-check confirms it.
           </p>
         )}
         {assigned && capability?.vision === false && (

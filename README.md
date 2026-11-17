@@ -11,16 +11,13 @@
 <p align="center">
   <a href="https://github.com/Compendiq/compendiq-ce/actions/workflows/pr-check.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Compendiq/compendiq-ce/pr-check.yml?branch=main&logo=github&label=CI"></a>
   <a href="https://github.com/Compendiq/compendiq-ce/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Compendiq/compendiq-ce?logo=git&logoColor=white&label=release"></a>
-  <img alt="Confluence Data Center 9.2" src="https://img.shields.io/badge/Confluence-Data%20Center%209.2-0052CC?logo=confluence&logoColor=white">
   <img alt="Docker required" src="https://img.shields.io/badge/Docker-24%2B%20required-2496ED?logo=docker&logoColor=white">
-  <img alt="No telemetry" src="https://img.shields.io/badge/telemetry-none-3FB950">
   <a href="LICENSE"><img alt="License: AGPL v3" src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg"></a>
 </p>
 
 <p align="center">
   <a href="#install-in-three-minutes"><b>Install</b></a> &nbsp;&bull;&nbsp;
   <a href="#answers-with-receipts"><b>Features</b></a> &nbsp;&bull;&nbsp;
-  <a href="#community-edition-vs-enterprise"><b>Enterprise</b></a> &nbsp;&bull;&nbsp;
   <a href="#documentation"><b>Docs</b></a> &nbsp;&bull;&nbsp;
   <a href="SECURITY.md"><b>Security</b></a>
 </p>
@@ -191,30 +188,6 @@ Diagrams are source-of-truth and live in [`docs/architecture/`](docs/architectur
 decisions are recorded in [`docs/ARCHITECTURE-DECISIONS.md`](docs/ARCHITECTURE-DECISIONS.md).
 
 </details>
-
-## Community Edition vs Enterprise
-
-Community Edition is **free and AGPL-3.0, with no artificial resource limits** — no seat caps, no
-document caps, no metered AI calls. And it does not shrink: the
-[stewardship pledge](docs/STEWARDSHIP.md) commits in writing that every feature shipped under CE
-stays under CE, enforceable against a published v0.3.0 baseline.
-
-| | Community Edition | Enterprise |
-| :--- | :---: | :---: |
-| Confluence sync, cited RAG Q&A, AI authoring | Included | Included |
-| Hybrid retrieval, rerank, image analysis | Included | Included |
-| Any number of LLM providers and models | Included | Included |
-| TipTap editor with Confluence macro round-trip | Included | Included |
-| RBAC, groups, audit log, SMTP alerts, backups | Included | Included |
-| OIDC / SAML SSO and SCIM provisioning | — | **Enterprise** |
-| Per-page RAG permission enforcement | — | **Enterprise** |
-| PII detection and AI output review queue | — | **Enterprise** |
-| Compliance reports and IP allowlisting | — | **Enterprise** |
-| SLA and priority engineering support | — | **Enterprise** |
-
-Enterprise runs the **same unmodified CE images** — it unlocks at runtime, so there is no forked
-build and no migration. [Open an Enterprise request](https://github.com/Compendiq/compendiq-ce/issues/new?template=enterprise-interest.md)
-or ask in [Discussions](https://github.com/Compendiq/compendiq-ce/discussions).
 
 ## Documentation
 

@@ -86,6 +86,7 @@ import {
   assertPageHierarchyParentsAvailable,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
+  lockPageWrites,
   PageWriteError,
   registerPageWriteIntentReconciler,
   withPageWriteTransaction,
@@ -130,6 +131,7 @@ export interface RelocatablePage {
   source: string;
   space_key: string | null;
   confluence_id: string | null;
+  notion_page_id: string | null;
   visibility: string;
   created_by_user_id: string | null;
   body_html: string | null;
@@ -154,7 +156,7 @@ export interface RelocatablePage {
 }
 
 export const RELOCATABLE_COLUMNS =
-  'id, title, source, space_key, confluence_id, visibility, created_by_user_id, ' +
+  'id, title, source, space_key, confluence_id, notion_page_id, visibility, created_by_user_id, ' +
   'body_html, body_storage, body_text, version, inherit_perms, local_modified_at, ' +
   'local_modified_by, embedding_dirty, image_analysis_dirty, embedding_status, embedded_at, ' +
   'content_revision::text, lifecycle_revision::text';
@@ -466,9 +468,9 @@ async function reserveRelocateIntent(input: {
     );
     const current = await client.query<Pick<
       RelocatablePage,
-      'source' | 'confluence_id' | 'space_key' | 'version' | 'title' | 'body_html' | 'body_storage'
+      'source' | 'confluence_id' | 'notion_page_id' | 'space_key' | 'version' | 'title' | 'body_html' | 'body_storage'
     >>(
-      `SELECT source, confluence_id, space_key, version, title, body_html, body_storage
+      `SELECT source, confluence_id, notion_page_id, space_key, version, title, body_html, body_storage
          FROM pages WHERE id = $1 AND deleted_at IS NULL`,
       [input.page.id],
     );
@@ -480,6 +482,7 @@ async function reserveRelocateIntent(input: {
       !page ||
       page.source !== input.page.source ||
       page.confluence_id !== input.page.confluence_id ||
+      page.notion_page_id !== input.page.notion_page_id ||
       page.space_key !== input.page.space_key ||
       page.version !== input.page.version ||
       page.title !== input.page.title ||
@@ -507,6 +510,25 @@ async function reserveRelocateIntent(input: {
         await assertPageHierarchyParentsAvailable(client, [parent.rows[0].id]);
         parentConfluenceId = parent.rows[0].confluence_id;
       }
+    }
+
+    await lockPageWrites(client, pageIds);
+    await assertCurrentRelocateAuthorityOnClient(
+      client,
+      input.userId,
+      input.page.id,
+      input.target === 'confluence' ? input.targetSpaceKey : input.page.space_key,
+    );
+    try {
+      await assertIdentifierUnambiguous(oldKey, input.page.id, 'current', client);
+      if (input.target === 'local') {
+        await assertIdentifierUnambiguous(String(input.page.id), input.page.id, 'new local', client);
+      }
+    } catch (error) {
+      if (error instanceof RelocateError && error.statusCode === 409) {
+        throw new RelocateError(409, 'Cannot relocate: a page identifier is ambiguous. Reload and try again.');
+      }
+      throw error;
     }
 
     const intent = await reservePageWriteIntentInTransaction(client, {
@@ -622,6 +644,7 @@ async function currentRelocationClient(
           current.space_key === prep.space_key
         : current.source === 'standalone' &&
           current.confluence_id === null &&
+          current.notion_page_id === null &&
           current.space_key === prep.targetSpaceKey;
       if (!identityMatches) {
         throw new PageWriteError(
@@ -752,7 +775,8 @@ async function persistRelocationPreparation(
              original_local_modified_at, original_local_modified_by, original_embedding_dirty,
              original_image_analysis_dirty, original_embedding_status, original_embedded_at,
              original_key, child_ids, access_control_entries, attachments,
-             expected_remote_title_sha256, expected_remote_body_storage_sha256, parent_confluence_id
+             expected_remote_title_sha256, expected_remote_body_storage_sha256, parent_confluence_id,
+             original_notion_page_id
            ) VALUES (
              $1, $2, $3, $4, $5, $6,
              $7, $8, $9, $10,
@@ -761,7 +785,7 @@ async function persistRelocationPreparation(
              $18, $19, $20,
              $21, $22, $23,
              $24, $25, $26::jsonb, $27::jsonb,
-             $28, $29, $30
+             $28, $29, $30, $31
            )`,
           [
             intent.id,
@@ -794,6 +818,7 @@ async function persistRelocationPreparation(
             input.expectedRemoteTitleSha256,
             input.expectedRemoteBodyStorageSha256,
             input.parentConfluenceId,
+            page.notion_page_id,
           ],
         );
         return {
@@ -833,6 +858,7 @@ async function loadRelocationPreparation(
     target_visibility: 'private' | 'shared' | null;
     original_source: string;
     original_confluence_id: string | null;
+    original_notion_page_id: string | null;
     original_space_key: string | null;
     original_title: string;
     original_body_html: string | null;
@@ -893,6 +919,7 @@ async function loadRelocationPreparation(
     source: row.original_source,
     space_key: row.original_space_key,
     confluence_id: row.original_confluence_id,
+    notion_page_id: row.original_notion_page_id,
     visibility: row.original_visibility,
     created_by_user_id: row.original_created_by_user_id,
     body_html: row.original_body_html,
@@ -1355,6 +1382,7 @@ async function publishToConfluenceOnClient(
        title = $2,
        source = 'confluence',
        confluence_id = $3,
+       notion_page_id = NULL,
        space_key = $4,
        body_html = $5,
        body_storage = $6,
@@ -1715,6 +1743,7 @@ async function publishToLocalOnClient(
     `UPDATE pages SET
        source = 'standalone',
        confluence_id = NULL,
+       notion_page_id = NULL,
        space_key = $2,
        visibility = $3,
        created_by_user_id = $4,
@@ -1797,6 +1826,7 @@ async function restorePreMoveStateOnClient(
     prep.direction === 'to_local' &&
     current.source === 'standalone' &&
     current.confluence_id === null &&
+    current.notion_page_id === null &&
     current.space_key === prep.targetSpaceKey;
   if (!isOriginal && !isPreparedLocal) {
     throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'The local relocation state cannot be restored exactly');
@@ -1836,7 +1866,8 @@ async function restorePreMoveStateOnClient(
          embedding_dirty = $15,
          image_analysis_dirty = $16,
          embedding_status = $17,
-         embedded_at = $18
+         embedded_at = $18,
+         notion_page_id = $19
        WHERE id = $1`,
       [
         prep.id,
@@ -1857,6 +1888,7 @@ async function restorePreMoveStateOnClient(
         prep.image_analysis_dirty,
         prep.embedding_status,
         prep.embedded_at,
+        prep.notion_page_id,
       ],
     );
     await invalidateCollabDocAfterBodyWrite(prep.id, client);
@@ -1868,6 +1900,11 @@ async function restorePreMoveStateOnClient(
         [prep.id, ace.principal_type, ace.principal_id, ace.permission],
       );
     }
+  } else if (current.notion_page_id !== prep.notion_page_id) {
+    await client.query(
+      'UPDATE pages SET notion_page_id = $2 WHERE id = $1',
+      [prep.id, prep.notion_page_id],
+    );
   }
   if (prep.childIds.length > 0) {
     const restored = await client.query(
@@ -2128,6 +2165,7 @@ async function verifyLocalToConfluencePublication(
     !current ||
     current.source !== 'confluence' ||
     current.confluence_id !== confluenceId ||
+    current.notion_page_id !== null ||
     current.space_key !== prep.targetSpaceKey ||
     current.visibility !== 'shared' ||
     current.title !== observed.title ||
@@ -2200,6 +2238,7 @@ async function verifyLocalPublicationState(
     !current ||
     current.source !== 'standalone' ||
     current.confluence_id !== null ||
+    current.notion_page_id !== null ||
     current.space_key !== prep.targetSpaceKey ||
     current.visibility !== prep.targetVisibility ||
     current.created_by_user_id !== prep.actorId ||

@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EventEmitter } from 'events';
 
 // Mock the openai-compatible client's streamChat — that's what the routes call.
 vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
@@ -103,32 +102,6 @@ describe('SSE abort on client disconnect', () => {
 
     expect(chunks).toHaveLength(1);
     expect(chunks[0].content).toBe('chunk-1');
-    expect(controller.signal.aborted).toBe(true);
-  });
-
-  it('should handle client close event on raw request', () => {
-    const rawRequest = new EventEmitter();
-    const closeHandlers: Array<() => void> = [];
-
-    // Track close event listeners
-    const origOn = rawRequest.on.bind(rawRequest);
-    rawRequest.on = vi.fn((event: string, handler: () => void) => {
-      if (event === 'close') {
-        closeHandlers.push(handler);
-      }
-      return origOn(event, handler);
-    }) as typeof rawRequest.on;
-
-    // Simulate attaching a close listener (what the SSE handler does)
-    const controller = new AbortController();
-    const onClose = () => controller.abort();
-    rawRequest.on('close', onClose);
-
-    expect(closeHandlers).toHaveLength(1);
-    expect(controller.signal.aborted).toBe(false);
-
-    // Simulate client disconnect
-    rawRequest.emit('close');
     expect(controller.signal.aborted).toBe(true);
   });
 
