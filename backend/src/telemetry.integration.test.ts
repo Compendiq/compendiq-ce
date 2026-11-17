@@ -89,7 +89,7 @@ describe.skipIf(!dbAvailable)('OpenTelemetry pg instrumentation', () => {
 /**
  * Inbound query-string credentials must not reach exported spans
  * (GHSA-3v2p-hm54-8qcq: `@opentelemetry/instrumentation-http` < 0.222.0 put the
- * raw query into `url.query` / `url.full` / `http.target` on server spans).
+ * raw query into `url.query` on server spans; `url.full` exists on client spans only).
  * `GET /api/internal/health?token=<secret>` is the CE route that takes a
  * persistent credential this way (health-api.ts). 0.222.0 alone only redacts
  * the semantic-convention defaults (`sig`, `X-Amz-Signature`, …), not `token`,
@@ -160,6 +160,11 @@ process.stdout.write(JSON.stringify({ responded: responseText.startsWith('HTTP/1
 describe('OpenTelemetry HTTP server instrumentation', () => {
   it('exports the health token in no span attribute or span name', async () => {
     const secret = `leak-marker-${randomUUID()}`;
+    // The probe receives the config as JSON, so it must be pure data: a
+    // function-valued option (requestHook, …) would be dropped silently and
+    // the test would stop exercising what production runs.
+    const config = buildAutoInstrumentationConfig();
+    expect(JSON.parse(JSON.stringify(config))).toEqual(config);
 
     const { stdout } = await promisify(execFile)(
       process.execPath,
@@ -169,7 +174,7 @@ describe('OpenTelemetry HTTP server instrumentation', () => {
         env: {
           PATH: process.env.PATH,
           PROBE_SECRET: secret,
-          PROBE_INSTRUMENTATION_CONFIG: JSON.stringify(buildAutoInstrumentationConfig()),
+          PROBE_INSTRUMENTATION_CONFIG: JSON.stringify(config),
         },
       },
     );
@@ -188,4 +193,4 @@ describe('OpenTelemetry HTTP server instrumentation', () => {
     expect(spans.some((span) => span.kind === SpanKind.CLIENT)).toBe(false);
     expect(stdout).not.toContain(secret);
   }, 60_000);
- });
+});

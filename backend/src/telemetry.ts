@@ -43,7 +43,7 @@ function resolveSignalDestination(exporterChoice: string | undefined, signalEndp
 
 /**
  * Query parameters whose values the HTTP *server* instrumentation replaces
- * with `REDACTED` in `url.query` / `url.full` (GHSA-3v2p-hm54-8qcq).
+ * with `REDACTED` in the server span's `url.query` (GHSA-3v2p-hm54-8qcq).
  *
  * `redactedQueryParamsServer` is `@experimental` upstream (instrumentation-http
  * ≥ 0.222.0) and REPLACES the built-in list instead of extending it, so the

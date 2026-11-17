@@ -845,7 +845,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **OpenTelemetry HTTP server spans no longer export the health token**
   (GHSA-3v2p-hm54-8qcq). `@opentelemetry/instrumentation-http` 0.204.0–0.221.0
-  put the raw query string into `url.query` / `url.full` of every inbound
+  put the raw query string into `url.query` of every inbound
   request span, so with `OTEL_ENABLED=true` and an OTLP endpoint
   `GET /api/internal/health?token=<secret>` sent the persistent health token to
   the collector. `@opentelemetry/auto-instrumentations-node` 0.79.0 → 0.80.0

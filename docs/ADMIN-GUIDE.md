@@ -2139,8 +2139,8 @@ instrumentation.
 
 #### Query-string credentials in spans (GHSA-3v2p-hm54-8qcq)
 
-HTTP server spans carry the request's query string in `url.query` (and
-`url.full`). Before `@opentelemetry/instrumentation-http` 0.222.0 the value
+HTTP server spans carry the request's query string in `url.query`
+(outgoing client spans carry `url.full`). Before `@opentelemetry/instrumentation-http` 0.222.0 the value
 was exported verbatim, so `GET /api/internal/health?token=<secret>` sent the
 persistent health token to the collector. The backend now configures the
 instrumentation's `redactedQueryParamsServer` option (experimental upstream;
@@ -2152,7 +2152,7 @@ parameter stay visible. The list lives in `backend/src/telemetry.ts` and
 covers the Community Edition routes only. Routes added by an Enterprise
 overlay, and any other credential passed in a query string (for example
 through a reverse proxy), are not covered — keep a collector-side redaction
-rule for `url.query` and `url.full` (for example the OpenTelemetry Collector
+rule for `url.query` (and `url.full` on client spans) (for example the OpenTelemetry Collector
 `redaction` or `attributes` processor). A health token exported by an earlier
 release with tracing enabled should be rotated
 (`POST /api/admin/health-api/rotate`).
