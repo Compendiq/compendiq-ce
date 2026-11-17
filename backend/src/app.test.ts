@@ -531,6 +531,13 @@ describe.skipIf(!canRun)('buildApp — Swagger UI gating', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/html');
 
+    // Swagger UI's assets come from @fastify/static (10.x, bumped with its glob 14)
+    // through the plugin's wildcard route; pin one so a static-serving break shows here.
+    const asset = await app.inject({ method: 'GET', url: '/api/docs/static/swagger-ui.css' });
+    expect(asset.statusCode).toBe(200);
+    expect(asset.headers['content-type']).toContain('text/css');
+    expect(asset.body).toContain('.swagger-ui');
+
     await closeTestApp(app);
   });
 
