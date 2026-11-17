@@ -5,6 +5,7 @@ import {
   PageFreezeDetailFieldsSchema,
   PageFreezeHistoryEntrySchema,
   PageFreezePreviewResponseSchema,
+  PageGovernanceProposalResponseSchema,
   PageLifecycleDenialReasonSchema,
 } from './page-baselines.js';
 
@@ -93,6 +94,72 @@ describe('page baseline contracts', () => {
     expect(PageFreezeDetailFieldsSchema.parse({
       ...state, governanceEnabled: true, governanceProposalId: ID,
     }).governanceProposalId).toBe(ID);
+  });
+
+  it('parses a finalized governed proposal and an approved one whose freeze failed', () => {
+    const proposal = {
+      id: ID,
+      pageId: 7,
+      originalPageId: 7,
+      spaceKey: 'LOCAL',
+      status: 'finalized',
+      expectedManifestDigest: DIGEST,
+      expectedContentRevision: '12',
+      requirementsRevision: '3',
+      requiredRoles: ['quality'],
+      requestedBy: ACTOR_ID,
+      requestedByName: 'Example Admin',
+      contentAuthorName: 'Example Admin',
+      baselineId: ID,
+      finalizeError: null,
+      decisionReason: null,
+      createdAt: '2026-09-18T12:00:00.000Z',
+      updatedAt: '2026-09-18T12:05:00.000Z',
+      approvals: [],
+    };
+    // The overlay answers `finalized` once the last approval froze the page;
+    // a shared bundle that refused it would report a completed freeze as a
+    // failed request.
+    expect(PageGovernanceProposalResponseSchema.parse({ proposal }).proposal.status).toBe('finalized');
+    expect(PageGovernanceProposalResponseSchema.parse({
+      proposal: { ...proposal, status: 'approved', baselineId: null, finalizeError: 'freeze_busy' },
+    }).proposal.finalizeError).toBe('freeze_busy');
+    expect(PageGovernanceProposalResponseSchema.safeParse({
+      proposal: { ...proposal, status: 'frozen' },
+    }).success).toBe(false);
+  });
+
+  it('parses the lifecycle detail of a page its approvals froze, licensed and unlicensed', () => {
+    const frozen = {
+      isFrozen: true,
+      baselineId: ID,
+      frozenVersion: 3,
+      frozenAt: '2026-09-18T12:05:00.000Z',
+      frozenBy: ACTOR_ID,
+      frozenByName: 'Example Admin',
+      freezeReason: 'Approved by every required role',
+      provenance: 'authenticated_approval',
+      contentRevision: '12',
+      lifecycleRevision: '9',
+      canFreeze: false,
+      freezeDeniedReason: 'page_is_frozen',
+      canUnfreeze: true,
+      unfreezeDeniedReason: null,
+      canApprove: false,
+      approveDeniedReason: 'page_is_frozen',
+      canMutateContent: false,
+      mutateContentDeniedReason: 'page_is_frozen',
+      governanceEnabled: true,
+      governanceProposalStatus: 'finalized',
+      governanceProposalId: ID,
+    };
+    // After the final approval the page detail names the proposal that froze
+    // it; a bundle that refused `finalized` here would lose the whole detail.
+    expect(PageFreezeDetailFieldsSchema.parse(frozen)).toEqual(frozen);
+
+    // A lapsed licence is its own denial, not an unreachable workflow.
+    const unlicensed = { ...frozen, approveDeniedReason: 'governance_license_required' };
+    expect(PageFreezeDetailFieldsSchema.parse(unlicensed)).toEqual(unlicensed);
   });
 
   it('keeps signatory email out of ordinary history while retaining it in admin evidence', () => {

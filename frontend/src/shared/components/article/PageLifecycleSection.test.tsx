@@ -285,4 +285,53 @@ describe('PageLifecycleSection', () => {
     // `body` — a browser run caught this landing on `body` first.
     await waitFor(() => expect(screen.getByTestId('freeze-btn')).toHaveFocus());
   });
+
+  it('hands focus to the section heading after a thaw confirmed from the keyboard', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.endsWith('/unfreeze')) return json({ state: { ...FROZEN, isFrozen: false, baselineId: null } });
+      return json({});
+    });
+    renderSection(FROZEN);
+    fireEvent.click(screen.getByTestId('unfreeze-btn'));
+    const dialog = await screen.findByTestId('unfreeze-dialog');
+    fireEvent.change(within(dialog).getByTestId('unfreeze-reason'), {
+      target: { value: 'Correcting a factual error found after release' },
+    });
+    const confirm = within(dialog).getByTestId('unfreeze-confirm');
+    confirm.focus();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(screen.queryByTestId('unfreeze-dialog')).not.toBeInTheDocument());
+    // Focusing while the modal still traps focus is pulled back into it, and
+    // the dialog's teardown then leaves focus on `body`: a browser run caught
+    // exactly that. The heading has to win once the dialog is gone.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Document lifecycle' })).toHaveFocus());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole('heading', { name: 'Document lifecycle' })).toHaveFocus();
+  });
+
+  it('hands focus to the section heading after a freeze confirmed from the keyboard', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.includes('/freeze-preview')) return json(PREVIEW);
+      if (url.endsWith('/freeze')) return json({ state: FROZEN });
+      return json({});
+    });
+    renderSection(EDITABLE);
+    fireEvent.click(screen.getByTestId('freeze-btn'));
+    await screen.findByTestId('freeze-preview');
+    const dialog = screen.getByTestId('freeze-dialog');
+    fireEvent.change(within(dialog).getByTestId('freeze-reason'), {
+      target: { value: 'Released to the regulator' },
+    });
+    const confirm = within(dialog).getByTestId('freeze-confirm');
+    confirm.focus();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(screen.queryByTestId('freeze-dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Document lifecycle' })).toHaveFocus());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole('heading', { name: 'Document lifecycle' })).toHaveFocus();
+  });
 });
