@@ -851,8 +851,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StreamableHTTPServerTransport`; no first-party code imports the package or
   uses `upgradeWebSocket`, so the WebSocket advisory is not reachable. In the
   sidecar a raw-backslash path is answered `404` by Express routing before it
-  reaches the token guard or the adapter; `%5C` and a backslash in the query
-  string are still served as before.
+  reaches the token guard or the adapter; a `%5C` path is also `404` (no
+  route), and only a backslash in the query string is accepted as before.
 
 ## [0.9.2] - 2026-10-29
 
