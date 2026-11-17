@@ -17,6 +17,7 @@
  *   only the fully-unconfigured dev default falls back to console exporters.
  */
 
+import type { InstrumentationConfigMap } from '@opentelemetry/auto-instrumentations-node';
 import { logger } from './core/utils/logger.js';
 
 const SDK_KEY = '__otelSdk';
@@ -38,6 +39,45 @@ function resolveSignalDestination(exporterChoice: string | undefined, signalEndp
     ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
     ?? (exporterChoice ? 'otlp (default endpoint)' : 'console')
   );
+}
+
+/**
+ * Query parameters whose values the HTTP *server* instrumentation replaces
+ * with `REDACTED` in `url.query` / `url.full` (GHSA-3v2p-hm54-8qcq).
+ *
+ * `redactedQueryParamsServer` is `@experimental` upstream (instrumentation-http
+ * ≥ 0.222.0) and REPLACES the built-in list instead of extending it, so the
+ * seven semantic-convention defaults are re-listed here. The final entry is
+ * the audited addition: every CE backend route that reads a credential from the
+ * query string — today only `GET /api/internal/health?token=` (health-api.ts).
+ * Add a name here before shipping any new route that takes a credential in the
+ * query string. Routes of the private EE overlay are not covered.
+ */
+const REDACTED_SERVER_QUERY_PARAMS = [
+  'sig',
+  'Signature',
+  'AWSAccessKeyId',
+  'X-Goog-Signature',
+  'X-Amz-Signature',
+  'X-Amz-Credential',
+  'X-Amz-Security-Token',
+  'token',
+];
+
+/**
+ * Configuration handed to `getNodeAutoInstrumentations()`. Exported so the
+ * integration test exercises the exact config production runs with.
+ *
+ * HTTP, undici, pg and Redis are instrumented automatically. No Fastify
+ * instrumentation is installed: requests appear as HTTP server spans.
+ */
+export function buildAutoInstrumentationConfig(): InstrumentationConfigMap {
+  return {
+    '@opentelemetry/instrumentation-fs': { enabled: false }, // too noisy
+    '@opentelemetry/instrumentation-http': {
+      redactedQueryParamsServer: REDACTED_SERVER_QUERY_PARAMS,
+    },
+  };
 }
 
 type OtelSdk = { shutdown: () => Promise<void> };
@@ -83,13 +123,7 @@ export async function startTelemetry(): Promise<void> {
     // Build the SDK configuration
     const sdkConfig: ConstructorParameters<typeof NodeSDK>[0] = {
       serviceName,
-      instrumentations: [
-        getNodeAutoInstrumentations({
-          // HTTP, undici, pg and Redis are instrumented automatically. No Fastify
-          // instrumentation is installed: requests appear as HTTP server spans.
-          '@opentelemetry/instrumentation-fs': { enabled: false }, // too noisy
-        }),
-      ],
+      instrumentations: [getNodeAutoInstrumentations(buildAutoInstrumentationConfig())],
     };
 
     // Traces: same policy as the metrics block below (review r3 — the two

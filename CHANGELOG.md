@@ -841,6 +841,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborting the export; and a failed export shows an error toast naming the
   report instead of failing silently.
 
+### Security
+
+- **OpenTelemetry HTTP server spans no longer export the health token**
+  (GHSA-3v2p-hm54-8qcq). `@opentelemetry/instrumentation-http` 0.204.0–0.221.0
+  put the raw query string into `url.query` / `url.full` of every inbound
+  request span, so with `OTEL_ENABLED=true` and an OTLP endpoint
+  `GET /api/internal/health?token=<secret>` sent the persistent health token to
+  the collector. `@opentelemetry/auto-instrumentations-node` 0.79.0 → 0.80.0
+  (`instrumentation-http` 0.222.0), `@opentelemetry/sdk-node` 0.221.0 → 0.222.0
+  and `@opentelemetry/sdk-metrics` 2.10.0 → 2.11.0 (the OTel family moves
+  together). The upgrade alone redacts only `sig`, `Signature`,
+  `AWSAccessKeyId`, `X-Goog-Signature` and the `X-Amz-*` signing parameters,
+  not `token`, so `telemetry.ts` now also passes `redactedQueryParamsServer`
+  (experimental upstream; it replaces the defaults, which are re-listed): the
+  span keeps `url.query=token=REDACTED&…`. Only `token` is added — the one
+  query credential CE routes read; Enterprise overlay routes and any other
+  query credential are not covered, so a collector-side `url.query` redaction
+  rule remains advisable (Admin Guide → OpenTelemetry). Operators who ran an
+  earlier release with tracing enabled should rotate the health token
+  (`POST /api/admin/health-api/rotate`). The backend image smoke step now also
+  imports `auto-instrumentations-node` and `instrumentation-http`.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed

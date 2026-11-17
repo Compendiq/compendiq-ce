@@ -2,8 +2,11 @@ import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { SpanKind } from '@opentelemetry/api';
 import { isDbAvailable } from './test-db-helper.js';
+import { buildAutoInstrumentationConfig } from './telemetry.js';
 
 /**
  * Database spans must not leak the DB username (GHSA-qqmp-wf37-98f9:
@@ -52,6 +55,7 @@ process.stdout.write(JSON.stringify(spans));
 
 interface ExportedSpan {
   name: string;
+  kind: number;
   attributes: Record<string, unknown>;
 }
 
@@ -81,3 +85,107 @@ describe.skipIf(!dbAvailable)('OpenTelemetry pg instrumentation', () => {
     expect(querySpan!.attributes['db.system.name']).toBe('postgresql');
   }, 60_000);
 });
+
+/**
+ * Inbound query-string credentials must not reach exported spans
+ * (GHSA-3v2p-hm54-8qcq: `@opentelemetry/instrumentation-http` < 0.222.0 put the
+ * raw query into `url.query` / `url.full` / `http.target` on server spans).
+ * `GET /api/internal/health?token=<secret>` is the CE route that takes a
+ * persistent credential this way (health-api.ts). 0.222.0 alone only redacts
+ * the semantic-convention defaults (`sig`, `X-Amz-Signature`, …), not `token`,
+ * so the proof runs the real HTTP instrumentation with the config production
+ * uses (`buildAutoInstrumentationConfig()`), a loopback server and an in-memory
+ * exporter. No database involved.
+ *
+ * Child process, same reason as above. The instrumentation patches `http` when
+ * CommonJS code first `require`s it after the SDK started — which is what
+ * Fastify does in production — so the probe loads it through `createRequire`
+ * after `sdk.start()`; an ESM `import('node:http')` there produces no spans at
+ * all. The probe request is a raw `node:net` socket so the test's own client
+ * does not create a CLIENT span that would legitimately carry the URL.
+ */
+const HTTP_PROBE = `
+import { createRequire } from 'node:module';
+import { NodeSDK, tracing } from '@opentelemetry/sdk-node';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+
+const exporter = new tracing.InMemorySpanExporter();
+const processor = new tracing.SimpleSpanProcessor(exporter);
+const sdk = new NodeSDK({
+  serviceName: 'http-span-probe',
+  spanProcessors: [processor],
+  instrumentations: [getNodeAutoInstrumentations(JSON.parse(process.env.PROBE_INSTRUMENTATION_CONFIG))],
+});
+sdk.start();
+
+// Like Fastify, load http through CommonJS require after sdk.start(): that is
+// the load the instrumentation hooks (an ESM import of node:http is not).
+const { createServer } = createRequire(import.meta.url)('http');
+const net = createRequire(import.meta.url)('net');
+
+const server = createServer((req, res) => {
+  res.setHeader('content-type', 'application/json');
+  res.end('{"ok":true}');
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const { port } = server.address();
+
+const responseText = await new Promise((resolve, reject) => {
+  const socket = net.connect(port, '127.0.0.1', () => {
+    socket.write(
+      'GET /api/internal/health?token=' + process.env.PROBE_SECRET + '&view=full HTTP/1.1\\r\\n'
+      + 'Host: 127.0.0.1:' + port + '\\r\\nConnection: close\\r\\n\\r\\n',
+    );
+  });
+  let received = '';
+  socket.on('data', (chunk) => { received += chunk; });
+  socket.on('end', () => resolve(received));
+  socket.on('error', reject);
+});
+await new Promise((resolve) => server.close(resolve));
+
+await processor.forceFlush();
+const spans = exporter.getFinishedSpans().map((span) => ({
+  name: span.name,
+  kind: span.kind,
+  attributes: span.attributes,
+  events: span.events,
+  links: span.links,
+  status: span.status,
+}));
+await sdk.shutdown();
+process.stdout.write(JSON.stringify({ responded: responseText.startsWith('HTTP/1.1 200'), spans }));
+`;
+
+describe('OpenTelemetry HTTP server instrumentation', () => {
+  it('exports the health token in no span attribute or span name', async () => {
+    const secret = `leak-marker-${randomUUID()}`;
+
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ['--input-type=module', '-e', HTTP_PROBE],
+      {
+        cwd: backendDir,
+        env: {
+          PATH: process.env.PATH,
+          PROBE_SECRET: secret,
+          PROBE_INSTRUMENTATION_CONFIG: JSON.stringify(buildAutoInstrumentationConfig()),
+        },
+      },
+    );
+    const { responded, spans }: { responded: boolean; spans: ExportedSpan[] } = JSON.parse(stdout);
+    expect(responded).toBe(true);
+
+    const serverSpan = spans.find(
+      (span) => span.kind === SpanKind.SERVER && span.attributes['url.path'] === '/api/internal/health',
+    );
+    expect(serverSpan, `no server span for /api/internal/health among ${spans.map((span) => span.name).join(', ')}`)
+      .toBeDefined();
+    // Redaction ran (not a vacuous pass): the param is kept, its value replaced.
+    expect(serverSpan!.attributes['url.query']).toContain('token=REDACTED');
+    expect(serverSpan!.attributes['url.query']).toContain('view=full');
+
+    expect(spans.some((span) => span.kind === SpanKind.CLIENT)).toBe(false);
+    expect(stdout).not.toContain(secret);
+  }, 60_000);
+ });

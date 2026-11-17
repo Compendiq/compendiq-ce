@@ -165,7 +165,7 @@ jobs:
       # build script has none, and every export would fail.
       smoke_test: |
         docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
-          "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); const { generatePdf } = await import('./dist/core/services/pdf-service.js'); await generatePdf('<p>Установка 手順 한국어</p>', {}); console.log('runtime require smoke ok');"
+          "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/auto-instrumentations-node'); await import('@opentelemetry/instrumentation-http'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); const { generatePdf } = await import('./dist/core/services/pdf-service.js'); await generatePdf('<p>Установка 手順 한국어</p>', {}); console.log('runtime require smoke ok');"
 
   docker-frontend:
     name: Frontend Image

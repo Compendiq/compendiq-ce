@@ -140,6 +140,10 @@ describe('npm advisory floors', () => {
     expect(belowFloor('shell-quote', '1.11.0')).toEqual([]);
   });
 
+  it('resolves @opentelemetry/instrumentation-http past the unredacted server url.query (GHSA-3v2p-hm54-8qcq)', () => {
+    expect(belowFloor('@opentelemetry/instrumentation-http', '0.222.0')).toEqual([]);
+  });
+
   it('resolves postcss-selector-parser past the quadratic flat-selector parse (GHSA-rj75-hqrm-r3gf)', () => {
     expect(belowFloor('postcss-selector-parser', '7.1.6')).toEqual([]);
   });
