@@ -307,11 +307,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      Every value is verified by src/workspace-themes.test.ts, which parses these
      tokens and COMPUTES WCAG ratios rather than pinning hex literals. Retune a
      surface and it fails with the measured ratio. */
-  --color-background: #0f0f10;          /* Workspace — navigation and AI rail */
+  --color-background: #0d1118;          /* Workspace — cool slate navigation and AI rail */
   --color-foreground: #e7e9eb;          /* Graphite ink */
-  --color-card: #19191a;                /* Pane — shared document, left pane and context rail */
+  --color-card: #131922;                /* Pane — shared document, left pane and context rail */
   --color-card-foreground: #e7e9eb;
-  --color-card-elevated: #1b1b1d;       /* Raised — popovers and dialogs */
+  --color-card-elevated: #19222f;       /* Raised — popovers and dialogs */
   /* Steel — the single brand AND interaction accent: brand mark, primary
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
@@ -327,21 +327,20 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Action ink — the neutral affordance for non-accent buttons: light fill,
      dark text. Leaves Steel free to mean "primary action". */
   --color-action: #e7e9eb;             /* matches --color-foreground */
-  --color-action-foreground: #0f0f10;
+  --color-action-foreground: #0d1118;
   --color-action-hover: #f0f2f3;
-  --color-secondary: #1c1d1d;
-  --color-secondary-foreground: #c5c7c8;
-  --color-muted: #1c1d1d;
+  --color-secondary: #1b2432;
+  --color-secondary-foreground: #c4ccd6;
+  --color-muted: #1b2432;
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
-  --color-muted-foreground: #a0a4aa;
-  /* Separate hover, press and selection fills. The brighter Pane (2026-09-12)
-     needs a small hover lift to preserve the visible state step; press and
-     selection retain their existing values and interactive outline.
+  --color-muted-foreground: #a0aab6;
+  /* Separate hover, press and selection fills tuned onto cool deep slate so
+     interactive states harmonize with the diagonal shell gradient.
      Muted remains a resting field fill, independent of the state ladder. */
-  --color-accent: #1d1e1e;             /* hover — 1.051:1 on Pane */
-  --color-pressed: #212226;            /* :active — 1.106:1 */
-  --color-selected: #282a2e;           /* current destination — 1.222:1 */
+  --color-accent: #1c2635;             /* hover — 1.123:1 on Pane */
+  --color-pressed: #212d3f;            /* :active — 1.232:1 */
+  --color-selected: #29374c;           /* current destination — 1.422:1 */
   --color-accent-foreground: #e7e9eb;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
@@ -380,15 +379,14 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
                          border for both jobs and did not meet 1.4.11.)
                          UNTOUCHED by the softening pass: quieting an operable
                          edge is a 1.4.11 question, not a taste one. */
-  --color-border: #222225;
-  --doc-rule: #2a2a2d;
-  /* Lifted 2026-08-31 from #71717a. This token caps how deep a state fill may
-     go: at the widened selected fill (#282a2e) the old value measured 2.97:1,
-     so the edge that marks a selected row fell under 1.4.11. Now 3.48:1 there
-     and 4.37:1 on the pane, which is what gave the dark ladder its room. */
-  --color-border-interactive: #7c7c85;
-  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 90%, transparent);
-  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
+  --color-border: #1f2836;
+  --doc-rule: #293546;
+  /* Lifted 2026-08-31 from #71717a and #7c7c85 to cool slate #798799. Caps how
+     deep a state fill may go while holding 3.288:1 on selected (#29374c) and
+     4.805:1 on pane (#131922). */
+  --color-border-interactive: #798799;
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 82%, transparent);
+  --popover-glass-border: rgb(255 255 255 / 0.12);
   --color-ring: #86aec8;
   --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
@@ -433,7 +431,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Lifted 2026-08-31 from #8b8f99, which measured 4.44:1 on the widened
      selected fill. Worst ground is now 5.11:1, and Graphite still has zero
      simulated CVD collisions across the seven roles. */
-  --color-status-inactive: #979aa3;
+  --color-status-inactive: #95a0ae;
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
@@ -449,7 +447,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
   /* Code colors — matched against --color-code-bg, which sits a step
      BELOW --color-card so a code block reads as recessed, not stacked. */
-  --color-code-bg: #101111;
+  --color-code-bg: #10151f;
   --color-code-keyword: #c69af4;
   --color-code-string: #5ed39b;
   --color-code-function: #8b93f8;
@@ -515,22 +513,22 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Darkest step on the ladder — the viewport gutter around the workspace.
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
-  --app-chassis: #09090a;
+  --app-chassis: #090b0f;
   /* Shell diagonal colour-gradient + bottom-left shade pool (Graphite dark).
      Ramp is inverted in lightness from Paper: cool slate/navy tint at the
      bottom-left (--shell-grad-1) fading to the dark canvas (--shell-grad-5 =
      --app-chassis) at top-right. --shell-muted clears 4.5:1 against the
-     lightest stop (#1a222d, 7.05:1) and the pool composite (6.46:1). */
-  --shell-grad-1: #1a222d;
-  --shell-grad-2: #151b24;
-  --shell-grad-3: #10141b;
-  --shell-grad-4: #0c0e12;
-  --shell-grad-5: #09090a;
+     lightest stop (#1a2331, 6.96:1) and the pool composite (6.36:1). */
+  --shell-grad-1: #1a2331;
+  --shell-grad-2: #141b26;
+  --shell-grad-3: #101620;
+  --shell-grad-4: #0c1017;
+  --shell-grad-5: #090b0f;
   --shell-pool: rgb(38 50 68 / 0.42);
   --shell-pool-soft: rgb(28 38 52 / 0.18);
   --shell-muted: #a3adba;
   --panel-bg: rgb(255 255 255 / 0.05);
-  --panel-bg-fallback: rgb(25 25 26 / 0.92);
+  --panel-bg-fallback: rgb(19 25 34 / 0.94);
   --panel-border: rgb(255 255 255 / 0.08);
   --panel-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.08),
@@ -542,18 +540,19 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
-  --app-login-ground: #09090a;
-  /* Internal panel-header chrome. Slightly lighter than the viewport chassis
-     and darker than the workspace chrome, so toolbars read as neutral framing
-     rather than another content pane. The top app header uses --app-chassis
-     to complete the continuous outer frame. */
-  --app-header-bg: #0c0c0d;
+  --app-login-ground: #090b0f;
+  /* Internal panel-header chrome — cool slate step below Workspace. */
+  --app-header-bg: #0c1017;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
   --app-workspace-shadow: var(--panel-shadow);
   --surface-backdrop: var(--app-chassis);
-  --surface-card: var(--color-card);
+  --surface-card: rgb(255 255 255 / 0.045);
+  --surface-card-border: rgb(255 255 255 / 0.09);
   --surface-card-elevated: var(--color-card-elevated);
+  --surface-input: rgb(255 255 255 / 0.05);
+  --shell-control-bg: rgb(255 255 255 / 0.05);
+  --shell-control-border: rgb(255 255 255 / 0.10);
 
   /* Corner language. Retuned down hard from the neumorphic scale
      (20/12/8/4px): soft extrusion needed a large radius to read as a pillow,
@@ -612,8 +611,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Dropdown chevron — dark-theme default. The stroke colour is the
      dark-theme muted-foreground hex (URL-escaped).
      Light theme overrides this in the [data-theme-type="light"] block. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ba6b5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ba6b5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* Typography preferences are expressed as root attributes so the first-paint
@@ -720,7 +719,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      exactly the range where dense grey text drifts across the AA line. */
   --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
+  --surface-card-border: var(--color-border);
   --surface-card-elevated: var(--color-card-elevated);
+  --surface-input: var(--color-card);
+  --shell-control-bg: var(--color-card);
+  --shell-control-border: var(--color-border);
 
   /* Dropdown chevron — mineral stroke (#616878, URL-escaped to %23616878),
      matching the light theme's --color-muted-foreground. The :root default is
@@ -1439,7 +1442,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 @utility nm-card {
   border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--surface-card-border, var(--color-border));
   background: var(--surface-card, var(--color-card));
 }
 
@@ -1520,7 +1523,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 @utility nm-card-interactive {
   position: relative;
   border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--surface-card-border, var(--color-border));
   background: var(--surface-card, var(--color-card));
   cursor: pointer;
   outline: 2px solid transparent;
@@ -1920,7 +1923,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding: 0.375rem 0.5rem;
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
-  background: var(--color-card);
+  background: var(--surface-input, var(--color-card));
   transition: border-color 0.12s ease-out, box-shadow 0.12s ease-out;
 
   /* Focus is a 1px ring drawn tight to the border, not a 2px halo bleeding
@@ -1939,7 +1942,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding: 0.375rem 0.625rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background: var(--color-card);
+  background: var(--surface-input, var(--color-card));
   color: var(--color-foreground);
   font-size: 0.8125rem;
   line-height: 1.25rem;
@@ -1981,7 +1984,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   height: 1.75rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background-color: var(--color-card);
+  background-color: var(--surface-input, var(--color-card));
   padding: 0 1.75rem 0 0.625rem;
   font-size: var(--text-xs);
   line-height: 1;
@@ -2015,7 +2018,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   height: 2rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background-color: var(--color-card);
+  background-color: var(--surface-input, var(--color-card));
   padding: 0 2rem 0 0.625rem;
   font-size: 0.8125rem;
   line-height: 1;
@@ -2078,8 +2081,23 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   }
 }
 
+/* Native <select> option popups inherit opaque theme card surface rather than UA grey. */
+select.nm-select option,
+select.nm-select-md option {
+  background-color: var(--color-card-elevated);
+  color: var(--color-foreground);
+}
+
 /* Opaque fill, no blur — the interactive edge and overlay shadow remain. */
 @media (prefers-reduced-transparency: reduce) {
+  :root,
+  [data-theme] {
+    --surface-card: var(--color-card);
+    --surface-card-border: var(--color-border);
+    --surface-input: var(--color-card);
+    --shell-control-bg: var(--color-card);
+    --shell-control-border: var(--color-border);
+  }
   .nm-popover-glass,
   .app-context-rail .panel-toolbar.nm-popover-glass {
     background-color: var(--color-card-elevated);

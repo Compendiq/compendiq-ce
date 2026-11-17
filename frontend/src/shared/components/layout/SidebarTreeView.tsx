@@ -873,7 +873,7 @@ export function SidebarTreeView({
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-card border border-border px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-[var(--shell-control-bg)] border border-[var(--shell-control-border)] px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
             title={
               selectedSpaceOption

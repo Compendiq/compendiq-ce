@@ -336,6 +336,41 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
+  it('keeps every Graphite neutral and surface on the cool slate side of the hue circle', () => {
+    const darkNeutrals = [
+      '--color-background',
+      '--color-foreground',
+      '--color-card',
+      '--color-card-elevated',
+      '--color-secondary',
+      '--color-secondary-foreground',
+      '--color-muted',
+      '--color-muted-foreground',
+      '--color-accent',
+      '--color-pressed',
+      '--color-selected',
+      '--color-border',
+      '--doc-rule',
+      '--color-border-interactive',
+      '--color-action',
+      '--color-action-hover',
+      '--color-code-bg',
+      '--color-status-inactive',
+      '--app-chassis',
+      '--app-header-bg',
+      '--shell-muted',
+    ];
+    for (const name of darkNeutrals) {
+      const hex = token(darkBlock, name);
+      const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [
+        number,
+        number,
+        number,
+      ];
+      expect(b, `${name} (${hex}) must be cool slate: blue channel above red`).toBeGreaterThan(r);
+    }
+  });
+
   // Hover, pressed and selected are THREE tokens with three values, in both
   // themes. They were one token — Graphite had accent, secondary and muted all
   // at #1c1d1d, so ΔE-OK between hover, selected, pressed and a field fill was
@@ -478,7 +513,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     ['graphite', darkBlock],
     ['paper', lightBlock],
   ])('keeps %s popup text readable over document images', (theme, block) => {
-    const opacity = theme === 'graphite' ? 0.90 : 0.82;
+    const opacity = 0.82;
     // Black and white bound the backgrounds a document image can contribute,
     // including with blur disabled. Measuring the opaque token misses this.
     for (const backdrop of ['#000000', '#ffffff']) {
