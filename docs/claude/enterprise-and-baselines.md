@@ -169,6 +169,19 @@ After a cutover, restore the snapshot only from the still-empty cutover ACL,
 serializing the check and write with ordinary grant/revoke statements using
 the ACE relation lock **before the page row lock**, matching restriction sync.
 A changed ACL must refuse rather than be overwritten.
+
+The authored rollback payload includes exact `original_notion_page_id`, NULL
+and spelling included. Successful local and Confluence publication require
+current token NULL in addition to existing content/owner/child/receipt fences.
+A rollback is not successful publication: exact legacy Confluence compensation
+may restore nonNULL metadata, ignored by the standalone-only import policy.
+A structurally original/no-cutover recovery restores only repaired token
+metadata and preserves current grants; token mismatch never decides phase.
+Existing ACE-before-page locking and cutover-ACL refusals remain authoritative.
+Keep uncertain effects, preparation, receipts/capacity, deferred-ingestion,
+collaborative-document and attachment fences intact. See the runbook's
+one-time152 retirement requirement before deploying this snapshot schema.
+
 Local delete recovery uses exact tombstones and retries committed cleanup
 without repeating deletion.
 Remote delete recovery completes the normal delete's room closure: its
@@ -261,9 +274,16 @@ deleted, synced and foreign-owned intermediates, but rows outside the authorized
 component neither block nor leak.
 
 Publication abandons other prepared previews of that page in the same commit;
-guarded cleanup releases only their unpublished bytes and capacity. A
-`preparing` reservation whose intent was durably cancelled before any effect is
-also reclaimable. Pending or started preparations never expire by age.
+guarded cleanup releases only their unpublished bytes and capacity.
+For the same page and acting user, re-preview also reclaims a `preparing`
+reservation whose `baseline.prepare` intent is durably `cancelled`, has
+`settled_at`, and has neither a local nor a remote effect-start marker.
+Commit abandonment first, then use the existing guarded cleanup to remove only
+that unpublished UUID and release its stored capacity exactly once before
+fresh admission. Only `prepared` rows are reusable. Cleanup failure propagates:
+the failing reservation remains abandoned, retryable and charged; no replacement
+is admitted by that failed preview. Pending or started preparations never expire
+by age or heartbeat; uncertain outcomes stay pending.
 A durable governed marker still vetoes direct manual freeze when EE is
 unavailable. It never prevents authorized audited thaw, including a manual
 baseline frozen before that policy was enabled. #278 signing/governance and

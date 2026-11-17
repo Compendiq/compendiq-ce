@@ -420,7 +420,7 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 **Configuration:**
 - `USE_BULLMQ=true` (default) -- set to `false` to fall back to legacy `setInterval` workers
 - Redis `maxmemory-policy` must be `noeviction` (default in the provided Docker config)
-- Job history is stored in the `job_history` PostgreSQL table for observability; BullMQ queue metrics are not exposed via the API
+- Redis keeps the last 100 completed and 200 failed scheduler runs per queue (older records are removed as new runs finish; records stored before an upgrade are trimmed the same way, no startup cleanup). Every run is also written to the `job_history` PostgreSQL table, the longer record; finished on-demand jobs on those queues count toward the same limits; BullMQ queue metrics are not exposed via the API
 - `REEMBED_WAIT_LOCKS_MS=600000` (default 10 min): how long the `reembed-all`
   worker waits for in-flight per-user embedding runs to finish before
   aborting the job. Visible in the admin UI via `GET /api/admin/embedding/locks`.
@@ -428,22 +428,44 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
   completed/failed `reembed-all` job records BullMQ keeps in Redis before
   sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
 - `webhook_deliveries_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Webhook delivery attempts retention** under Retention windows (below), or as `webhookDeliveriesRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS` when the row is absent): the daily `maintenance` retention sweep prunes `webhook_deliveries` attempt rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Only attempts of finished deliveries (`webhook_outbox.status` `done`/`dead`) are pruned, because the delivery worker counts a pending item's ledger rows to pick its next attempt number. `webhook_outbox` rows are never deleted by this sweep.
+- `job_history_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Job history retention** under Retention windows (below), or as `jobHistoryRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_JOB_HISTORY_DAYS` only while the row is absent): the daily `maintenance` retention sweep deletes `job_history` rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Every `job_history` row records a finished job (`completed` or `failed`), so age alone decides; no other table is touched. If the setting cannot be read, the sweep is skipped and logged instead of running with a default. **Upgrading deletes `job_history` rows older than 90 days at the first sweep unless you set the window first (see the upgrade paragraph below).**
+- `notifications_read_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Read notifications retention** under Retention windows (below), or as `notificationsReadRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_NOTIFICATIONS_READ_DAYS` only while the row is absent): the same sweep deletes notifications that have been read (`is_read = TRUE`) and are older than this, in batches of 10 000, with its own `RETENTION_PRUNED` heartbeat (zero-row runs included). **Unread notifications are never deleted, whatever their age**, and `notification_preferences` is untouched. If the setting cannot be read, the sweep is skipped and logged instead of running with a default. **Upgrading deletes read notifications older than 90 days at the first sweep unless you set the window first (see the upgrade paragraph below).**
+
+**Upgrading to the job history and read notification windows.** Migration 154
+seeds both windows at 90 days, so the first daily sweep after the upgrade
+deletes `job_history` rows and read notifications older than 90 days. To keep
+more, either insert the rows before upgrading
+(`INSERT INTO admin_settings (setting_key, setting_value) VALUES ('job_history_retention_days', '365'), ('notifications_read_retention_days', '365') ON CONFLICT (setting_key) DO NOTHING;`,
+which the migration leaves untouched), or set them with
+`PUT /api/admin/settings` (`{"jobHistoryRetentionDays": 365, "notificationsReadRetentionDays": 365}`)
+right after the upgrade and before the first sweep. The previous version drops
+these fields from a `PUT`, so the API cannot set them before the upgrade. The
+`RETENTION_JOB_HISTORY_DAYS` / `RETENTION_NOTIFICATIONS_READ_DAYS` variables
+apply only while the row is absent, which a migrated database never is, so they
+cannot keep rows. With `USE_BULLMQ=false` the first sweep runs 24 hours after
+the backend starts; with BullMQ it runs at the existing
+`data-retention-scheduler` slot, which on a new Redis, or after a missed slot,
+is right at start, so inserting the rows first is the only guaranteed way. The
+windows also apply to restored data: after a restore, the next sweep deletes
+restored `job_history` rows and read notifications older than the window.
 
 **Retention windows.** **Settings → Governance → Data & Compliance → Retention**
-opens with a *Retention windows* section holding the two single-table windows
+opens with a *Retention windows* section holding the single-table windows
 the daily sweep applies: **Admin access-denied audit retention**
 (`admin_access_denied_retention_days`, `ADMIN_ACCESS_DENIED` rows of
-`audit_log`) and **Webhook delivery attempts retention**
-(`webhook_deliveries_retention_days`). Both take whole days from 7 to 3650;
+`audit_log`), **Webhook delivery attempts retention**
+(`webhook_deliveries_retention_days`), **Job history retention**
+(`job_history_retention_days`) and **Read notifications retention**
+(`notifications_read_retention_days`). All take whole days from 7 to 3650;
 an out-of-range or fractional value is rejected inline and cannot be saved.
 Each window has its own **Save** (or Enter in its field), which sends only
-that one setting, so saving one never changes the other or any other admin
+that one setting, so saving one never changes another window or any other admin
 setting. A failed save keeps the typed value and shows the server's reason.
 If the settings cannot be read, the section says so and offers **Retry**
 instead of showing defaults. The section sits above, and is independent of,
 the Enterprise per-table policy matrix. The Retention tab itself is shown only
 under an Enterprise licence with the `data_retention_policies` feature; other
-deployments set both windows through `PUT /api/admin/settings` (or the env
+deployments set these windows through `PUT /api/admin/settings` (or the env
 fallbacks while the rows are absent).
 
 ### LLM Request Queue
@@ -541,6 +563,8 @@ Compendiq can send email notifications for key events. Configure SMTP in **Setti
 - License expiry warning (Enterprise)
 
 Settings configured via the admin UI are persisted in the `admin_settings` database table and take precedence over environment variables. Use the **Send Test** button to verify SMTP connectivity.
+
+A save applies on every backend replica without a restart: the replica that handles it writes the rows first, then re-reads them, and signals the others through Redis (`smtp:config:changed`) to re-read them too; a replica whose Redis connection was interrupted re-reads them when it reconnects. A failed save changes nothing: neither the stored settings nor the mail transport in use. A field that has no stored row falls back to that replica's `SMTP_*` environment variable, so keep those identical on every replica. The exception is `secure`: once any `smtp_*` row exists, TLS is off unless an `smtp_secure` row says `true`, even when `SMTP_SECURE=true` (unchanged behaviour). Saving from the admin UI always writes that row.
 
 Edits made while a save is in progress remain in the form and require a subsequent save; the completed request only saves the values submitted with it.
 
@@ -1798,6 +1822,33 @@ for restore verification.
 - **Schedule:** configure interval hours, keep-last-N, and delete-after-days.
   One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
   History refreshes while a run is active.
+- **Failures:** if `pg_dump` fails to start or exits non-zero, or an attachment
+  vanishes or becomes unreadable mid-backup, the backup fails without affecting
+  the server: a download is cut off and audited as `BACKUP_EXPORT_FAILED`, an
+  S3 run is marked `failed` with the `pg_dump` or file error and its multipart
+  upload is aborted. The lock is released at once, so the next run can retry.
+- **Retention prune failures (#1710):** once the upload has completed, the run
+  is recorded as `success` with its object key and size, and `backup_last_run_at`
+  is set, so the schedule interval is honoured. Retention (keep-last-N and
+  delete-after-days) then runs as a separate step after the backup lock is
+  released. If it fails — a denied `ListObjects` or `DeleteObjects`, a network
+  error — the run stays `success`, `error` stays empty, and the prune error
+  message (truncated to 1000 characters) is stored as the run's *warning*. It
+  appears in the **History** list under Backup & Recovery as
+  `— warning: <text>`, in `GET /api/admin/backup` history entries as `warning`,
+  and as `pruneWarning` in the `BACKUP_UPLOADED` audit event that is written
+  for every completed S3 upload. The failure is also logged at `warn`, and the
+  job result stays `Uploaded <filename>`. Nothing prunes the old objects until
+  a later due run succeeds at it, so storage grows meanwhile; fix the
+  credentials or bucket policy to restore pruning. This is what makes
+  append-only (delete-less) credentials workable: you get one upload per
+  interval and a visible warning instead of an upload on every 15-minute tick.
+  Two database-fault cases still re-upload on the next due tick, because the
+  schedule gate is not stored in either: (1) the upload completed but recording
+  `backup_last_run_at` fails — the run stays `success` and the error is logged;
+  (2) the upload completed but the database rejects the success write itself —
+  the run is marked `failed` without an object key (the object is in the
+  bucket), as before.
 
 #### Enterprise KMS and immutable storage
 
@@ -1826,11 +1877,14 @@ because the frontend is newer.
   sends Governance bypass and never creates a delete marker to hide a retained
   backup. Unreadable policy or protection metadata fails closed.
 
-For version-aware pruning, grant `s3:ListBucketVersions`,
+Enterprise prunes version-aware for every S3 destination, whether or not
+Object Lock is enabled, so grant `s3:ListBucketVersions`,
 `s3:GetBucketObjectLockConfiguration`, `s3:GetObjectRetention`,
 `s3:GetObjectLegalHold`, `s3:GetObjectVersion`, and `s3:DeleteObjectVersion`,
-in addition to upload/list permissions. Missing metadata-read permission is not
-treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
+in addition to upload/list permissions, for all Enterprise S3 backups. A missing
+permission does not fail the backup: the run stays `success` and the prune error
+is stored as the run's warning in Backup & Recovery history. Missing
+metadata-read permission is not treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
 per-part and included in completion; a multipart checksum is not SHA-256 of the
 concatenated object bytes.
 
@@ -1872,9 +1926,11 @@ the target database and attachment directory.
 Restore is an offline, standalone operation: stop Fastify traffic before a
 non-dry-run restore, and run `backend/scripts/restore-backup.ts` from a source
 checkout with `postgresql17-client` (`pg_restore`) installed. `POSTGRES_URL`
-must reach the target database. `ATTACHMENTS_DIR` must identify the real live
-attachment tree; its parent must be writable and on the filesystem that will
-hold the restored tree.
+must reach the target database, **also for `--dry-run`**: validation reads the
+target's newest applied migration. Without it the CLI exits with code 2 and
+`POSTGRES_URL is required (also for --dry-run)`. `ATTACHMENTS_DIR` must
+identify the real live attachment tree; its parent must be writable and on the
+filesystem that will hold the restored tree.
 
 The CLI creates a mode-`0700` `.compendiq-restore-*` directory next to
 `ATTACHMENTS_DIR`. Reserve free space there for the complete decrypted
@@ -1905,11 +1961,26 @@ listings and often shell history; do not use it for routine operations.
 Before any live mutation, restore fully consumes AES-GCM authentication and
 validates safe/unique archive members, a strict closed manifest (bounded to
 1 MiB), the exact SHA-256 checksum set, database size, the
-`PAT_ENCRYPTION_KEY` fingerprint, and that the archive migration is not newer
-than this binary. `--force` overrides **only** the PAT-key fingerprint
-mismatch; it never bypasses authentication, schema, path, member, checksum,
-size, or forward-migration checks. Validation failure and dry-run leave
-PostgreSQL and live attachments unchanged and remove staging.
+`PAT_ENCRYPTION_KEY` fingerprint, that the archive migration is not newer
+than this binary, and that it is **not older than the target database**
+(newest `_migrations` row). An empty target (no `_migrations` table, or no
+rows) is allowed, as is a target at or behind the archive's level; an
+unreadable target refuses the restore. In Enterprise builds the level on both
+sides is the newest migration name across Community and Enterprise
+migrations, so an archive with an older Community level under an unchanged
+Enterprise level is not detected; restore a backup taken before an upgrade
+with the empty-database procedure. An older archive is refused with
+`Backup migration <archive> is older than the target database (<target>)`;
+see [Restoring an older archive](#restoring-an-older-archive). `--force`
+overrides **only** the PAT-key fingerprint mismatch; it never bypasses
+authentication, schema, path, member, checksum, size, forward-migration, or
+target-schema checks. Validation failure and dry-run leave PostgreSQL and live
+attachments unchanged and remove staging.
+
+The target level is read once, before staging. The target database must not
+change between that check and the restore (no application start, migration
+run, or second restore against it), which is one reason restore is an offline
+procedure.
 
 Commit renames the previous attachment tree aside, installs the staged tree,
 and runs `pg_restore --clean --if-exists --no-owner --no-acl
@@ -1928,6 +1999,32 @@ does not attempt a database or attachment rollback. The error reports both
 the retained old-attachment rollback directory and restore staging directory.
 Keep both while diagnosing/recovering the database; remove them manually only
 after the restored state is accepted or another restore has completed.
+
+##### Restoring an older archive
+
+An archive taken at an older schema than the target database (for example a
+v0.8.0 backup after upgrading to v0.9.x, or a pre-upgrade backup after a failed
+upgrade) cannot be restored in place, and both `--dry-run` and the restore
+refuse it. `pg_restore --clean` only drops the objects the archive contains:
+tables added by newer migrations keep foreign keys to restored tables (for
+example `cannot drop constraint users_pkey … because other objects depend on
+it`), and their rows would describe data that no longer exists.
+
+Restore into an empty database instead and let the application migrations
+move it forward:
+
+1. Stop Fastify traffic. Create an empty database owned by the application
+   role (for example `createdb -O kb_user kb_creator_restore`) and an empty
+   attachment directory beside the live one.
+2. Point `POSTGRES_URL` at the empty database and `ATTACHMENTS_DIR` at the
+   empty directory, then run the restore with `--dry-run`, and again without
+   it. The restore applies the shipped migrations after `pg_restore`, so the
+   database ends at this binary's newest migration.
+3. Point the backend's `POSTGRES_URL` and `ATTACHMENTS_DIR` at the restored
+   database and directory and start it; startup migrations find nothing left
+   to apply.
+4. Keep the previous database and attachment tree until the restored state is
+   accepted, then remove them.
 
 ### Manual PostgreSQL dump
 
@@ -1988,9 +2085,11 @@ Compendiq provides Kubernetes-compatible health probes:
 |----------|---------|--------|
 | `GET /api/health` | Public health status | PostgreSQL + Redis + LLM connectivity (coarse; no internal telemetry) |
 | `GET /api/health/ready` | Readiness probe | PostgreSQL + Redis |
-| `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive) |
+| `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive); no database or Redis access, not rate limited |
 | `GET /api/health/start` | Startup probe | Startup complete + PostgreSQL + LLM availability |
 | `GET /api/llm/circuit-breaker-status` | Per-provider circuit-breaker state | Returns a provider-keyed flat map: `{ [providerId]: { state, failureCount, nextRetryTime } }`. Requires auth. |
+
+During a database outage, rate limits stay in force: each backend process keeps applying the rate limits it last loaded (or the built-in defaults if it never loaded any) and retries the settings read at most once every 10 seconds instead of on every request.
 
 Example response from `GET /api/health`:
 
@@ -2084,14 +2183,14 @@ remains available only when the licence grants `advanced_rbac`.
 2. Fill in username (required), optional email, optional display name, and pick the role (`user` or `admin`).
 3. Choose one of two credential modes:
    - **Explicit password** — type it into the form. The user signs in with that password on first login.
-   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → System → Integrations → Email / SMTP admin tab). When SMTP is not configured the API returns the temporary password in the response so the admin can hand it over out-of-band.
+   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → System → Integrations → Email / SMTP admin tab). When the email cannot be delivered (SMTP not configured, the send fails, or it is not confirmed within 15 seconds) the temporary password is shown once in the create dialog so the admin can hand it over out-of-band; it is not shown when the email was sent. The audit event `user_created` records `invitationSent` for the outcome. A reverse proxy or load balancer in front of `/api/` whose timeout is 15 seconds or less can still cut the request off before the password is returned when the SMTP server stalls; the user then exists without a known password and has to be deleted and created again.
 4. The new user is created immediately — there is no email-verification step in CE.
 
 ### Editing a user
 
 From the user's row in the table:
 
-- **Display name, email, role** can be patched via `PUT /api/admin/users/:id`. Changing an email to one that is already in use returns HTTP 409 (`EMAIL_TAKEN`).
+- **Display name, email, role** can be patched via `PUT /api/admin/users/:id`. Send `null` to clear the email or display name; fields left out of the body stay unchanged. Changing an email to one that is already in use returns HTTP 409 (`EMAIL_TAKEN`).
 - **Demoting the last active admin** is rejected with HTTP 409 (`LAST_ADMIN`). Promote another admin first.
 - Username and password cannot be changed through this form. Password changes go through the self-service flow from the user's own profile; username is immutable once set.
 
@@ -2385,8 +2484,10 @@ LLM providers → **Image analysis (vision)**.
   previous assignment untouched: **provider not found**, **no model
   resolves**, **the model refused the test image** (text-only — pick a
   vision-capable model) and **image support could not be confirmed**
-  (unreachable, auth, 429, open breaker — not a verdict about the model; fix
-  the endpoint and save again, or **Re-check**).
+  (the provider did not answer — unreachable, auth, 429, open breaker — or it
+  answered but the reply was cut off before a visible answer, as a reasoning
+  model can when it uses up the probe's token budget; not a verdict about the
+  model; fix the endpoint and save again, or **Re-check**).
 - **Pause, not purge.** Unassigning stops new analysis; descriptions already
   indexed and still valid stay searchable. The **Index identity** line shows
   the model identity the index was built under; if the provider's endpoint

@@ -2580,6 +2580,14 @@ function normalizeNotionId(id: string): string {
 }
 
 function failReason(err: unknown): string {
+  if (err !== null && typeof err === 'object' && 'code' in err && typeof err.code === 'string') {
+    if (err.code === '23505') {
+      return 'Import conflicts with existing content. Refresh and try again.';
+    }
+    if (err.code.startsWith('23')) {
+      return 'Import could not be completed because the content changed. Refresh and try again.';
+    }
+  }
   if (err instanceof NotionError) return err.message;
   if (err instanceof Error) return err.message;
   return 'Import failed';

@@ -105,6 +105,36 @@ describe('admin backup routes (#1420)', () => {
     }
   });
 
+  it('GET /api/admin/backup includes the prune warning of each history entry', async () => {
+    const run = {
+      id: 'run-1',
+      createdAt: '2026-08-28T10:00:00.000Z',
+      finishedAt: '2026-08-28T10:00:03.000Z',
+      destination: 's3',
+      status: 'success',
+      bytes: 123,
+      objectKey: 'compendiq-backups/backup.enc',
+      error: null,
+      triggeredBy: null,
+      jobId: null,
+    };
+    listBackupRuns.mockResolvedValue([
+      { ...run, warning: 'DeleteObjects failed (403)' },
+      { ...run, id: 'run-0', warning: null },
+    ]);
+    const app = await build();
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/admin/backup' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().history).toEqual([
+        expect.objectContaining({ id: 'run-1', status: 'success', warning: 'DeleteObjects failed (403)' }),
+        expect.objectContaining({ id: 'run-0', warning: null }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('removes the direct streaming export route', async () => {
     const app = await build();
     try {

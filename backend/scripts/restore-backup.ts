@@ -7,7 +7,9 @@
  *
  * The compatibility form `--passphrase '...'` remains supported. Without
  * either passphrase input, BACKUP_ENCRYPTION_KEY supplies the master key.
- * Database: POSTGRES_URL. Attachments: ATTACHMENTS_DIR (default data/attachments).
+ * Database: POSTGRES_URL, required also for --dry-run because the archive's
+ * schema level is checked against the target database's (#1711).
+ * Attachments: ATTACHMENTS_DIR (default data/attachments).
  */
 
 import { createReadStream } from 'node:fs';
@@ -26,11 +28,14 @@ function hasFlag(name: string): boolean {
   return process.argv.includes(name);
 }
 
+const POSTGRES_URL_REQUIRED = 'POSTGRES_URL is required (also for --dry-run)';
+
 async function main(): Promise<void> {
   const file = arg('--file');
   if (!file) {
     console.error(
-      'Usage: restore-backup --file <path.enc> [--passphrase <str>] [--dry-run] [--force]',
+      'Usage: restore-backup --file <path.enc> [--passphrase <str>] [--dry-run] [--force]\n' +
+        `${POSTGRES_URL_REQUIRED}: the archive must not be older than the target database.`,
     );
     process.exitCode = 2;
     return;
@@ -38,8 +43,8 @@ async function main(): Promise<void> {
   const passphrase = arg('--passphrase') ?? process.env.BACKUP_PASSPHRASE;
   const secret = resolveBackupSecret(passphrase);
   const postgresUrl = process.env.POSTGRES_URL;
-  if (!postgresUrl && !hasFlag('--dry-run')) {
-    console.error('POSTGRES_URL is required unless --dry-run');
+  if (!postgresUrl) {
+    console.error(POSTGRES_URL_REQUIRED);
     process.exitCode = 2;
     return;
   }
@@ -48,7 +53,7 @@ async function main(): Promise<void> {
     encrypted: createReadStream(file),
     secret,
     attachmentsRoot,
-    postgresUrl: postgresUrl ?? '',
+    postgresUrl,
     dryRun: hasFlag('--dry-run'),
     force: hasFlag('--force'),
   });

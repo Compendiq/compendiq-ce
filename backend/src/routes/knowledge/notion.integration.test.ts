@@ -10,11 +10,12 @@ import {
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { decryptPat, isEncryptedSecretFormat } from '../../core/utils/crypto.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
 import { setNotionApiBaseUrlForTests } from '../../domains/knowledge/services/notion-client.js';
 import { resetNotionImportStatusForTests } from '../../domains/knowledge/services/notion-import-job.js';
-import { buildKnowledgeTestApp, insertUser } from './pages.test-helpers.js';
+import { buildKnowledgeTestApp, insertLocalSpace, insertUser } from './pages.test-helpers.js';
 import { notionRoutes } from './notion.js';
 
 const [dbAvailable, redisAvailable] = await Promise.all([
@@ -443,11 +444,12 @@ describe.skipIf(!dependenciesAvailable)('GET /api/notion/tree upstream failures 
   });
 });
 
-describe.skipIf(!dependenciesAvailable)('POST /api/notion/import (#1465)', () => {
+describe('POST /api/notion/import (#1465)', () => {
   let server: FakeNotionServer;
   let userId: string;
 
   beforeAll(async () => {
+    expect(dependenciesAvailable, '#1739 import regressions require real PostgreSQL and Redis').toBe(true);
     await setupTestDb();
     server = await startFakeNotionServer({
       validToken: TOKEN,
@@ -696,6 +698,164 @@ describe.skipIf(!dependenciesAvailable)('POST /api/notion/import (#1465)', () =>
       server.state.lookupDelayMs = undefined;
       userId = ownerId;
       await instance.close();
+    }
+  });
+
+  describe('#1739 bounded local destination parent', () => {
+    async function persistedBoundaryState() {
+      const state: Record<string, unknown> = {};
+      for (const table of ['pages', 'page_versions', 'page_write_intents', 'page_relocation_preparations', 'page_baselines']) {
+        state[table] = (await query<{ rows: unknown }>(
+          `SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) AS rows FROM ${table} t`,
+        )).rows[0]!.rows;
+      }
+      return state;
+    }
+
+    for (const parentId of [
+      'abc', '2147483648', 2_147_483_648, '3000000000', 3_000_000_000,
+      '9007199254740993', 9_007_199_254_740_992,
+    ]) {
+      it(`#1739 RED R-P30 rejects parent ${String(parentId)} (${typeof parentId}) before allocating a job`, async () => {
+        await insertLocalSpace('IDLOCAL', userId);
+        await query(
+          `INSERT INTO pages (source, confluence_id, space_key, title, body_html, body_text, visibility)
+           VALUES ('confluence', $1, 'IDLOCAL', 'Parent text decoy', '<p>decoy</p>', 'decoy', 'shared')`,
+          [String(parentId)],
+        );
+        const instance = await app();
+        try {
+          const connected = await instance.inject({
+            method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN },
+          });
+          expect(connected.statusCode, connected.body).toBe(200);
+          server.requests.length = 0;
+          const before = await persistedBoundaryState();
+          const response = await instance.inject({
+            method: 'POST', url: '/api/notion/import',
+            payload: { pageIds: ['notes'], parentId, spaceKey: 'IDLOCAL' },
+          });
+          expect.soft(response.statusCode, response.body).toBe(400);
+          // Old code accepts202 and starts a failing job. Drain that real job
+          // even while the expected400 assertion is red, before DB teardown.
+          if (response.statusCode === 202) {
+            await vi.waitFor(async () => {
+              const status = await instance.inject({ method: 'GET', url: '/api/notion/import/status' });
+              expect(status.json<{ status: string }>().status).not.toBe('importing');
+            }, { timeout: 10_000, interval: 20 });
+          }
+          expect.soft(response.body).not.toContain(TOKEN);
+          expect.soft(response.body).not.toMatch(/22003|22P02|out of range for type integer/);
+          expect(await persistedBoundaryState()).toEqual(before);
+          expect(server.requests).toEqual([]);
+          expect(await redis.exists(`notion:import:lock:${userId}`)).toBe(0);
+          expect.soft(await redis.exists(`notion:import:status:${userId}`)).toBe(0);
+          const status = await instance.inject({ method: 'GET', url: '/api/notion/import/status' });
+          expect.soft(status.json()).toEqual({ status: 'idle' });
+        } finally {
+          await instance.close();
+        }
+      });
+    }
+
+    for (const parentId of ['2147483647', 2_147_483_647, '0002147483647']) {
+      it(`#1739 CONTROL completed import under max parent ${String(parentId)} (${typeof parentId})`, async () => {
+        await insertLocalSpace('IDLOCAL', userId);
+        await query(
+          `INSERT INTO pages
+             (id, source, space_key, title, body_html, body_text, visibility, created_by_user_id, path, depth)
+           VALUES (2147483647, 'standalone', 'IDLOCAL', 'Max local parent',
+                   '<p>Parent remains</p>', 'Parent remains', 'private', $1, '/2147483647', 0)`,
+          [userId],
+        );
+        const parentBefore = (await query('SELECT to_jsonb(p) AS page FROM pages p WHERE id = 2147483647')).rows;
+        const instance = await app();
+        try {
+          const connected = await instance.inject({
+            method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN },
+          });
+          expect(connected.statusCode).toBe(200);
+          const result = await importUntilComplete(instance, {
+            pageIds: ['notes'], parentId, spaceKey: 'IDLOCAL',
+          });
+          const item = result.items.find((entry) => entry.notionPageId === 'notes');
+          expect(item).toMatchObject({ status: 'success', notionPageId: 'notes' });
+          expect(item?.localPageId).toBeGreaterThan(0);
+          expect(item?.localPageId).toBeLessThan(2_147_483_647);
+          const row = await query<{
+            parent_id: string; path: string; depth: number; source: string; space_key: string; body_html: string;
+          }>('SELECT parent_id, path, depth, source, space_key, body_html FROM pages WHERE id = $1', [item!.localPageId]);
+          expect(row.rows[0]).toMatchObject({
+            parent_id: '2147483647', path: `/2147483647/${item!.localPageId}`,
+            depth: 1, source: 'standalone', space_key: 'IDLOCAL',
+          });
+          expect(row.rows[0]!.body_html).toContain('Imported via route');
+          expect((await query('SELECT to_jsonb(p) AS page FROM pages p WHERE id = 2147483647')).rows).toEqual(parentBefore);
+        } finally {
+          await instance.close();
+        }
+      });
+    }
+
+    it('#1739 CONTROL local parent PK retains the resolved Confluence canonical key', async () => {
+      await insertLocalSpace('IDLOCAL', userId);
+      const parent = await query<{ id: number }>(
+        `INSERT INTO pages (source, confluence_id, space_key, title, body_html, body_text, visibility)
+         VALUES ('confluence', '3000000000', 'IDLOCAL', 'Synced destination', '<p>parent</p>', 'parent', 'shared')
+         RETURNING id`,
+      );
+      const parentId = parent.rows[0]!.id;
+      await query('UPDATE pages SET path = $2, depth = 0 WHERE id = $1', [parentId, `/${parentId}`]);
+      const readerRole = await query<{ id: number }>(
+        `INSERT INTO roles (name, display_name, is_system, permissions)
+         VALUES ('id_boundary_parent_reader', 'ID Boundary Parent Reader', FALSE, ARRAY['read'])
+         RETURNING id`,
+      );
+      await query(
+        `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+         VALUES ('IDLOCAL', 'user', $1, $2)`,
+        [userId, readerRole.rows[0]!.id],
+      );
+      expect(await userCanAccessPage(userId, parentId)).toBe(true);
+      const parentBefore = (await query('SELECT to_jsonb(p) AS page FROM pages p WHERE id = $1', [parentId])).rows;
+      const instance = await app();
+      try {
+        await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+        const result = await importUntilComplete(instance, {
+          pageIds: ['notes'], parentId: String(parentId), spaceKey: 'IDLOCAL',
+        });
+        const item = result.items.find((entry) => entry.notionPageId === 'notes');
+        expect(item).toMatchObject({ status: 'success' });
+        const child = await query<{ parent_id: string; path: string; source: string }>(
+          'SELECT parent_id, path, source FROM pages WHERE id = $1', [item!.localPageId],
+        );
+        expect(child.rows[0]).toEqual({
+          parent_id: '3000000000', path: `/${parentId}/${item!.localPageId}`, source: 'standalone',
+        });
+        expect((await query('SELECT to_jsonb(p) AS page FROM pages p WHERE id = $1', [parentId])).rows).toEqual(parentBefore);
+      } finally {
+        await instance.close();
+      }
+    });
+
+    for (const resourceId of ['notes', '9007199254740993']) {
+      it(`#1739 CONTROL external Notion page ID ${resourceId} is not an int4 destination`, async () => {
+        server.state.pages![resourceId] = {
+          ...server.state.pages!.notes, id: resourceId,
+        };
+        server.state.blockChildren![resourceId] = server.state.blockChildren!.notes!;
+        const instance = await app();
+        try {
+          await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+          const result = await importUntilComplete(instance, { pageIds: [resourceId] });
+          expect(result.items).toEqual(expect.arrayContaining([
+            expect.objectContaining({ notionPageId: resourceId, status: 'success' }),
+          ]));
+          expect(server.requests.some((request) => request.url === `/v1/pages/${resourceId}`)).toBe(true);
+        } finally {
+          await instance.close();
+        }
+      });
     }
   });
 });

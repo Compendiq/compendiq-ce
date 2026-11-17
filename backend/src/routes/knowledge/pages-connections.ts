@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectionEventSchema } from '@compendiq/contracts';
+import { ConnectionEventSchema, PagePrimaryKeySchema } from '@compendiq/contracts';
 import { recordConnectionEvent } from '../../core/services/audit-service.js';
 import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 import { getPageConnections } from '../../domains/knowledge/services/page-connections-service.js';
 
 const PageIdParamSchema = z.object({
-  id: z.coerce.number().int().positive(),
+  id: PagePrimaryKeySchema,
 }).strict();
 
 export async function pagesConnectionRoutes(fastify: FastifyInstance): Promise<void> {

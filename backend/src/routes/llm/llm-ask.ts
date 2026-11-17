@@ -74,6 +74,7 @@ import {
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_DOCUMENT_TEXT_FOR_LLM,
+  streamFailureMessage,
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
@@ -1300,8 +1301,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         : confidence.basis === 'similarity'
           ? similarityThreshold
           : Math.max(similarityThreshold, rerankThreshold);
+    // #1728: a blank assistant turn grounds nothing. Threads written before
+    // provider error frames were failures can hold one that looks answered.
     const hasSubstantiveHistory = conversationHistory.some(
-      (m) => m.role === 'assistant' && !m.refused,
+      (m) => m.role === 'assistant' && !m.refused && contentToText(m.content).trim() !== '',
     );
     // NOTE the one thing deliberately absent from this list: the images the
     // retriever found (#1115 P4). `imagePart` is the USER's own attachment
@@ -1647,8 +1650,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     }
 
     /**
-     * #1115 P4 — what the audit records about the pictures, spread into both
-     * `emitLlmAudit` calls below.
+     * #1115 P4 — what the audit records about the pictures, spread into every
+     * `emitLlmAudit` entry below.
      *
      * It reports what was SENT, not what was picked or considered: the
      * numbers exist so an operator can answer "did this answer see the
@@ -1715,7 +1718,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // Stream the response and collect full answer
       const controller = new AbortController();
       const onClose = () => controller.abort();
-      request.raw.on('close', onClose);
+      // #1719: socket loss is reported on the RESPONSE. A POST's body is
+      // consumed before the handler runs, so `request.raw` has already closed
+      // and never fires again. The seed covers a client that left during the
+      // retrieval, cache lookup and proofs above (as `streamSSE` does).
+      reply.raw.on('close', onClose);
+      if (reply.raw.destroyed || request.raw.aborted) controller.abort();
 
       const generator = streamChat(chatConfig, resolvedModel, messages, controller.signal, {
         thinking: body.thinking,
@@ -1733,6 +1741,33 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         },
       });
       let fullAnswer = '';
+      // #1719: `dispatched` is set just before the provider stream is entered
+      // (`streamSSE`'s boundary); `auditWritten` keeps this request to one entry.
+      let dispatched = false;
+      let auditWritten = false;
+      let streamFailure: unknown;
+      const emitAskAudit = (outcome: { status: 'success' } | { status: 'error'; errorMessage: string }): void => {
+        auditWritten = true;
+        emitLlmAudit({
+          userId,
+          action: 'ask',
+          model: resolvedModel,
+          provider: chatConfig.providerId,
+          inputTokens: estimateTokens(messages.map(m => contentToText(m.content)).join('')),
+          outputTokens: estimateTokens(fullAnswer),
+          inputMessages: messages.map(m => ({
+            role: m.role,
+            contentLength: contentToText(m.content).length,
+          })),
+          promptHash: fingerprintPrompt(messages),
+          retrievedChunkIds: searchResults.map(r => String(r.pageId)),
+          durationMs: Date.now() - auditStart,
+          ...outcome,
+          promptInjectionDetected,
+          sanitized: wasSanitized,
+          ...retrievedImageAudit,
+        });
+      };
 
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -1743,6 +1778,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       });
 
       try {
+        // #1719: a client that has already left gets no provider request.
+        if (controller.signal.aborted) throw new DOMException('Client disconnected', 'AbortError');
+        dispatched = true;
         for await (const chunk of generator) {
           if (controller.signal.aborted) {
             logger.debug('RAG SSE stream aborted by client disconnect');
@@ -1766,25 +1804,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             throw new ArticleStageRefusedError(proof.status === 503 ? 'ai_policy_unavailable' : 'grounding_changed');
           }
 
-          emitLlmAudit({
-            userId,
-            action: 'ask',
-            model: resolvedModel,
-            provider: chatConfig.providerId,
-            inputTokens: estimateTokens(messages.map(m => contentToText(m.content)).join('')),
-            outputTokens: estimateTokens(fullAnswer),
-            inputMessages: messages.map(m => ({
-              role: m.role,
-              contentLength: contentToText(m.content).length,
-            })),
-            promptHash: fingerprintPrompt(messages),
-            retrievedChunkIds: searchResults.map(r => String(r.pageId)),
-            durationMs: Date.now() - auditStart,
-            status: 'success',
-            promptInjectionDetected,
-            sanitized: wasSanitized,
-            ...retrievedImageAudit,
-          });
+          emitAskAudit({ status: 'success' });
 
           reply.raw.write(`data: ${JSON.stringify({
             done: true,
@@ -1796,6 +1816,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           startAutoTitle(saved, fullAnswer);
         }
       } catch (err) {
+        streamFailure = err;
         if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
           logger.debug('RAG stream aborted by client disconnect');
         } else if (err instanceof ArticleStageRefusedError && fullAnswer === '') {
@@ -1817,34 +1838,27 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           const publicationRefused = refusal !== null;
           if (refusal) logger.warn({ reason: refusal.reason }, 'RAG answer not published: grounding changed');
           else logger.error({ err }, 'RAG stream error');
-          emitLlmAudit({
-            userId,
-            action: 'ask',
-            model: resolvedModel,
-            provider: chatConfig.providerId,
-            inputTokens: estimateTokens(messages.map(m => contentToText(m.content)).join('')),
-            outputTokens: estimateTokens(fullAnswer),
-            inputMessages: messages.map(m => ({
-              role: m.role,
-              contentLength: contentToText(m.content).length,
-            })),
-            promptHash: fingerprintPrompt(messages),
-            retrievedChunkIds: searchResults.map(r => String(r.pageId)),
-            durationMs: Date.now() - auditStart,
+          emitAskAudit({
             status: 'error',
             errorMessage: refusal
               ? `Publication refused: ${refusal.reason}`
               : err instanceof Error ? err.message : String(err),
-            promptInjectionDetected,
-            sanitized: wasSanitized,
-            ...retrievedImageAudit,
           });
           reply.raw.write(`data: ${JSON.stringify({
-            error: publicationRefused ? 'ai_grounding_not_admissible' : 'Stream error', done: true,
+            error: publicationRefused ? 'ai_grounding_not_admissible' : streamFailureMessage(err), done: true,
           })}\n\n`);
         }
       } finally {
-        request.raw.removeListener('close', onClose);
+        // #1719: a client that left after dispatch gets the entry `streamSSE`
+        // records for the other routes, however the stream ended (the loop's
+        // `break`, a thrown AbortError, or `streamChat` returning silently).
+        // Not when an entry was already written, and not for a refusal at
+        // `beforeDispatch`: a policy decision is no inference.
+        if (dispatched && controller.signal.aborted && !auditWritten
+          && !(streamFailure instanceof ArticleStageRefusedError && fullAnswer === '')) {
+          emitAskAudit({ status: 'error', errorMessage: 'Client disconnected' });
+        }
+        reply.raw.removeListener('close', onClose);
         reply.raw.end();
       }
     } finally {

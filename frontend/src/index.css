@@ -1156,7 +1156,6 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 .app-context-rail .panel-toolbar.nm-popover-glass {
   background-color: color-mix(in srgb, var(--color-card-elevated) 42%, transparent);
   backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
 
 /* Shell surfaces carry the palette without competing with content. The top
@@ -1395,8 +1394,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   border: 1px solid var(--popover-glass-border, color-mix(in srgb, var(--color-border-interactive) 18%, transparent));
   background-color: var(--color-card-elevated);
   background-color: var(--popover-glass-bg, color-mix(in srgb, var(--color-card-elevated) 90%, transparent));
+  /* Unprefixed ONLY. The build adds `-webkit-backdrop-filter` for Safari. Do
+     not hand-write the prefixed twin after it: Lightning CSS then collapses the
+     pair to the prefixed declaration alone, Chrome and Firefox lose the blur and
+     the popover shows page content straight through (#2042). */
   backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -1993,7 +1995,6 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .app-context-rail .panel-toolbar.nm-popover-glass {
     background-color: var(--color-card-elevated);
     backdrop-filter: none;
-    -webkit-backdrop-filter: none;
   }
 }
 
@@ -4073,7 +4074,6 @@ span[data-comment-id][data-comment-resolved="true"] {
   border-radius: var(--radius-sm);
   cursor: pointer;
   backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   transition: background 0.15s ease;
 }
 

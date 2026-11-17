@@ -11,7 +11,7 @@ import { logAuditEvent } from '../../core/services/audit-service.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logger } from '../../core/utils/logger.js';
 import { NotionClient, NotionError } from '../../domains/knowledge/services/notion-client.js';
-import { fetchNotionWorkspaceTree } from '../../domains/knowledge/services/notion-tree.js';
+import { fetchNotionWorkspaceTree, refreshNotionImportedMarkers } from '../../domains/knowledge/services/notion-tree.js';
 import {
   getNotionImportStatus,
   releaseNotionImportLock,
@@ -83,14 +83,16 @@ export async function notionRoutes(fastify: FastifyInstance) {
       });
     }
     const cached = await cache.get<{ nodes: unknown[] }>(request.userId, 'notion_tree', 'workspace');
-    if (cached) {
-      return NotionTreeResponseSchema.parse(cached);
-    }
     try {
-      const client = new NotionClient(token);
-      const nodes = await fetchNotionWorkspaceTree(client, { userId: request.userId });
-      const response = NotionTreeResponseSchema.parse({ nodes });
-      await cache.set(request.userId, 'notion_tree', 'workspace', response);
+      const response = cached
+        ? NotionTreeResponseSchema.parse(cached)
+        : NotionTreeResponseSchema.parse({
+          nodes: await fetchNotionWorkspaceTree(new NotionClient(token)),
+        });
+      if (!cached) {
+        await cache.set(request.userId, 'notion_tree', 'workspace', response);
+      }
+      await refreshNotionImportedMarkers(response.nodes, request.userId);
       return response;
     } catch (err) {
       if (err instanceof NotionError && err.statusCode >= 400) {

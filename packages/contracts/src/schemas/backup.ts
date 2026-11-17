@@ -19,6 +19,9 @@ export const BackupRunSchema = z.object({
   error: z.string().nullable(),
   triggeredBy: z.string().nullable(),
   jobId: z.string().nullable(),
+  // Absent from a backend that predates the field (e.g. an overlaid Enterprise
+  // backend); the shared SPA must still parse its status response (#1710).
+  warning: z.string().nullable().default(null),
 });
 export type BackupRun = z.infer<typeof BackupRunSchema>;
 

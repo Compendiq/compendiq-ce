@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat as transportChat, streamChat as transportStreamChat, generateEmbedding as transportEmbedding, invalidateBreaker, __test_only__, LlmHttpError, StreamIncompleteError, type ProviderConfig, type ChatMessage, type StreamChatOptions } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat as transportChat, streamChat as transportStreamChat, generateEmbedding as transportEmbedding, invalidateBreaker, __test_only__, LlmHttpError, ProviderStreamError, StreamIncompleteError, type ProviderConfig, type ChatMessage, type StreamChatOptions } from './openai-compatible-client.js';
 
 // This suite sends only synthetic literals (hi, 2+2, a/b) to its HTTP servers.
 // Keep its queue/breaker/wire assertions on the real transport, with an explicit
@@ -313,6 +313,188 @@ describe('openai-compatible-client — SSE framing (#1722)', () => {
 
     expect(chunks.map((chunk) => chunk.content).join('')).toBe('partial');
     expect(chunks.some((chunk) => chunk.done)).toBe(false);
+  });
+});
+
+// ─── #1728: a provider `error` frame inside a 200 stream is a failure ───────
+describe('openai-compatible-client — provider error frames (#1728)', () => {
+  const frame = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`;
+  const text = (content: string) => frame({ choices: [{ delta: { content } }] });
+  const reasoning = (reasoning_content: string) => frame({ choices: [{ delta: { reasoning_content, content: null } }] });
+  const DONE = 'data: [DONE]\n\n';
+  const PROVIDER_TEXT = 'upstream worker crashed: CUDA out of memory on gpu-7';
+  const errorFrame = frame({ error: { message: PROVIDER_TEXT, type: 'server_error' } });
+
+  let errSrv: Server;
+  let errBase: string;
+  let payload = '';
+  /** Keep the response open after `payload` instead of ending it. */
+  let holdOpen = false;
+  let responseClosed: Promise<void> = Promise.resolve();
+  let requests = 0;
+
+  beforeAll(async () => {
+    errSrv = createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        requests += 1;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        if (holdOpen) {
+          responseClosed = new Promise((resolve) => res.once('close', () => resolve()));
+          res.write(payload);
+        } else {
+          res.end(payload);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => errSrv.listen(0, '127.0.0.1', resolve));
+    errBase = `http://127.0.0.1:${(errSrv.address() as AddressInfo).port}/v1`;
+  });
+  afterEach(() => {
+    holdOpen = false;
+    errSrv.closeAllConnections();
+  });
+  afterAll(() => new Promise<void>((resolve) => errSrv.close(() => resolve())));
+
+  async function collect(opts: {
+    thinking?: boolean;
+    signal?: AbortSignal;
+    providerId?: string;
+    onChunk?: () => void;
+  } = {}) {
+    const chunks: Array<{ content: string; done: boolean }> = [];
+    let error: unknown;
+    try {
+      for await (const chunk of streamChat(
+        { ...cfg, baseUrl: errBase, providerId: opts.providerId ?? `err-1728-${Math.random().toString(36).slice(2)}` },
+        'm1', [{ role: 'user', content: 'hi' }], opts.signal,
+        opts.thinking === undefined ? undefined : { thinking: opts.thinking },
+      )) {
+        chunks.push(chunk);
+        opts.onChunk?.();
+      }
+    } catch (err) {
+      error = err;
+    }
+    return { chunks, error, text: chunks.map((chunk) => chunk.content).join('') };
+  }
+
+  /** Resolves with the value, or with `'timed out'` after `ms`. */
+  function within<T>(promise: Promise<T>, ms: number): Promise<T | 'timed out'> {
+    return Promise.race([promise, new Promise<'timed out'>((resolve) => setTimeout(() => resolve('timed out'), ms))]);
+  }
+
+  it('throws ProviderStreamError for an error frame followed by [DONE], with no done chunk', async () => {
+    payload = errorFrame + DONE;
+    const { chunks, error } = await collect();
+    expect(error).toBeInstanceOf(ProviderStreamError);
+    expect(error).toMatchObject({ receivedCharacters: 0, detail: PROVIDER_TEXT });
+    expect(chunks.some((chunk) => chunk.done)).toBe(false);
+  });
+
+  it('yields the text before the error frame, then throws with its length', async () => {
+    payload = text('Hel') + errorFrame + DONE;
+    const { chunks, error, text: received } = await collect();
+    expect(received).toBe('Hel');
+    expect(error).toBeInstanceOf(ProviderStreamError);
+    expect(error).toMatchObject({ receivedCharacters: 3 });
+    expect(chunks.some((chunk) => chunk.done)).toBe(false);
+  });
+
+  it('yields nothing after the error frame', async () => {
+    payload = text('Hel') + errorFrame + text('lo, world')
+      + frame({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 9 } }) + DONE;
+    const { chunks, error, text: received } = await collect();
+    expect(error).toBeInstanceOf(ProviderStreamError);
+    expect(received).toBe('Hel');
+    expect(chunks).toEqual([{ content: 'Hel', done: false }]);
+  });
+
+  it('does not process the content or usage carried by the error frame itself', async () => {
+    payload = frame({
+      error: { message: PROVIDER_TEXT },
+      choices: [{ delta: { content: 'leaked' } }],
+      usage: { prompt_tokens: 5, completion_tokens: 9 },
+    }) + DONE;
+    const { chunks, error } = await collect();
+    expect(error).toBeInstanceOf(ProviderStreamError);
+    expect(error).toMatchObject({ receivedCharacters: 0 });
+    expect(chunks).toEqual([]);
+  });
+
+  it.each([
+    ['a string error', PROVIDER_TEXT, PROVIDER_TEXT],
+    ['an error object with a message', { message: PROVIDER_TEXT, code: 500 }, PROVIDER_TEXT],
+    ['an error object without a message', { code: 'overloaded', retry: true }, '{"code":"overloaded","retry":true}'],
+  ])('takes the detail from %s', async (_label, error, detail) => {
+    payload = frame({ error }) + DONE;
+    const result = await collect();
+    expect(result.error).toBeInstanceOf(ProviderStreamError);
+    expect(result.error).toMatchObject({ detail });
+  });
+
+  it('bounds the detail and keeps provider text out of the message', async () => {
+    payload = frame({ error: { message: `${PROVIDER_TEXT} ${'x'.repeat(2_000)}` } }) + DONE;
+    const { error } = await collect();
+    expect(error).toBeInstanceOf(ProviderStreamError);
+    expect(error).toMatchObject({
+      name: 'ProviderStreamError',
+      message: 'streamChat: provider reported an error in the stream',
+    });
+    const { detail, message } = error as ProviderStreamError;
+    expect(detail).toHaveLength(ERROR_BODY_MAX_CHARS);
+    expect(detail.startsWith(PROVIDER_TEXT)).toBe(true);
+    expect(message).not.toContain('CUDA');
+  });
+
+  it.each([
+    ['null', null],
+    ['an empty string', ''],
+    ['false', false],
+  ])('ignores an error member that is %s and completes the stream', async (_label, error) => {
+    payload = text('ok') + frame({ error, choices: [{ delta: { content: '!' } }] }) + DONE;
+    const { chunks, error: thrown, text: received } = await collect();
+    expect(thrown).toBeUndefined();
+    expect(received).toBe('ok!');
+    expect(chunks.at(-1)).toEqual({ content: '', done: true });
+  });
+
+  it('closes an open <think> block before throwing', async () => {
+    payload = reasoning('pondering') + errorFrame + DONE;
+    const { chunks, error, text: received } = await collect({ thinking: true });
+    expect(received).toBe('<think>pondering</think>');
+    expect(chunks.at(-1)).toEqual({ content: '</think>', done: false });
+    expect(error).toBeInstanceOf(ProviderStreamError);
+  });
+
+  it('returns silently when the caller aborted before the error surfaced', async () => {
+    payload = text('Hel') + errorFrame + DONE;
+    const controller = new AbortController();
+    const { chunks, error } = await collect({ signal: controller.signal, onChunk: () => controller.abort() });
+    expect(error).toBeUndefined();
+    expect(chunks).toEqual([{ content: 'Hel', done: false }]);
+  });
+
+  it('stops at the error frame and closes a provider socket that is held open', async () => {
+    holdOpen = true;
+    payload = text('Hel') + errorFrame;
+    const result = await within(collect(), 2_000);
+    expect(result).not.toBe('timed out');
+    if (result === 'timed out') return;
+    expect(result.error).toBeInstanceOf(ProviderStreamError);
+    expect(result.text).toBe('Hel');
+    expect(await within(responseClosed, 2_000)).not.toBe('timed out');
+  });
+
+  it('does not count error frames against the provider breaker', async () => {
+    payload = errorFrame + DONE;
+    const before = requests;
+    // One more than the breaker's failure threshold (3).
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const { error } = await collect({ providerId: 'err-1728-breaker' });
+      expect(error).toBeInstanceOf(ProviderStreamError);
+    }
+    expect(requests - before).toBe(4);
   });
 });
 

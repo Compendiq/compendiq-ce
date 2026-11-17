@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type * as AdminSettingsModule from './admin-settings-service.js';
 
 const mockPool = {
   query: vi.fn(),
@@ -15,10 +16,17 @@ vi.mock('../utils/logger.js', () => ({
 
 // #264 — ADMIN_ACCESS_DENIED purge runs inside `runRetentionCleanup`; stub the
 // getter to a known value so the mocked DELETE loop is deterministic.
-vi.mock('./admin-settings-service.js', () => ({
-  getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
-  getWebhookDeliveriesRetentionDays: vi.fn().mockResolvedValue(90),
-}));
+vi.mock('./admin-settings-service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof AdminSettingsModule>();
+  return {
+    getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
+    getWebhookDeliveriesRetentionDays: vi.fn().mockResolvedValue(90),
+    // #1760: the real strict resolvers run over the mocked `query` above, so
+    // the failed-read and env-fallback paths are the production ones.
+    getJobHistoryRetentionDaysStrict: actual.getJobHistoryRetentionDaysStrict,
+    getNotificationsReadRetentionDaysStrict: actual.getNotificationsReadRetentionDaysStrict,
+  };
+});
 
 // #307 Finding #4: retention heartbeat test spy on audit-service emissions.
 vi.mock('./audit-service.js', () => ({
@@ -47,6 +55,8 @@ import {
   STANDALONE_TRASH_RETENTION_DAYS,
 } from './data-retention-service.js';
 import { logAuditEvent as mockLogAuditEvent } from './audit-service.js';
+import { query as mockSettingsQuery } from '../db/postgres.js';
+import { logger } from '../utils/logger.js';
 
 // pool.query call order inside runRetentionCleanup (pending_sync_versions is
 // absent: its retention-days getter is not mocked above, so that sweep skips
@@ -54,7 +64,8 @@ import { logAuditEvent as mockLogAuditEvent } from './audit-service.js';
 //   [0] audit_log  [1] search_analytics  [2] error_log
 //   [3..] ADMIN_ACCESS_DENIED batches (#264)
 //   [next] standalone trash purge (UX review)
-//   [last] page_versions
+//   [next] page_versions
+//   [last two] job_history, then read notifications (#1760)
 
 describe('data-retention-service', () => {
   beforeEach(() => {
@@ -127,8 +138,9 @@ describe('data-retention-service', () => {
       await runRetentionCleanup();
 
       // 3 umbrella time-based + 1 ADMIN_ACCESS_DENIED targeted
-      // + 1 standalone trash purge + 1 webhook_deliveries + 1 count-based = 7
-      expect(mockPool.query).toHaveBeenCalledTimes(7);
+      // + 1 standalone trash purge + 1 webhook_deliveries + 1 count-based
+      // + 1 job_history + 1 read notifications = 9
+      expect(mockPool.query).toHaveBeenCalledTimes(9);
 
       // Verify audit_log uses default 365 days
       const auditCall = mockPool.query.mock.calls[0];
@@ -439,6 +451,196 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 });
       await runRetentionCleanup();
       expect((find()![4] as Record<string, unknown>).rows_pruned).toBe(12);
+    });
+
+    // ─── #1760 — job_history and read-notification sweeps ────────────────
+    describe('job_history and read-notification sweeps (#1760)', () => {
+      type DeleteResult = { rowCount: number } | Error;
+      /**
+       * Answer each DELETE by its table (every other sweep reports zero rows).
+       * `settings` maps an `admin_settings` key to the stored value, or to an
+       * Error when that read fails. The REAL strict resolvers run over this
+       * mocked query layer.
+       */
+      function mockDeletes(
+        jobHistory: DeleteResult[],
+        notifications: DeleteResult[],
+        settings: Record<string, string | Error> = {},
+      ) {
+        (mockSettingsQuery as ReturnType<typeof vi.fn>).mockImplementation(
+          async (_sql: string, params: unknown[]) => {
+            const stored = settings[String(params[0])];
+            if (stored instanceof Error) throw stored;
+            return { rows: stored === undefined ? [] : [{ setting_value: stored }], rowCount: 1 };
+          },
+        );
+        const queues = { job_history: [...jobHistory], notifications: [...notifications] };
+        mockPool.query.mockImplementation(async (sql: string) => {
+          const table = sql.includes('DELETE FROM job_history')
+            ? 'job_history'
+            : sql.includes('DELETE FROM notifications')
+              ? 'notifications'
+              : null;
+          if (!table) return { rowCount: 0 };
+          const next = queues[table].shift() ?? { rowCount: 0 };
+          if (next instanceof Error) throw next;
+          return next;
+        });
+      }
+
+      afterEach(() => {
+        delete process.env.RETENTION_JOB_HISTORY_DAYS;
+        delete process.env.RETENTION_NOTIFICATIONS_READ_DAYS;
+      });
+
+      const heartbeats = (resourceId: string) =>
+        (mockLogAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+          (call) => call[1] === 'RETENTION_PRUNED' && call[3] === resourceId,
+        );
+      const deleteCalls = (table: string) =>
+        mockPool.query.mock.calls.filter(([sql]) => String(sql).includes(`DELETE FROM ${table}`));
+
+      it('reports both results keys with the rows each sweep deleted', async () => {
+        mockDeletes([{ rowCount: 7 }], [{ rowCount: 3 }]);
+
+        const results = await runRetentionCleanup();
+
+        expect(results.job_history).toBe(7);
+        expect(results.notifications_read).toBe(3);
+      });
+
+      it('deletes by the resolved window in 10_000-row batches until a short batch', async () => {
+        mockDeletes(
+          [{ rowCount: 10_000 }, { rowCount: 10_000 }, { rowCount: 55 }],
+          [{ rowCount: 10_000 }, { rowCount: 0 }],
+        );
+
+        const results = await runRetentionCleanup();
+
+        expect(results.job_history).toBe(20_055);
+        expect(results.notifications_read).toBe(10_000);
+        expect(deleteCalls('job_history')).toHaveLength(3);
+        expect(deleteCalls('notifications')).toHaveLength(2);
+        for (const call of [...deleteCalls('job_history'), ...deleteCalls('notifications')]) {
+          expect(call[1]).toEqual([90, 10_000]);
+        }
+      });
+
+      it('emits one RETENTION_PRUNED heartbeat per sweep, zero-row runs included, naming the table twice', async () => {
+        mockDeletes([], []);
+        await runRetentionCleanup();
+
+        expect(heartbeats('job_history')).toHaveLength(1);
+        expect(heartbeats('job_history')[0]![2]).toBe('table');
+        expect(heartbeats('job_history')[0]![4]).toEqual({
+          table: 'job_history',
+          rows_pruned: 0,
+          retention_days: 90,
+        });
+        expect(heartbeats('notifications_read')).toHaveLength(1);
+        expect(heartbeats('notifications_read')[0]![4]).toEqual({
+          table: 'notifications_read',
+          rows_pruned: 0,
+          retention_days: 90,
+        });
+
+        vi.clearAllMocks();
+        mockDeletes([{ rowCount: 12 }], [{ rowCount: 4 }]);
+        await runRetentionCleanup();
+        expect((heartbeats('job_history')[0]![4] as Record<string, unknown>).rows_pruned).toBe(12);
+        expect((heartbeats('notifications_read')[0]![4] as Record<string, unknown>).rows_pruned).toBe(4);
+      });
+
+      it('uses each sweep\'s own admin_settings window', async () => {
+        mockDeletes([], [], {
+          job_history_retention_days: '30',
+          notifications_read_retention_days: '400',
+        });
+
+        await runRetentionCleanup();
+
+        expect(deleteCalls('job_history')[0]![1]).toEqual([30, 10_000]);
+        expect(deleteCalls('notifications')[0]![1]).toEqual([400, 10_000]);
+      });
+
+      it('falls back to the env value, then to 90, while the setting row is absent', async () => {
+        process.env.RETENTION_JOB_HISTORY_DAYS = '45';
+        process.env.RETENTION_NOTIFICATIONS_READ_DAYS = '60';
+        mockDeletes([], []);
+        await runRetentionCleanup();
+        expect(deleteCalls('job_history')[0]![1]).toEqual([45, 10_000]);
+        expect(deleteCalls('notifications')[0]![1]).toEqual([60, 10_000]);
+
+        delete process.env.RETENTION_JOB_HISTORY_DAYS;
+        delete process.env.RETENTION_NOTIFICATIONS_READ_DAYS;
+        vi.clearAllMocks();
+        mockDeletes([], []);
+        await runRetentionCleanup();
+        expect(deleteCalls('job_history')[0]![1]).toEqual([90, 10_000]);
+        expect(deleteCalls('notifications')[0]![1]).toEqual([90, 10_000]);
+      });
+
+      it('a failing delete is logged, keeps the rows already deleted, emits no heartbeat and never fails the run', async () => {
+        mockDeletes([{ rowCount: 10_000 }, new Error('lock timeout')], [{ rowCount: 2 }]);
+
+        const results = await runRetentionCleanup();
+
+        expect(results.job_history).toBe(10_000);
+        expect(heartbeats('job_history')).toHaveLength(0);
+        // The later sweep still ran and was recorded.
+        expect(results.notifications_read).toBe(2);
+        expect(heartbeats('notifications_read')).toHaveLength(1);
+      });
+
+      it('a failing notifications delete does not change the earlier sweeps\' results', async () => {
+        mockDeletes([{ rowCount: 5 }], [new Error('lock timeout')]);
+
+        const results = await runRetentionCleanup();
+
+        expect(results.notifications_read).toBe(0);
+        expect(heartbeats('notifications_read')).toHaveLength(0);
+        expect(results.job_history).toBe(5);
+        expect(results.page_versions).toBe(0);
+      });
+
+      it('a failed settings read skips that sweep (no delete, no heartbeat, error logged) while every other sweep still runs', async () => {
+        mockDeletes(
+          [{ rowCount: 9 }],
+          [{ rowCount: 2 }],
+          { job_history_retention_days: new Error('connection reset') },
+        );
+
+        const results = await runRetentionCleanup();
+
+        expect(results.job_history).toBe(0);
+        expect(deleteCalls('job_history')).toHaveLength(0);
+        expect(heartbeats('job_history')).toHaveLength(0);
+        expect(vi.mocked(logger.error)).toHaveBeenCalled();
+        // Later sweeps are unaffected.
+        expect(results.notifications_read).toBe(2);
+        expect(heartbeats('notifications_read')).toHaveLength(1);
+        expect(deleteCalls('search_analytics')).toHaveLength(1);
+        expect(deleteCalls('page_versions')).toHaveLength(1);
+      });
+
+      it('a failed read never falls back to the env value or 90: both sweeps skip, the run still completes', async () => {
+        process.env.RETENTION_JOB_HISTORY_DAYS = '45';
+        process.env.RETENTION_NOTIFICATIONS_READ_DAYS = '45';
+        mockDeletes([{ rowCount: 9 }], [{ rowCount: 2 }], {
+          job_history_retention_days: new Error('connection reset'),
+          notifications_read_retention_days: new Error('connection reset'),
+        });
+
+        const results = await runRetentionCleanup();
+
+        expect(results.job_history).toBe(0);
+        expect(results.notifications_read).toBe(0);
+        expect(deleteCalls('job_history')).toHaveLength(0);
+        expect(deleteCalls('notifications')).toHaveLength(0);
+        expect(heartbeats('job_history')).toHaveLength(0);
+        expect(heartbeats('notifications_read')).toHaveLength(0);
+        expect(deleteCalls('search_analytics')).toHaveLength(1);
+      });
     });
 
     // ─── #307 Finding #4 — zero-row heartbeat attestation ────────────────

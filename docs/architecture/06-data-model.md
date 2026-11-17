@@ -110,7 +110,7 @@ erDiagram
         int version
         text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
-        text notion_page_id "idempotency for one-shot Notion import (#1465); NULL unless imported. source stays standalone"
+        text notion_page_id "live standalone import binding; successful relocation clears; legacy CF compensation metadata is ignored"
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
@@ -249,6 +249,7 @@ erDiagram
         text target_visibility
         text original_source
         text original_confluence_id
+        text original_notion_page_id "nullable; exact rollback token, never normalized"
         text original_space_key
         text original_title
         text original_body_html
@@ -521,6 +522,7 @@ erDiagram
         text error
         text triggered_by "nullable user id text; null for schedule"
         text job_id "nullable BullMQ job id"
+        text warning "nullable; S3 prune error on a success run, max 1000 chars"
     }
 
     roles {
@@ -790,6 +792,25 @@ upload appends its own bounded receipt before the next provider call. Receipt
 capacity scales with the admitted inventory; the generic terminal result holds
 only its count and canonical ordered SHA-256, never a second full receipt array.
 
+Migration152 adds the eighteenth authored page snapshot value,
+`original_notion_page_id`. The universal-PK FK keeps that exact source row
+alive. Old writers only inserted the token, so every retained preparation is
+backfilled from its same FK row BEFORE any repair, independently of phase,
+ACLs, body or receipt classification. NULL is an exact known value, not an
+unknown-history default.
+
+The existing `pages_notion_page_id_owner_live_uidx` name and normalized owner
+key remain; its predicate is now source=standalone, nonNULL token, live row.
+Nullable-owner semantics are unchanged. Metadata on a Confluence row cannot
+block another standalone import, including after exact legacy compensation.
+The migration clears all Confluence tokens and only provenance-matching
+retained Confluence-to-local roots; other standalone near-matches remain
+untouched without aborting safe Confluence repair. No FK, status/progress,
+ACL, attachment, history, derived-state, capacity or lifecycle protocol is
+rewritten. Retirement is the bounded snapshot-schema precondition documented
+in the immutable-page-baselines runbook.
+
+
 Migration 121 seeds exactly one feature-state row with
 `creation_enabled = false` and one zeroed capacity row. #276 registers the
 deployment-readiness provider at backend startup; readiness is true only when
@@ -921,7 +942,11 @@ a user foreign key so scheduled runs and historical actor identifiers remain
 representable. Because an in-flight S3 archive necessarily snapshots
 its own row as `running`, offline restore reconciles every restored `running`
 row to `failed` with a finish time and the error `Backup interrupted by restore`
-after migrations and before reporting restore success.
+after migrations and before reporting restore success. Migration 153 adds the
+nullable `warning` column (#1710): when the S3 retention prune fails after the
+upload completed, the run stays `success` with `error` NULL and the prune error
+message (at most 1000 characters) is stored in `warning` by a dedicated
+`UPDATE` that never touches status, size, object key, finish time or error.
 
 Enterprise migration 900 adds `backup_destinations` and
 `backup_destination_results`. The primary is a runtime mirror of the CE S3

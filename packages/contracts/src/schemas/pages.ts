@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PageIconSchema } from './page-icon.js';
+import { PagePrimaryKeySchema } from './page-id.js';
 import {
   PageFreezeDetailFieldsSchema,
   PageFreezeSummaryFieldsSchema,
@@ -80,7 +81,8 @@ const ConnectionVisitSchema = z.object({
 const ConnectionClickSchema = z.object({
   event: z.literal('connection_click'),
   visitId: z.string().uuid(),
-  targetPageId: z.string().regex(/^[1-9]\d*$/),
+  targetPageId: z.string().regex(/^[1-9]\d*$/)
+    .refine((id) => PagePrimaryKeySchema.safeParse(id).success, 'Invalid page ID'),
   group: z.enum(['linked', 'section', 'related']),
 }).strict();
 
@@ -192,8 +194,8 @@ export const CreatePageSchema = z.object({
    * Labels to apply at creation (#1133). Carried here rather than applied by a
    * follow-up `PUT /pages/:id/labels` because the id this route returns is
    * ambiguous: for a Confluence create it is the *Confluence content id*, which
-   * is numeric, and the labels route reads a numeric id as a database primary
-   * key — so the follow-up would silently label a different page.
+   * may be numeric, and the labels route treats an in-range numeric id as a
+   * database primary key — so the follow-up could silently label a different page.
    *
    * Bounds mirror the Markdown-import route the front-matter comes from.
    */
@@ -287,6 +289,30 @@ export const SearchResultItemSchema = z.object({
 });
 export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
 
+/**
+ * PostgreSQL-safe calendar dates or qualified timestamps, kept as raw strings.
+ * Match microsecond precision and offset/year limits without changing bounds
+ * or cache identity; a date-only upper bound remains session-local midnight.
+ */
+export const PageDateFilterSchema = z.union([
+  z.string().date(),
+  z.string().datetime({ offset: true })
+    .regex(
+      /(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/,
+      'UTC offset must be between -15:59 and +15:59',
+    )
+    .refine(
+      (value) => !/\.\d{7}/.test(value),
+      'Use at most 6 fractional-second digits',
+    ),
+]).refine(
+  (value) => !value.startsWith('0000-'),
+  'Year must be between 0001 and 9999',
+).refine(
+  (value) => !/\s/.test(value),
+  'Date filters must not contain whitespace',
+);
+
 export const PageListQuerySchema = z.object({
   spaceKey: z.string().optional(),
   search: z.string().optional(),
@@ -301,8 +327,8 @@ export const PageListQuerySchema = z.object({
   visibility: PageVisibilityEnum.optional(),
   /** #283 — see SearchHybridQuerySchema.aiPolicy. Absent means no filter. */
   aiPolicy: AiPolicyFilterSchema.optional(),
-  dateFrom: z.string().optional(), // ISO date string
-  dateTo: z.string().optional(),   // ISO date string
+  dateFrom: PageDateFilterSchema.optional(),
+  dateTo: PageDateFilterSchema.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   sort: z.enum(['title', 'modified', 'author', 'quality', 'relevance']).default('title'),
@@ -352,6 +378,8 @@ export const TrashItemSchema = z.object({
   title: z.string(),
   source: PageSourceEnum,
   visibility: PageVisibilityEnum,
+  spaceKey: z.string().nullable(),
+  spaceMissing: z.boolean(),
   deletedAt: z.string(),
   createdAt: z.string(),
   deletedBy: z.string(),
@@ -365,6 +393,12 @@ export const TrashListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 export type TrashListResponse = z.infer<typeof TrashListResponseSchema>;
+
+/** Optional caller-chosen destination when a trashed page's stored space is gone. */
+export const RestorePageBodySchema = z.object({
+  targetSpaceKey: z.string().min(1).optional(),
+});
+export type RestorePageBody = z.infer<typeof RestorePageBodySchema>;
 
 // -- Relocate between a local space and Confluence (Issue #1123) --
 
@@ -552,7 +586,7 @@ export const AdminDuplicatesQuerySchema = z.object({
 });
 
 export const BatchExportBodySchema = z.object({
-  pageIds: z.array(z.coerce.number().int().positive()).min(1).max(50),
+  pageIds: z.array(PagePrimaryKeySchema).min(1).max(50),
 });
 
 export type DuplicatesQuery = z.infer<typeof DuplicatesQuerySchema>;

@@ -30,10 +30,15 @@
  *   - Soft-fail: DB errors during cold-load or re-read are logged; the
  *     cached value stays at the last-known value (or defaultValue on first
  *     failure). The getter never throws.
+ *   - Serialized and coalesced (#1758): every read goes through one
+ *     `createCoalescedReloader`, so overlapping bus events and reconnects
+ *     never let an older read overwrite a newer one; a read that hangs is
+ *     abandoned after RELOAD_READ_TIMEOUT_MS and never applied.
  */
 
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { createCoalescedReloader } from './coalesced-reload.js';
 import { subscribe, onReconnect, type CacheBusChannel } from './redis-cache-bus.js';
 
 interface CachedSettingOptions<T> {
@@ -43,38 +48,51 @@ interface CachedSettingOptions<T> {
   defaultValue: T;
 }
 
+/** A `parse` error, kept apart from a failed SELECT so each keeps its own log line. */
+class ParseFailure {
+  constructor(readonly err: unknown) {}
+}
+
 export async function makeCachedSetting<T>(opts: CachedSettingOptions<T>): Promise<() => T> {
   let cached: T = opts.defaultValue;
 
-  async function loadFromDb(phase: 'cold-load' | 're-read'): Promise<void> {
-    try {
+  const reload = createCoalescedReloader<T, 'cold-load' | 're-read'>({
+    read: async () => {
       const r = await query<{ setting_value: string }>(
         `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
         [opts.key],
       );
       const raw = r.rows[0]?.setting_value ?? null;
       try {
-        cached = opts.parse(raw);
+        return opts.parse(raw);
       } catch (err) {
+        throw new ParseFailure(err);
+      }
+    },
+    apply: (value) => {
+      cached = value;
+    },
+    onFailure: (err, phase) => {
+      if (err instanceof ParseFailure) {
         logger.warn(
-          { err, key: opts.key, phase },
+          { err: err.err, key: opts.key, phase },
           'cached-setting: parse failed — keeping previous value',
         );
+        return;
       }
-    } catch (err) {
       logger.warn(
         { err, key: opts.key, phase },
         phase === 'cold-load'
           ? 'cached-setting: cold-load failed — using defaultValue'
           : 'cached-setting: re-read failed — keeping previous value',
       );
-    }
-  }
+    },
+  });
 
-  await loadFromDb('cold-load');
+  await reload('cold-load');
 
-  subscribe(opts.cacheBusChannel, () => loadFromDb('re-read'));
-  onReconnect(() => loadFromDb('re-read'));
+  subscribe(opts.cacheBusChannel, async () => { await reload('re-read'); });
+  onReconnect(async () => { await reload('re-read'); });
 
   return () => cached;
 }

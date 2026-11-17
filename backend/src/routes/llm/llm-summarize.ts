@@ -70,6 +70,8 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
 
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
+    let promptInjectionDetected = warnings.length > 0;
+    let wasSanitized = sanitizedMarkdown !== markdown;
     if (warnings.length > 0) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/summarize' }, request);
     }
@@ -89,6 +91,8 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
       // One aggregated event per request (#835) — covers every offending web
       // source so audit volume stays bounded. logAuditEvent never throws.
       if (injectionWarnings.length > 0) {
+        promptInjectionDetected = true;
+        wasSanitized = true;
         await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
           warnings: injectionWarnings.flatMap((w) => w.warnings),
           route: '/llm/summarize',
@@ -159,6 +163,8 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
             inputMessages: summarizeMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
             promptHash: fingerprintPrompt(summarizeMessages),
             retrievedChunkIds: [],
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           },
           cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });

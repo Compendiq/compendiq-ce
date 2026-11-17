@@ -12,7 +12,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
-import type { RedisClientType } from 'redis';
+import { expect, onTestFinished, vi } from 'vitest';
+import { createClient, type RedisClientType } from 'redis';
 import { PageSubtreeFrozenError } from '../../core/services/page-subtree.js';
 import { query } from '../../core/db/postgres.js';
 
@@ -96,8 +97,63 @@ const STALE_EMBEDDING_MARKER = 'stale-embedding-marker';
  * that interlock, so its disappearance proves the worker ran.
  */
 export async function holdOtherEmbeddingLease(redis: RedisClientType): Promise<void> {
-  await redis.set(`embedding:lock:${OTHER_EMBEDDING_HOLDER}`, 'other-runtime', { EX: 60 });
-  await redis.sAdd('embedding:locks:active', [OTHER_EMBEDDING_HOLDER, STALE_EMBEDDING_MARKER]);
+  await holdEmbeddingLease(redis, OTHER_EMBEDDING_HOLDER, [STALE_EMBEDDING_MARKER]);
+}
+
+/**
+ * Holds `embedding:lock:<holder>` and lists it in `embedding:locks:active`
+ * (plus any `staleMembers`, which get no lock key), and releases all of it
+ * when the current test finishes, pass or fail. The leases live in the
+ * worker's shared Redis DB, which the next file on that worker inherits;
+ * `processDirtyPages` backs off at its cross-user interlock for as long as a
+ * foreign holder is listed, so a leaked lease starves an unrelated suite's run.
+ * Call it from a test or a `beforeEach`.
+ */
+export async function holdEmbeddingLease(
+  redis: RedisClientType,
+  holder: string,
+  staleMembers: string[] = [],
+): Promise<void> {
+  onTestFinished(() => releaseEmbeddingLeases(redis, [holder, ...staleMembers]));
+  await redis.set(`embedding:lock:${holder}`, 'other-runtime', { EX: 60 });
+  await redis.sAdd('embedding:locks:active', [holder, ...staleMembers]);
+}
+
+/** Deletes each holder's lock key and its `embedding:locks:active` member. */
+export async function releaseEmbeddingLeases(redis: RedisClientType, holders: string[]): Promise<void> {
+  await redis.del(holders.map((holder) => `embedding:lock:${holder}`));
+  await redis.sRem('embedding:locks:active', holders);
+}
+
+/**
+ * Teardown guard: the file leaves no `embedding:lock:*` key and no
+ * `embedding:locks:active` member for the next file on this worker's Redis DB.
+ * Polls because a worker the last test fired may still be releasing its own
+ * lease; a leaked fixture lease never clears and fails after the timeout.
+ * Reads through its own client (`REDIS_URL` is the worker-isolated slot), so
+ * declare it as the FIRST `afterAll` of a file: hooks run last-declared first,
+ * which makes it run after the file's own teardown has closed its client, and a
+ * failure here cannot skip that teardown.
+ */
+export async function expectNoEmbeddingLeaseLeak(): Promise<void> {
+  const probe: RedisClientType = createClient({
+    url: process.env.REDIS_URL,
+    socket: { reconnectStrategy: false, connectTimeout: 1000 },
+  });
+  await probe.connect();
+  try {
+    await vi.waitFor(
+      async () => {
+        expect({
+          lockKeys: (await probe.keys('embedding:lock:*')).sort(),
+          activeMembers: (await probe.sMembers('embedding:locks:active')).sort(),
+        }).toEqual({ lockKeys: [], activeMembers: [] });
+      },
+      { timeout: 5_000 },
+    );
+  } finally {
+    await probe.quit();
+  }
 }
 
 /**

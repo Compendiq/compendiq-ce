@@ -32,6 +32,7 @@ import {
   activeEmbeddingHolders,
   buildKnowledgeTestApp,
   holdOtherEmbeddingLease,
+  expectNoEmbeddingLeaseLeak,
   insertLocalSpace,
   insertUser,
   OTHER_EMBEDDING_HOLDER,
@@ -256,6 +257,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         const { pagesCrudRoutes } = await import('./pages-crud.js');
         await instance.register(pagesCrudRoutes, { prefix: '/api' });
       });
+    });
+
+    // Declared first on purpose: afterAll hooks run last-declared first, so this
+    // runs after the teardown below and a failure here cannot skip that teardown.
+    afterAll(async () => {
+      await expectNoEmbeddingLeaseLeak();
     });
 
     afterAll(async () => {

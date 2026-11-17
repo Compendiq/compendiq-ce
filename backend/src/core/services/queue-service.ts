@@ -43,6 +43,15 @@ function getOrCreateQueue(name: string): Queue {
   return q;
 }
 
+// ─── Scheduler job retention (#1756) ─────────────────────────────────────────
+//
+// Repeatable-scheduler jobs would otherwise stay in Redis forever (maxmemory
+// policy is noeviction). Applied through the scheduler job template only, never
+// `Queue.defaultJobOptions`, so on-demand `enqueueJob` options are unaffected.
+// `job_history` in Postgres remains the longer record.
+const SCHEDULED_REMOVE_ON_COMPLETE = { count: 100 };
+const SCHEDULED_REMOVE_ON_FAIL = { count: 200 };
+
 // ─── Job history ─────────────────────────────────────────────────────────────
 
 async function recordJobHistory(
@@ -156,7 +165,13 @@ export async function startQueueWorkers(): Promise<void> {
       await q.upsertJobScheduler(
         `${def.queueName}-scheduler`,
         { every: def.repeatPattern.every },
-        { name: def.queueName },
+        {
+          name: def.queueName,
+          opts: {
+            removeOnComplete: SCHEDULED_REMOVE_ON_COMPLETE,
+            removeOnFail: SCHEDULED_REMOVE_ON_FAIL,
+          },
+        },
       );
       logger.info(
         { queue: def.queueName, everyMs: def.repeatPattern.every },
@@ -173,7 +188,13 @@ export async function startQueueWorkers(): Promise<void> {
   await maintenanceQueue.upsertJobScheduler(
     'data-retention-scheduler',
     { every: retentionHours * 60 * 60 * 1000 },
-    { name: 'data-retention' },
+    {
+      name: 'data-retention',
+      opts: {
+        removeOnComplete: SCHEDULED_REMOVE_ON_COMPLETE,
+        removeOnFail: SCHEDULED_REMOVE_ON_FAIL,
+      },
+    },
   );
 
   // Register analytics-aggregation queue for future EE use

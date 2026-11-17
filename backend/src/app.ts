@@ -102,6 +102,7 @@ import { initCollabBus, initCollabLifecycleBus } from './core/services/collab-ro
 import { initCollabFlag } from './core/services/collab-flag.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
 import { initUserSecurityCacheBus } from './core/services/user-security-cache.js';
+import { subscribeSmtpConfigReload } from './core/services/email-service.js';
 import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
 import {
   initPageBaselineMaintenance,
@@ -360,6 +361,17 @@ export async function buildApp() {
   // changes invalidate across pods immediately. Must run AFTER initCacheBus.
   // Without a working bus the cache's 30s TTL bounds the staleness.
   initUserSecurityCacheBus();
+
+  // ── SMTP configuration reload (#1757) ────────────────────────────
+  // `initEmailService()` cold-loads the smtp_* rows in index.ts before this
+  // runs; here every replica subscribes `smtp:config:changed` and the
+  // reconnect handler so a save on any pod reaches it without a restart.
+  // Must run AFTER initCacheBus. With an active bus it reloads once more
+  // (awaited) to narrow the gap since that cold-load.
+  const unsubscribeSmtpConfigReload = await subscribeSmtpConfigReload();
+  app.addHook('onClose', async () => {
+    unsubscribeSmtpConfigReload();
+  });
 
   // ── LLM provider cache-bus subscriber (EE #113 sub-PR 1d) ────────
   // Wires the cluster subscriber for `provider:cache:bump` and

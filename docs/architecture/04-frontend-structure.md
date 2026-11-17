@@ -207,9 +207,12 @@ enters the viewport, not on ordinary re-renders or background refetches.
   manifest identity (`expectedManifestDigest` + `expectedContentRevision`),
   and the badge, the editor gate and the tree follow the re-read page. A
   refusal keeps the operator's typed text so a stale preview or a busy room
-  is retried, not retyped. The dialogs restore focus to the control that
-  opened them **after** the portal unmounts — focusing in the same tick lands
-  on `body`, which a browser run caught and jsdom did not.
+  is retried, not retyped. Focus moves only **after** the portal unmounts:
+  a dismissal returns it to the control that opened the dialog, and a
+  success hands it to the section heading if the pressed confirm still owned
+  it (decided when the dialog closes). Focusing while the modal is mounted is
+  pulled back by its focus trap and then lands on `body` — a browser run
+  caught both paths, after a keyboard-confirmed thaw for the second.
 - `FrozenBadge` is neutral ink plus a lock glyph in both forms. It is not a
   status hue: amber, green and red stay reserved pipeline signals, and the
   glyph is the channel that survives `forced-colors` and colour blindness.
@@ -235,7 +238,29 @@ enters the viewport, not on ordinary re-renders or background refetches.
   marked stale in amber and offers no vote; an `approved` proposal carrying a
   `finalizeError` reports the named failure and the explicit retry the server
   requires, because the freeze happens inside the final approval and nothing
-  reschedules it.
+  reschedules it. That error is a reason slug rendered through
+  `governanceRefusal`; an older row holding prose is shown verbatim. A final
+  vote answers `finalized` when its freeze completed, or `approved` with a
+  `finalizeError` when it did not, which is a recorded vote, not a refusal.
+  After a completed freeze the re-read page detail reports
+  `governanceProposalStatus: 'finalized'` with the id of the proposal whose
+  approvals froze its **current** baseline, so the section reads that
+  proposal, says the approvals froze the article and lists the votes as a
+  record with no controls; after a thaw the page reports `none` again. A
+  frozen page never offers **Request approval**, whatever its status says
+  (one frozen while the space was ungoverned reports `none`), because the
+  server refuses a proposal on it.
+  Every governed mutation invalidates the page and the proposal when it
+  **settles**, success or refusal, because a refusal can still have moved
+  server state. The one exception is `governance_license_required`: the
+  client's licence view can be stale, so that refusal (from a mutation or
+  the proposal read) latches the unlicensed branch with no further
+  governance request — the proposal is not re-read on settle — until the
+  licence `useEnterprise()` reports changes identity or validity. A latch
+  taken from the proposal read is also released by a later successful read
+  (a remount can start from the cached refusal while a fresh read is in
+  flight). It is not `governance_unavailable`, which means the workflow
+  could not be reached.
 - **Retained evidence is a disclosure, not a second list** (`PageBaselineHistory`).
   It fetches only once opened, pages on the server's cursor, and keeps the
   same three claims apart as the section above it: the server's immutable
@@ -244,9 +269,10 @@ enters the viewport, not on ordinary re-renders or background refetches.
   article and labelled as unverified. A reference id renders as text, never as
   a link, and a failed read is a failure rather than an article that was never
   frozen.
-- **Every protected-write entry point on the article route shares one refusal.**
-  Edit, the empty-article `Add content`, the shortcuts that reach them, the
-  draw.io overlay and the attachment write behind it all go through
+- **Every protected-write entry point on the article route is withheld or
+  refused on a frozen article.** Edit, the empty-article `Add content` (no
+  longer rendered once frozen), the shortcuts that reach them, the draw.io
+  overlay and the attachment write behind it all go through
   `contentWriteRefusal`, which distinguishes *frozen* from *not yours to
   change* because the next step differs. `DrawioEditor` has no read-only mode,
   so a frozen article supplies **no** `onEditDiagram` callback and the viewer
@@ -255,7 +281,19 @@ enters the viewport, not on ordinary re-renders or background refetches.
   AI `Apply` is a protected write too: the dock and the improve diff withdraw
   the control and keep the generated text, and a **423** from
   `/llm/improvements/apply` is reported as a refusal that changed nothing, not
-  as a re-runnable failure.
+  as a re-runnable failure. The other server-admitted writes
+  (`page-write-admission` intents) are not offered at all while frozen: the
+  page icon is shown but not editable, the inspector withholds Auto-tag
+  (labels), `Move to Confluence…`/the Danger zone (relocation, Confluence
+  delete), `Move to trash`, `Pull latest from Confluence` and Version
+  history's Restore, and `Alt+Shift+D` answers with the frozen reason
+  instead of the trash confirm. Reading, version history and diffs, Pin,
+  Show in graph, Export PDF, Verify and the derived-data maintenance actions
+  stay.
+  The lifecycle heading is a programmatic focus target, not a control, so it
+  draws its ring only on `:focus-visible`: the shared `nm-focus-ring` keeps a
+  transparent outline at rest, which `forced-colors: active` paints as a
+  permanent box.
 - **Settings → Governance → Article baselines** (`ArticleBaselinesTab`) is the
   admin surface: baseline creation activation with the deployment's readiness
   blockers in prose, and per space the CE governance marker plus — under an

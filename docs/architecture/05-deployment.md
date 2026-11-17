@@ -447,6 +447,7 @@ flowchart LR
 | IP allowlist hot-reload | Pub/sub | `ip_allowlist:changed` |
 | Confluence SSRF allowlist | Dedicated `ssrf-allowlist-bus` | `ssrf:allowlist:changed` |
 | Sync conflict / PII / license / per-page-restriction policy | Pub/sub | `sync:conflict:policy:changed`, `pii:policy:changed`, `license:changed` |
+| SMTP configuration (`PUT /api/admin/smtp`) | Pub/sub reload signal (empty payload, never a setting); each replica re-reads the `smtp_*` rows, also on bus reconnect | `smtp:config:changed` |
 | Recurring jobs (sync tick, retention prune, embedding tick, webhook outbox poll) | BullMQ `upsertJobScheduler` with stable IDs | Redis queue keys |
 | Sync run mutual exclusion (scheduler and manual `POST /api/sync`) | Redis SET-NX lock | `sync:worker:lock` |
 | Embedding locks | Redis SET-NX | `embedding:lock:{userId}` (per-user fairness) and `embedding:lock:__reembed_all__` (global re-embed) |

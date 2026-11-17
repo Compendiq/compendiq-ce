@@ -14,6 +14,7 @@ import {
   CollabCommitResponseSchema,
   CollabCommitSchema,
   CollabConfigSchema,
+  PagePrimaryKeySchema,
   type CollabCommit,
 } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
@@ -512,15 +513,15 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     return CollabConfigSchema.parse({ enabled: isCollabEditingEnabled() });
   });
 
-  fastify.post('/pages/:id/collab/commit', {
+  fastify.post<{ Params: { id: string } }>('/pages/:id/collab/commit', {
     onRequest: [fastify.authenticate],
     bodyLimit: 2 * 1024 * 1024,
   }, async (request) => {
-    const rawId = (request.params as { id: string }).id;
-    const pageId = Number(rawId);
-    if (!Number.isInteger(pageId) || pageId <= 0) {
+    const parsedId = PagePrimaryKeySchema.safeParse(request.params.id);
+    if (!parsedId.success) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    const pageId = parsedId.data;
     const body = CollabCommitSchema.parse(request.body);
     const requestedDocumentState = decodeCommitDocumentState(body.expectedDocumentState);
     const userId = request.userId;
@@ -690,7 +691,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     }
   });
 
-  fastify.get('/collab/:pageId', {
+  fastify.get<{ Params: { pageId: string } }>('/collab/:pageId', {
     websocket: true,
     // @fastify/compress must not wrap the upgrade.
     compress: false,
@@ -770,13 +771,12 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     });
 
     void (async () => {
-      const raw = (request.params as { pageId: string }).pageId;
-      const parsed = Number(raw);
-      if (!Number.isInteger(parsed) || parsed <= 0) {
+      const parsedId = PagePrimaryKeySchema.safeParse(request.params.pageId);
+      if (!parsedId.success) {
         finish(4404, 'not_found');
         return;
       }
-      pageId = parsed;
+      pageId = parsedId.data;
 
       const auth = await authenticateSocket(request);
       if (auth === '4401') {

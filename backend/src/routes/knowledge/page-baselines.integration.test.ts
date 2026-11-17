@@ -1,4 +1,5 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
@@ -11,9 +12,10 @@ import {
   type PageLifecycleState,
 } from '@compendiq/contracts';
 import { getPool, query } from '../../core/db/postgres.js';
-import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
+import { insertTestRuntime, isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
 import { cleanupAbandonedBaselinePreparations } from '../../core/services/page-baseline-service.js';
+import { inspectBaselineManifest } from '../../core/services/page-baseline-manifest.js';
 import { pageBaselineRoutes } from './page-baselines.js';
 import { createClient, type RedisClientType } from 'redis';
 import { setRedisClient } from '../../core/services/redis-cache.js';
@@ -22,6 +24,7 @@ import { initPageBaselineOutbox, kickPageLifecycleOutbox } from '../../core/serv
 import {
   admitPageRuntime,
   cancelPageWriteIntentBeforeEffect,
+  fencePageWriterRuntime,
   releasePageRuntime,
   reservePageWriteIntent,
   withPageWriteTransaction,
@@ -141,6 +144,119 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
       },
     });
   }
+
+  async function cancelledPreparation() {
+    const sourceDir = join(attachmentsDir, 'local', String(pageId));
+    const sourceBytes = Buffer.from('HTTP cancelled preparation source');
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(join(sourceDir, 'cancelled.txt'), sourceBytes);
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [
+      pageId, `<a href="/api/local-attachments/${pageId}/cancelled.txt">Retain this source</a>`,
+    ]);
+    const baselineId = randomUUID();
+    const client = await getPool().connect();
+    let prepared;
+    try {
+      prepared = await inspectBaselineManifest(client, pageId, baselineId, owner);
+    } finally {
+      client.release();
+    }
+    expect(prepared.attachments.map((attachment) => attachment.filename)).toEqual(['cancelled.txt']);
+    const revision = (await query<{ content_revision: string; lifecycle_revision: string }>(
+      'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+    )).rows[0]!;
+    const runtimeId = randomUUID();
+    const intentId = randomUUID();
+    await insertTestRuntime({ runtimeId, quiesced: true });
+    await query(
+      `INSERT INTO page_write_intents (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect)
+       VALUES ($1, $2, 'baseline.prepare', $3, ARRAY[$4]::integer[], $5::jsonb, 'local_verified', $6::jsonb)`,
+      [intentId, runtimeId, owner, pageId,
+        JSON.stringify({ [pageId]: { contentRevision: revision.content_revision, lifecycleRevision: revision.lifecycle_revision } }),
+        JSON.stringify({
+          effectClass: 'local', baselineId, pageId, sourcePageIds: [pageId],
+          manifestDigest: prepared.manifestDigest, totalBytes: prepared.totalBytes,
+        })],
+    );
+    const manifest = prepared.manifest;
+    await query(
+      `INSERT INTO page_baselines (
+         id, page_id, original_page_id, page_identity, version, content_revision, lifecycle_revision,
+         manifest_digest, manifest, manifest_bytes, title, body_html, body_storage, body_text, labels,
+         parent_identity, icon, attachments, total_bytes, reserved_bytes,
+         prepared_by_user_id, prepared_by_name, preparation_intent_id
+       ) VALUES (
+         $1, $2, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14,
+         $15::jsonb, $16::jsonb, $17::jsonb, $18, $18, $19, 'HTTP crash fixture', $20
+       )`,
+      [baselineId, pageId, JSON.stringify(manifest[3]), prepared.version, prepared.contentRevision,
+        revision.lifecycle_revision, prepared.manifestDigest, JSON.stringify(manifest), prepared.manifestBytes,
+        manifest[6], manifest[7], manifest[8], manifest[9], manifest[10],
+        manifest[11] === null ? null : JSON.stringify(manifest[11]),
+        manifest[12] === null ? null : JSON.stringify(manifest[12]),
+        JSON.stringify(prepared.attachments), prepared.totalBytes, owner, intentId],
+    );
+    await query(
+      'UPDATE page_baseline_capacity SET reserved_bytes = reserved_bytes + $1 WHERE singleton = TRUE',
+      [prepared.totalBytes],
+    );
+    await fencePageWriterRuntime({
+      runtimeId, actorId: admin, mode: 'durable_no_started_effects',
+      reason: 'The retired HTTP fixture reserved bytes but never began a copy',
+    });
+    return { baselineId, intentId, prepared, sourceDir, sourceBytes };
+  }
+
+  it('1765 regression: GET freeze-preview returns 200 with a new baseline before preparation maintenance', async () => {
+    const cancelled = await cancelledPreparation();
+    const intentBefore = (await query(
+      'SELECT to_jsonb(i) AS evidence FROM page_write_intents i WHERE id = $1', [cancelled.intentId],
+    )).rows;
+    expect(intentBefore[0]!.evidence).toMatchObject({
+      status: 'cancelled', settled_at: expect.any(String),
+      effect_started_at: null, remote_effect_started_at: null,
+    });
+    expect((await query(
+      'SELECT status, reserved_bytes::text FROM page_baselines WHERE id = $1', [cancelled.baselineId],
+    )).rows).toEqual([{ status: 'preparing', reserved_bytes: String(cancelled.prepared.totalBytes) }]);
+    const pageBefore = (await query('SELECT to_jsonb(p) AS evidence FROM pages p WHERE id = $1', [pageId])).rows;
+    // The outbox is running, but preparation maintenance has not been started
+    // or called. This GET must itself reclaim only this actor's cancellation.
+    const response = await app.inject({
+      method: 'GET', url: `/api/pages/${pageId}/freeze-preview`, headers: { 'x-test-user': owner },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const fresh = PageFreezePreviewResponseSchema.parse(response.json());
+    expect(fresh.baselineId).not.toBe(cancelled.baselineId);
+    expect(fresh.contentRevision).toBe(cancelled.prepared.contentRevision);
+    expect((await query('SELECT id FROM page_baselines WHERE id = $1', [cancelled.baselineId])).rows).toEqual([]);
+    const prepared = await query<{
+      id: string; status: string; intent_id: string; intent_status: string; settled_at: Date | null;
+    }>(
+      `SELECT b.id, b.status, i.id AS intent_id, i.status AS intent_status, i.settled_at
+         FROM page_baselines b JOIN page_write_intents i ON i.id = b.preparation_intent_id
+        WHERE b.original_page_id = $1 AND b.prepared_by_user_id = $2`,
+      [pageId, owner],
+    );
+    expect(prepared.rows).toEqual([{
+      id: fresh.baselineId, status: 'prepared', intent_id: expect.any(String),
+      intent_status: 'completed', settled_at: expect.any(Date),
+    }]);
+    expect(prepared.rows[0]!.intent_id).not.toBe(cancelled.intentId);
+    expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows)
+      .toEqual([{ reserved_bytes: String(fresh.totalBytes) }]);
+    expect((await query(
+      'SELECT to_jsonb(i) AS evidence FROM page_write_intents i WHERE id = $1', [cancelled.intentId],
+    )).rows).toEqual(intentBefore);
+    expect((await query('SELECT to_jsonb(p) AS evidence FROM pages p WHERE id = $1', [pageId])).rows).toEqual(pageBefore);
+    expect((await query('SELECT id FROM page_baseline_history WHERE original_page_id = $1', [pageId])).rows).toEqual([]);
+    expect(await readFile(join(cancelled.sourceDir, 'cancelled.txt'))).toEqual(cancelled.sourceBytes);
+    expect(await preview()).toEqual(fresh);
+    expect(await cleanupAbandonedBaselinePreparations()).toBe(0);
+    expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows)
+      .toEqual([{ reserved_bytes: String(fresh.totalBytes) }]);
+    expect(await readFile(join(cancelled.sourceDir, 'cancelled.txt'))).toEqual(cancelled.sourceBytes);
+  });
 
   it('keeps advertised lifecycle capabilities aligned with direct preview admission', async () => {
     await query(

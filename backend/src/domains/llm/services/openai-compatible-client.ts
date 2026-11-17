@@ -19,6 +19,7 @@ import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
 import type { ChatMessage } from './prompts.js';
 import { LlmHttpError, ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
+import { ProviderStreamError, StreamIncompleteError } from './provider-stream-error.js';
 import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 import { authorizeArticleDispatch, type ArticleStageContext } from './article-stage-admission.js';
 
@@ -48,22 +49,7 @@ async function authorizeTransport(cfg: ProviderConfig, model: string, context: T
 }
 export type { ChatMessage, ChatContentPart } from './prompts.js';
 export { LlmHttpError } from './llm-http-error.js';
-
-/**
- * The provider closed a streaming response WITHOUT its `data: [DONE]`
- * terminator. Whatever text arrived before the EOF is a PREFIX of unknown
- * length, not a completion: a proxy timeout, a crashed worker or a dropped
- * socket all look exactly like this. It is thrown rather than yielded as
- * `done: true` so no consumer can cache, publish or audit the prefix as a
- * successful result. Not an `LlmHttpError` (no status was involved) and not
- * counted against the breaker (the dispatch itself succeeded).
- */
-export class StreamIncompleteError extends Error {
-  constructor(public readonly receivedCharacters: number) {
-    super('streamChat: provider ended the stream before [DONE]');
-    this.name = 'StreamIncompleteError';
-  }
-}
+export { ProviderStreamError, StreamIncompleteError } from './provider-stream-error.js';
 
 export interface ProviderConfig {
   /** Revision read in the same SQL row as the resolved transport. */
@@ -651,8 +637,21 @@ export async function* streamChat(
   // cut mid-answer, without the error carrying any of the text itself.
   let received = 0;
   let receivedDone = false;
+  // #1728: the first provider `error` frame. Every later frame, `[DONE]`
+  // included, is ignored and the read loop stops at it: some hosts follow
+  // the error with `[DONE]`, which would otherwise complete the stream.
+  let providerError: ProviderStreamError | undefined;
+  // An `error` member that is a non-empty string or a non-null object marks
+  // an error frame (`null`, `''`, `false` and absent members do not). The
+  // detail is the provider's own text, bounded like an HTTP error body.
+  const streamErrorDetail = (error: unknown): string | undefined => {
+    if (typeof error === 'string') return error === '' ? undefined : error.slice(0, ERROR_BODY_MAX_CHARS);
+    if (typeof error !== 'object' || error === null) return undefined;
+    const message = 'message' in error ? error.message : undefined;
+    return (typeof message === 'string' ? message : JSON.stringify(error)).slice(0, ERROR_BODY_MAX_CHARS);
+  };
   const onData = (rawData: string): void => {
-    if (receivedDone) return;
+    if (receivedDone || providerError) return;
     const data = rawData.trim();
     if (data === '[DONE]') {
       receivedDone = true;
@@ -666,9 +665,16 @@ export async function* streamChat(
 
     try {
       const parsed = JSON.parse(data) as {
+        error?: unknown;
         choices?: Array<{ delta?: CompletionText }>;
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
+      // The error frame's own `choices` and `usage` are not processed.
+      const errorDetail = streamErrorDetail(parsed.error);
+      if (errorDetail !== undefined) {
+        providerError = new ProviderStreamError(received, errorDetail);
+        return;
+      }
       if (parsed.usage) {
         const promptTokens = parsed.usage.prompt_tokens;
         const completionTokens = parsed.usage.completion_tokens;
@@ -721,20 +727,24 @@ export async function* streamChat(
         yield chunk;
         if (chunk.done) return;
       }
-      if (done) break;
+      // An error frame ends the stream here; waiting for `[DONE]` or EOF
+      // would keep the provider socket open for nothing.
+      if (providerError || done) break;
     }
   } finally {
     await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
   }
   // EOF before `[DONE]`: the provider (or a proxy between us) closed the
   // socket mid-answer. The text so far is a prefix, not a result — see
-  // StreamIncompleteError. A consumer that is itself being torn down by a
-  // client disconnect never reaches here (generator.return() exits the
-  // loop above through the finally), so this only fires on a real EOF.
+  // StreamIncompleteError. A provider error frame is the same kind of
+  // failure, typed as ProviderStreamError. A consumer that is itself being
+  // torn down by a client disconnect never reaches here (generator.return()
+  // exits the loop above through the finally), so this only fires on a real
+  // EOF or an error frame.
   if (!receivedDone) {
     if (thinkOpen) yield { content: '</think>', done: false };
     if (signal?.aborted) return;
-    throw new StreamIncompleteError(received);
+    throw providerError ?? new StreamIncompleteError(received);
   }
 }
 

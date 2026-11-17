@@ -4,8 +4,9 @@ import { toPageIcon } from '../../core/services/page-icon.js';
 import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { z } from 'zod';
+import { PagePrimaryKeySchema } from '@compendiq/contracts';
 
-const IdParamSchema = z.object({ id: z.string().min(1) });
+const IdParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 export async function pinnedPagesRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -70,15 +71,10 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
 
   // POST /api/pages/:id/pin - pin an article
   // Frontend sends integer PK as the :id parameter
-  fastify.post('/pages/:id/pin', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+  fastify.post<{ Params: { id: string } }>('/pages/:id/pin', async (request) => {
+    const { id: pageId } = IdParamSchema.parse(request.params);
+    const rawId = request.params.id;
     const userId = request.userId;
-
-    // Parse as integer PK (frontend sends stringified integer PKs)
-    const numericId = parseInt(id, 10);
-    if (isNaN(numericId)) {
-      throw fastify.httpErrors.badRequest('Invalid page ID');
-    }
 
     // Verify the page exists and the user can access it. userCanAccessPage()
     // handles confluence (RBAC spaces + page-level ACEs), standalone
@@ -86,11 +82,9 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
     // system-admin bypass, and returns false for missing/soft-deleted pages —
     // matching GET /pages/:id semantics so a restricted or nonexistent page is
     // a 404 in either case.
-    if (!(await userCanAccessPage(userId, numericId))) {
+    if (!(await userCanAccessPage(userId, pageId))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
-
-    const pageId = numericId;
 
     // If already pinned, return 200 immediately (idempotent)
     const alreadyPinned = await query<{ page_id: number }>(
@@ -98,7 +92,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       [userId, pageId],
     );
     if (alreadyPinned.rows.length > 0) {
-      return { message: 'Page pinned', pageId: id };
+      return { message: 'Page pinned', pageId: rawId };
     }
 
     // Single-statement insert. The already-pinned check above is a fast path,
@@ -113,29 +107,24 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       [userId, pageId],
     );
 
-    return { message: 'Page pinned', pageId: id };
+    return { message: 'Page pinned', pageId: rawId };
   });
 
   // DELETE /api/pages/:id/pin - unpin an article
-  fastify.delete('/pages/:id/pin', async (request) => {
-    const { id } = IdParamSchema.parse(request.params);
+  fastify.delete<{ Params: { id: string } }>('/pages/:id/pin', async (request) => {
+    const { id: pageId } = IdParamSchema.parse(request.params);
+    const rawId = request.params.id;
     const userId = request.userId;
-
-    // Parse as integer PK
-    const numericId = parseInt(id, 10);
-    if (isNaN(numericId)) {
-      throw fastify.httpErrors.badRequest('Invalid page ID');
-    }
 
     const result = await query(
       'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2',
-      [userId, numericId],
+      [userId, pageId],
     );
 
     if ((result.rowCount ?? 0) === 0) {
       throw fastify.httpErrors.notFound('Pin not found');
     }
 
-    return { message: 'Page unpinned', pageId: id };
+    return { message: 'Page unpinned', pageId: rawId };
   });
 }
