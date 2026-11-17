@@ -67,6 +67,12 @@ interface VersionHistoryProps {
    * action button matching the other right-pane actions.
    */
   renderTrigger?: (open: boolean) => ReactNode;
+  /**
+   * Whether Restore is offered. A frozen article refuses a version restore
+   * (`423 page_is_frozen`), so it gets history, previews and diffs only.
+   * Defaults to `true`: the server still decides every restore.
+   */
+  restoreAllowed?: boolean;
 }
 
 /**
@@ -83,7 +89,13 @@ function formatVersionTime(editedAt: string | null, syncedAt: string | null): st
   return '';
 }
 
-export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model, renderTrigger }: VersionHistoryProps) {
+export function VersionHistory({
+  pageId,
+  currentBodyText: _currentBodyText,
+  model,
+  renderTrigger,
+  restoreAllowed = true,
+}: VersionHistoryProps) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
@@ -422,7 +434,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                           </button>
                         </>
                       )}
-                      {!version.isCurrent && (
+                      {!version.isCurrent && restoreAllowed && (
                         <button
                           onClick={() => handleRestore(version.versionNumber)}
                           disabled={restoreMutation.isPending}

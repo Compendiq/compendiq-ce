@@ -1172,8 +1172,14 @@ export function PageViewPage() {
 
   const handleDeletePage = useCallback(() => {
     if (!id) return;
+    // The inspector offers no trash row on a frozen article; the shortcut
+    // must not reach the confirm the server would refuse (`page_is_frozen`).
+    if (page?.isFrozen === true) {
+      toast.info('This article is frozen. It cannot be moved to trash until it is thawed.');
+      return;
+    }
     setConfirmTrashOpen(true);
-  }, [id]);
+  }, [id, page?.isFrozen]);
 
   const handleConfirmMoveToTrash = useCallback(async () => {
     if (!id) return;
@@ -1645,7 +1651,7 @@ export function PageViewPage() {
               <PageTitleIcon
                 icon={page.icon}
                 pageId={page.id}
-                editable
+                editable={page.isFrozen !== true}
                 onSelect={handleSelectIcon}
                 onUpload={handleUploadIcon}
                 onRemove={handleRemoveIcon}
@@ -1663,13 +1669,15 @@ export function PageViewPage() {
             <div className="flex flex-col items-center gap-4 py-12 text-center">
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
-              <Button
-                onClick={handleStartEditing}
-                variant="primary"
-                data-testid="add-content-btn"
-              >
-                Add content
-              </Button>
+              {page.isFrozen !== true && (
+                <Button
+                  onClick={handleStartEditing}
+                  variant="primary"
+                  data-testid="add-content-btn"
+                >
+                  Add content
+                </Button>
+              )}
             </div>
             <ArticleConnections key={`connections-${page.id}`} pageId={page.id} />
           </div>
@@ -1685,7 +1693,7 @@ export function PageViewPage() {
               <PageTitleIcon
                 icon={page.icon}
                 pageId={page.id}
-                editable
+                editable={page.isFrozen !== true}
                 onSelect={handleSelectIcon}
                 onUpload={handleUploadIcon}
                 onRemove={handleRemoveIcon}

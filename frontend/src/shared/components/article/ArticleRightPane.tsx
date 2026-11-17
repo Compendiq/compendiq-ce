@@ -453,6 +453,11 @@ export function ArticleRightPane({
   const [confirmResyncOpen, setConfirmResyncOpen] = useState(false);
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+  // A frozen article refuses every protected write (`423 page_is_frozen`):
+  // labels, relocation, trash, version restore, a Confluence pull. Those
+  // entry points are not offered at all; reading, history, Pin, graph, export
+  // and the derived-data maintenance actions stay (#277).
+  const frozen = page?.isFrozen === true;
   const verifiedAt = page?.verifiedAt ?? null;
   const verifiedDateStr = verifiedAt ? formatDateStamp(verifiedAt) : null;
 
@@ -1474,6 +1479,7 @@ export function ArticleRightPane({
                     {id && (
                       <VersionHistory
                         pageId={id}
+                        restoreAllowed={!frozen}
                         renderTrigger={() => (
                           <button
                             type="button"
@@ -1519,7 +1525,7 @@ export function ArticleRightPane({
                     <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-xs font-semibold text-muted-foreground">
                       Maintenance &amp; AI
                     </div>
-                    {aiAutoTagAvailable && id && (
+                    {aiAutoTagAvailable && id && !frozen && (
                       <AutoTagger
                         pageId={id}
                         currentLabels={page?.labels ?? []}
@@ -1527,7 +1533,7 @@ export function ArticleRightPane({
                         className={railMenuItem}
                       />
                     )}
-                    {page.confluenceId && (
+                    {page.confluenceId && !frozen && (
                       <button
                         onClick={openResyncConfirm}
                         disabled={resyncMutation.isPending}
@@ -1996,7 +2002,7 @@ export function ArticleRightPane({
               )}
             </dl>
 
-            {!editing && !isStandalone && page.confluenceId && (
+            {!editing && !isStandalone && page.confluenceId && !frozen && (
               <button
                 type="button"
                 onClick={openResyncConfirm}
@@ -2013,7 +2019,7 @@ export function ArticleRightPane({
                 <span>{resyncMutation.isPending ? 'Pulling from Confluence…' : 'Pull latest from Confluence…'}</span>
               </button>
             )}
-            {!editing && isStandalone && canRelocate && (
+            {!editing && isStandalone && canRelocate && !frozen && (
               <div className="mt-2">
                 <button
                   type="button"
@@ -2213,7 +2219,7 @@ export function ArticleRightPane({
       )}
 
 
-      {page && id && aiAutoTagAvailable && editing && (
+      {page && id && aiAutoTagAvailable && editing && !frozen && (
         <div className="px-3 pb-4" data-testid="article-actions-edit">
           <h3 className="mb-2 text-xs font-semibold text-foreground">
             Page actions
@@ -2236,6 +2242,7 @@ export function ArticleRightPane({
             {id && (
               <VersionHistory
                 pageId={id}
+                restoreAllowed={!frozen}
                 renderTrigger={(historyOpen) => (
                   <button
                     type="button"
@@ -2288,7 +2295,7 @@ export function ArticleRightPane({
               <span className="truncate">Export PDF</span>
             </button>
 
-            {id && aiAutoTagAvailable && (
+            {id && aiAutoTagAvailable && !frozen && (
               <AutoTagger
                 pageId={id}
                 currentLabels={page.labels}
@@ -2299,7 +2306,7 @@ export function ArticleRightPane({
             {/* A local page's delete is a 30-day restorable trash, so it is an
                 ordinary row. A Confluence page's delete is irreversible and goes
                 upstream, so it sits behind the Danger zone below instead. */}
-            {isStandalone && (
+            {isStandalone && !frozen && (
               <button
                 type="button"
                 onClick={handleDelete}
@@ -2312,7 +2319,7 @@ export function ArticleRightPane({
             )}
           </div>
 
-          {!isStandalone && (
+          {!isStandalone && !frozen && (
             <details className="group mt-2" data-testid="danger-zone">
               <summary className={cn(destructiveRowClass, 'cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden')}>
                 <ChevronRight

@@ -89,7 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `approver_not_distinct`, `governance_evidence_incomplete`,
   `governance_policy_changed`, `stale_lifecycle`) have their own wording.
   After a successful freeze or thaw confirmed from the keyboard, focus now
-  lands on the Document lifecycle heading instead of the page body.
+  lands on the Document lifecycle heading instead of the page body, and in
+  forced-colors mode that heading no longer shows a permanent outline box.
+  A frozen article no longer offers writes the server refuses: page icon
+  editing, Auto-tag, `Move to Confluence…`, `Move to trash` (and
+  `Alt+Shift+D`), the Danger zone, `Pull latest from Confluence`, the
+  empty-article `Add content` and Version history's Restore. Reading,
+  history, Pin, Export PDF and Verify stay.
 
 - **Popovers and dropdowns had no blur in Chrome and Firefox (#2042):**
   `nm-popover-glass`, the context-rail toolbar and the Draw.io node buttons

@@ -111,10 +111,13 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
 
   return (
     <section className="mt-5" data-testid="document-lifecycle">
+      {/* A programmatic focus target, not a control: no outline at rest. The
+          shared `nm-focus-ring` keeps a transparent outline at rest, which
+          forced-colors mode paints as a permanent box around this heading. */}
       <h3
         ref={headingRef}
         tabIndex={-1}
-        className="nm-focus-ring text-xs font-semibold text-foreground"
+        className="text-xs font-semibold text-foreground outline-none focus-visible:[outline:2px_solid_var(--color-ring)] focus-visible:[outline-offset:2px]"
       >
         Document lifecycle
       </h3>

@@ -269,9 +269,10 @@ enters the viewport, not on ordinary re-renders or background refetches.
   article and labelled as unverified. A reference id renders as text, never as
   a link, and a failed read is a failure rather than an article that was never
   frozen.
-- **Every protected-write entry point on the article route shares one refusal.**
-  Edit, the empty-article `Add content`, the shortcuts that reach them, the
-  draw.io overlay and the attachment write behind it all go through
+- **Every protected-write entry point on the article route is withheld or
+  refused on a frozen article.** Edit, the empty-article `Add content` (no
+  longer rendered once frozen), the shortcuts that reach them, the draw.io
+  overlay and the attachment write behind it all go through
   `contentWriteRefusal`, which distinguishes *frozen* from *not yours to
   change* because the next step differs. `DrawioEditor` has no read-only mode,
   so a frozen article supplies **no** `onEditDiagram` callback and the viewer
@@ -280,7 +281,19 @@ enters the viewport, not on ordinary re-renders or background refetches.
   AI `Apply` is a protected write too: the dock and the improve diff withdraw
   the control and keep the generated text, and a **423** from
   `/llm/improvements/apply` is reported as a refusal that changed nothing, not
-  as a re-runnable failure.
+  as a re-runnable failure. The other server-admitted writes
+  (`page-write-admission` intents) are not offered at all while frozen: the
+  page icon is shown but not editable, the inspector withholds Auto-tag
+  (labels), `Move to Confluence…`/the Danger zone (relocation, Confluence
+  delete), `Move to trash`, `Pull latest from Confluence` and Version
+  history's Restore, and `Alt+Shift+D` answers with the frozen reason
+  instead of the trash confirm. Reading, version history and diffs, Pin,
+  Show in graph, Export PDF, Verify and the derived-data maintenance actions
+  stay.
+  The lifecycle heading is a programmatic focus target, not a control, so it
+  draws its ring only on `:focus-visible`: the shared `nm-focus-ring` keeps a
+  transparent outline at rest, which `forced-colors: active` paints as a
+  permanent box.
 - **Settings → Governance → Article baselines** (`ArticleBaselinesTab`) is the
   admin surface: baseline creation activation with the deployment's readiness
   blockers in prose, and per space the CE governance marker plus — under an
