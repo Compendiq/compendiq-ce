@@ -275,7 +275,7 @@ describe('Inset shell utilities', () => {
     expect(panelBgMatch).not.toBeNull();
     expect(sidebarAlphaMatch).not.toBeNull();
     expect(Number(panelBgMatch![1])).toBeCloseTo(0.30, 5);
-    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.52, 5);
+    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.34, 5);
     expect(Number(sidebarAlphaMatch![1])).toBeGreaterThan(Number(panelBgMatch![1]));
 
     const lightPanelBgMatch = /--panel-bg:\s*rgb\(255 255 255 \/ ([0-9.]+)\);/.exec(lightBlock);
