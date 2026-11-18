@@ -19,12 +19,12 @@ test.describe('PDF export', () => {
     pageId = (await created.json()).id;
   });
 
-  test('export page to PDF via the inspector', async ({ page }, testInfo) => {
+  test('export page to PDF via the read toolbar menu', async ({ page }, testInfo) => {
     await page.goto(`/pages/${pageId}`);
     await expect(page.getByTestId('edit-page-btn')).toBeVisible();
-    await page.getByRole('tab', { name: 'Details', exact: true }).click();
+    await page.getByTestId('article-read-more-btn').click();
     const downloadPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Export PDF', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Export PDF', exact: true }).click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toMatch(/\.pdf$/i);
     const output = testInfo.outputPath('export.pdf');

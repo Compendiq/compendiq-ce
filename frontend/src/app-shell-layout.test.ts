@@ -500,8 +500,8 @@ describe('Context rail vs left navigation', () => {
     const aiSidebar = read('features/ai/conversations/AiConversationsSidebar.tsx');
     expect(sidebar).toContain('border-t border-[var(--rail-divider)]');
     expect(aiSidebar).toContain('border-t border-[var(--rail-divider)]');
-    expect(sidebar).toContain('group-hover:scale-125');
-    expect(aiSidebar).toContain('group-hover:scale-125');
-    expect(rightPane).toContain('group-hover:scale-125');
+    expect(sidebar).toContain('group-hover:opacity-100');
+    expect(aiSidebar).toContain('group-hover:opacity-100');
+    expect(rightPane).toContain('group-hover:opacity-100');
   });
 });
