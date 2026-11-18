@@ -1600,8 +1600,12 @@ Ordinary page history redacts reported signatory emails, while the system-admin
 evidence response may contain the stored caller-reported email. A UUID or digest
 never grants access.
 
-Interrupted writers never expire by heartbeat or TTL. Recovery is active
-system-administrator work through `/api/admin/page-write-recovery`: quiescence
+Interrupted writers never expire by heartbeat or TTL. One exception is
+deployment-scoped: the version upgrade that applies migration 152 first retires
+every pre-upgrade writer epoch itself (migration 151b) — closing its write gate,
+fencing only epochs that dispatched no effect, and leaving started unknown work
+pending for a termination-verified fence. Recovery of those remaining intents
+is active system-administrator work through `/api/admin/page-write-recovery`: quiescence
 must reach the process that owns the runtime ID, fencing accepts only an exact
 owner acknowledgment, server-proven no-start state, or independently verified
 local process termination, and outcome reconciliation uses trusted

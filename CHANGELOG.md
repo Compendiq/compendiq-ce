@@ -68,6 +68,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A killed deployment no longer blocks startup at migration 152 (#2063):**
+  the backend previously could not start when upgrading to a build containing
+  `152_relocation_notion_identity.sql` if the previous process had been killed
+  without a graceful quiesce. The migration's pre-cutover guard refuses any
+  unretired writer epoch or unreleased room admission, and the replacement
+  container can neither obtain the owner's acknowledgment nor prove local
+  termination (a recreated container has a different host, boot and PID
+  namespace), so it failed with
+  `relocation_notion_upgrade_requires_retired_writers` on every start and needed
+  manual SQL. New migration `151b_page_writer_upgrade_retirement.sql` runs
+  immediately before 152 and retires every pre-upgrade epoch itself: epochs with
+  no dispatched effect are fenced with the existing server-verified
+  `durable_no_started_effects` proof (pre-effect intents cancelled, room tokens
+  released as `runtime_fenced`), and epochs that dispatched work are quiesced
+  and marked `upgrade_retired_at` without inventing an owner acknowledgment
+  (started intents stay pending, room tokens released as `upgrade_retired`).
+  Both close the database-enforced write gate, so an old live replica is refused
+  at its next write. Retirement runs only while 152 is still unrecorded, so
+  installs that already applied it get the schema without cutting a live
+  replica. `POST /api/admin/page-write-recovery/runtime/quiesce` now refuses
+  (`409 runtime_upgrade_retired`) before closing its irreversible local gate,
+  the recovery listing exposes `upgradeRetiredAt`, and each retired epoch writes
+  one `PAGE_WRITER_UPGRADE_RETIREMENT` audit row. Scale old replicas to 0 first
+  if their unflushed collaborative edits matter; started unknown remote work
+  still needs a termination-verified fence before reconciliation.
+
 - **Governed sign-off matches the Enterprise workflow (#277):** a final
   approval that froze the article answered `status: 'finalized'`, which the
   shared contract did not list, so the panel reported "Refused:

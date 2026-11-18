@@ -168,6 +168,7 @@ erDiagram
         timestamptz started_at "DEFAULT NOW"
         timestamptz quiesced_at
         uuid quiescence_ack
+        timestamptz upgrade_retired_at "migration 151b; = quiesced_at, no owner ack"
         timestamptz fenced_at
         uuid fenced_by FK "users; ON DELETE SET NULL"
         text fence_reason
@@ -200,7 +201,7 @@ erDiagram
         text purpose "legacy | collab_room | collab_request (migration 127)"
         timestamptz admitted_at "DEFAULT NOW"
         timestamptz released_at
-        text release_kind "clean_disconnect | runtime_fenced"
+        text release_kind "clean_disconnect | runtime_fenced | upgrade_retired"
     }
 
     page_write_intents {
@@ -689,6 +690,21 @@ register version 1, and the database rejects an incompatible registration once
 creation is enabled or any published baseline exists. The activation
 transaction locks the feature row before checking active, non-quiesced
 runtimes, closing the registration/readiness race.
+
+**Upgrade retirement (migration 151b; #2063).** The row has exactly three
+retirement shapes, enforced by `page_writer_runtimes_retirement_state_check`:
+untouched (`quiesced_at`, `quiescence_ack`, `upgrade_retired_at` all NULL);
+owner-acknowledged quiescence (`quiesced_at` + `quiescence_ack`, no marker);
+or closed by the version upgrade (`quiesced_at` + `upgrade_retired_at` equal,
+`quiescence_ack` NULL). Migration 151b runs between 151 and 152 so the one-time
+152 cutover never deadlocks on epochs left by a killed deployment: epochs with
+no dispatched effect get the `durable_no_started_effects` fence, the rest are
+only quiesced and marked, keeping their started intents pending. Because no
+acknowledgment exists for the third shape, the fence CHECK still refuses an
+`owner_quiescence_ack` proof for it. `page_runtime_admissions.release_kind`
+gains `upgrade_retired` beside `clean_disconnect` and `runtime_fenced`. The
+retirement DML runs only while 152 is unrecorded, so installs that already
+applied 152 receive the schema without cutting a live replica.
 
 **Article AI policy activation (migration 151; #1881).** The enforcement
 switch is the `ai_policy_activation_state` singleton (`singleton BOOLEAN PK

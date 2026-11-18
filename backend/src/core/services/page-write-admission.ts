@@ -422,6 +422,7 @@ export type PageWriteRecoveryState = {
     deploymentIdentity: Record<string, unknown>;
     startedAt: string;
     quiescedAt: string | null;
+    upgradeRetiredAt: string | null;
     acknowledgmentId: string | null;
     fencedAt: string | null;
     fenceReason: string | null;
@@ -1846,6 +1847,34 @@ export async function quiescePageWriterRuntime(
   }
   const runtimeId = await getPageWriterRuntimeId();
 
+  // Refuse an epoch this process must not drain before closing the local gate:
+  // closing it is irreversible, and `waitForLocalRuntimeDrain` can never finish
+  // once an upgrade-retired epoch's admissions can no longer be released. The
+  // transaction below re-reads this state under the runtime row lock.
+  const durableState = await getPool().query<{
+    fenced_at: Date | null;
+    quiesced_at: Date | null;
+    quiescence_ack: string | null;
+  }>(
+    `SELECT fenced_at, quiesced_at, quiescence_ack
+       FROM page_writer_runtimes
+      WHERE runtime_id = $1`,
+    [runtimeId],
+  );
+  if (!durableState.rows[0]) {
+    throw new PageWriteError(409, 'runtime_unknown', 'The writer runtime is not registered');
+  }
+  if (durableState.rows[0].fenced_at) {
+    throw new PageWriteError(409, 'runtime_fenced', 'This writer runtime has been permanently fenced');
+  }
+  if (durableState.rows[0].quiesced_at && !durableState.rows[0].quiescence_ack) {
+    throw new PageWriteError(
+      409,
+      'runtime_upgrade_retired',
+      'This writer epoch was retired by a schema upgrade and has no owner acknowledgment',
+    );
+  }
+
   // Accept and durably record the retirement request while the actor's admin
   // row is SHARE-locked. Only a committed request may close the process gate.
   await inTransaction(async (client) => {
@@ -1870,9 +1899,10 @@ export async function quiescePageWriterRuntime(
   const acknowledgmentId = await inTransaction(async (client) => {
     const current = await client.query<{
       fenced_at: Date | null;
+      quiesced_at: Date | null;
       quiescence_ack: string | null;
     }>(
-      `SELECT fenced_at, quiescence_ack
+      `SELECT fenced_at, quiesced_at, quiescence_ack
          FROM page_writer_runtimes
         WHERE runtime_id = $1
         FOR UPDATE`,
@@ -1883,6 +1913,17 @@ export async function quiescePageWriterRuntime(
     }
     if (current.rows[0].fenced_at) {
       throw new PageWriteError(409, 'runtime_fenced', 'This writer runtime has been permanently fenced');
+    }
+    // A schema upgrade can close an epoch's gate without an owner
+    // acknowledgment (`upgrade_retired_at`, migration 151b). Never answer with
+    // an acknowledgment that was not stored: the owner_ack fence that follows
+    // would fail, after this call had claimed success.
+    if (current.rows[0].quiesced_at && !current.rows[0].quiescence_ack) {
+      throw new PageWriteError(
+        409,
+        'runtime_upgrade_retired',
+        'This writer epoch was retired by a schema upgrade and has no owner acknowledgment',
+      );
     }
     const activeAdmissions = await client.query<{ exists: boolean }>(
       `SELECT EXISTS (
@@ -1935,12 +1976,19 @@ export async function quiescePageWriterRuntime(
     );
     if (current.rows[0].quiescence_ack) return current.rows[0].quiescence_ack;
     const ack = randomUUID();
-    await client.query(
+    const acknowledged = await client.query(
       `UPDATE page_writer_runtimes
           SET quiesced_at = NOW(), quiescence_ack = $2
         WHERE runtime_id = $1 AND quiesced_at IS NULL`,
       [runtimeId, ack],
     );
+    if (acknowledged.rowCount !== 1) {
+      throw new PageWriteError(
+        409,
+        'runtime_quiescence_conflict',
+        'The runtime retired before this acknowledgment was stored',
+      );
+    }
     return ack;
   });
   return {
@@ -2651,11 +2699,12 @@ export async function getPageWriteRecoveryState(pageId?: number): Promise<PageWr
       started_at: Date;
       quiesced_at: Date | null;
       quiescence_ack: string | null;
+      upgrade_retired_at: Date | null;
       fenced_at: Date | null;
       fence_reason: string | null;
     }>(
       `SELECT runtime_id, deployment_identity, started_at, quiesced_at,
-              quiescence_ack::text, fenced_at, fence_reason
+              quiescence_ack::text, upgrade_retired_at, fenced_at, fence_reason
          FROM page_writer_runtimes
         WHERE runtime_id IN (
           SELECT runtime_id
@@ -2688,6 +2737,7 @@ export async function getPageWriteRecoveryState(pageId?: number): Promise<PageWr
       deploymentIdentity: publicDeploymentIdentity(row.deployment_identity),
       startedAt: asIso(row.started_at),
       quiescedAt: row.quiesced_at ? asIso(row.quiesced_at) : null,
+      upgradeRetiredAt: row.upgrade_retired_at ? asIso(row.upgrade_retired_at) : null,
       acknowledgmentId: row.quiescence_ack,
       fencedAt: row.fenced_at ? asIso(row.fenced_at) : null,
       fenceReason: row.fence_reason,
