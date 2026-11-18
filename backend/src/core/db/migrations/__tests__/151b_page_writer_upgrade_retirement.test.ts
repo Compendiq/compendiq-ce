@@ -534,6 +534,65 @@ describe.skipIf(!dbAvailable)('151b upgrade writer retirement (#2063)', () => {
     expect(await runtimeRow(fixture.runtimeId)).toMatchObject({ fenced_at: expect.any(Date) });
   });
 
+  it('releases a leftover room token of an epoch that was fenced earlier', async () => {
+    await runMigrations();
+    await truncateAllTables();
+    await unapply152();
+    const owner = await insertAdmin();
+    const pageId = await insertPage(owner);
+    const runtimeId = `already-fenced-${randomUUID()}`;
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, ai_policy_enforcement_version,
+          fenced_at, fence_reason, fence_proof)
+       VALUES ($1, '{"host":"old-container","pid":1}'::jsonb, 1, NOW(),
+               'Known terminated original writer', '{"kind":"verified_local_termination"}')`,
+      [runtimeId],
+    );
+    const admissionId = await insertAdmission(runtimeId, pageId);
+    // 151b is the only writer of this release; run it again while 152 is pending.
+    await query('DELETE FROM _migrations WHERE name = $1', [MIGRATION_151B]);
+    await runMigrations();
+    expect(await admissionRow(admissionId)).toMatchObject({
+      released_at: expect.any(Date), release_kind: 'runtime_fenced',
+    });
+    expect((await query('SELECT 1 FROM page_runtime_admissions WHERE released_at IS NULL')).rowCount).toBe(0);
+  });
+
+  it('still refuses a genuinely unretired epoch or unreleased admission at the 152 guard', async () => {
+    await runMigrations();
+    await truncateAllTables();
+    // 151b stays recorded, so its retirement cannot mask the guard: this is the
+    // window in which a still-running old replica registers between the files.
+    await unapply152();
+    await blockedInstallFixture({ noStart: true });
+    await expect(runMigrations()).rejects.toThrow('relocation_notion_upgrade_requires_retired_writers');
+    expect((await query('SELECT 1 FROM _migrations WHERE name = $1', [MIGRATION_152])).rowCount).toBe(0);
+
+    // The admission clause is independent of the epoch clause.
+    await query('DELETE FROM page_runtime_admissions');
+    await query('DELETE FROM page_write_intents');
+    await query('DELETE FROM page_writer_runtimes');
+    const owner = await insertAdmin();
+    const pageId = await insertPage(owner);
+    const fencedRuntime = `guard-fenced-${randomUUID()}`;
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, ai_policy_enforcement_version,
+          fenced_at, fence_reason, fence_proof)
+       VALUES ($1, '{"host":"old-container","pid":1}'::jsonb, 1, NOW(),
+               'Known terminated original writer', '{"kind":"verified_local_termination"}')`,
+      [fencedRuntime],
+    );
+    await insertAdmission(fencedRuntime, pageId);
+    await expect(runMigrations()).rejects.toThrow('relocation_notion_upgrade_requires_retired_writers');
+
+    await query('DELETE FROM page_runtime_admissions');
+    await query('DELETE FROM page_writer_runtimes');
+    await runMigrations();
+    expect((await query('SELECT 1 FROM _migrations WHERE name = $1', [MIGRATION_152])).rowCount).toBe(1);
+  });
+
   // LAST: this closes the module's own write gate, so no later case may write.
   it('refuses to claim an acknowledgment for an upgrade-retired own epoch', async () => {
     await truncateAllTables();

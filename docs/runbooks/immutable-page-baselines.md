@@ -917,9 +917,10 @@ Consequences and the remaining manual work:
    `lock_timeout = 0`). A long writer can therefore delay migration startup; it
    cannot deadlock with a gated writer, and an aborted retirement rolls back
    whole and is retried on the next boot. An independently started reader that
-   names both tables (collab room owner scan, recovery listing) can be the
-   deadlock victim instead; that request fails and is retried, the migration is
-   unaffected.
+   names both tables (collab room owner scan, recovery listing) can form a
+   two-table cycle with it; PostgreSQL does not guarantee which side is the
+   victim, so either that request fails and is retried, or this boot's migration
+   rolls back whole and the next boot retries it.
 6. Each retired epoch writes one `PAGE_WRITER_UPGRADE_RETIREMENT` audit row
    (`user_id` NULL, `metadata.mode`, `metadata.startedIntents`) and the recovery
    listing shows `upgradeRetiredAt` beside a NULL `acknowledgmentId`.

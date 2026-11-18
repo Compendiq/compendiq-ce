@@ -165,7 +165,11 @@ BEGIN
   CREATE TEMP TABLE upgrade_retirement_targets ON COMMIT DROP AS
   SELECT r.runtime_id,
          count(i.id) FILTER (
-           WHERE i.effect_started_at IS NOT NULL OR i.recovery_started_at IS NOT NULL
+           WHERE i.effect_started_at IS NOT NULL
+              OR i.recovery_started_at IS NOT NULL
+              -- Today's only writer sets this together with effect_started_at;
+              -- an independent remote marker must still count as dispatched.
+              OR i.remote_effect_started_at IS NOT NULL
          )::int AS started_intents
     FROM page_writer_runtimes r
     LEFT JOIN page_write_intents i
@@ -220,7 +224,8 @@ BEGIN
    WHERE i.runtime_id = t.runtime_id
      AND i.status = 'pending'
      AND i.effect_started_at IS NULL
-     AND i.recovery_started_at IS NULL;
+     AND i.recovery_started_at IS NULL
+     AND i.remote_effect_started_at IS NULL;
 
   -- Close the gate on every target, including the ones fenced below, so the
   -- AI-policy legacy-client window (`max(quiesced_at)`) stays conservative.
