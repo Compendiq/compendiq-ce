@@ -40,11 +40,59 @@ async function auditPage(
 ): Promise<ContrastViolation[]> {
   return await page.evaluate(
     ({ route, theme }) => {
-      function parse(c: string) {
-        const m = c.match(/rgba?\(([^)]+)\)/);
-        if (!m) return null;
-        const p = m[1].split(',').map((s) => parseFloat(s));
-        return { r: p[0], g: p[1], b: p[2], a: p[3] ?? 1 };
+      function oklabToSrgb(L: number, a: number, b: number, alpha: number) {
+        const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+        const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+        const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+        const l = l_ * l_ * l_;
+        const m = m_ * m_ * m_;
+        const s = s_ * s_ * s_;
+        const linR = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+        const linG = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+        const linB = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+        const encode = (x: number) => {
+          const clamped = Math.max(0, Math.min(1, x));
+          const srgb = clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * Math.pow(clamped, 1 / 2.4) - 0.055;
+          return Math.round(srgb * 255);
+        };
+        return { r: encode(linR), g: encode(linG), b: encode(linB), a: alpha };
+      }
+      function parse(c: string): { r: number; g: number; b: number; a: number } | null {
+        const rgb = c.match(/rgba?\(([^)]+)\)/);
+        if (rgb) {
+          const parts = rgb[1].replace(/\s*\/\s*/g, ',').split(/[\s,]+/).filter(Boolean).map(parseFloat);
+          if (parts.length >= 3) {
+            return { r: parts[0]!, g: parts[1]!, b: parts[2]!, a: parts[3] ?? 1 };
+          }
+        }
+        const srgb = c.match(/color\(srgb\s+([^)]+)\)/);
+        if (srgb) {
+          const parts = srgb[1].replace(/\s*\/\s*/g, ' ').trim().split(/\s+/).map(parseFloat);
+          if (parts.length >= 3) {
+            return {
+              r: Math.round(parts[0]! * 255),
+              g: Math.round(parts[1]! * 255),
+              b: Math.round(parts[2]! * 255),
+              a: parts[3] ?? 1,
+            };
+          }
+        }
+        const oklab = c.match(/oklab\(([^)]+)\)/);
+        if (oklab) {
+          const parts = oklab[1].replace(/\s*\/\s*/g, ' ').trim().split(/\s+/).map(parseFloat);
+          if (parts.length >= 3) {
+            return oklabToSrgb(parts[0]!, parts[1]!, parts[2]!, parts[3] ?? 1);
+          }
+        }
+        const oklch = c.match(/oklch\(([^)]+)\)/);
+        if (oklch) {
+          const parts = oklch[1].replace(/\s*\/\s*/g, ' ').trim().split(/\s+/).map(parseFloat);
+          if (parts.length >= 3) {
+            const rad = (parts[2]! * Math.PI) / 180;
+            return oklabToSrgb(parts[0]!, parts[1]! * Math.cos(rad), parts[1]! * Math.sin(rad), parts[3] ?? 1);
+          }
+        }
+        return null;
       }
       function L(c: { r: number; g: number; b: number }) {
         const f = (v: number) => {
@@ -61,17 +109,41 @@ async function auditPage(
           l2 = L(bg);
         return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
       }
+      function compositeOver(
+        fg: { r: number; g: number; b: number; a: number },
+        bg: { r: number; g: number; b: number },
+      ) {
+        const a = Math.max(0, Math.min(1, fg.a));
+        const inv = 1 - a;
+        return {
+          r: Math.round(fg.r * a + bg.r * inv),
+          g: Math.round(fg.g * a + bg.g * inv),
+          b: Math.round(fg.b * a + bg.b * inv),
+          a: 1,
+        };
+      }
       function bgOf(el: HTMLElement): { r: number; g: number; b: number; a: number } {
+        const layers: { r: number; g: number; b: number; a: number }[] = [];
+        let base: { r: number; g: number; b: number; a: number } | null = null;
         let n: HTMLElement | null = el;
         while (n) {
-          const c = getComputedStyle(n).backgroundColor;
-          const p = parse(c);
-          if (p && p.a > 0) return p;
+          const p = parse(getComputedStyle(n).backgroundColor);
+          if (p && p.a > 0) {
+            if (p.a >= 0.999) {
+              base = p;
+              break;
+            }
+            layers.push(p);
+          }
           n = n.parentElement;
         }
-        return theme === 'dark'
+        let current = base ?? (theme === 'dark'
           ? { r: 18, g: 18, b: 18, a: 1 }
-          : { r: 247, g: 247, b: 247, a: 1 };
+          : { r: 247, g: 247, b: 247, a: 1 });
+        for (let i = layers.length - 1; i >= 0; i--) {
+          current = compositeOver(layers[i]!, current);
+        }
+        return current;
       }
       function describe(el: HTMLElement): string {
         const id = el.id ? `#${el.id}` : '';
