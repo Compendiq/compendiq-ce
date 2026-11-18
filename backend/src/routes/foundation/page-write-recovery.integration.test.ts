@@ -283,4 +283,43 @@ describe.skipIf(!available)('page writer recovery administration', () => {
       user_agent: 'page-write-recovery-test-agent',
     }]);
   });
+  it('reports an upgrade-retired epoch and its started intent without an owner acknowledgment', async () => {
+    // #2063: migration 151b closes the gate of an epoch that dispatched work
+    // and stamps `upgrade_retired_at`; the recovery view must show that state
+    // (not a fabricated acknowledgment) so an operator knows a termination
+    // fence is still required before reconciling.
+    const page = (await query(`INSERT INTO pages (source, space_key, title, body_text)
+      VALUES ('standalone', 'LOCAL', 'Retired writer page', 'Retired writer body')
+      RETURNING id`)).rows[0]!;
+    const runtimeId = `upgrade-retired-${randomUUID()}`;
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, ai_policy_enforcement_version,
+          quiesced_at, upgrade_retired_at)
+       VALUES ($1, $2::jsonb, 1, NOW(), NOW())`,
+      [runtimeId, JSON.stringify({ host: 'killed-container', pid: 1, startedAt: new Date().toISOString() })],
+    );
+    const intentId = randomUUID();
+    await query(
+      `INSERT INTO page_write_intents
+         (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect, effect_started_at)
+       VALUES ($1, $2, 'attachment.local.put', $3, ARRAY[$4]::int[], '{}', 'local_verified',
+               '{"effectClass":"local"}'::jsonb, NOW())`,
+      [intentId, runtimeId, actorId, page.id],
+    );
+    const response = await app.inject({ method: 'GET', url: `/api/admin/page-write-recovery?pageId=${page.id}` });
+    expect(response.statusCode, response.body).toBe(200);
+    const state = response.json<{
+      runtimes: Array<{
+        runtimeId: string; quiescedAt: string | null; upgradeRetiredAt: string | null;
+        acknowledgmentId: string | null; fencedAt: string | null;
+      }>;
+    }>();
+    expect(state.runtimes.find((runtime) => runtime.runtimeId === runtimeId)).toMatchObject({
+      quiescedAt: expect.any(String),
+      upgradeRetiredAt: expect.any(String),
+      acknowledgmentId: null,
+      fencedAt: null,
+    });
+  });
 });

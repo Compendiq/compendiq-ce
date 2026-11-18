@@ -21,7 +21,6 @@ import {
   getPageWriterRuntimeId,
   quiescePageWriterRuntime,
   reconcilePageWriteIntent,
-  releasePageRuntime,
   reservePageWriteIntent,
   runPageWriteIntentEffect,
   withAiPolicyWriteTransaction,
@@ -104,6 +103,7 @@ vi.mock('undici', async (importOriginal) => {
 });
 
 const MIGRATION = '152_relocation_notion_identity.sql';
+const UPGRADE_RETIREMENT = '151b_page_writer_upgrade_retirement.sql';
 const TOKEN = '1774-upgrade-controlled-notion';
 const STORAGE = '<p>fixture body</p>';
 const OLD_STAMP = '2026-08-09T10:11:12.123456Z';
@@ -158,7 +158,6 @@ let beforeCapacity: unknown[];
 let beforePages: PageSnapshot[];
 let beforePreparations: Record<string, unknown>[];
 let beforeIntents: unknown[];
-let retiredModule = false;
 const fixtures = new Map<string, RetainedFixture>();
 
 function digest(value: string) {
@@ -252,6 +251,18 @@ async function oldSchema() {
       (created_by_user_id,(lower(replace(notion_page_id,'-',''))))
       WHERE notion_page_id IS NOT NULL AND deleted_at IS NULL`);
     await client.query('DELETE FROM _migrations WHERE name=$1', [MIGRATION]);
+    // #2063: also rebuild the pre-151b state, so the real 151b -> 152 order is
+    // exercised instead of only the guard.
+    await client.query('ALTER TABLE page_writer_runtimes DROP CONSTRAINT IF EXISTS page_writer_runtimes_retirement_state_check');
+    await client.query('ALTER TABLE page_writer_runtimes DROP COLUMN IF EXISTS upgrade_retired_at');
+    await client.query('ALTER TABLE page_writer_runtimes DROP CONSTRAINT IF EXISTS page_writer_runtimes_check');
+    await client.query(`ALTER TABLE page_writer_runtimes ADD CONSTRAINT page_writer_runtimes_check CHECK (
+      (quiesced_at IS NULL AND quiescence_ack IS NULL)
+      OR (quiesced_at IS NOT NULL AND quiescence_ack IS NOT NULL))`);
+    await client.query('ALTER TABLE page_runtime_admissions DROP CONSTRAINT IF EXISTS page_runtime_admissions_release_kind_check');
+    await client.query(`ALTER TABLE page_runtime_admissions ADD CONSTRAINT page_runtime_admissions_release_kind_check
+      CHECK (release_kind IN ('clean_disconnect', 'runtime_fenced'))`);
+    await client.query('DELETE FROM _migrations WHERE name=$1', [UPGRADE_RETIREMENT]);
     await client.query('COMMIT');
   } finally {
     await client.query('ROLLBACK');
@@ -698,7 +709,7 @@ describe('1774 actual old-row upgrade and independent consumer controls', () => 
   // LAST case, deliberately irreversible for this module's execution authority.
   // --isolate ensures later files receive a new module/runtime. No writer or
   // recovery is invoked below retirement, including teardown.
-  it('[FEATURE SAFETY W01] actual failed/unknown work survives real release/quiesce/owner_ack and152', async () => {
+  it('[FEATURE SAFETY W01] actual failed/unknown work survives the self-retiring upgrade', async () => {
     await truncateAllTables();
     await oldSchema();
     ownerA = await insertUser('retirement-owner');
@@ -747,31 +758,29 @@ describe('1774 actual old-row upgrade and independent consumer controls', () => 
     const prepBefore = [await preparation(pIntent.id), await preparation(uIntent.id)];
     const pagesBefore = [await snapshot(p), await snapshot(u)];
     const capacityBefore = await capacity();
-    let admissionReleased = false;
-    const retireOwner = async () => {
-      const acknowledgment = await quiescePageWriterRuntime({
-        actorId: administrator, reason: 'Drain actual failed old work before the one-time snapshot schema migration',
-      });
-      expect(acknowledgment.runtimeId).toBe(runtimeId);
-      const fenced = await fencePageWriterRuntime({
-        mode: 'owner_ack', runtimeId: acknowledgment.runtimeId,
-        acknowledgmentId: acknowledgment.acknowledgmentId, actorId: administrator,
-        reason: 'Exact real owning-process acknowledgment retires execution without clearing started uncertainty',
-      });
-      retiredModule = true;
-      return fenced;
-    };
     try {
-      // On origin the real runner resolves; this is the documented FEATURE
-      // safety failure, NOT absent-file/schema/import or consumer-red credit.
-      await expect(runMigrations()).rejects.toThrow('relocation_notion_upgrade_requires_retired_writers');
-      expect((await query('SELECT 1 FROM _migrations WHERE name=$1', [MIGRATION])).rowCount).toBe(0);
-      await releasePageRuntime(admission);
-      admissionReleased = true;
-      expect((await query('SELECT released_at,release_kind FROM page_runtime_admissions WHERE id=$1', [admission.id])).rows[0])
-        .toMatchObject({ released_at: expect.any(Date), release_kind: 'clean_disconnect' });
-      expect((await retireOwner()).unresolvedIntents).toBe(2);
+      // #2063: a killed deployment is retired by the upgrade itself, before the
+      // one-time 152 guard. No manual SQL and no owner-acknowledgment fiction.
       await runMigrations();
+      expect((await query('SELECT 1 FROM _migrations WHERE name=$1', [MIGRATION])).rowCount).toBe(1);
+      expect((await query('SELECT 1 FROM _migrations WHERE name=$1', [UPGRADE_RETIREMENT])).rowCount).toBe(1);
+
+      // This epoch dispatched work, so it is closed, never fenced, and has no
+      // owner acknowledgment to claim.
+      const retiredState = (await query(
+        'SELECT quiesced_at,quiescence_ack,upgrade_retired_at,fenced_at FROM page_writer_runtimes WHERE runtime_id=$1', [runtimeId],
+      )).rows[0]!;
+      expect(retiredState).toMatchObject({
+        quiesced_at: expect.any(Date), quiescence_ack: null, fenced_at: null,
+        upgrade_retired_at: expect.any(Date),
+      });
+      expect(retiredState.upgrade_retired_at).toEqual(retiredState.quiesced_at);
+      expect((await query('SELECT released_at,release_kind FROM page_runtime_admissions WHERE id=$1', [admission.id])).rows[0])
+        .toMatchObject({ released_at: expect.any(Date), release_kind: 'upgrade_retired' });
+      expect((await query('SELECT 1 FROM page_runtime_admissions WHERE released_at IS NULL')).rowCount).toBe(0);
+
+      // Actual failed/unknown work survives exactly: intents, preparations and
+      // capacity are untouched, and only 152's documented token repair ran.
       expect((await query('SELECT to_jsonb(i) AS value FROM page_write_intents i WHERE id=ANY($1::uuid[]) ORDER BY id',
         [[pIntent.id, uIntent.id]])).rows).toEqual(pendingBefore);
       for (let index = 0; index < 2; index++) {
@@ -790,19 +799,25 @@ describe('1774 actual old-row upgrade and independent consumer controls', () => 
         expect(token).toBe(index === 0 ? 'NO-TeS' : 'Un-Known');
       }
       expect(await capacity()).toEqual(capacityBefore);
-      const retiredState = (await query(
-        'SELECT quiesced_at,quiescence_ack,fenced_at FROM page_writer_runtimes WHERE runtime_id=$1', [runtimeId],
-      )).rows[0]!;
-      expect(retiredState).toMatchObject({
-        quiesced_at: expect.any(Date), quiescence_ack: expect.any(String), fenced_at: expect.any(Date),
-      });
-      expect((await query('SELECT 1 FROM page_runtime_admissions WHERE released_at IS NULL')).rowCount).toBe(0);
+
+      // Recovery authority is unchanged: no fabricated acknowledgment, no
+      // no-start fence for dispatched work, and reconcile still needs a fence.
+      await expect(quiescePageWriterRuntime({ actorId: administrator, reason: 'A retired migration epoch cannot re-acknowledge' }))
+        .rejects.toMatchObject({ reason: 'runtime_upgrade_retired' });
+      await expect(fencePageWriterRuntime({
+        mode: 'owner_ack', runtimeId, actorId: administrator, acknowledgmentId: randomUUID(),
+        reason: 'No owner acknowledgment exists for this retired epoch',
+      })).rejects.toMatchObject({ reason: 'runtime_not_quiesced' });
+      await expect(fencePageWriterRuntime({
+        mode: 'durable_no_started_effects', runtimeId, actorId: administrator,
+        reason: 'Dispatched unknown work cannot be retired from no-start evidence',
+      })).rejects.toMatchObject({ reason: 'runtime_effects_started' });
+      await expect(reconcilePageWriteIntent(pIntent.id, {
+        actorId: administrator, reason: 'Recovery cannot start on a retired migration epoch',
+      })).rejects.toMatchObject({ reason: 'runtime_quiesced' });
+      await expect(admitPageRuntime(admissionPage, ownerA, 'collab_room'))
+        .rejects.toMatchObject({ reason: 'runtime_quiesced' });
     } finally {
-      // Required even when origin's expected negative assertion fails.
-      // Both effects have actually failed; no live/successful continuation is
-      // being relabeled drained. These are real supported retirement calls.
-      if (!admissionReleased) await releasePageRuntime(admission);
-      if (!retiredModule) await retireOwner();
       await runMigrations();
     }
   });

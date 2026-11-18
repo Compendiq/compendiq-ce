@@ -265,6 +265,21 @@ or any other failure keeps it, so a stale draft is refused until the user
 reconciles it (Reload, then Restore draft or Edit published version). The
 server's `version < current` rule and the collaborative commit are unchanged.
 
+## Writer upgrade retirement (#2063)
+
+Migration `151b_page_writer_upgrade_retirement.sql` retires every pre-upgrade
+writer epoch before the one-time `152` cutover, so a container killed without a
+graceful quiesce cannot wedge startup with
+`relocation_notion_upgrade_requires_retired_writers`. Epochs with no dispatched
+effect get the `durable_no_started_effects` fence; epochs that dispatched work
+are only quiesced and marked `upgrade_retired_at` (no fabricated owner
+acknowledgment) and keep their started intents pending, so recovery still
+requires a termination-verified fence. The retirement DML runs only while `152`
+is unrecorded; the column/constraint DDL runs everywhere. `quiescePageWriterRuntime`
+refuses (409 `runtime_upgrade_retired`) before touching its irreversible local
+gate. Do not add a fourth fence kind or let `reconcilePageWriteIntent` accept a
+fence that does not prove drain or termination.
+
 ## Enterprise (Open-Core)
 
 CE is this repo. EE lives in the private `Compendiq/compendiq-ee` repo and ships as `@compendiq/enterprise` (loaded dynamically via `core/enterprise/loader.ts`, falls back to `noop.ts`). Both editions ship the **same unmodified CE frontend image** — no EE frontend bundle, no build-time SPA patching. Enterprise UI is gated at runtime via `useEnterprise().isEnterprise`, derived from `/api/admin/license` (`edition !== 'community' && valid === true`).

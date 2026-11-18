@@ -145,7 +145,7 @@ export function LibraryFilterDropdown({
             aria-expanded={open}
             aria-controls={open && testId ? `${testId}-options` : undefined}
             className={cn(
-              'flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground outline-none transition-colors hover:border-border-interactive hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring',
+              'flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-[var(--surface-input)] px-3 py-1.5 text-xs text-foreground outline-none transition-colors hover:border-border-interactive hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring',
               isSelected && 'font-medium text-foreground',
               open && 'border-border-interactive bg-accent/30',
             )}

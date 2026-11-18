@@ -303,7 +303,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             // its children's chevrons now share ~6px of column. Without this the
             // guide would sit on top and clicking a child's left edge would
             // collapse its parent instead of toggling the child.
-            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             style={{ left: `${level * 12 + 2}px` }}
             // A MOUSE affordance, and only that — hence out of the tab order and
             // out of the accessibility tree.
@@ -880,7 +880,7 @@ export function SidebarTreeView({
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-card border border-border px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-[var(--shell-control-bg)] border border-[var(--shell-control-border)] px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
             title={
               selectedSpaceOption
@@ -1156,7 +1156,7 @@ export function SidebarTreeView({
             navigate('/pages/new');
             onNavigate?.();
           }}
-          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="New Page"
           title="New Page (Alt+N)"
           data-testid="sidebar-new-page-btn"
