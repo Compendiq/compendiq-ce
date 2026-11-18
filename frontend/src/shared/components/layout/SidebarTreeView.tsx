@@ -780,29 +780,9 @@ export function SidebarTreeView({
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          {/* Keep the collapsed control in the same 48px chrome row as the
-              expanded main-nav toolbar, so both panes start their content on
-              one baseline. No hairline since 2026-08-31 — the height is the
-              alignment now, not a shared line. */}
-          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center">
-            <button
-              onClick={() => {
-                if (forceCollapsed && !treeSidebarCollapsed) {
-                  onForceExpand?.();
-                } else {
-                  toggleTreeSidebar();
-                }
-              }}
-              className="flex items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-              aria-label="Expand sidebar"
-              title="Expand sidebar (,)"
-            >
-              {/* Shortcut in the tooltip, not glued to the icon — see the twin in
-                  ArticleRightPane. A "," rendered as a bordered chip beside a
-                  rail icon reads as stray punctuation, not a key. */}
-              <PanelLeft size={16} />
-            </button>
-          </div>
+          {/* Keep the collapsed spacer at the same 48px chrome height as the
+              expanded toolbar, so both panes start their content on one baseline. */}
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -821,6 +801,22 @@ export function SidebarTreeView({
             testid="sidebar-trash-collapsed"
             icon={<Trash2 size={15} aria-hidden="true" />}
           />
+
+          <button
+            type="button"
+            onClick={() => {
+              if (forceCollapsed && !treeSidebarCollapsed) {
+                onForceExpand?.();
+              } else {
+                toggleTreeSidebar();
+              }
+            }}
+            className="absolute -right-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (,)"
+          >
+            <PanelLeft size={13} aria-hidden="true" />
+          </button>
 
           <span
             data-rail-hairline
@@ -867,14 +863,6 @@ export function SidebarTreeView({
       {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
-          <button
-            onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-          </button>
       </div>
       )}
 
@@ -1081,16 +1069,6 @@ export function SidebarTreeView({
             </div>
           )}
         </div>
-        {!embedMainNav && (
-          <button
-            onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-          </button>
-        )}
       </div>
 
       {/* A compact navigation shortcut; the Pages dashboard remains the rich
@@ -1367,6 +1345,17 @@ export function SidebarTreeView({
           Trash
         </Button>
       </div>
+
+      {/* Seam collapse toggle */}
+      <button
+        type="button"
+        onClick={toggleTreeSidebar}
+        className="absolute -right-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label="Collapse sidebar"
+        title="Collapse sidebar (,)"
+      >
+        <PanelLeftClose size={13} aria-hidden="true" />
+      </button>
 
       {/* Resize handle */}
       <div

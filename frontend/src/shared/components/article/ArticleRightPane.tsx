@@ -1244,22 +1244,17 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="panel-toolbar nm-popover-glass group relative flex h-12 w-full shrink-0 flex-col items-center justify-center rounded-none border-none shadow-none">
-            <button
-              onClick={handleExpandSidebar}
-              className={railIconBtn}
-              aria-label="Expand inspector"
-              title="Expand inspector (.)"
-            >
-              <PanelRight size={16} />
-            </button>
-            <span
-              role="tooltip"
-              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-            >
-              Expand inspector · .
-            </span>
-          </div>
+          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-center rounded-none border-none shadow-none" aria-hidden="true" />
+
+          <button
+            type="button"
+            onClick={handleExpandSidebar}
+            className="absolute -left-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Expand inspector"
+            title="Expand inspector (.)"
+          >
+            <PanelRight size={13} aria-hidden="true" />
+          </button>
 
           <div className="my-1 h-px w-6 bg-border" />
           <div className="group relative flex w-full justify-center">
@@ -1852,15 +1847,17 @@ export function ArticleRightPane({
         </button>
         </div>
 
-        <button
-          type="button"
-          onClick={isSheet ? onRequestClose : handleCollapseSidebar}
-          className="nm-icon-button shrink-0"
-          aria-label={isSheet ? 'Close page inspector' : 'Collapse page sidebar'}
-          title={isSheet ? 'Close inspector' : 'Collapse sidebar (.)'}
-        >
-          {isSheet ? <X size={16} aria-hidden="true" /> : <PanelRightClose size={16} aria-hidden="true" />}
-        </button>
+        {isSheet && (
+          <button
+            type="button"
+            onClick={onRequestClose}
+            className="nm-icon-button shrink-0"
+            aria-label="Close page inspector"
+            title="Close inspector"
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       {assistantMounted && (
@@ -2439,7 +2436,18 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {/* Resize handle — on the left operable edge, matching the tree's resize affordance */}
+      {/* Seam collapse toggle & resize handle — on the left operable edge, matching the tree's affordance */}
+      {!isSheet && (
+        <button
+          type="button"
+          onClick={handleCollapseSidebar}
+          className="absolute -left-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse page sidebar"
+          title="Collapse sidebar (.)"
+        >
+          <PanelRightClose size={13} aria-hidden="true" />
+        </button>
+      )}
       {!isSheet && (
         <div
           role="separator"

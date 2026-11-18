@@ -143,15 +143,7 @@ export function AiConversationsSidebar({
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          <button
-            type="button"
-            onClick={toggleTreeSidebar}
-            className="mt-2 flex items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            <PanelLeft size={16} />
-          </button>
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -169,6 +161,16 @@ export function AiConversationsSidebar({
             title="New chat"
           >
             <SquarePen size={16} />
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleTreeSidebar}
+            className="absolute -right-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (,)"
+          >
+            <PanelLeft size={13} aria-hidden="true" />
           </button>
 
           <span
@@ -217,15 +219,6 @@ export function AiConversationsSidebar({
       {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
-        <button
-          type="button"
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
       </div>
       )}
 
@@ -244,17 +237,6 @@ export function AiConversationsSidebar({
           <SquarePen size={14} aria-hidden="true" />
           New chat
         </button>
-        {!embedMainNav && (
-          <button
-            type="button"
-            onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-          </button>
-        )}
       </div>
 
       {showFilter && (
@@ -299,6 +281,16 @@ export function AiConversationsSidebar({
             : `${visibleCount} ${visibleCount === 1 ? 'conversation' : 'conversations'}`}
         </span>
       </div>
+
+      <button
+        type="button"
+        onClick={toggleTreeSidebar}
+        className="absolute -right-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label="Collapse sidebar"
+        title="Collapse sidebar (,)"
+      >
+        <PanelLeftClose size={13} aria-hidden="true" />
+      </button>
 
       <div
         role="separator"

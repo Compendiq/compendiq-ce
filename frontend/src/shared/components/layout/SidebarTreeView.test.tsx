@@ -870,17 +870,18 @@ describe('SidebarTreeView', () => {
     expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
   });
 
-  it('sits the space selector left of collapse, at the collapse control height', () => {
+  it('sits the space selector in the h-12 toolbar and places collapse on the seam', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
     const selector = screen.getByTestId('space-selector-toggle');
     const collapse = screen.getByLabelText('Collapse sidebar');
-    expect(selector.compareDocumentPosition(collapse) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(selector.className).toMatch(/\bh-8\b/);
     expect(selector).not.toHaveTextContent('Every connected space');
-    expect(collapse.parentElement).toContainElement(selector);
-    expect(collapse.parentElement!.className).toMatch(/\bh-12\b/);
-    expect(collapse.parentElement!.className).toContain('panel-toolbar');
+    const toolbar = selector.closest('.panel-toolbar');
+    expect(toolbar).not.toBeNull();
+    expect(toolbar!.className).toMatch(/\bh-12\b/);
+    expect(collapse.className).toContain('-right-3');
+    expect(collapse.className).toContain('top-[52px]');
   });
 
   it('omits embedded main nav when embedMainNav is false in both expanded and collapsed states while preserving app-sidebar and collapse/expand', () => {
