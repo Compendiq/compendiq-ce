@@ -1424,15 +1424,15 @@ export function ArticleRightPane({
               </div>
             )}
           </div>
-          <div className="mt-auto mb-2 flex w-full shrink-0 justify-center">
+          <div className="mb-1.5 mt-auto flex w-full shrink-0 justify-center">
             <button
               type="button"
               onClick={handleExpandSidebar}
-              className={railIconBtn}
+              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Expand inspector"
               title="Expand inspector (.)"
             >
-              <PanelRight size={16} aria-hidden="true" />
+              <PanelRight size={15} aria-hidden="true" />
             </button>
           </div>
           <span
@@ -2437,9 +2437,9 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {/* Footer collapse toggle & resize handle — on the left operable edge, matching the tree's affordance */}
+      {/* Footer collapse toggle & resize handle — pinned to the right edge so the icon stays fixed when toggling */}
       {!isSheet && (
-        <div className="panel-toolbar flex shrink-0 items-center justify-start border-t border-[var(--rail-divider)] px-2 py-1.5">
+        <div className="panel-toolbar flex shrink-0 items-center justify-end border-t border-[var(--rail-divider)] py-1.5 pl-2 pr-1.5">
           <button
             type="button"
             onClick={handleCollapseSidebar}
@@ -2447,7 +2447,7 @@ export function ArticleRightPane({
             aria-label="Collapse page sidebar"
             title="Collapse sidebar (.)"
           >
-            <PanelRightClose size={14} aria-hidden="true" />
+            <PanelRightClose size={15} aria-hidden="true" />
           </button>
         </div>
       )}

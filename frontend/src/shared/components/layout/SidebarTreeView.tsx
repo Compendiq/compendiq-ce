@@ -811,11 +811,11 @@ export function SidebarTreeView({
                 toggleTreeSidebar();
               }
             }}
-            className="mb-2 flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mb-1.5 flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
           >
-            <PanelLeft size={16} aria-hidden="true" />
+            <PanelLeft size={15} aria-hidden="true" />
           </button>
 
           <span
@@ -1321,7 +1321,16 @@ export function SidebarTreeView({
       {/* Scope count + low-frequency storage navigation. Out of the scroller
           so both stay visible under a long tree. Trash belongs with the page
           corpus, but not beside the Library's primary New Page action. */}
-      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] px-2 py-1.5">
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] py-1.5 pl-1.5 pr-2">
+        <button
+          type="button"
+          onClick={toggleTreeSidebar}
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {treeData
             ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
@@ -1344,15 +1353,6 @@ export function SidebarTreeView({
         >
           Trash
         </Button>
-        <button
-          type="button"
-          onClick={toggleTreeSidebar}
-          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} aria-hidden="true" />
-        </button>
       </div>
 
       {/* Resize handle */}
