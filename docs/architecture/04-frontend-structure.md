@@ -96,8 +96,7 @@ and no `final` frame; later metadata still matters.
 
 ## Authenticated inset shell
 
-`AppLayout` paints a flat viewport **chassis** (`--app-chassis`, inset on
-`md+`). The top app header (logo and session cluster, `--app-header-height`)
+`AppLayout` paints the diagonal gradient **chassis** (`--app-chassis` with `--shell-grad-*` + `--shell-pool`, inset on `md+`). The top app header (logo and session cluster, `--app-header-height`)
 and the compact left destination icon rail (`MainNavChassisRail`, matching
 `--app-nav-rail-width: var(--app-header-height)`, rendering the icon-only
 Pages / AI / Graph links) are transparent over `--app-chassis`, forming a

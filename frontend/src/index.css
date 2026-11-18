@@ -516,11 +516,27 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Darkest step on the ladder — the viewport gutter around the workspace.
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
-  --app-chassis: #09090a;
+  --app-chassis: #090b0f;
+  /* Shell diagonal colour-gradient + radial highlight pool (Graphite dark).
+     Bottom-left / left edge is darkest (--shell-grad-1 = --app-chassis = #090b0f)
+     ramping smoothly to cool slate-navy at top-right (--shell-grad-5 = #1a2331 +
+     top-right pool at 83% 17%). --shell-muted (#a3adba) clears 4.5:1 against all
+     stops and the lightest stop (#1a2331, 6.96:1). */
+  --shell-grad-dir: to top right;
+  --shell-pool-pos: 83% 17%;
+  --shell-grad-1: #090b0f;
+  --shell-grad-2: #0b0e14;
+  --shell-grad-3: #0e131c;
+  --shell-grad-4: #141c28;
+  --shell-grad-5: #1a2331;
+  --shell-pool: rgb(38 50 68 / 0.36);
+  --shell-pool-soft: rgb(26 36 52 / 0.16);
+  --shell-muted: #a3adba;
+  --nav-hover: rgb(255 255 255 / 0.06);
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
-  --app-login-ground: #09090a;
+  --app-login-ground: #090b0f;
   /* Internal panel-header chrome. Slightly lighter than the viewport chassis
      and darker than the workspace chrome, so toolbars read as neutral framing
      rather than another content pane. The top app header uses --app-chassis
@@ -934,8 +950,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      THE SECONDARY INK SETS THE FLOOR UNDER HOW GREY THIS MAY GO — never a
      ceiling on how light. The left navigation's 12px secondary labels are
      --color-muted-foreground on this surface, so 1.4.3 applies at 4.5:1, and
-     #616878 clears that floor here (5.12:1 on #f5f5f5; 4.70:1 on the prior
-     #e8ecf0). Lighter is always safe for them; any deeper grey needs
+     #616878 clears that floor here (5.44:1 on #fbfbfd; 5.12:1 on the prior
+     #f5f5f5 and 4.70:1 on the prior #e8ecf0). Lighter is always safe for them; any deeper grey needs
      --color-muted-foreground darkened first, and workspace-themes.test.ts pins
      that relationship so the labels cannot be lost to a later retune.
      --color-border-interactive on Canvas is over the 1.4.11 floor. Every
@@ -943,7 +959,22 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      why the ramp reads near-neutral rather than beige. The rail's destinations
      are unaffected: they carry hover and selection with ink and a Steel marker
      line, never a fill. */
-  --app-chassis: #f5f5f5;
+  --app-chassis: #fbfbfd;
+  /* Shell diagonal colour-gradient + bottom-left shade pool (Paper light).
+     Darkest stop is bottom-left (#d0d4da), lightest is top-right (#fbfbfd =
+     --app-chassis). --shell-muted (#4b525c) clears 4.5:1 against the darkest
+     stop (5.30:1) and the pool composite (4.98:1). */
+  --shell-grad-dir: to top right;
+  --shell-pool-pos: 17% 83%;
+  --shell-grad-1: #d0d4da;
+  --shell-grad-2: #dbdfe4;
+  --shell-grad-3: #eceef1;
+  --shell-grad-4: #f6f7f9;
+  --shell-grad-5: #fbfbfd;
+  --shell-pool: rgb(196 201 208 / 0.56);
+  --shell-pool-soft: rgb(206 211 217 / 0.24);
+  --shell-muted: #4b525c;
+  --nav-hover: rgb(255 255 255 / 0.45);
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
@@ -1105,10 +1136,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-chassis {
-  /* One flat colour on every side of the workspace card. The tree column and
-     the header are transparent over it, so any image here (the retired
-     diagonal wash) showed as a tonal band around the card's left corners. */
-  background: var(--app-chassis);
+  /* Diagonal colour-gradient + radial shade pool on the shell root.
+     Solid fallback equals --app-chassis. */
+  background-color: var(--app-chassis);
+  background-image:
+    radial-gradient(64% 58% at var(--shell-pool-pos),
+      var(--shell-pool) 0%,
+      var(--shell-pool-soft) 46%,
+      transparent 82%),
+    linear-gradient(var(--shell-grad-dir),
+      var(--shell-grad-1) 0%,
+      var(--shell-grad-2) 33.333%,
+      var(--shell-grad-3) 62%,
+      var(--shell-grad-4) 84%,
+      var(--shell-grad-5) 100%);
   padding-inline-start: 0;
   padding-inline-end: var(--app-inset);
   padding-bottom: var(--app-inset);
@@ -1177,6 +1218,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   min-height: var(--app-header-height);
   max-height: var(--app-header-height);
   overflow: hidden;
+}
+
+/* Controls sitting directly on the outer shell gradient use --shell-muted for
+   WCAG AA contrast across every gradient stop. */
+.app-header,
+[data-testid="main-nav-chassis"] {
+  --color-muted-foreground: var(--shell-muted);
+  --glass-pill-hover: var(--nav-hover);
 }
 
 @utility app-sidebar {

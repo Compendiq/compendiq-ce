@@ -272,7 +272,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#f5f5f5',
+    '--app-chassis': '#fbfbfd',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
@@ -281,18 +281,27 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // The left destination rail paints Canvas, and its inactive labels are 12px
-  // --color-muted-foreground on it — normal text, so 1.4.3 wants 4.5:1. This is
-  // the constraint that sets HOW GREY the frame may go: at #ebeae8 the pair
-  // measures 4.51:1, so the next step of grey has to be paid for by darkening
-  // the secondary ink first. Without this guard the rail loses its labels to a
-  // chassis retune nothing else in the suite would notice, because every other
-  // muted-foreground measurement is taken against Pane and Raised.
-  it('keeps the destination rail labels readable on the frame', () => {
+  // The left destination rail and header paint the shell gradient, and their
+  // inactive icons/labels are --shell-muted on it — normal text/UI, so 1.4.3
+  // wants 4.5:1 against the worst-case stop (darkest bottom-left stop in Paper,
+  // lightest stop in Graphite).
+  it('keeps the destination rail labels readable on the frame and gradient stops', () => {
     expectContrast(
       'muted foreground on Canvas (rail labels)',
       token(lightBlock, '--color-muted-foreground'),
       token(lightBlock, '--app-chassis'),
+      4.5,
+    );
+    expectContrast(
+      'shell-muted on darkest light gradient stop (--shell-grad-1)',
+      token(lightBlock, '--shell-muted'),
+      token(lightBlock, '--shell-grad-1'),
+      4.5,
+    );
+    expectContrast(
+      'shell-muted on lightest dark gradient stop (--shell-grad-5)',
+      token(darkBlock, '--shell-muted'),
+      token(darkBlock, '--shell-grad-5'),
       4.5,
     );
   });
@@ -492,7 +501,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     ] as const) {
       const sidebar = token(block, '--app-sidebar-bg');
       const card = token(block, '--color-card');
-      const chassis = token(block, '--app-chassis');
+      const leftEdgeStop = token(block, '--shell-grad-1');
 
       expect(
         luminance(sidebar),
@@ -500,8 +509,8 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       ).toBeLessThan(luminance(card));
       expect(
         luminance(sidebar),
-        `${themeName}: sidebar (${sidebar}) must stay brighter than chassis (${chassis})`,
-      ).toBeGreaterThan(luminance(chassis));
+        `${themeName}: sidebar (${sidebar}) must stay brighter than left-edge chassis stop (${leftEdgeStop})`,
+      ).toBeGreaterThan(luminance(leftEdgeStop));
 
       const fg = token(block, '--color-foreground');
       const muted = token(block, '--color-muted-foreground');
@@ -851,6 +860,12 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--app-shell-bg',
     '--app-sidebar-bg',
     '--app-rail-bg',
+    '--shell-grad-1',
+    '--shell-grad-2',
+    '--shell-grad-3',
+    '--shell-grad-4',
+    '--shell-grad-5',
+    '--shell-muted',
   ];
 
   for (const name of required) {
@@ -863,7 +878,12 @@ describe('Both themes declare a complete, symmetric token set', () => {
     });
   }
 
-  it('both themes declare an overlay shadow', () => {
+  it('both themes declare shell gradient composition tokens and overlay shadow', () => {
+    for (const block of [darkBlock, lightBlock]) {
+      for (const name of ['--shell-grad-dir', '--shell-pool-pos', '--shell-pool', '--shell-pool-soft', '--nav-hover']) {
+        expect(block, `${name} must be declared`).toMatch(new RegExp(`${name}:\\s*[^;]+;`));
+      }
+    }
     for (const block of [darkBlock, lightSharedBlock]) {
       expect(block).toMatch(/--shadow-overlay:/);
       expect(block).toMatch(/--shadow-overlay-sm:/);

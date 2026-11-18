@@ -70,15 +70,15 @@ describe('Inset shell tokens', () => {
 
       const sidebarBg = tokenHex(block, '--app-sidebar-bg');
       const cardBg = tokenHex(block, '--color-card');
-      const chassisBg = tokenHex(block, '--app-chassis');
+      const leftEdgeStop = tokenHex(block, '--shell-grad-1');
       expect(
         luminance(sidebarBg),
         `${theme}: sidebar (${sidebarBg}) must be darker than main pane (${cardBg})`,
       ).toBeLessThan(luminance(cardBg));
       expect(
         luminance(sidebarBg),
-        `${theme}: sidebar (${sidebarBg}) must stay above chassis (${chassisBg})`,
-      ).toBeGreaterThan(luminance(chassisBg));
+        `${theme}: sidebar (${sidebarBg}) must stay above left-edge chassis stop (${leftEdgeStop})`,
+      ).toBeGreaterThan(luminance(leftEdgeStop));
     }
   });
 
@@ -120,31 +120,43 @@ describe('Inset shell tokens', () => {
   // mode this guards is silent: a chassis retune that keeps "below the pane"
   // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and
   // was the reason the frame had to be deepened when the line went away).
-  it('keeps the pane a visible step above the frame in both themes', () => {
-    for (const [theme, block] of [
-      ['graphite', darkBlock],
-      ['paper', lightBlock],
-    ] as const) {
-      expect(
-        contrast(tokenHex(block, '--color-card'), tokenHex(block, '--app-chassis')),
-        `${theme}: the workspace card needs a readable value step above the chassis`,
-      ).toBeGreaterThanOrEqual(1.08);
+  it('orders the 5-stop shell gradient ramp in both themes (darkest toward left/bottom-left, brightest toward top-right)', () => {
+    const lightStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(lightBlock, `--shell-grad-${n}`)));
+    for (let i = 1; i < lightStops.length; i++) {
+      expect(lightStops[i]!, `light stop ${i + 1} must be lighter than stop ${i}`).toBeGreaterThan(lightStops[i - 1]!);
     }
+    expect(tokenHex(lightBlock, '--shell-grad-5')).toBe(tokenHex(lightBlock, '--app-chassis'));
+    expect(lightBlock).toMatch(/--shell-grad-dir:\s*to top right;/);
+
+    const darkStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(darkBlock, `--shell-grad-${n}`)));
+    for (let i = 1; i < darkStops.length; i++) {
+      expect(darkStops[i]!, `dark stop ${i + 1} must lift toward top-right brightest stop ${i}`).toBeGreaterThan(darkStops[i - 1]!);
+    }
+    expect(tokenHex(darkBlock, '--shell-grad-1')).toBe(tokenHex(darkBlock, '--app-chassis'));
+    expect(darkBlock).toMatch(/--shell-grad-dir:\s*to top right;/);
   });
 
-  it('keeps navigation labels and focus indicators readable on the chassis', () => {
+  it('keeps navigation labels and focus indicators readable across every gradient stop', () => {
     for (const block of [darkBlock, lightBlock]) {
-      const ground = tokenHex(block, '--app-chassis');
-      expect(contrast(tokenHex(block, '--color-muted-foreground'), ground)).toBeGreaterThanOrEqual(4.5);
-      expect(contrast(tokenHex(block, '--color-primary'), ground)).toBeGreaterThanOrEqual(3);
+      const shellMuted = tokenHex(block, '--shell-muted');
+      const primary = tokenHex(block, '--color-primary');
+      for (const n of [1, 2, 3, 4, 5]) {
+        const stop = tokenHex(block, `--shell-grad-${n}`);
+        expect(contrast(shellMuted, stop)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(primary, stop)).toBeGreaterThanOrEqual(3);
+      }
     }
   });
 
-  it('paints the chassis one flat colour so the frame matches on every side of the card', () => {
+  it('paints the chassis with the radial shade pool and 5-stop diagonal colour-gradient', () => {
     const block = extractBlock(css, '@utility app-chassis {');
-    expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
-    expect(block).not.toMatch(/background-image/);
-    expect(css).not.toMatch(/--app-chassis-tones/);
+    expect(block).toMatch(/background-color:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/radial-gradient\(64% 58% at var\(--shell-pool-pos\)/);
+    expect(block).toMatch(/var\(--shell-pool\)\s*0%/);
+    expect(block).toMatch(/var\(--shell-pool-soft\)\s*46%/);
+    expect(block).toMatch(/linear-gradient\(var\(--shell-grad-dir\)/);
+    expect(block).toMatch(/var\(--shell-grad-1\)\s*0%/);
+    expect(block).toMatch(/var\(--shell-grad-5\)\s*100%/);
   });
 
   it('the context rail matches the central pane and stays off the chassis', () => {
@@ -172,9 +184,10 @@ describe('Inset shell utilities', () => {
     }
   });
 
-  it('the chassis utility paints the chassis token and applies inset padding', () => {
+  it('the chassis utility paints the gradient chassis tokens and applies inset padding', () => {
     const block = extractBlock(css, '@utility app-chassis {');
-    expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/background-color:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/background-image:/);
     expect(block).toMatch(/padding-inline-start:\s*0/);
     expect(block).toMatch(/padding-inline-end:\s*var\(--app-inset\)/);
     expect(block).not.toMatch(/padding-inline:\s*var\(--app-inset\)/);
