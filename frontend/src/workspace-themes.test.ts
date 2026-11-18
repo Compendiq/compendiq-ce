@@ -834,7 +834,6 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-status-inactive',
     '--app-chassis',
     '--app-shell-bg',
-    '--app-rail-bg',
     '--shell-grad-1',
     '--shell-grad-2',
     '--shell-grad-3',
@@ -854,6 +853,7 @@ describe('Both themes declare a complete, symmetric token set', () => {
   }
 
   const requiredComposite = [
+    '--app-rail-bg',
     '--shell-pool',
     '--shell-pool-soft',
     '--panel-bg',

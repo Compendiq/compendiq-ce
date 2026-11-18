@@ -56,15 +56,16 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('shell keeps the workspace ground while the rail uses the central pane surface in both themes', () => {
+  it('shell keeps the workspace ground while the attached right panel shares its frosted transparency', () => {
     for (const block of [darkBlock, lightBlock]) {
       const shell = /--app-shell-bg:\s*([^;]+);/.exec(block);
       const rail = /--app-rail-bg:\s*([^;]+);/.exec(block);
       expect(shell, '--app-shell-bg must be declared').not.toBeNull();
       expect(rail, '--app-rail-bg must be declared').not.toBeNull();
       expect(shell![1]!.trim()).toBe('var(--color-background)');
-      expect(rail![1]!.trim()).toBe('var(--color-card)');
+      expect(rail![1]!.trim()).toBe('transparent');
     }
+    expect(css).toMatch(/@media\s*\(max-width:\s*767px\)[\s\S]*?\.app-context-rail\s*\{[^}]*background:\s*var\(--color-card\)/);
   });
 
   it('chassis is distinguishable from the shell ground in both themes', () => {

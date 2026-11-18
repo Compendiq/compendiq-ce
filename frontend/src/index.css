@@ -544,7 +544,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Internal panel-header chrome — cool slate step below Workspace. */
   --app-header-bg: #0c1017;
   --app-shell-bg: var(--color-background);
-  --app-rail-bg: var(--color-card);
+  /* Attached inside .app-workspace on desktop: keep transparent so the right
+     panel shares the frosted workspace plate and lets the diagonal shell
+     gradient show through just like <main>. Mobile drawer sheets override back
+     to opaque var(--color-card). */
+  --app-rail-bg: transparent;
   --app-workspace-shadow: var(--panel-shadow);
   --surface-backdrop: var(--app-chassis);
   --surface-card: rgb(255 255 255 / 0.045);
@@ -1013,7 +1017,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      outer frame has one colour on all four sides. */
   --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
-  --app-rail-bg: var(--color-card);
+  /* Attached inside .app-workspace on desktop: keep transparent so the right
+     panel shares the frosted workspace plate and lets the diagonal shell
+     gradient show through just like <main>. Mobile drawer sheets override back
+     to opaque var(--color-card). */
+  --app-rail-bg: transparent;
   --app-workspace-shadow: var(--panel-shadow);
 }
 
@@ -1242,6 +1250,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .app-sidebar {
     background: var(--app-chassis);
   }
+  .app-context-rail {
+    background: var(--color-card);
+  }
+}
+
+#mobile-context-sidebar .app-context-rail {
+  background: var(--color-card);
 }
 
 /* Text and nav items sitting directly on the shell gradient use --shell-muted
