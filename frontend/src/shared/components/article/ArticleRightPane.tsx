@@ -1246,16 +1246,6 @@ export function ArticleRightPane({
               gets — native `title` is hover-only. */}
           <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-center rounded-none border-none shadow-none" aria-hidden="true" />
 
-          <button
-            type="button"
-            onClick={handleExpandSidebar}
-            className="absolute -left-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Expand inspector"
-            title="Expand inspector (.)"
-          >
-            <PanelRight size={13} aria-hidden="true" />
-          </button>
-
           <div className="my-1 h-px w-6 bg-border" />
           <div className="group relative flex w-full justify-center">
             <button
@@ -1433,6 +1423,17 @@ export function ArticleRightPane({
                 </span>
               </div>
             )}
+          </div>
+          <div className="mt-auto mb-2 flex w-full shrink-0 justify-center">
+            <button
+              type="button"
+              onClick={handleExpandSidebar}
+              className={railIconBtn}
+              aria-label="Expand inspector"
+              title="Expand inspector (.)"
+            >
+              <PanelRight size={16} aria-hidden="true" />
+            </button>
           </div>
           <span
             data-rail-hairline
@@ -2436,17 +2437,19 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {/* Seam collapse toggle & resize handle — on the left operable edge, matching the tree's affordance */}
+      {/* Footer collapse toggle & resize handle — on the left operable edge, matching the tree's affordance */}
       {!isSheet && (
-        <button
-          type="button"
-          onClick={handleCollapseSidebar}
-          className="absolute -left-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Collapse page sidebar"
-          title="Collapse sidebar (.)"
-        >
-          <PanelRightClose size={13} aria-hidden="true" />
-        </button>
+        <div className="panel-toolbar flex shrink-0 items-center justify-start border-t border-[var(--rail-divider)] px-2 py-1.5">
+          <button
+            type="button"
+            onClick={handleCollapseSidebar}
+            className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Collapse page sidebar"
+            title="Collapse sidebar (.)"
+          >
+            <PanelRightClose size={14} aria-hidden="true" />
+          </button>
+        </div>
       )}
       {!isSheet && (
         <div

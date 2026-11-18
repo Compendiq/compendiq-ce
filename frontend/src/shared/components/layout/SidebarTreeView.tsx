@@ -792,7 +792,7 @@ export function SidebarTreeView({
               onNavigate?.();
             }}
             className={cn(
-              'nm-icon-button mb-2 mt-auto shrink-0',
+              'nm-icon-button mb-1 mt-auto shrink-0',
               location.pathname === '/trash' && 'nav-selection',
             )}
             label="Trash"
@@ -811,11 +811,11 @@ export function SidebarTreeView({
                 toggleTreeSidebar();
               }
             }}
-            className="absolute -right-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mb-2 flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
           >
-            <PanelLeft size={13} aria-hidden="true" />
+            <PanelLeft size={16} aria-hidden="true" />
           </button>
 
           <span
@@ -1344,18 +1344,16 @@ export function SidebarTreeView({
         >
           Trash
         </Button>
+        <button
+          type="button"
+          onClick={toggleTreeSidebar}
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={14} aria-hidden="true" />
+        </button>
       </div>
-
-      {/* Seam collapse toggle */}
-      <button
-        type="button"
-        onClick={toggleTreeSidebar}
-        className="absolute -right-3 top-[52px] z-20 flex size-6 items-center justify-center rounded-full border border-border-interactive bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        aria-label="Collapse sidebar"
-        title="Collapse sidebar (,)"
-      >
-        <PanelLeftClose size={13} aria-hidden="true" />
-      </button>
 
       {/* Resize handle */}
       <div
