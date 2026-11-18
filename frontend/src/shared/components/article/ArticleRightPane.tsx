@@ -1442,7 +1442,7 @@ export function ArticleRightPane({
           <span
             data-rail-hairline
             aria-hidden="true"
-            className="pointer-events-none absolute bottom-0 left-0 top-0 z-10 flex w-[3px] flex-col items-center"
+            className="pointer-events-none absolute bottom-0 -left-px top-0 z-10 flex w-[3px] flex-col items-center"
           >
             <span className="w-px flex-1 bg-[var(--rail-divider)]" />
             <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
@@ -2462,7 +2462,7 @@ export function ArticleRightPane({
           <span
             data-rail-hairline
             aria-hidden="true"
-            className="flex h-full w-[3px] flex-col items-center"
+            className="-ml-px flex h-full w-[3px] flex-col items-center"
           >
             <span
               className={cn(

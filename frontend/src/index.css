@@ -1238,12 +1238,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   backdrop-filter: none;
 }
 
-/* When a panel renders its segmented hairline + 3-dot grip, suppress the
-   continuous CSS border so the hairline stops cleanly before the 3 dots and
-   resumes after them. */
-.app-context-rail:has([data-rail-hairline]),
+/* When a panel renders its segmented hairline + 3-dot grip, remove the 1px
+   CSS border box so the panel background and adjacent main toolbar meet flush
+   with zero gap, and let the 3px centered dots straddle the 1px seam cleanly. */
+.app-context-rail:has([data-rail-hairline]) {
+  border-left-width: 0;
+  overflow: visible;
+}
+
 .app-sidebar:has([data-rail-hairline]) {
-  border-color: transparent;
+  border-right-width: 0;
+  overflow: visible;
 }
 
 /* Shell surfaces carry the palette without competing with content. The top

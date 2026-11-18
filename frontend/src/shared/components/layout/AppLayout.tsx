@@ -557,7 +557,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 // keep this container as the page scroller.
                 isArticleRoute
                   ? 'overflow-hidden'
-                  : 'overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]',
+                  : 'overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable]',
               )}
             >
               <PageTransition>
@@ -609,7 +609,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                     overflow-y-auto in #1218 (it spilled 39px at 1440x560
                     before). A new one is the thing to check when adding a
                     height-capping page. */}
-                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isArticleRoute ? 'max-w-none' : 'max-w-7xl')}>
+                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isSettingsRoute || isArticleRoute ? 'max-w-none' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>

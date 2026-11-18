@@ -265,6 +265,11 @@ describe('Inset shell utilities', () => {
     expect(railHeader).toMatch(/background-color:\s*var\(--workspace-card-bg\)/);
     expect(railHeader).toMatch(/backdrop-filter:\s*none/);
 
+    const sidebarHairline = extractBlock(css, '.app-sidebar:has([data-rail-hairline]) {');
+    const railHairline = extractBlock(css, '.app-context-rail:has([data-rail-hairline]) {');
+    expect(sidebarHairline).toMatch(/border-right-width:\s*0/);
+    expect(railHairline).toMatch(/border-left-width:\s*0/);
+
     const panelBgMatch = /--panel-bg:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
     const sidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
     expect(panelBgMatch).not.toBeNull();
