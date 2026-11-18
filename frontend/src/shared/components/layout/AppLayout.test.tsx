@@ -260,7 +260,7 @@ describe('AppLayout', () => {
     expect(screen.getByTestId('panel-wrapper').className).not.toMatch(/\bml-2\b/);
     const logo = screen.getByTestId('header-chassis-slot');
     expect(logo).toBeInTheDocument();
-    expect(logo.className).toContain('md:pl-[calc((var(--app-nav-rail-width)-1.5rem)/2)]');
+    expect(logo.innerHTML).toContain('md:w-[var(--app-nav-rail-width)]');
     expect(screen.getByLabelText('Compendiq home')).toBeInTheDocument();
   });
 

@@ -20,7 +20,7 @@ import {
 } from '../article/ArticleRightPane';
 import { AiProvider } from '../../../features/ai/AiContext';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { Logo } from '../Logo';
+import { LogoMark, LogoWordmark } from '../Logo';
 import { HeaderSessionCluster } from './HeaderSessionCluster';
 import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
@@ -488,14 +488,18 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
           {/* Full horizontal lockup (Q-tile + Compendiq wordmark); on desktop the
               Q-tile centers inside the --app-nav-rail-width column directly above
-              the left rail icons (Pages / AI / Graph). */}
+              the left rail icons (Pages / AI / Graph) and the wordmark aligns
+              flush with the left border of the workspace card. */}
           <Link
             to="/"
             aria-label="Compendiq home"
             data-testid="header-chassis-slot"
-            className="flex items-center rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:pl-[calc((var(--app-nav-rail-width)-1.5rem)/2)]"
+            className="flex items-center gap-2 rounded-md text-foreground transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:gap-0"
           >
-            <Logo className="h-6 w-auto text-foreground" title="Compendiq" />
+            <span className="flex shrink-0 items-center justify-center md:w-[var(--app-nav-rail-width)]">
+              <LogoMark className="size-7 shrink-0" title="Compendiq" />
+            </span>
+            <LogoWordmark className="h-7 w-auto shrink-0" />
           </Link>
         </div>
         <div className="ml-auto flex min-w-0 items-center justify-end gap-1">

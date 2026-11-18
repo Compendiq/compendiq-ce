@@ -1,5 +1,5 @@
 import { useLocation } from 'react-router-dom';
-import { Logo } from '../Logo';
+import { LogoMark, LogoWordmark } from '../Logo';
 import { isAiRoute } from '../../lib/ai-routes';
 import { isArticlePath } from '../../lib/article-route';
 import { cn } from '../../lib/cn';
@@ -35,7 +35,7 @@ function WorkspaceBones() {
     <div className="app-shell flex min-h-0 flex-1">
       <div
         aria-hidden="true"
-        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col items-center gap-1.5 pt-0.5 md:flex"
+        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col items-center gap-1.5 md:flex"
       >
         <Bone className="size-8 rounded-md" />
         <Bone className="size-8 rounded-md" />
@@ -86,7 +86,12 @@ export function AppBootSkeleton({
     >
       <BootAnnouncer label="Loading Compendiq" />
       <header className="app-header relative z-10 flex shrink-0 items-center px-3 md:pl-0">
-        <Logo className="h-6 w-auto text-foreground md:ml-[calc((var(--app-nav-rail-width)-1.5rem)/2)]" title="Compendiq" />
+        <div className="flex items-center gap-2 text-foreground md:gap-0">
+          <span className="flex shrink-0 items-center justify-center md:w-[var(--app-nav-rail-width)]">
+            <LogoMark className="size-7 shrink-0" title="Compendiq" />
+          </span>
+          <LogoWordmark className="h-7 w-auto shrink-0" />
+        </div>
       </header>
       {quiet ? null : <WorkspaceBones />}
     </div>

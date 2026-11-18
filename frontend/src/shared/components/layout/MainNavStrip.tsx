@@ -114,7 +114,7 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps = {}) {
     <nav
       data-testid="main-nav-chassis"
       aria-label="Main navigation"
-      className="hidden md:flex w-[var(--app-nav-rail-width)] shrink-0 self-stretch flex-col items-center gap-1.5 pt-0.5"
+      className="hidden md:flex w-[var(--app-nav-rail-width)] shrink-0 self-stretch flex-col items-center gap-1.5"
     >
       {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
         const active = isActive(location.pathname, path);
