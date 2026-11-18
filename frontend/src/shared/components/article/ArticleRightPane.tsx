@@ -2473,14 +2473,14 @@ export function ArticleRightPane({
             <span
               data-testid="article-right-pane-resize-grip"
               className={cn(
-                'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-opacity',
-                'group-hover:opacity-100 group-focus-visible:opacity-100',
-                isResizing && 'opacity-100',
+                'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-all duration-150',
+                'group-hover:scale-125 group-hover:opacity-100 group-focus-visible:scale-125 group-focus-visible:opacity-100',
+                isResizing && 'scale-125 opacity-100',
               )}
             >
-              <span className="size-[3px] rounded-full bg-muted-foreground" />
-              <span className="size-[3px] rounded-full bg-muted-foreground" />
-              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+              <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+              <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
             </span>
             <span
               className={cn(

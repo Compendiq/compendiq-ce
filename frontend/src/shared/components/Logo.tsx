@@ -42,14 +42,15 @@ export function LogoMark({
 
 /**
  * Compendiq wordmark SVG ("Compendiq" with the magnifying-q at the end),
- * viewBox cropped to the wordmark region so its left edge aligns flush with
- * the left border of the workspace card.
+ * viewBox cropped to the glyph ink origin (`x ≈ 1140` so the Helvetica 'C'
+ * left bearing is removed) and its left edge aligns flush with the left border
+ * of the workspace card.
  */
 export function LogoWordmark({ className }: { className?: string }) {
   return (
     <svg
       aria-hidden="true"
-      viewBox="1064.82 0 2800 1000"
+      viewBox="1140 0 2725 1000"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       style={{ fillRule: 'evenodd', clipRule: 'evenodd', strokeLinecap: 'round' }}

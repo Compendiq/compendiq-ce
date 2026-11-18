@@ -280,16 +280,16 @@ describe('Inset shell utilities', () => {
     const sidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
     expect(panelBgMatch).not.toBeNull();
     expect(sidebarAlphaMatch).not.toBeNull();
-    expect(Number(panelBgMatch![1])).toBeCloseTo(0.30, 5);
-    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.34, 5);
+    expect(Number(panelBgMatch![1])).toBeCloseTo(0.40, 5);
+    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.44, 5);
     expect(Number(sidebarAlphaMatch![1])).toBeGreaterThan(Number(panelBgMatch![1]));
 
-    const lightPanelBgMatch = /--panel-bg:\s*rgb\(255 255 255 \/ ([0-9.]+)\);/.exec(lightBlock);
+    const lightPanelBgMatch = /--panel-bg:\s*rgb\([0-9 ]+ \/ ([0-9.]+)\);/.exec(lightBlock);
     const lightSidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(208 212 218 \/ ([0-9.]+)\);/.exec(lightBlock);
     expect(lightPanelBgMatch).not.toBeNull();
     expect(lightSidebarAlphaMatch).not.toBeNull();
-    expect(Number(lightPanelBgMatch![1])).toBeCloseTo(0.78, 5);
-    expect(Number(lightSidebarAlphaMatch![1])).toBeCloseTo(0.38, 5);
+    expect(Number(lightPanelBgMatch![1])).toBeCloseTo(0.88, 5);
+    expect(Number(lightSidebarAlphaMatch![1])).toBeCloseTo(0.48, 5);
   });
 
   it('mobile is edge-to-edge; md and xl step the inset and card radius', () => {
@@ -502,5 +502,14 @@ describe('Context rail vs left navigation', () => {
     expect(settingsSidebar).toMatch(/app-sidebar/);
     expect(sidebar).not.toMatch(/app-context-rail/);
     expect(settingsSidebar).not.toMatch(/app-context-rail/);
+  });
+
+  it('uses --rail-divider for the left panel footer rule and makes the 3-dot grip pop on hover', () => {
+    const aiSidebar = read('features/ai/conversations/AiConversationsSidebar.tsx');
+    expect(sidebar).toContain('border-t border-[var(--rail-divider)]');
+    expect(aiSidebar).toContain('border-t border-[var(--rail-divider)]');
+    expect(sidebar).toContain('group-hover:scale-125');
+    expect(aiSidebar).toContain('group-hover:scale-125');
+    expect(rightPane).toContain('group-hover:scale-125');
   });
 });

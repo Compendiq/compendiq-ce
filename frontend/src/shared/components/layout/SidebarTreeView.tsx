@@ -1343,7 +1343,7 @@ export function SidebarTreeView({
       {/* Scope count + low-frequency storage navigation. Out of the scroller
           so both stay visible under a long tree. Trash belongs with the page
           corpus, but not beside the Library's primary New Page action. */}
-      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] px-2 py-1.5">
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {treeData
             ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
@@ -1403,14 +1403,14 @@ export function SidebarTreeView({
           <span
             data-testid="sidebar-resize-grip"
             className={cn(
-              'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-opacity',
-              'group-hover:opacity-100 group-focus-visible:opacity-100',
-              isResizing && 'opacity-100',
+              'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-all duration-150',
+              'group-hover:scale-125 group-hover:opacity-100 group-focus-visible:scale-125 group-focus-visible:opacity-100',
+              isResizing && 'scale-125 opacity-100',
             )}
           >
-            <span className="size-[3px] rounded-full bg-muted-foreground" />
-            <span className="size-[3px] rounded-full bg-muted-foreground" />
-            <span className="size-[3px] rounded-full bg-muted-foreground" />
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
           </span>
           <span
             className={cn(
