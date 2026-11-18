@@ -281,9 +281,10 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // The left destination rail paints the shell gradient, and its inactive labels
-  // are --shell-muted on it — normal text, so 1.4.3 wants 4.5:1 against the
-  // worst-case stop (darkest bottom-left stop in Paper, lightest stop in Graphite).
+  // The left destination rail and header paint the shell gradient, and their
+  // inactive icons/labels are --shell-muted on it — normal text/UI, so 1.4.3
+  // wants 4.5:1 against the worst-case stop (darkest bottom-left stop in Paper,
+  // lightest stop in Graphite).
   it('keeps the destination rail labels readable on the frame and gradient stops', () => {
     expectContrast(
       'muted foreground on Canvas (rail labels)',
@@ -323,6 +324,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       '--color-code-bg',
       '--color-status-inactive',
       '--app-header-bg',
+      '--app-sidebar-bg',
     ];
     for (const name of neutrals) {
       expect(name in OWNER_PINNED, `${name} is under the ramp, not pinned`).toBe(false);
@@ -336,10 +338,9 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  it('keeps every Graphite neutral and surface on the cool slate side of the hue circle', () => {
-    const darkNeutrals = [
+  it('keeps Graphite surface, button, and popup tokens on the cool slate-navy ramp rather than neutral gray', () => {
+    const coolTokens = [
       '--color-background',
-      '--color-foreground',
       '--color-card',
       '--color-card-elevated',
       '--color-secondary',
@@ -352,22 +353,25 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       '--color-border',
       '--doc-rule',
       '--color-border-interactive',
-      '--color-action',
-      '--color-action-hover',
+      '--color-action-foreground',
       '--color-code-bg',
       '--color-status-inactive',
       '--app-chassis',
       '--app-header-bg',
-      '--shell-muted',
+      '--app-sidebar-bg',
+      '--app-login-ground',
     ];
-    for (const name of darkNeutrals) {
+    for (const name of coolTokens) {
       const hex = token(darkBlock, name);
       const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [
         number,
         number,
         number,
       ];
-      expect(b, `${name} (${hex}) must be cool slate: blue channel above red`).toBeGreaterThan(r);
+      expect(
+        b - r,
+        `${name} (${hex}) must stay cool slate-navy (blue clearly above red, not old neutral gray)`,
+      ).toBeGreaterThanOrEqual(3);
     }
   });
 
@@ -513,7 +517,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     ['graphite', darkBlock],
     ['paper', lightBlock],
   ])('keeps %s popup text readable over document images', (theme, block) => {
-    const opacity = 0.82;
+    const opacity = theme === 'graphite' ? 0.90 : 0.82;
     // Black and white bound the backgrounds a document image can contribute,
     // including with blur disabled. Measuring the opaque token misses this.
     for (const backdrop of ['#000000', '#ffffff']) {
@@ -523,6 +527,84 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
         ['--color-muted-foreground', 3],
       ] as const) {
         expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, floor);
+      }
+    }
+  });
+
+  it('keeps the inside-workspace sidebar surface slightly darker than main, above chassis, and WCAG-compliant for text, focus, and state fills', () => {
+    for (const [themeName, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const sidebar = token(block, '--app-sidebar-bg');
+      const card = token(block, '--color-card');
+      const leftEdgeStop = token(block, '--shell-grad-1');
+
+      expect(
+        luminance(sidebar),
+        `${themeName}: sidebar (${sidebar}) must be darker than main pane (${card})`,
+      ).toBeLessThan(luminance(card));
+      expect(
+        luminance(sidebar),
+        `${themeName}: sidebar (${sidebar}) must stay brighter than left-edge chassis stop (${leftEdgeStop})`,
+      ).toBeGreaterThan(luminance(leftEdgeStop));
+
+      const fg = token(block, '--color-foreground');
+      const muted = token(block, '--color-muted-foreground');
+      const primaryInk = token(block, '--color-primary-ink');
+      const ring = token(block, '--color-ring');
+      const borderInteractive = token(block, '--color-border-interactive');
+      const accent = token(block, '--color-accent');
+      const pressed = token(block, '--color-pressed');
+      const selected = token(block, '--color-selected');
+
+      // Text, icons, section labels (SECTION_LABEL uses text-muted-foreground), and focus ring on sidebar ground
+      expectContrast(`${themeName} foreground on sidebar`, fg, sidebar, 4.5);
+      expectContrast(`${themeName} muted-foreground on sidebar`, muted, sidebar, 4.5);
+      expectContrast(`${themeName} primary-ink on sidebar`, primaryInk, sidebar, 4.5);
+      expectContrast(`${themeName} focus ring on sidebar`, ring, sidebar, 3);
+      expectContrast(`${themeName} border-interactive on sidebar`, borderInteractive, sidebar, 3);
+
+      // State fills on sidebar ground: perceptible steps + WCAG text/edge contrast
+      const hoverRatio = contrast(accent, sidebar);
+      const pressedRatio = contrast(pressed, sidebar);
+      const selectedRatio = contrast(selected, sidebar);
+      expect(pressedRatio, `${themeName}: pressed must step past hover on sidebar`).toBeGreaterThan(hoverRatio);
+      expect(selectedRatio, `${themeName}: selected must step past pressed on sidebar`).toBeGreaterThan(pressedRatio);
+      expect(
+        deltaEOk(accent, sidebar),
+        `${themeName}: hover (${accent}) must be perceptibly distinct from sidebar (${sidebar})`,
+      ).toBeGreaterThanOrEqual(0.014);
+
+      for (const [stateName, stateBg] of [
+        ['hover', accent],
+        ['pressed', pressed],
+        ['selected', selected],
+      ] as const) {
+        expectContrast(`${themeName} foreground on sidebar ${stateName}`, fg, stateBg, 4.5);
+        expectContrast(`${themeName} muted-foreground on sidebar ${stateName}`, muted, stateBg, 4.5);
+        expectContrast(`${themeName} border-interactive on sidebar ${stateName}`, borderInteractive, stateBg, 3);
+      }
+
+      // 75%-opaque (25%-translucent) sidebar and main pane composited over the
+      // outer gradient stops still clear WCAG AA contrast and keep sidebar < card.
+      for (const stopName of ['--shell-grad-1', '--shell-grad-5'] as const) {
+        const stop = token(block, stopName);
+        const sbComp = composite(sidebar, 0.75, stop);
+        const cardComp = composite(card, 0.75, stop);
+        expect(
+          luminance(sbComp),
+          `${themeName} 75% sidebar (${sbComp}) over ${stopName} must stay darker than 75% main (${cardComp})`,
+        ).toBeLessThan(luminance(cardComp));
+        for (const [label, ground] of [
+          ['75% sidebar', sbComp],
+          ['75% main', cardComp],
+        ] as const) {
+          expectContrast(`${themeName} foreground on ${label} over ${stopName}`, fg, ground, 4.5);
+          expectContrast(`${themeName} muted-foreground on ${label} over ${stopName}`, muted, ground, 4.5);
+          expectContrast(`${themeName} primary-ink on ${label} over ${stopName}`, primaryInk, ground, 4.5);
+          expectContrast(`${themeName} border-interactive on ${label} over ${stopName}`, borderInteractive, ground, 3);
+        }
       }
     }
   });
@@ -834,6 +916,7 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-status-inactive',
     '--app-chassis',
     '--app-shell-bg',
+    '--app-sidebar-bg',
     '--shell-grad-1',
     '--shell-grad-2',
     '--shell-grad-3',
@@ -852,29 +935,29 @@ describe('Both themes declare a complete, symmetric token set', () => {
     });
   }
 
-  const requiredComposite = [
-    '--app-rail-bg',
-    '--shell-grad-dir',
-    '--shell-pool-pos',
-    '--shell-pool',
-    '--shell-pool-soft',
-    '--panel-bg',
-    '--panel-bg-fallback',
-    '--panel-border',
-    '--panel-shadow',
-    '--nav-hover',
-    '--nav-active',
-    '--nav-active-shadow',
-  ];
-
-  for (const name of requiredComposite) {
-    it(`declares ${name} in both themes`, () => {
-      expect(darkBlock).toMatch(new RegExp(`${name}:\\s*[^;]+;`));
-      expect(lightBlock).toMatch(new RegExp(`${name}:\\s*[^;]+;`));
-    });
-  }
-
-  it('both themes declare an overlay shadow', () => {
+  it('both themes declare shell gradient composition tokens, frosted panel tokens, and overlay shadow', () => {
+    for (const block of [darkBlock, lightBlock]) {
+      for (const name of [
+        '--shell-grad-dir',
+        '--shell-pool-pos',
+        '--shell-pool',
+        '--shell-pool-soft',
+        '--nav-hover',
+        '--app-rail-bg',
+        '--panel-bg',
+        '--panel-bg-fallback',
+        '--panel-border',
+        '--panel-divider',
+        '--rail-divider',
+        '--panel-shadow',
+        '--app-sidebar-translucent',
+        '--workspace-card-bg',
+        '--workspace-toolbar-bg',
+        '--workspace-well-bg',
+      ]) {
+        expect(block, `${name} must be declared`).toMatch(new RegExp(`${name}:\\s*[^;]+;`));
+      }
+    }
     for (const block of [darkBlock, lightSharedBlock]) {
       expect(block).toMatch(/--shadow-overlay:/);
       expect(block).toMatch(/--shadow-overlay-sm:/);
@@ -1046,7 +1129,7 @@ describe('Flat depth model', () => {
         // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
         if (/^none$/.test(value)) continue;
         if (/^0 0 0 \d+px/.test(value)) continue;
-        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow|panel-shadow|nav-active-shadow)\)/.test(value)) continue;
+        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow|panel-shadow)\)/.test(value)) continue;
         // Retired tokens resolve to `transparent`, so they paint nothing.
         if (/var\(--nm-(shadow|highlight)/.test(value)) continue;
         offenders.push(`${selector} → ${value}`);

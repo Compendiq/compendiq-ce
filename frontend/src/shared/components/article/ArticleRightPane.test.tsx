@@ -263,57 +263,21 @@ describe('ArticleRightPane', () => {
     document.body.innerHTML = '';
   });
 
-  it('renders the expanded pane with header and action buttons', () => {
+  it('renders the expanded pane with header and slim Details inspector', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
-    // The "Page context" label and the page title under it are gone: the view
-    // switcher is the header row now. Both were redundant — the article's own
-    // H1 sits a few pixels to the left and never scrolls out from under the
-    // context strip. What the header must still carry is the tablist and the
-    // collapse control, which is what this asserts instead.
     expect(screen.getByRole('tablist', { name: 'Page context views' })).toBeInTheDocument();
     expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('Pin')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Source' })).toBeInTheDocument();
-    expect(screen.getByText('Danger zone')).toBeInTheDocument();
-  });
-
-  it('lists page actions flat and fences a Confluence page’s deletion behind the Danger zone', async () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    await waitFor(() => expect(screen.getByRole('link', { name: 'Open in Confluence' })).toBeVisible());
-    for (const label of ['Version history', 'Pin', 'Show in graph', 'Export PDF']) {
-      expect(screen.getByText(label).closest('details')).toBeNull();
-    }
-    expect(screen.queryByText('More actions')).not.toBeInTheDocument();
-    expect(screen.queryByText('Move to trash')).not.toBeInTheDocument();
-
-    const dangerZone = screen.getByTestId('danger-zone');
-    expect(dangerZone).not.toHaveAttribute('open');
-    expect(screen.getByRole('button', { name: 'Delete in Confluence…', hidden: true }).closest('details')).toBe(dangerZone);
-    expect(screen.getByTestId('relocate-local-btn').closest('details')).toBe(dangerZone);
-    expect(screen.getByTestId('relocate-local-btn')).toHaveTextContent('Move to a local space — deletes the Confluence page');
-    fireEvent.click(screen.getByText('Danger zone'));
-    expect(dangerZone).toHaveAttribute('open');
-  });
-
-  it('gives a local page an ordinary Move to trash row and no Danger zone', () => {
-    currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null } as typeof currentMockPage;
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    const trash = screen.getByRole('button', { name: 'Move to trash' });
-    expect(screen.getByTestId('article-actions')).toContainElement(trash);
-    expect(trash.closest('details')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Document health' })).toBeInTheDocument();
+    expect(screen.getByTestId('details-notes-section')).toBeInTheDocument();
+    expect(screen.getByTestId('document-lifecycle')).not.toHaveAttribute('open');
+    // Read-mode page actions, danger zone, and duplicate labels moved to the read toolbar.
+    expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
     expect(screen.queryByTestId('danger-zone')).not.toBeInTheDocument();
-    expect(screen.queryByText('Delete in Confluence…')).not.toBeInTheDocument();
-  });
-
-  it('exposes Pin as a toggle', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    expect(screen.getByRole('button', { name: 'Pin' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByTestId('document-labels')).not.toBeInTheDocument();
   });
 
   it('opens on the outline when the page has document structure', () => {
@@ -325,10 +289,10 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Introduction')).toBeInTheDocument();
-    expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('details-source')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
-    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
+    expect(screen.getByTestId('details-source')).toBeInTheDocument();
   });
 
   it('gives outline expand a 24px out-of-flow hit target', () => {
@@ -453,16 +417,6 @@ describe('ArticleRightPane', () => {
     expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
   });
 
-  it('mounts the Version history trigger in the read-mode action list (#709)', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    const actions = screen.getByTestId('article-actions');
-    expect(actions).toBeInTheDocument();
-    // Glass-styled trigger rendered via VersionHistory's renderTrigger prop.
-    expect(screen.getByText('Version history')).toBeInTheDocument();
-    expect(screen.getByTitle('Version history')).toBeInTheDocument();
-  });
-
   it('hides the Version history trigger while editing (#709)', () => {
     useArticleViewStore.setState({ editing: true });
 
@@ -482,7 +436,6 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText('Document health')).toBeInTheDocument();
     expect(screen.getByTestId('embedding-status-badge')).toBeInTheDocument();
     expect(screen.getByTestId('quality-score-badge')).toBeInTheDocument();
-    expect(screen.getByText('docs')).toBeInTheDocument();
   });
 
   it('renders Version history in the collapsed rail overflow', async () => {
@@ -628,46 +581,14 @@ describe('ArticleRightPane', () => {
     });
 
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
+    expect(screen.getByTestId('details-source')).toBeInTheDocument();
   });
 
-  it('offers Pull latest in the Source block and Re-index in Document health for a Confluence page', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    expect(screen.getByTestId('details-source')).toContainElement(screen.getByTestId('article-resync-btn'));
-    expect(screen.getByTestId('article-resync-btn')).toHaveTextContent('Pull latest from Confluence…');
-    expect(screen.getByTestId('document-health')).toContainElement(screen.getByTestId('article-reembed-btn'));
-  });
-
-  it('hides Pull latest for a local page', () => {
-    currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null } as typeof currentMockPage;
-
+  it('offers Re-index in Document health and keeps Pull latest off Source', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByTestId('article-resync-btn')).not.toBeInTheDocument();
-    // Re-index always available — local pages can still be indexed for search.
-    expect(screen.getByTestId('article-reembed-btn')).toBeInTheDocument();
-  });
-
-  it('pulls from Confluence only after the confirm, which opens on Cancel', async () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByTestId('article-resync-btn'));
-
-    const dialog = await screen.findByTestId('confirm-dialog');
-    expect(dialog).toHaveTextContent('Pull the latest version from Confluence?');
-    expect(mockResyncPage).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByTestId('confirm-dialog-cancel')).toHaveFocus());
-
-    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
-    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
-    expect(mockResyncPage).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId('article-resync-btn'));
-    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
-
-    expect(mockResyncPage).toHaveBeenCalledTimes(1);
-    expect(mockResyncPage.mock.calls[0]![0]).toBe('page-1');
+    expect(screen.getByTestId('document-health')).toContainElement(screen.getByTestId('article-reembed-btn'));
   });
 
   it('routes the rail’s pull through the same confirm', async () => {
@@ -1126,39 +1047,6 @@ describe('ArticleRightPane', () => {
     expect(mockReembedPage.mock.calls[0]![0]).toBe('page-1');
   });
 
-  it('disables the Re-sync button while resync is pending', () => {
-    resyncIsPending = true;
-
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    const btn = screen.getByTestId('article-resync-btn') as HTMLButtonElement;
-    expect(btn.disabled).toBe(true);
-  });
-
-  it('does not toast error when Re-sync silently no-ops (0/0/[])', async () => {
-    // Bulk endpoint can legitimately return zero-everywhere when the page is
-    // skipped server-side (e.g. confluenceId became null between render and
-    // click). That's not a failure — surface as info, not error.
-    const sonner = await import('sonner');
-    const toastErrorSpy = vi.spyOn(sonner.toast, 'error');
-    const toastInfoSpy = vi.spyOn(sonner.toast, 'info');
-    mockResyncPage.mockImplementation((_id: string, opts: { onSuccess: (d: { succeeded: number; failed: number; errors: string[] }) => void }) => {
-      opts.onSuccess({ succeeded: 0, failed: 0, errors: [] });
-    });
-
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('article-resync-btn'));
-    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => {
-      expect(toastErrorSpy).not.toHaveBeenCalled();
-      expect(toastInfoSpy).toHaveBeenCalledWith('Nothing to re-sync.');
-    });
-
-    toastErrorSpy.mockRestore();
-    toastInfoSpy.mockRestore();
-  });
-
   // #1126: collapsing this pane drops the outline entirely — the rail only ever
   // carried actions. The flyout is what keeps the outline reachable at 40px,
   // which matters now that opening the dock forces the rail.
@@ -1493,262 +1381,13 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText('Unpublished draft')).toBeInTheDocument();
   });
 
-  it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    const link = screen.getByText('Open in Confluence').closest('a');
-    expect(link).toBeInTheDocument();
-    // Should use confluenceId '98765432', not the internal id 'page-1'
-    expect(link).toHaveAttribute(
-      'href',
-      'https://confluence.example.com/pages/viewpage.action?pageId=98765432',
-    );
-  });
-
-  it('hides the "Open in Confluence" link when confluenceId is null', () => {
-    currentMockPage = { ...mockPage, confluenceId: null };
-
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    expect(screen.queryByText('Open in Confluence')).not.toBeInTheDocument();
-  });
-
-  // --- AutoTagger ---
-  it('renders AutoTagger with correct props', async () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    const autoTagger = await screen.findByTestId('auto-tagger');
-    expect(autoTagger).toBeInTheDocument();
-    expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
-    expect(autoTagger).toHaveAttribute('data-labels', 'docs');
-  });
-
-  it('renders the Auto-tag button in read mode without any legacy settings fields (#718 regression)', async () => {
-    // settings mock has no ollamaModel/openaiModel/llmProvider; the button must still appear.
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-    expect(await screen.findByTestId('auto-tagger')).toBeInTheDocument();
-  });
-
-  // --- Delete via ConfirmDialog (replaces native confirm()) ---
-  it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
-    // Standalone, because the soft-delete copy asserted below is the copy of
-    // the soft-delete branch: `mockPage` is Confluence-sourced, and that branch
-    // deletes upstream with no Trash to restore from (#1636).
-    currentMockPage = { ...mockPage, source: 'standalone' };
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByText('Move to trash'));
-
-    // Copy must reflect the 30-day soft-delete trash, not the old (false)
-    // "cannot be undone" claim from native confirm().
-    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
-    expect(
-      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Move to trash');
-
-    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => {
-      expect(mockDeletePage).toHaveBeenCalledWith('page-1');
-    });
-    expect(mockNavigate).toHaveBeenCalledWith('/');
-  });
-
-  /**
-   * #1636 — the same copy module as PageViewPage's dialog, driven by the same
-   * server-side `descendantCount`. `mockPage` carries no count, so every other
-   * test here is exercising the unknown-count fallback.
-   */
-  it('names the sub-article count when the page has descendants (#1636)', async () => {
-    currentMockPage = { ...mockPage, source: 'standalone', descendantCount: 2 } as typeof currentMockPage;
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByText('Move to trash'));
-    await screen.findByTestId('confirm-dialog');
-
-    expect(await screen.findByText('Move page and sub-articles to trash?')).toBeInTheDocument();
-    expect(screen.getByText(/^This page has 2 sub-articles\./)).toBeInTheDocument();
-    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
-      'Move page and 2 sub-articles to trash',
-    );
-
-    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
-    await waitFor(() => {
-      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
-    });
-    expect(mockDeletePage).not.toHaveBeenCalled();
-  });
-
-  /**
-   * …and the count is quoted for a STANDALONE page only, because a
-   * Confluence-sourced page is not trashed at all: its delete propagates UP to
-   * Confluence, and afterwards `GET /pages/trash` filters
-   * `source = 'standalone'` while restore refuses anything else — the row never
-   * reaches Trash and can never be restored from it. The N=0 copy this used to
-   * render promised a 30-day restore that no later action could honour.
-   */
-  it('promises no restore for a Confluence page — its delete goes upstream (#1636)', async () => {
-    currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByText('Danger zone'));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete in Confluence…' }));
-    await screen.findByTestId('confirm-dialog');
-
-    expect(await screen.findByText('Delete page in Confluence permanently?')).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        'This page is synced from Confluence, so deleting it here deletes it in Confluence too. This cannot be undone.',
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete permanently in Confluence');
-
-    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
-    await waitFor(() => {
-      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
-    });
-    expect(mockDeletePage).not.toHaveBeenCalled();
-  });
-
-  it('cancelling the move-to-trash dialog does not delete', async () => {
-    currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null } as typeof currentMockPage;
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByText('Move to trash'));
-    await screen.findByTestId('confirm-dialog');
-    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
-    });
-    expect(mockDeletePage).not.toHaveBeenCalled();
-  });
-
-  // Behaviour change: the collapsed rail no longer offers Delete at all.
-  //
-  // Expanded, deleting sits behind a "Danger zone" disclosure and then a
-  // confirm dialog. Collapsing the pane used to PROMOTE it to a top-level icon
-  // among ten unlabelled glyphs — so the safety around destroying a page was a
-  // function of a layout preference. Sharing the confirm (which it did, and
-  // which this test used to assert) made the second step identical; it did
-  // nothing about the first one going missing.
+  // Behaviour change: the collapsed rail offers no Delete control.
   it('the collapsed rail offers no Delete control', () => {
     useUiStore.setState({ articleSidebarCollapsed: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByLabelText('Delete page')).not.toBeInTheDocument();
-  });
-
-  it('expanded, Delete still drives the move-to-trash dialog', async () => {
-    useUiStore.setState({ articleSidebarCollapsed: false });
-
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    // Two steps by design: the disclosure, then the confirm. That first step is
-    // exactly what the collapsed rail used to skip. (The expanded control is
-    // labelled by its visible text; `aria-label="Delete page"` belonged to the
-    // rail icon alone, which is why the check above can look for it.)
-    fireEvent.click(screen.getByText('Danger zone'));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete in Confluence…' }));
-
-    expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => {
-      expect(mockDeletePage).toHaveBeenCalledWith('page-1');
-    });
-  });
-
-  // --- PDF Export ---
-  it('calls export mutation and triggers download on success', async () => {
-    const fakeBlob = new Blob(['%PDF'], { type: 'application/pdf' });
-    mockExportPdfAsync.mockResolvedValueOnce(fakeBlob);
-    const createObjectURLSpy = vi.fn(() => 'blob:http://localhost/fake-url');
-    const revokeObjectURLSpy = vi.fn();
-    globalThis.URL.createObjectURL = createObjectURLSpy;
-    globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
-
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByText('Export PDF'));
-
-    await waitFor(() => {
-      expect(mockExportPdfAsync).toHaveBeenCalledWith(NaN);
-    });
-    await waitFor(() => {
-      expect(createObjectURLSpy).toHaveBeenCalledWith(fakeBlob);
-      expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:http://localhost/fake-url');
-    });
-  });
-
-  it('shows this page in the graph from Details', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByTestId('show-in-graph-btn'));
-    expect(mockNavigate).toHaveBeenCalledWith('/graph?focus=page-1');
-  });
-
-  describe('relocate entry point (#1123)', () => {
-    it('offers "Move to Confluence" on a local article', () => {
-      currentMockPage = {
-        ...mockPage,
-        source: 'standalone',
-        spaceKey: 'HOME',
-        confluenceId: null,
-      };
-      render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-      expect(screen.getByTestId('relocate-btn')).toHaveTextContent('Move to Confluence…');
-      expect(screen.getByTestId('details-source')).toContainElement(screen.getByTestId('relocate-btn'));
-      expect(screen.getByTestId('relocate-btn')).toHaveAccessibleDescription('Confluence becomes the source of record.');
-    });
-
-    it('offers "Move to a local space" on a Confluence article only inside the Danger zone', () => {
-      currentMockPage = { ...mockPage, source: 'confluence' };
-      render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
-      expect(screen.getByTestId('relocate-local-btn').closest('details')).toBe(screen.getByTestId('danger-zone'));
-    });
-
-    // Hidden, not disabled: `pages:relocate` is seeded onto editor /
-    // space_admin by migration 086 and CE ships no UI for granting
-    // permissions, so a denied user has no in-product path to earning it.
-    it('renders no relocate control without the pages:relocate permission', () => {
-      mockRelocateAllowed = false;
-      currentMockPage = { ...mockPage, source: 'standalone' };
-      render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
-    });
-
-    it('opens the relocate dialog carrying the article’s own source', async () => {
-      currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null };
-      render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      fireEvent.click(screen.getByTestId('relocate-btn'));
-
-      await screen.findByRole('dialog');
-      await waitFor(() => {
-        expect(screen.getByRole('dialog')).toHaveTextContent(/move to confluence/i);
-      });
-
-      fireEvent.click(screen.getByTestId('relocate-cancel'));
-      await waitFor(() => {
-        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      });
-    });
-
-    it('hides the relocate control while the editor is open', () => {
-      currentMockPage = { ...mockPage, source: 'standalone' };
-      useArticleViewStore.setState({ editing: true });
-      render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
-    });
   });
 
   describe('verification', () => {

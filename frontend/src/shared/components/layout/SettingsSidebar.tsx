@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
+import { PANEL_COLLAPSE_TRANSITION } from '../../hooks/use-panel-collapse-motion';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
@@ -13,18 +14,17 @@ import {
 import { cn } from '../../lib/cn';
 
 /**
- * Left sidebar mounted on /settings/* routes — replaces the Pages tree there.
- * Top: the Pages / AI / Graph main-nav strip (shared with SidebarTreeView via
- * `MainNavStrip`) so users keep one-click access to the rest of the app while
- * in Settings.
+ * Left sidebar mounted on /settings/* routes — replaces the Pages tree there
+ * inside `app-workspace`.
+ * On desktop, Pages / AI / Graph live in the outer chassis icon rail
+ * (`MainNavChassisRail`) so `embedMainNav={false}` is passed; in the mobile
+ * drawer (`embedMainNav={true}`) this renders `MainNavStripExpanded` at top.
  * Body: the Settings section nav (was the inner rail inside SettingsLayout).
  *
  * Always open: Settings is a destination rail, not a working view, so there
  * is no collapse control here. The shared `treeSidebarCollapsed` state (and
  * the `,` shortcut) still apply to SidebarTreeView on the other routes.
  */
-
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
 export function SettingsSidebar({
   onNavigate,
@@ -44,9 +44,9 @@ export function SettingsSidebar({
   return (
     <m.aside
       data-testid="settings-sidebar"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      initial={false}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
-      transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className="app-sidebar relative flex flex-col overflow-hidden"
     >
       {/* Same 48px chrome height as SidebarTreeView's — the two sidebars share
@@ -99,7 +99,7 @@ export function SettingsSidebar({
                         data-testid={`nav-settings-${item.id}`}
                         className={({ isActive }) =>
                           cn(
-                            'group/nav relative block rounded-md px-2.5 py-1.5 text-sm motion-safe:transition-colors motion-safe:duration-150',
+                            'group/nav relative block rounded-md px-2.5 py-1.5 text-sm motion-safe:transition-colors motion-safe:duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             isActive
                               ? 'nav-selection font-medium'
                               : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
@@ -135,6 +135,20 @@ export function SettingsSidebar({
           );
         })}
       </nav>
+
+      <span
+        data-rail-hairline
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-0 -right-px top-0 z-10 flex w-[3px] flex-col items-center"
+      >
+        <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+        <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+          <span className="size-[3px] rounded-full bg-muted-foreground" />
+          <span className="size-[3px] rounded-full bg-muted-foreground" />
+          <span className="size-[3px] rounded-full bg-muted-foreground" />
+        </span>
+        <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+      </span>
 
     </m.aside>
   );

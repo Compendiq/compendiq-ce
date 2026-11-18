@@ -96,24 +96,31 @@ and no `final` frame; later metadata still matters.
 
 ## Authenticated inset shell
 
-`AppLayout` paints a flat viewport **chassis** (`--app-chassis`, inset on
-`md+`). The top app header — logo, then the Pages / AI / Graph tabs
-(`MainNavHeaderTabs`), then the session cluster — and the left navigation
-column (`MainNavChassisRail` hosting the route's sidebar) are transparent over
-it, so the frame is one colour on every side of a single rounded **workspace
-card**, which carries the light `--app-workspace-shadow` (ADR-010 v1.7). The
-composition is:
+`AppLayout` paints the diagonal gradient **chassis** (`--app-chassis` with `--shell-grad-*` + `--shell-pool`, inset on `md+`). The top app header (logo and session cluster, `--app-header-height`)
+and the compact left destination icon rail (`MainNavChassisRail`, matching
+`--app-nav-rail-width: var(--app-header-height)`, rendering the icon-only
+Pages / AI / Graph links) are transparent over `--app-chassis`, forming a
+uniform-width L-shaped frame around a single rounded **workspace card**
+(`app-workspace`, carrying `--app-workspace-shadow`). Inside the frosted translucent workspace card (`--panel-bg` over the shell
+gradient with `backdrop-filter: blur(16px)`, `--panel-border`, `--panel-divider`, and `--rail-divider`), the
+collapsible/resizable route sidebar (`SidebarTreeView` / `AiConversationsSidebar`
+/ `SettingsSidebar` on `--app-sidebar-translucent`, slightly darker than `<main>`
+with `background-clip: padding-box`) sits directly to the left of the transparent `<main>`
+pane and attached inspector (`--app-rail-bg: transparent`, divided by `--rail-divider`) on article routes,
+letting the chassis gradient show through while keeping in-flow workspace cards,
+toolbars, wells, Library search, and both article/inspector headers lightly translucent (`--workspace-card-bg` /
+`--workspace-toolbar-bg` / `--workspace-well-bg`). The composition is:
 ```mermaid
 flowchart TB
     chassis["viewport chassis --app-chassis (flat)"]
-    header["top app header<br/>logo · Pages / AI / Graph tabs · session"]
+    header["top app header<br/>logo · session"]
     shell["app shell (no overflow clip)"]
-    left["left column MainNavChassisRail<br/>SidebarTreeView | AiConversationsSidebar | SettingsSidebar<br/>transparent, resizable"]
-    card["workspace card --app-shell-* + --app-workspace-shadow<br/>main [+ attached inspector on article routes]"]
+    rail["left icon rail MainNavChassisRail<br/>Pages / AI / Graph icons only · width = header height"]
+    card["workspace card --app-shell-* + --app-workspace-shadow<br/>route sidebar (--app-sidebar-bg) | main [--color-card] | [inspector]"]
 
     chassis --> header
     chassis --> shell
-    shell --> left
+    shell --> rail
     shell --> card
 ```
 

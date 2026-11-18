@@ -76,7 +76,7 @@ export interface PageSummary extends PageAiPolicyWorkerFields {
   aiPolicyRevision?: number;
 }
 
-interface PageDetail extends PageSummary, Partial<PageLifecycleState>, PageAiPolicyDetailFields {
+export interface PageDetail extends PageSummary, Partial<PageLifecycleState>, PageAiPolicyDetailFields {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;

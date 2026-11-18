@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { cn } from '../../lib/cn';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Link } from 'react-router-dom';
-import { Loader2, Lock, LockOpen } from 'lucide-react';
+import { ChevronRight, Loader2, Lock, LockOpen } from 'lucide-react';
 import { CONFLUENCE_SETTINGS_PATH } from '../../lib/routes';
 import type { PageLifecycleState } from '@compendiq/contracts';
 import { PageBaselineHistory } from './PageBaselineHistory';
@@ -49,6 +49,7 @@ interface PageLifecycleSectionProps {
   pageId: string;
   /** `undefined` while the page read is in flight or failed: state unknown. */
   page: LifecycleFields | undefined;
+  defaultOpen?: boolean;
 }
 
 function formatWhen(value: string | null | undefined): string | null {
@@ -58,7 +59,7 @@ function formatWhen(value: string | null | undefined): string | null {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps) {
+export function PageLifecycleSection({ pageId, page, defaultOpen = true }: PageLifecycleSectionProps) {
   const [freezeOpen, setFreezeOpen] = useState(false);
   const [unfreezeOpen, setUnfreezeOpen] = useState(false);
   const [announcement, setAnnouncement] = useState('');
@@ -110,17 +111,27 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
   }
 
   return (
-    <section className="mt-5" data-testid="document-lifecycle">
+    <details open={defaultOpen} className="group mt-5 border-t border-border/60 pt-3" data-testid="document-lifecycle">
       {/* A programmatic focus target, not a control: no outline at rest. The
           shared `nm-focus-ring` keeps a transparent outline at rest, which
           forced-colors mode paints as a permanent box around this heading. */}
-      <h3
-        ref={headingRef}
-        tabIndex={-1}
-        className="text-xs font-semibold text-foreground outline-none focus-visible:[outline:2px_solid_var(--color-ring)] focus-visible:[outline-offset:2px]"
+      <summary
+        className="flex cursor-pointer list-none items-center justify-between gap-2 py-0.5 text-xs font-semibold text-foreground marker:content-none [&::-webkit-details-marker]:hidden"
       >
-        Document lifecycle
-      </h3>
+        <span className="inline-flex items-center gap-1.5">
+          <ChevronRight size={13} className="shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
+          <h3
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-xs font-semibold text-foreground outline-none focus-visible:[outline:2px_solid_var(--color-ring)] focus-visible:[outline-offset:2px]"
+          >
+            Document lifecycle
+          </h3>
+        </span>
+        <span className="text-[11px] font-normal text-muted-foreground">
+          {frozen ? (page.frozenVersion ? `Frozen v${page.frozenVersion}` : 'Frozen') : 'Editable'}
+        </span>
+      </summary>
 
       <div className="mt-1.5 flex items-start gap-2 text-xs font-medium text-foreground/85">
         {frozen ? (
@@ -247,7 +258,7 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
         }}
         onThawed={() => setAnnouncement('This article is editable again. Its baseline is retained.')}
       />
-    </section>
+    </details>
   );
 }
 

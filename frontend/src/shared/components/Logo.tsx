@@ -4,6 +4,81 @@ interface LogoProps {
 }
 
 /**
+ * Compendiq Q-glyph + magnifier mark (no background tile, matching the left
+ * rail icon style). Used independently in the top header so the mark centers
+ * inside `--app-nav-rail-width` while the wordmark aligns with the left border
+ * of the workspace card.
+ */
+export function LogoMark({
+  className,
+  title,
+}: {
+  className?: string;
+  title?: string;
+}) {
+  return (
+    <svg
+      role={title ? 'img' : undefined}
+      aria-label={title}
+      aria-hidden={title ? undefined : 'true'}
+      viewBox="0 0 1000 1000"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      style={{ fillRule: 'evenodd', clipRule: 'evenodd', strokeLinecap: 'round' }}
+    >
+      {title && <title>{title}</title>}
+      <path
+        d="M1000,115l0,770c0,63.47 -51.53,115 -115,115l-770,0c-63.47,0 -115,-51.53 -115,-115l0,-770c0,-63.47 51.53,-115 115,-115l770,0c63.47,0 115,51.53 115,115Z"
+        fill="#16191e"
+      />
+      <path
+        d="M500,95c222.176,-0 405,182.824 405,405c0,222.176 -182.824,405 -405,405c-222.176,0 -405,-182.824 -405,-405c-0,-222.176 182.824,-405 405,-405Zm285.424,301.118c-43.57,-119.717 -158.035,-199.868 -285.434,-199.868c-166.632,0 -303.75,137.118 -303.75,303.75c0,166.632 137.118,303.75 303.75,303.75c127.399,0 241.863,-80.151 285.434,-199.868l-95.074,-48.532c-24.669,86.814 -104.537,147.15 -194.789,147.15c-111.088,0 -202.5,-91.412 -202.5,-202.5c0,-111.088 91.412,-202.5 202.5,-202.5c90.251,0 170.12,60.336 194.789,147.15l95.074,-48.532Z"
+        fill="#e7e9eb"
+      />
+      <path d="M618.125,618.125l165.375,165.375" fill="none" stroke="#86aec8" strokeWidth="67.5" />
+    </svg>
+  );
+}
+
+/**
+ * Compendiq wordmark SVG ("Compendiq" with the magnifying-q at the end),
+ * viewBox starting at `x = 1040` so the Helvetica 'C' is never clipped and its
+ * left edge aligns cleanly with the left border of the workspace card.
+ */
+export function LogoWordmark({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="1040 0 2825 1000"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      style={{ fillRule: 'evenodd', clipRule: 'evenodd', strokeLinecap: 'round' }}
+    >
+      <text
+        x="1064.82"
+        y="692.255"
+        fill="currentColor"
+        style={{ fontFamily: 'Helvetica', fontSize: '537.02px' }}
+      >
+        C
+        <tspan
+          x="1444.583 1735.193 2174.48 2465.089 2755.699 3046.309 3336.919"
+          y="692.255 692.255 692.255 692.255 692.255 692.255 692.255"
+        >
+          ompendi
+        </tspan>
+      </text>
+      <g>
+        <path d="M3761.869,554.017l0,138.238" fill="none" stroke="currentColor" strokeWidth="40.28" strokeLinecap="butt" />
+        <path d="M3627.682,692.207l138.238,0.057" fill="none" stroke="currentColor" strokeWidth="40.28" strokeLinecap="butt" />
+        <circle cx="3623.631" cy="554.017" r="138.238" fill="none" stroke="currentColor" strokeWidth="40.28" strokeLinecap="butt" />
+        <path d="M3723.288,649.755l101.86,101.86" fill="none" stroke="#86aec8" strokeWidth="40.28" strokeLinejoin="bevel" />
+      </g>
+    </svg>
+  );
+}
+
+/**
  * Compendiq wordmark + Q-glyph + magnifier.
  *
  * Two color regions:
@@ -45,7 +120,7 @@ export function Logo({ className, title = 'Compendiq' }: LogoProps) {
       <title>{title}</title>
       <path
         d="M1000,115l0,770c0,63.47 -51.53,115 -115,115l-770,0c-63.47,0 -115,-51.53 -115,-115l0,-770c0,-63.47 51.53,-115 115,-115l770,0c63.47,0 115,51.53 115,115Z"
-        fill="#131922"
+        fill="#16191e"
       />
       <path
         d="M500,95c222.176,-0 405,182.824 405,405c0,222.176 -182.824,405 -405,405c-222.176,0 -405,-182.824 -405,-405c-0,-222.176 182.824,-405 405,-405Zm285.424,301.118c-43.57,-119.717 -158.035,-199.868 -285.434,-199.868c-166.632,0 -303.75,137.118 -303.75,303.75c0,166.632 137.118,303.75 303.75,303.75c127.399,0 241.863,-80.151 285.434,-199.868l-95.074,-48.532c-24.669,86.814 -104.537,147.15 -194.789,147.15c-111.088,0 -202.5,-91.412 -202.5,-202.5c0,-111.088 91.412,-202.5 202.5,-202.5c90.251,0 170.12,60.336 194.789,147.15l95.074,-48.532Z"
