@@ -532,7 +532,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --shell-pool: rgb(36 40 48 / 0.30);
   --shell-pool-soft: rgb(26 29 36 / 0.14);
   --shell-muted: #a5a9af;
-  --panel-bg: rgb(255 255 255 / 0.08);
+  --panel-bg: rgb(22 25 30 / 0.82);
   --panel-bg-fallback: rgb(20 22 27 / 0.94);
   --panel-border: transparent;
   --panel-divider: transparent;
@@ -541,10 +541,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
     0 2px 6px rgb(0 0 0 / 45%),
     0 12px 28px -4px rgb(0 0 0 / 65%);
   --nav-hover: rgb(255 255 255 / 0.06);
-  --app-sidebar-translucent: rgb(0 0 0 / 0.16);
-  --workspace-card-bg: rgb(255 255 255 / 0.05);
-  --workspace-toolbar-bg: rgb(255 255 255 / 0.04);
-  --workspace-well-bg: rgb(0 0 0 / 0.14);
+  --app-sidebar-translucent: rgb(20 23 27 / 0.88);
+  --workspace-card-bg: rgb(255 255 255 / 0.03);
+  --workspace-toolbar-bg: rgb(255 255 255 / 0.025);
+  --workspace-well-bg: rgb(0 0 0 / 0.16);
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
@@ -556,9 +556,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --app-header-bg: #0d0e11;
   --app-shell-bg: var(--color-background);
   --app-sidebar-bg: #14171b;
-  /* Attached inside .app-workspace on desktop: transparent so the right panel
-     shares the frosted workspace plate and lets the diagonal shell gradient
-     show through just like <main>. Mobile sheets override to --color-card. */
   --app-rail-bg: transparent;
   --app-workspace-shadow: var(--panel-shadow);
   --surface-backdrop: var(--app-chassis);
@@ -989,8 +986,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --shell-pool: rgb(196 201 208 / 0.56);
   --shell-pool-soft: rgb(206 211 217 / 0.24);
   --shell-muted: #4b525c;
-  --panel-bg: rgb(255 255 255 / 0.88);
-  --panel-bg-fallback: rgb(255 255 255 / 0.95);
+  --panel-bg: rgb(255 255 255 / 0.92);
+  --panel-bg-fallback: rgb(255 255 255 / 0.96);
   --panel-border: rgb(255 255 255 / 0.62);
   --panel-divider: var(--color-border);
   --rail-divider: var(--color-border);
@@ -999,10 +996,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     0 1px 3px rgb(20 42 66 / 7%),
     0 8px 24px -4px rgb(20 42 66 / 10%);
   --nav-hover: rgb(255 255 255 / 0.45);
-  --app-sidebar-translucent: rgb(208 212 218 / 0.38);
-  --workspace-card-bg: rgb(255 255 255 / 0.50);
-  --workspace-toolbar-bg: rgb(235 240 245 / 0.55);
-  --workspace-well-bg: rgb(244 246 248 / 0.45);
+  --app-sidebar-translucent: rgb(248 250 252 / 0.88);
+  --workspace-card-bg: rgb(255 255 255 / 0.65);
+  --workspace-toolbar-bg: rgb(235 240 245 / 0.68);
+  --workspace-well-bg: rgb(244 246 248 / 0.60);
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
@@ -1027,9 +1024,6 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
   --app-sidebar-bg: #f8fafc;
-  /* Attached inside .app-workspace on desktop: transparent so the right panel
-     shares the frosted workspace plate and lets the diagonal shell gradient
-     show through just like <main>. Mobile sheets override to --color-card. */
   --app-rail-bg: transparent;
   --app-workspace-shadow: var(--panel-shadow);
 }
@@ -1195,7 +1189,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 /* The content panel is a frosted, elevated surface floating on the shell gradient. */
 @utility app-workspace {
   background: var(--panel-bg);
-  backdrop-filter: blur(16px) saturate(112%);
+  backdrop-filter: blur(10px) saturate(106%);
   border: 1px solid var(--panel-border);
   border-radius: var(--app-shell-radius);
   box-shadow: var(--panel-shadow);
@@ -1323,7 +1317,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 .app-workspace :is(.sticky, .panel-toolbar).bg-card {
   background-color: var(--panel-bg-fallback);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(8px);
 }
 /* Panel composition primitives. Sidebars share the same chassis, but their
    internal hierarchy comes from quiet chrome, a single context control, and

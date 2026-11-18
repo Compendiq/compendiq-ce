@@ -239,7 +239,7 @@ describe('Inset shell utilities', () => {
   it('the workspace utility is the frosted radiused card with its translucent panel ground, border token, and resting shadow', () => {
     const block = extractBlock(css, '@utility app-workspace {');
     expect(block).toMatch(/background:\s*var\(--panel-bg\)/);
-    expect(block).toMatch(/backdrop-filter:\s*blur\(16px\)/);
+    expect(block).toMatch(/backdrop-filter:\s*blur\(10px\)/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
     expect(block).toMatch(/border:\s*1px solid var\(--panel-border\)/);
     expect(css).not.toMatch(/--app-shell-border-width/);
@@ -278,19 +278,10 @@ describe('Inset shell utilities', () => {
     expect(sidebarHairline).toMatch(/border-right-width:\s*0/);
     expect(railHairline).toMatch(/border-left-width:\s*0/);
 
-    const panelBgMatch = /--panel-bg:\s*rgb\(255 255 255 \/ ([0-9.]+)\);/.exec(darkBlock);
-    const sidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
-    expect(panelBgMatch).not.toBeNull();
-    expect(sidebarAlphaMatch).not.toBeNull();
-    expect(Number(panelBgMatch![1])).toBeCloseTo(0.08, 5);
-    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.16, 5);
-
-    const lightPanelBgMatch = /--panel-bg:\s*rgb\(255 255 255 \/ ([0-9.]+)\);/.exec(lightBlock);
-    const lightSidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(208 212 218 \/ ([0-9.]+)\);/.exec(lightBlock);
-    expect(lightPanelBgMatch).not.toBeNull();
-    expect(lightSidebarAlphaMatch).not.toBeNull();
-    expect(Number(lightPanelBgMatch![1])).toBeCloseTo(0.88, 5);
-    expect(Number(lightSidebarAlphaMatch![1])).toBeCloseTo(0.38, 5);
+    expect(darkBlock).toMatch(/--panel-bg:\s*rgb\(22 25 30 \/ 0\.82\);/);
+    expect(darkBlock).toMatch(/--app-sidebar-translucent:\s*rgb\(20 23 27 \/ 0\.88\);/);
+    expect(lightBlock).toMatch(/--panel-bg:\s*rgb\(255 255 255 \/ 0\.92\);/);
+    expect(lightBlock).toMatch(/--app-sidebar-translucent:\s*rgb\(248 250 252 \/ 0\.88\);/);
   });
 
   it('mobile is edge-to-edge; md and xl step the inset and card radius', () => {
