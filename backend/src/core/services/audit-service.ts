@@ -173,6 +173,10 @@ export type AuditAction =
   | 'PAGE_FROZEN'
   | 'PAGE_THAWED'
   | 'PAGE_BASELINE_ACTIVATION_CHANGED'
+  // #2063: migration 151b retired a pre-upgrade writer epoch so the one-time
+  // migration 152 cutover could run. Metadata names the retirement mode and
+  // the started-intent count; user_id is NULL (a migration, not an operator).
+  | 'PAGE_WRITER_UPGRADE_RETIREMENT'
   | 'PAGE_GOVERNANCE_POLICY_CHANGED'
   // #1881: the article AI policy enforcement switch. Metadata carries the
   // blockers observed at the transition and whether the legacy-client

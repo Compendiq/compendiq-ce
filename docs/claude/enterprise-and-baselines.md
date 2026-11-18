@@ -180,7 +180,10 @@ metadata and preserves current grants; token mismatch never decides phase.
 Existing ACE-before-page locking and cutover-ACL refusals remain authoritative.
 Keep uncertain effects, preparation, receipts/capacity, deferred-ingestion,
 collaborative-document and attachment fences intact. See the runbook's
-one-time152 retirement requirement before deploying this snapshot schema.
+one-time152 upgrade-retirement section before deploying this snapshot schema:
+migration 151b retires the pre-upgrade epochs automatically (fenced when no
+effect was dispatched, quiesced and marked otherwise), and started unknown
+intents still need a termination-verified fence.
 
 Local delete recovery uses exact tombstones and retries committed cleanup
 without repeating deletion.

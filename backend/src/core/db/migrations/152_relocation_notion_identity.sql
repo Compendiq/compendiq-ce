@@ -1,10 +1,22 @@
 -- Old writers must be quiesced/fenced and held stopped across this snapshot cutover.
 -- Durable pending intents may remain; execution authority must already be retired.
+--
+-- #2063: migration 151b retires every pre-upgrade epoch before this guard runs.
+-- Always apply through `runMigrations` (151b sorts before this file); applying
+-- this file by hand to a 151-level database references `upgrade_retired_at`,
+-- which 151b adds.
+-- An epoch it could not fence (started work, no termination proof) is closed by
+-- `quiesced_at` + `upgrade_retired_at` with no owner acknowledgment; that state
+-- is retired for this cutover and must pass. A row with the marker but an open
+-- gate still blocks.
 DO $$ BEGIN
   IF EXISTS (
     SELECT 1 FROM page_writer_runtimes
      WHERE fenced_at IS NULL
-       AND (quiesced_at IS NULL OR quiescence_ack IS NULL)
+       AND (
+         quiesced_at IS NULL
+         OR (quiescence_ack IS NULL AND upgrade_retired_at IS NULL)
+       )
   ) OR EXISTS (
     SELECT 1 FROM page_runtime_admissions WHERE released_at IS NULL
   ) THEN
