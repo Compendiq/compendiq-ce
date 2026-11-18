@@ -4,8 +4,8 @@ import { resolve } from 'path';
 import { extractBlock } from './test-utils';
 
 /**
- * Inset application shell: viewport chassis → rounded app shell →
- * integrated workspace (nav + main) + detached context rail.
+ * Inset application shell: viewport chassis (top header + compact left icon
+ * rail) → rounded workspace card (route sidebar + main + detached context rail).
  *
  * Behaviour cannot be measured in jsdom (no layout). This file pins the
  * tokens, utilities and DOM structure as a proxy, the same way
@@ -56,14 +56,29 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('shell keeps the workspace ground while the rail uses the central pane surface in both themes', () => {
-    for (const block of [darkBlock, lightBlock]) {
+  it('shell keeps the workspace ground while the sidebar sits slightly darker than the central pane in both themes', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
       const shell = /--app-shell-bg:\s*([^;]+);/.exec(block);
       const rail = /--app-rail-bg:\s*([^;]+);/.exec(block);
       expect(shell, '--app-shell-bg must be declared').not.toBeNull();
       expect(rail, '--app-rail-bg must be declared').not.toBeNull();
       expect(shell![1]!.trim()).toBe('var(--color-background)');
       expect(rail![1]!.trim()).toBe('var(--color-card)');
+
+      const sidebarBg = tokenHex(block, '--app-sidebar-bg');
+      const cardBg = tokenHex(block, '--color-card');
+      const chassisBg = tokenHex(block, '--app-chassis');
+      expect(
+        luminance(sidebarBg),
+        `${theme}: sidebar (${sidebarBg}) must be darker than main pane (${cardBg})`,
+      ).toBeLessThan(luminance(cardBg));
+      expect(
+        luminance(sidebarBg),
+        `${theme}: sidebar (${sidebarBg}) must stay above chassis (${chassisBg})`,
+      ).toBeGreaterThan(luminance(chassisBg));
     }
   });
 
@@ -179,16 +194,20 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('the boot skeleton reserves the left column at the tree’s default width', () => {
+  it('matches the left icon rail width to the header height and mirrors it in the boot skeleton', () => {
     const skeleton = read('shared/components/feedback/AppLoadingFallback.tsx');
-    expect(css).toMatch(/--app-nav-rail-width:\s*282px/);
+    expect(css).toMatch(/--app-nav-rail-width:\s*var\(--app-header-height\)/);
     expect(skeleton).toContain('w-[var(--app-nav-rail-width)]');
+    expect(skeleton).toContain('app-sidebar');
+    expect(skeleton).not.toContain('ml-4');
   });
 
-  it('left navigation has a transparent background, inheriting the app-shell ground', () => {
+  it('the workspace sidebar uses --app-sidebar-bg with a 1px right divider and transparent toolbars', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
-    expect(sidebar).toMatch(/background:\s*transparent/);
+    expect(sidebar).toMatch(/background:\s*var\(--app-sidebar-bg\)/);
+    expect(sidebar).toMatch(/border-right-width:\s*1px/);
+    expect(sidebar).toMatch(/border-color:\s*var\(--color-border\)/);
     expect(pane).toMatch(/background:\s*var\(--color-card\)/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
@@ -338,15 +357,22 @@ describe('AppLayout structure', () => {
     expect(skipAt).toBeLessThan(shellAt);
   });
 
-  it('mounts left navigation in the chassis rail outside the workspace card', () => {
+  it('mounts the compact icon rail on the chassis and the route sidebar inside the workspace card left of main', () => {
     const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
     expect(workspaceAt).toBeGreaterThan(-1);
     const chassisNavAt = appLayout.indexOf('<MainNavChassisRail');
-    const sidebarAt = appLayout.indexOf('<SidebarTreeView');
+    const sidebarAt = appLayout.indexOf('<SidebarTreeView', workspaceAt);
+    const aiSidebarAt = appLayout.indexOf('<AiConversationsSidebar', workspaceAt);
+    const settingsSidebarAt = appLayout.indexOf('<SettingsSidebar', workspaceAt);
     const mainAt = appLayout.indexOf('id="main-content"');
     expect(chassisNavAt).toBeGreaterThan(-1);
     expect(chassisNavAt).toBeLessThan(workspaceAt);
-    expect(sidebarAt).toBeLessThan(workspaceAt);
+    expect(sidebarAt).toBeGreaterThan(workspaceAt);
+    expect(sidebarAt).toBeLessThan(mainAt);
+    expect(aiSidebarAt).toBeGreaterThan(workspaceAt);
+    expect(aiSidebarAt).toBeLessThan(mainAt);
+    expect(settingsSidebarAt).toBeGreaterThan(workspaceAt);
+    expect(settingsSidebarAt).toBeLessThan(mainAt);
     expect(mainAt).toBeGreaterThan(workspaceAt);
     const paneAt = appLayout.indexOf('<ArticleRightPane', workspaceAt);
     expect(paneAt).toBeGreaterThan(mainAt);
@@ -371,19 +397,22 @@ describe('AppLayout structure', () => {
     expect(appLayout).not.toMatch(/forceTreeCollapsed/);
   });
 
-  it('does not reintroduce the retired floating-chrome padding on the panel wrapper', () => {
+  it('does not reintroduce the retired floating-chrome padding or extra rail margin on the panel wrapper', () => {
     const match = /data-testid="panel-wrapper"[^>]*className="([^"]+)"/.exec(appLayout)
       ?? /data-testid="panel-wrapper"[^>]*className=\{cn\(([\s\S]*?)\)\}/.exec(appLayout);
     expect(match, 'panel-wrapper className').not.toBeNull();
     const value = match![1]!;
     expect(value).not.toMatch(/\bp-3\b/);
     expect(value).not.toMatch(/\bgap-2\.5\b/);
+    expect(value).not.toMatch(/\bml-2\b/);
   });
 
-  it('keeps desktop trees off the in-tree Pages/AI/Graph strip', () => {
+  it('keeps desktop sidebars off the in-tree Pages/AI/Graph strip and header free of MainNavHeaderTabs', () => {
     expect(appLayout).toMatch(/SettingsSidebar embedMainNav=\{false\}/);
     expect(appLayout).toMatch(/SidebarTreeView embedMainNav=\{false\}/);
+    expect(appLayout).toMatch(/AiConversationsSidebar embedMainNav=\{false\}/);
     expect(appLayout).toMatch(/SidebarTreeView onNavigate=\{closeMobileSidebar\} embedMainNav/);
+    expect(appLayout).not.toMatch(/MainNavHeaderTabs/);
     expect(appLayout).not.toMatch(/AppHeaderMain/);
   });
 
@@ -415,7 +444,7 @@ describe('Context rail vs left navigation', () => {
     expect(expanded).not.toMatch(/app-sidebar/);
   });
 
-  it('left navigation and settings still use the sidebar chassis utility', () => {
+  it('left navigation and settings still use the sidebar utility', () => {
     expect(sidebar).toMatch(/app-sidebar/);
     expect(settingsSidebar).toMatch(/app-sidebar/);
     expect(sidebar).not.toMatch(/app-context-rail/);

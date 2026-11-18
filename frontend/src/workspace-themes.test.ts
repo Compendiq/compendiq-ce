@@ -315,6 +315,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       '--color-code-bg',
       '--color-status-inactive',
       '--app-header-bg',
+      '--app-sidebar-bg',
     ];
     for (const name of neutrals) {
       expect(name in OWNER_PINNED, `${name} is under the ramp, not pinned`).toBe(false);
@@ -480,6 +481,63 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
         ['--color-muted-foreground', 3],
       ] as const) {
         expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, floor);
+      }
+    }
+  });
+
+  it('keeps the inside-workspace sidebar surface slightly darker than main, above chassis, and WCAG-compliant for text, focus, and state fills', () => {
+    for (const [themeName, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const sidebar = token(block, '--app-sidebar-bg');
+      const card = token(block, '--color-card');
+      const chassis = token(block, '--app-chassis');
+
+      expect(
+        luminance(sidebar),
+        `${themeName}: sidebar (${sidebar}) must be darker than main pane (${card})`,
+      ).toBeLessThan(luminance(card));
+      expect(
+        luminance(sidebar),
+        `${themeName}: sidebar (${sidebar}) must stay brighter than chassis (${chassis})`,
+      ).toBeGreaterThan(luminance(chassis));
+
+      const fg = token(block, '--color-foreground');
+      const muted = token(block, '--color-muted-foreground');
+      const primaryInk = token(block, '--color-primary-ink');
+      const ring = token(block, '--color-ring');
+      const borderInteractive = token(block, '--color-border-interactive');
+      const accent = token(block, '--color-accent');
+      const pressed = token(block, '--color-pressed');
+      const selected = token(block, '--color-selected');
+
+      // Text, icons, section labels (SECTION_LABEL uses text-muted-foreground), and focus ring on sidebar ground
+      expectContrast(`${themeName} foreground on sidebar`, fg, sidebar, 4.5);
+      expectContrast(`${themeName} muted-foreground on sidebar`, muted, sidebar, 4.5);
+      expectContrast(`${themeName} primary-ink on sidebar`, primaryInk, sidebar, 4.5);
+      expectContrast(`${themeName} focus ring on sidebar`, ring, sidebar, 3);
+      expectContrast(`${themeName} border-interactive on sidebar`, borderInteractive, sidebar, 3);
+
+      // State fills on sidebar ground: perceptible steps + WCAG text/edge contrast
+      const hoverRatio = contrast(accent, sidebar);
+      const pressedRatio = contrast(pressed, sidebar);
+      const selectedRatio = contrast(selected, sidebar);
+      expect(pressedRatio, `${themeName}: pressed must step past hover on sidebar`).toBeGreaterThan(hoverRatio);
+      expect(selectedRatio, `${themeName}: selected must step past pressed on sidebar`).toBeGreaterThan(pressedRatio);
+      expect(
+        deltaEOk(accent, sidebar),
+        `${themeName}: hover (${accent}) must be perceptibly distinct from sidebar (${sidebar})`,
+      ).toBeGreaterThanOrEqual(0.014);
+
+      for (const [stateName, stateBg] of [
+        ['hover', accent],
+        ['pressed', pressed],
+        ['selected', selected],
+      ] as const) {
+        expectContrast(`${themeName} foreground on sidebar ${stateName}`, fg, stateBg, 4.5);
+        expectContrast(`${themeName} muted-foreground on sidebar ${stateName}`, muted, stateBg, 4.5);
+        expectContrast(`${themeName} border-interactive on sidebar ${stateName}`, borderInteractive, stateBg, 3);
       }
     }
   });
@@ -791,6 +849,7 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-status-inactive',
     '--app-chassis',
     '--app-shell-bg',
+    '--app-sidebar-bg',
     '--app-rail-bg',
   ];
 

@@ -22,7 +22,7 @@ import { AiProvider } from '../../../features/ai/AiContext';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
 import { HeaderSessionCluster } from './HeaderSessionCluster';
-import { MainNavChassisRail, MainNavHeaderTabs } from './MainNavStrip';
+import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
 import { useIsInspectorWideLayout, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
@@ -360,10 +360,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
     // the page that started it. It is inert until an AI surface mounts and
     // registers as a consumer — see `retainAi` in AiContext.
     <AiProvider>
-    {/* Chassis is the viewport ground. The rounded shell sits inset on the
-        end and bottom on desktop; the destination rail is flush to the start
-        edge. Edge-to-edge below `md`. Do not swap `app-chassis` for a `bg-*`
-        utility: the inset padding is part of the same contract. */}
+    {/* Chassis is the viewport ground. The rounded workspace card sits inset on
+        the end and bottom on desktop; the compact destination icon rail is
+        flush to the start edge (matching the header height). Edge-to-edge
+        below `md`. Do not swap `app-chassis` for a `bg-*` utility: the inset
+        padding is part of the same contract. */}
     <div data-testid="app-chassis" className="app-chassis flex h-screen flex-col overflow-hidden">
       {/* WCAG 2.4.1 Bypass Blocks (Level A): the first focusable element in the
           whole app, invisible until it earns focus. Without it a keyboard user
@@ -414,7 +415,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               // a phone. Sizing the drawer to the viewport with a cap contains
               // it, and `overflow-hidden` makes that a clip rather than a
               // horizontal scroll. The sidebar itself carries `max-w-full`.
-              className="fixed inset-y-0 left-0 z-50 w-[85vw] max-w-[20rem] overflow-hidden md:hidden"
+              className="fixed inset-y-0 left-0 z-50 flex w-fit max-w-[min(85vw,20rem)] overflow-hidden md:hidden"
             >
               {isAiRoute
                 ? <AiConversationsSidebar onNavigate={closeMobileSidebar} embedMainNav />
@@ -494,9 +495,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
           >
             <Logo className="h-6 w-auto text-foreground" title="Compendiq" />
           </Link>
-
-          {/* 3 Main Nav destination buttons as Notion flat tabs */}
-          <MainNavHeaderTabs />
         </div>
         <div className="ml-auto flex min-w-0 items-center justify-end gap-1">
           {isArticleRoute && isMobileLayout && (
@@ -525,22 +523,22 @@ export function AppLayout({ children }: { children: ReactNode }) {
           its own content, and its box-shadow must reach the chassis margin.
           app-chassis (h-screen, overflow-hidden) still stops page scroll. */}
       <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1">
-      <MainNavChassisRail>
-        {/* The tree / left side panel lives in the chassis rail, outside the workspace card */}
-        {isAiRoute
-          ? <AiConversationsSidebar embedMainNav={false} />
-          : isSettingsRoute
-            ? <SettingsSidebar embedMainNav={false} />
-            : <SidebarTreeView embedMainNav={false} />}
-      </MainNavChassisRail>
+      <MainNavChassisRail />
       <div
         data-testid="panel-wrapper"
-        className="ml-2 flex min-h-0 min-w-0 flex-1"
+        className="flex min-h-0 min-w-0 flex-1"
       >
         <div data-testid="app-workspace" className="app-workspace flex min-h-0 min-w-0 flex-1 overflow-hidden">
-          {/* Left navigation and <main> share --color-card. They remain one
-              clipped workspace composition, split by the sidebar hairline
-              rather than nested cards or a second value step. */}
+          {/* Route sidebar (page tree, AI conversations, or settings nav) lives
+              inside the workspace card on --app-sidebar-bg (slightly darker
+              than <main>), separated by a subtle 1px border-right. */}
+          {!isMobileLayout && (
+            isAiRoute
+              ? <AiConversationsSidebar embedMainNav={false} />
+              : isSettingsRoute
+                ? <SettingsSidebar embedMainNav={false} />
+                : <SidebarTreeView embedMainNav={false} />
+          )}
           <main
             id="main-content"
             // Not natively focusable — the skip link above targets this id and

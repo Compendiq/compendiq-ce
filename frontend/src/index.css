@@ -509,8 +509,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      a Tailwind `bg-*` utility composes with them normally again — the old
      "gradients are background-images, so hover:bg-* silently does nothing"
      trap is designed out rather than documented around. */
-  /* Inset application shell. Chassis is the viewport ground; the workspace
-     frame uses --color-background, while left navigation, central content,
+  /* Inset application shell. Chassis is the viewport ground (top header +
+     compact left icon rail). Inside the workspace card, the left sidebar
+     uses --app-sidebar-bg (slightly darker than <main>), while central content
      and the detached context rail share --color-card. */
   /* Darkest step on the ladder — the viewport gutter around the workspace.
      A notch blacker than the chrome so the card detaches without going
@@ -526,6 +527,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      to complete the continuous outer frame. */
   --app-header-bg: #0c0c0d;
   --app-shell-bg: var(--color-background);
+  --app-sidebar-bg: #141415;
   --app-rail-bg: var(--color-card);
   --app-workspace-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px -4px rgba(0, 0, 0, 0.6);
   --surface-backdrop: var(--app-chassis);
@@ -965,6 +967,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      outer frame has one colour on all four sides. */
   --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
+  --app-sidebar-bg: #f8fafc;
   --app-rail-bg: var(--color-card);
   --app-workspace-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px -2px rgba(0, 0, 0, 0.06);
 }
@@ -1080,9 +1083,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Left column on the chassis; the boot skeleton reserves this width for the
-     tree, whose own default and reset are the same 282px. */
-  --app-nav-rail-width: 282px;
+  /* Compact left icon rail on the chassis; matches --app-header-height (2.75rem / 44px)
+     so the top bar and left icon rail form a uniform-width L-shaped frame around
+     the workspace card. */
+  --app-nav-rail-width: var(--app-header-height);
   --app-shell-radius: 0px;
 }
 
@@ -1159,11 +1163,12 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 /* Shell surfaces carry the palette without competing with content. The top
-   app header continues the Canvas around the workspace on all four sides.
-   The left navigation pane — title, tree, and footer — paints the same
-   surface as main so the workspace reads as one card split by a hairline,
-   not a chrome band beside a reading pane. The detached context rail is the
-   same composition: one pane, its own first row, no band. */
+   app header and compact left icon rail continue the Canvas around the
+   workspace card on all four sides. Inside the workspace card, the left
+   navigation pane paints --app-sidebar-bg (slightly darker than <main>'s
+   --color-card), separated from <main> by a subtle 1px right hairline. The
+   detached context rail shares --color-card with <main>, split by its 1px
+   left hairline. */
 @utility app-header {
   /* Let the chassis wash continue through the header without restarting. */
   background: transparent;
@@ -1175,18 +1180,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-sidebar {
-  background: transparent;
+  background: var(--app-sidebar-bg);
+  border-right-width: 1px;
   border-color: var(--color-border);
+  flex-shrink: 0;
 }
 
-/* Title and footer bands inherit the pane; they must not reintroduce Chrome. */
+/* Title and footer bands inherit the sidebar surface; they must not reintroduce Chrome. */
 .app-sidebar .panel-toolbar {
   background: transparent;
 }
 
-/* Route content is the page users are working on. It shares --color-card with
-   the left pane so the workspace is one surface; the hairline on the sidebar
-   is the only split. The workspace clips both to the shared outer radius. */
+/* Route content is the page users are working on. It paints --color-card,
+   stepping slightly brighter than .app-sidebar beside it; the workspace card
+   clips both to the shared outer radius. */
 @utility app-content-pane {
   background: var(--color-card);
 }

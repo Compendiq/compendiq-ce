@@ -157,18 +157,23 @@ describe('AppLayout', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders header with Notion flat destination tabs', () => {
+  it('keeps destination tabs out of the top header and renders them in the left icon rail', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    const header = document.querySelector('header');
-    expect(header).toBeTruthy();
-    expect(header!.querySelector('a[href="/"]')).toBeInTheDocument();
-    expect(header!.querySelector('a[href="/ai"]')).toBeInTheDocument();
-    expect(header!.querySelector('a[href="/graph"]')).toBeInTheDocument();
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('a[href="/"]')).toBeInTheDocument(); // Logo home link
+    expect(header.querySelector('a[href="/ai"]')).toBeNull();
+    expect(header.querySelector('a[href="/graph"]')).toBeNull();
+    expect(screen.queryByTestId('main-nav-header')).toBeNull();
+
+    const chassisRail = screen.getByTestId('main-nav-chassis');
+    expect(chassisRail.querySelector('a[href="/"]')).toBeInTheDocument();
+    expect(chassisRail.querySelector('a[href="/ai"]')).toBeInTheDocument();
+    expect(chassisRail.querySelector('a[href="/graph"]')).toBeInTheDocument();
   });
 
   it('does not put a route title in the header', () => {
@@ -232,7 +237,7 @@ describe('AppLayout', () => {
     expect(header!.contains(screen.getByTestId('header-session-cluster'))).toBe(true);
   });
 
-  it('puts destination tabs in the header and sidebar on the chassis, outside the workspace card', () => {
+  it('puts icon-only primary destinations on the chassis rail outside the workspace card', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -240,15 +245,19 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     const chassisRail = screen.getByTestId('main-nav-chassis');
-    expect(chassisRail).toHaveAccessibleName('Navigation sidebar');
+    expect(chassisRail).toHaveAccessibleName('Main navigation');
     expect(screen.getByTestId('app-workspace').contains(chassisRail)).toBe(false);
-    expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
-    const headerNav = screen.getByTestId('main-nav-header');
-    expect(headerNav).toHaveAccessibleName('Main navigation');
+    const pages = within(chassisRail).getByRole('link', { name: 'Pages' });
+    const ai = within(chassisRail).getByRole('link', { name: 'AI chat, full page' });
+    const graph = within(chassisRail).getByRole('link', { name: 'Graph' });
+    expect(pages).toHaveAttribute('aria-current', 'page');
+    expect(pages.textContent).toBe('');
+    expect(ai.textContent).toBe('');
+    expect(graph.textContent).toBe('');
+    expect(screen.queryByTestId('main-nav-header')).toBeNull();
     const shell = screen.getByTestId('app-shell');
     expect(shell.className).not.toMatch(/\bgap-/);
+    expect(screen.getByTestId('panel-wrapper').className).not.toMatch(/\bml-2\b/);
     const logo = screen.getByTestId('header-chassis-slot');
     expect(logo).toBeInTheDocument();
     expect(logo.className).toContain('md:ml-3');
@@ -671,8 +680,8 @@ describe('AppLayout', () => {
     expect(panelWrapper.className).not.toContain('gap-2.5');
   });
 
-  it('mounts left nav in the chassis rail, and main content with attached inspector inside the workspace card', () => {
-    render(
+  it('mounts the icon rail on the chassis, and the route sidebar, main content, and inspector inside the workspace card', async () => {
+    const { unmount } = render(
       <AppLayout>
         <div>article</div>
       </AppLayout>,
@@ -680,12 +689,41 @@ describe('AppLayout', () => {
     );
     const workspace = screen.getByTestId('app-workspace');
     const chassisRail = screen.getByTestId('main-nav-chassis');
+    const treeSidebar = screen.getByTestId('sidebar-tree-view');
     const pane = screen.getByTestId('article-right-pane');
-    const main = document.getElementById('main-content');
-    expect(chassisRail.contains(screen.getByTestId('sidebar-tree-view'))).toBe(true);
-    expect(workspace.contains(screen.getByTestId('sidebar-tree-view'))).toBe(false);
+    const main = document.getElementById('main-content')!;
+    expect(workspace.contains(chassisRail)).toBe(false);
+    expect(chassisRail.contains(treeSidebar)).toBe(false);
+    expect(workspace.contains(treeSidebar)).toBe(true);
     expect(workspace.contains(main)).toBe(true);
     expect(workspace.contains(pane)).toBe(true);
+    expect(treeSidebar.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmount();
+
+    const { unmount: unmountAi } = render(
+      <AppLayout>
+        <div>ai</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    const aiSidebar = await screen.findByTestId('ai-conversations-sidebar');
+    const aiWorkspace = screen.getByTestId('app-workspace');
+    const aiMain = document.getElementById('main-content')!;
+    expect(aiWorkspace.contains(aiSidebar)).toBe(true);
+    expect(aiSidebar.compareDocumentPosition(aiMain) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmountAi();
+
+    render(
+      <AppLayout>
+        <div>settings</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/settings') },
+    );
+    const settingsSidebar = screen.getByTestId('settings-sidebar');
+    const settingsWorkspace = screen.getByTestId('app-workspace');
+    const settingsMain = document.getElementById('main-content')!;
+    expect(settingsWorkspace.contains(settingsSidebar)).toBe(true);
+    expect(settingsSidebar.compareDocumentPosition(settingsMain) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('mounts the inspector only on article routes', () => {

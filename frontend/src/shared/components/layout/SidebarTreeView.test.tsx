@@ -883,6 +883,24 @@ describe('SidebarTreeView', () => {
     expect(collapse.parentElement!.className).toContain('panel-toolbar');
   });
 
+  it('omits embedded main nav when embedMainNav is false in both expanded and collapsed states while preserving app-sidebar and collapse/expand', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    const { unmount } = render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+    const expandedAside = screen.getByRole('complementary', { name: 'Page tree' });
+    expect(expandedAside).toHaveClass('app-sidebar');
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
+    expect(screen.getByRole('separator', { name: 'Resize tree sidebar' })).toBeInTheDocument();
+    unmount();
+
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+    const collapsedAside = screen.getByRole('complementary', { name: 'Page tree' });
+    expect(collapsedAside).toHaveClass('app-sidebar');
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
+  });
+
   it('shows collapse sidebar button in expanded sidebar header', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(<SidebarTreeView />, { wrapper: createWrapper() });

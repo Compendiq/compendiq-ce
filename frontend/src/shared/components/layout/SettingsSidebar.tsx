@@ -13,10 +13,11 @@ import {
 import { cn } from '../../lib/cn';
 
 /**
- * Left sidebar mounted on /settings/* routes — replaces the Pages tree there.
- * Top: the Pages / AI / Graph main-nav strip (shared with SidebarTreeView via
- * `MainNavStrip`) so users keep one-click access to the rest of the app while
- * in Settings.
+ * Left sidebar mounted on /settings/* routes — replaces the Pages tree there
+ * inside `app-workspace`.
+ * On desktop, Pages / AI / Graph live in the outer chassis icon rail
+ * (`MainNavChassisRail`) so `embedMainNav={false}` is passed; in the mobile
+ * drawer (`embedMainNav={true}`) this renders `MainNavStripExpanded` at top.
  * Body: the Settings section nav (was the inner rail inside SettingsLayout).
  *
  * Always open: Settings is a destination rail, not a working view, so there
@@ -84,7 +85,7 @@ export function SettingsSidebar({
             >
               <h2
                 id={`settings-group-${group.id}`}
-                className="px-2 py-1 text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80"
+                className="px-2 py-1 text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground"
               >
                 {group.label}
               </h2>
@@ -99,10 +100,10 @@ export function SettingsSidebar({
                         data-testid={`nav-settings-${item.id}`}
                         className={({ isActive }) =>
                           cn(
-                            'group/nav relative block rounded-md px-2.5 py-1.5 text-sm motion-safe:transition-colors motion-safe:duration-150',
+                            'group/nav relative block rounded-md px-2.5 py-1.5 text-sm motion-safe:transition-colors motion-safe:duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             isActive
                               ? 'nav-selection font-medium'
-                              : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground/80',
+                              : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                           )
                         }
                         end

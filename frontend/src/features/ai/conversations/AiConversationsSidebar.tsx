@@ -28,10 +28,10 @@ export const CONVERSATION_FILTER_THRESHOLD = 8;
  * `app-shell-layout.test.ts` fails if either name comes back in AppLayout.
  *
  * `embedMainNav` mirrors SidebarTreeView / SettingsSidebar exactly. On desktop
- * the header's tabs (MainNavHeaderTabs) own Pages / AI / Graph, so AppLayout
- * passes `false`; the mobile drawer has no header tabs and takes the default.
- * When it is false there is no nav row at all, so the collapse button moves
- * into the row below — the tree's own two-branch treatment.
+ * the outer chassis icon rail (`MainNavChassisRail`) owns Pages / AI / Graph,
+ * so AppLayout passes `false`; the mobile drawer has no rail and takes the
+ * default. When it is false there is no nav row at all, so the collapse button
+ * moves into the row below — the tree's own two-branch treatment.
  */
 export function AiConversationsSidebar({
   onNavigate,
