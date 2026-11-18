@@ -516,24 +516,24 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Darkest step on the ladder — the viewport gutter around the workspace.
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
-  --app-chassis: #07080b;
+  --app-chassis: #0a0b0e;
   /* Shell diagonal colour-gradient + radial highlight pool (Graphite dark).
-     Bottom-left / left edge is darkest (--shell-grad-1 = --app-chassis = #07080b)
-     ramping smoothly to cool slate at top-right (--shell-grad-5 = #171c25 +
+     Bottom-left / left edge is darkest (--shell-grad-1 = --app-chassis = #0a0b0e)
+     ramping smoothly to cool slate at top-right (--shell-grad-5 = #1c222c +
      top-right pool at 83% 17%). --shell-muted (#a3aab4) clears 4.5:1 against all
-     stops and the lightest stop (#171c25). */
+     stops and the lightest stop (#1c222c, 6.82:1). */
   --shell-grad-dir: to top right;
   --shell-pool-pos: 83% 17%;
-  --shell-grad-1: #07080b;
-  --shell-grad-2: #0a0c10;
-  --shell-grad-3: #0d1016;
-  --shell-grad-4: #12161e;
-  --shell-grad-5: #171c25;
+  --shell-grad-1: #0a0b0e;
+  --shell-grad-2: #0c0e12;
+  --shell-grad-3: #101319;
+  --shell-grad-4: #161b23;
+  --shell-grad-5: #1c222c;
   --shell-pool: rgb(36 44 56 / 0.30);
   --shell-pool-soft: rgb(26 32 42 / 0.14);
   --shell-muted: #a3aab4;
-  --panel-bg: rgb(0 0 0 / 0.40);
-  --panel-bg-fallback: rgb(15 19 25 / 0.96);
+  --panel-bg: rgb(255 255 255 / 0.05);
+  --panel-bg-fallback: rgb(18 22 29 / 0.94);
   --panel-border: transparent;
   --panel-divider: transparent;
   --rail-divider: rgb(255 255 255 / 0.06);
@@ -541,7 +541,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
     0 2px 6px rgb(0 0 0 / 45%),
     0 12px 28px -4px rgb(0 0 0 / 65%);
   --nav-hover: rgb(255 255 255 / 0.06);
-  --app-sidebar-translucent: rgb(0 0 0 / 0.44);
+  --app-sidebar-translucent: rgb(0 0 0 / 0.24);
   --workspace-card-bg: rgb(255 255 255 / 0.05);
   --workspace-toolbar-bg: rgb(255 255 255 / 0.04);
   --workspace-well-bg: rgb(0 0 0 / 0.14);
@@ -976,21 +976,21 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      line, never a fill. */
   --app-chassis: #fbfbfd;
   /* Shell diagonal colour-gradient + bottom-left shade pool (Paper light).
-     Darkest stop is bottom-left (#bbc1c9), lightest is top-right (#fbfbfd =
-     --app-chassis). --shell-muted (#3e454e) clears 4.5:1 against the darkest
-     stop and the pool composite. */
+     Darkest stop is bottom-left (#d0d4da), lightest is top-right (#fbfbfd =
+     --app-chassis). --shell-muted (#4b525c) clears 4.5:1 against the darkest
+     stop (5.30:1) and the pool composite (4.98:1). */
   --shell-grad-dir: to top right;
   --shell-pool-pos: 17% 83%;
-  --shell-grad-1: #bbc1c9;
-  --shell-grad-2: #c6ccd4;
-  --shell-grad-3: #d6dbe2;
-  --shell-grad-4: #e4e8ed;
+  --shell-grad-1: #d0d4da;
+  --shell-grad-2: #dbdfe4;
+  --shell-grad-3: #eceef1;
+  --shell-grad-4: #f6f7f9;
   --shell-grad-5: #fbfbfd;
-  --shell-pool: rgb(180 186 196 / 0.56);
-  --shell-pool-soft: rgb(192 198 206 / 0.24);
-  --shell-muted: #3e454e;
-  --panel-bg: rgb(244 246 248 / 0.88);
-  --panel-bg-fallback: rgb(244 246 248 / 0.95);
+  --shell-pool: rgb(196 201 208 / 0.56);
+  --shell-pool-soft: rgb(206 211 217 / 0.24);
+  --shell-muted: #4b525c;
+  --panel-bg: rgb(255 255 255 / 0.88);
+  --panel-bg-fallback: rgb(255 255 255 / 0.95);
   --panel-border: rgb(255 255 255 / 0.62);
   --panel-divider: var(--color-border);
   --rail-divider: var(--color-border);
@@ -999,7 +999,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     0 1px 3px rgb(20 42 66 / 7%),
     0 8px 24px -4px rgb(20 42 66 / 10%);
   --nav-hover: rgb(255 255 255 / 0.45);
-  --app-sidebar-translucent: rgb(208 212 218 / 0.48);
+  --app-sidebar-translucent: rgb(208 212 218 / 0.38);
   --workspace-card-bg: rgb(255 255 255 / 0.50);
   --workspace-toolbar-bg: rgb(235 240 245 / 0.55);
   --workspace-well-bg: rgb(244 246 248 / 0.45);
@@ -1144,8 +1144,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    Existing project breakpoints — do not invent a third ladder. */
 :root {
   --app-inset: 0px;
-  --app-header-height: 2.75rem;
-  /* Compact left icon rail on the chassis; matches --app-header-height (2.75rem / 44px)
+  --app-header-height: 3.125rem;
+  /* Compact left icon rail on the chassis; matches --app-header-height (3.125rem / 50px)
      so the top bar and left icon rail form a uniform-width L-shaped frame around
      the workspace card. */
   --app-nav-rail-width: var(--app-header-height);
@@ -1189,7 +1189,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 @utility app-shell {
   min-height: 0;
-  padding-top: 4px;
+  padding-top: 0;
 }
 
 /* The content panel is a frosted, elevated surface floating on the shell gradient. */

@@ -35,7 +35,7 @@ function WorkspaceBones() {
     <div className="app-shell flex min-h-0 flex-1">
       <div
         aria-hidden="true"
-        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col items-center gap-1.5 md:flex"
+        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col items-center gap-1.5 pt-1.5 md:flex"
       >
         <Bone className="size-8 rounded-md" />
         <Bone className="size-8 rounded-md" />
