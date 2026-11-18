@@ -166,7 +166,7 @@ export function AiConversationsSidebar({
           <button
             type="button"
             onClick={toggleTreeSidebar}
-            className="mb-1.5 mt-auto flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mb-1.5 ml-1.5 mt-auto flex size-7 shrink-0 items-center justify-center self-start rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
           >

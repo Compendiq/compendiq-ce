@@ -1424,7 +1424,7 @@ export function ArticleRightPane({
               </div>
             )}
           </div>
-          <div className="mb-1.5 mt-auto flex w-full shrink-0 justify-center">
+          <div className="mb-1.5 mt-auto flex w-full shrink-0 justify-end pr-1.5">
             <button
               type="button"
               onClick={handleExpandSidebar}
