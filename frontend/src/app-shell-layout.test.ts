@@ -106,7 +106,7 @@ describe('Inset shell tokens', () => {
   // mode this guards is silent: a chassis retune that keeps "below the pane"
   // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and
   // was the reason the frame had to be deepened when the line went away).
-  it('orders the 5-stop shell gradient ramp in both themes (top-left darkest in dark mode, bottom-left darkest in light mode)', () => {
+  it('orders the 5-stop shell gradient ramp in both themes (darkest toward left/bottom-left, brightest toward top-right)', () => {
     const lightStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(lightBlock, `--shell-grad-${n}`)));
     for (let i = 1; i < lightStops.length; i++) {
       expect(lightStops[i]!, `light stop ${i + 1} must be lighter than stop ${i}`).toBeGreaterThan(lightStops[i - 1]!);
@@ -116,10 +116,10 @@ describe('Inset shell tokens', () => {
 
     const darkStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(darkBlock, `--shell-grad-${n}`)));
     for (let i = 1; i < darkStops.length; i++) {
-      expect(darkStops[i]!, `dark stop ${i + 1} must lift above top-left darkest stop ${i}`).toBeGreaterThan(darkStops[i - 1]!);
+      expect(darkStops[i]!, `dark stop ${i + 1} must lift toward top-right brightest stop ${i}`).toBeGreaterThan(darkStops[i - 1]!);
     }
     expect(tokenHex(darkBlock, '--shell-grad-1')).toBe(tokenHex(darkBlock, '--app-chassis'));
-    expect(darkBlock).toMatch(/--shell-grad-dir:\s*to bottom right;/);
+    expect(darkBlock).toMatch(/--shell-grad-dir:\s*to top right;/);
   });
 
   it('keeps navigation labels and focus indicators readable across every gradient stop', () => {

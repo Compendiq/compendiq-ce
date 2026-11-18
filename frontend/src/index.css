@@ -514,17 +514,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
   --app-chassis: #090b0f;
-  /* Shell diagonal colour-gradient + radial shade pool (Graphite dark).
-     Darkest stop is top-left (--shell-grad-1 = --app-chassis = #090b0f) fading
-     toward cool slate-navy at bottom-right (--shell-grad-5 = #1a2331).
-     --shell-muted (#a3adba) clears 4.5:1 against the lightest stop (#1a2331,
-     6.96:1) and the pool composite. */
-  --shell-grad-dir: to bottom right;
-  --shell-pool-pos: 83% 83%;
+  /* Shell diagonal colour-gradient + radial highlight pool (Graphite dark).
+     Bottom-left / left edge is darkest (--shell-grad-1 = --app-chassis = #090b0f)
+     ramping smoothly to cool slate-navy at top-right (--shell-grad-5 = #1a2331 +
+     top-right pool at 83% 17%). --shell-muted (#a3adba) clears 4.5:1 against all
+     stops and the lightest stop (#1a2331, 6.96:1). */
+  --shell-grad-dir: to top right;
+  --shell-pool-pos: 83% 17%;
   --shell-grad-1: #090b0f;
-  --shell-grad-2: #0c1017;
-  --shell-grad-3: #101620;
-  --shell-grad-4: #151c27;
+  --shell-grad-2: #0b0e14;
+  --shell-grad-3: #0e131c;
+  --shell-grad-4: #141c28;
   --shell-grad-5: #1a2331;
   --shell-pool: rgb(38 50 68 / 0.36);
   --shell-pool-soft: rgb(26 36 52 / 0.16);
