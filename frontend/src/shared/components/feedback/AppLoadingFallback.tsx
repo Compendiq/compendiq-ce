@@ -90,7 +90,7 @@ export function AppBootSkeleton({
           <span className="flex shrink-0 items-center justify-center md:w-[var(--app-nav-rail-width)]">
             <LogoMark className="size-7 shrink-0" title="Compendiq" />
           </span>
-          <LogoWordmark className="h-7 w-auto shrink-0" />
+          <LogoWordmark className="h-7 w-auto shrink-0 md:ml-3" />
         </div>
       </header>
       {quiet ? null : <WorkspaceBones />}
