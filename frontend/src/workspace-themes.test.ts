@@ -298,9 +298,9 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       4.5,
     );
     expectContrast(
-      'shell-muted on lightest dark gradient stop (--shell-grad-1)',
+      'shell-muted on lightest dark gradient stop (--shell-grad-5)',
       token(darkBlock, '--shell-muted'),
-      token(darkBlock, '--shell-grad-1'),
+      token(darkBlock, '--shell-grad-5'),
       4.5,
     );
   });
@@ -854,6 +854,8 @@ describe('Both themes declare a complete, symmetric token set', () => {
 
   const requiredComposite = [
     '--app-rail-bg',
+    '--shell-grad-dir',
+    '--shell-pool-pos',
     '--shell-pool',
     '--shell-pool-soft',
     '--panel-bg',
