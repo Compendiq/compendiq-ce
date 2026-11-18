@@ -307,11 +307,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      Every value is verified by src/workspace-themes.test.ts, which parses these
      tokens and COMPUTES WCAG ratios rather than pinning hex literals. Retune a
      surface and it fails with the measured ratio. */
-  --color-background: #0f0f10;          /* Workspace — navigation and AI rail */
+  --color-background: #0c1017;          /* Workspace — navigation and AI rail */
   --color-foreground: #e7e9eb;          /* Graphite ink */
-  --color-card: #19191a;                /* Pane — shared document, left pane and context rail */
+  --color-card: #121a26;                /* Pane — shared document, left pane and context rail */
   --color-card-foreground: #e7e9eb;
-  --color-card-elevated: #1b1b1d;       /* Raised — popovers and dialogs */
+  --color-card-elevated: #172130;       /* Raised — popovers and dialogs */
   /* Steel — the single brand AND interaction accent: brand mark, primary
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
@@ -327,21 +327,20 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Action ink — the neutral affordance for non-accent buttons: light fill,
      dark text. Leaves Steel free to mean "primary action". */
   --color-action: #e7e9eb;             /* matches --color-foreground */
-  --color-action-foreground: #0f0f10;
+  --color-action-foreground: #0c1017;
   --color-action-hover: #f0f2f3;
-  --color-secondary: #1c1d1d;
-  --color-secondary-foreground: #c5c7c8;
-  --color-muted: #1c1d1d;
+  --color-secondary: #161f2c;
+  --color-secondary-foreground: #c4ccd6;
+  --color-muted: #161f2c;
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
-  --color-muted-foreground: #a0a4aa;
-  /* Separate hover, press and selection fills. The brighter Pane (2026-09-12)
-     needs a small hover lift to preserve the visible state step; press and
-     selection retain their existing values and interactive outline.
-     Muted remains a resting field fill, independent of the state ladder. */
-  --color-accent: #1d1e1e;             /* hover — 1.051:1 on Pane */
-  --color-pressed: #212226;            /* :active — 1.106:1 */
-  --color-selected: #282a2e;           /* current destination — 1.222:1 */
+  --color-muted-foreground: #a3adba;
+  /* Separate hover, press and selection fills aligned to the cool slate-navy
+     ramp so buttons, rows and popups match the shell gradient; muted remains a
+     resting field fill, independent of the state ladder. */
+  --color-accent: #182230;             /* hover — 1.091:1 on Pane */
+  --color-pressed: #1e2a3c;            /* :active — 1.208:1 */
+  --color-selected: #253349;           /* current destination — 1.372:1 */
   --color-accent-foreground: #e7e9eb;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
@@ -380,13 +379,13 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
                          border for both jobs and did not meet 1.4.11.)
                          UNTOUCHED by the softening pass: quieting an operable
                          edge is a 1.4.11 question, not a taste one. */
-  --color-border: #222225;
-  --doc-rule: #2a2a2d;
-  /* Lifted 2026-08-31 from #71717a. This token caps how deep a state fill may
-     go: at the widened selected fill (#282a2e) the old value measured 2.97:1,
-     so the edge that marks a selected row fell under 1.4.11. Now 3.48:1 there
-     and 4.37:1 on the pane, which is what gave the dark ladder its room. */
-  --color-border-interactive: #7c7c85;
+  --color-border: #1c2636;
+  --doc-rule: #263347;
+  /* Lifted 2026-08-31 from #71717a; aligned 2026-11-18 with the slate-navy
+     ramp so interactive edges on buttons and popups clear 1.4.11's 3:1 floor
+     on every state fill (3.25:1 on selected, 4.46:1 on pane) while staying
+     3.22:1 below foreground for empty quality-meter segments. */
+  --color-border-interactive: #738296;
   --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 90%, transparent);
   --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
   --color-ring: #86aec8;
@@ -431,9 +430,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --color-status-ai: #c084fc;
   --color-status-disconnected: #f87171;
   /* Lifted 2026-08-31 from #8b8f99, which measured 4.44:1 on the widened
-     selected fill. Worst ground is now 5.11:1, and Graphite still has zero
-     simulated CVD collisions across the seven roles. */
-  --color-status-inactive: #979aa3;
+     selected fill; aligned 2026-11-18 with the slate-navy ramp. Worst ground
+     is 4.89:1 on selected, and Graphite still has zero simulated CVD
+     collisions across the seven roles. */
+  --color-status-inactive: #98a1b0;
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
@@ -449,7 +449,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
   /* Code colors — matched against --color-code-bg, which sits a step
      BELOW --color-card so a code block reads as recessed, not stacked. */
-  --color-code-bg: #101111;
+  --color-code-bg: #0e131b;
   --color-code-keyword: #c69af4;
   --color-code-string: #5ed39b;
   --color-code-function: #8b93f8;
@@ -553,9 +553,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      and darker than the workspace chrome, so toolbars read as neutral framing
      rather than another content pane. The top app header uses --app-chassis
      to complete the continuous outer frame. */
-  --app-header-bg: #0c0c0d;
+  --app-header-bg: #0b0e14;
   --app-shell-bg: var(--color-background);
-  --app-sidebar-bg: #141415;
+  --app-sidebar-bg: #0f151e;
   /* Attached inside .app-workspace on desktop: transparent so the right panel
      shares the frosted workspace plate and lets the diagonal shell gradient
      show through just like <main>. Mobile sheets override to --color-card. */
@@ -622,8 +622,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Dropdown chevron — dark-theme default. The stroke colour is the
      dark-theme muted-foreground hex (URL-escaped).
      Light theme overrides this in the [data-theme-type="light"] block. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a3adba' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a3adba' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* Typography preferences are expressed as root attributes so the first-paint

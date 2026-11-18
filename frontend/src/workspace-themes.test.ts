@@ -338,6 +338,43 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
+  it('keeps Graphite surface, button, and popup tokens on the cool slate-navy ramp rather than neutral gray', () => {
+    const coolTokens = [
+      '--color-background',
+      '--color-card',
+      '--color-card-elevated',
+      '--color-secondary',
+      '--color-secondary-foreground',
+      '--color-muted',
+      '--color-muted-foreground',
+      '--color-accent',
+      '--color-pressed',
+      '--color-selected',
+      '--color-border',
+      '--doc-rule',
+      '--color-border-interactive',
+      '--color-action-foreground',
+      '--color-code-bg',
+      '--color-status-inactive',
+      '--app-chassis',
+      '--app-header-bg',
+      '--app-sidebar-bg',
+      '--app-login-ground',
+    ];
+    for (const name of coolTokens) {
+      const hex = token(darkBlock, name);
+      const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [
+        number,
+        number,
+        number,
+      ];
+      expect(
+        b - r,
+        `${name} (${hex}) must stay cool slate-navy (blue clearly above red, not old neutral gray)`,
+      ).toBeGreaterThanOrEqual(6);
+    }
+  });
+
   // Hover, pressed and selected are THREE tokens with three values, in both
   // themes. They were one token — Graphite had accent, secondary and muted all
   // at #1c1d1d, so ΔE-OK between hover, selected, pressed and a field fill was
