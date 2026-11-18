@@ -219,15 +219,16 @@ describe('Inset shell utilities', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
     expect(sidebar).toMatch(/background:\s*var\(--app-sidebar-translucent\)/);
+    expect(sidebar).toMatch(/background-clip:\s*padding-box/);
     expect(sidebar).toMatch(/border-right-width:\s*1px/);
-    expect(sidebar).toMatch(/border-color:\s*var\(--color-border\)/);
+    expect(sidebar).toMatch(/border-color:\s*var\(--panel-divider\)/);
     expect(pane).toMatch(/background:\s*transparent/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
     );
   });
 
-  it('the workspace utility is the frosted radiused card with its translucent panel ground, 1px hairline border, and resting shadow', () => {
+  it('the workspace utility is the frosted radiused card with its translucent panel ground, border token, and resting shadow', () => {
     const block = extractBlock(css, '@utility app-workspace {');
     expect(block).toMatch(/background:\s*var\(--panel-bg\)/);
     expect(block).toMatch(/backdrop-filter:\s*blur\(16px\)/);
@@ -247,9 +248,23 @@ describe('Inset shell utilities', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
     expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
     expect(block).toMatch(/border-left-width:\s*1px/);
-    expect(block).toMatch(/border-color:\s*var\(--color-border\)/);
+    expect(block).toMatch(/border-color:\s*var\(--panel-divider\)/);
     expect(block).not.toMatch(/box-shadow:/);
     expect(block).not.toMatch(/gradient\(/);
+  });
+
+  it('keeps dark mode workspace outer/inner pane borders seamless with the main area and sidebar darker than main', () => {
+    expect(darkBlock).toMatch(/--panel-border:\s*transparent;/);
+    expect(darkBlock).toMatch(/--panel-divider:\s*transparent;/);
+    const darkShadow = /--panel-shadow:\s*([^;]+);/.exec(darkBlock);
+    expect(darkShadow).not.toBeNull();
+    expect(darkShadow![1]).not.toMatch(/inset\s+0\s+1px/);
+
+    const panelBgMatch = /--panel-bg:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
+    const sidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
+    expect(panelBgMatch).not.toBeNull();
+    expect(sidebarAlphaMatch).not.toBeNull();
+    expect(Number(sidebarAlphaMatch![1])).toBeGreaterThan(Number(panelBgMatch![1]));
   });
 
   it('mobile is edge-to-edge; md and xl step the inset and card radius', () => {

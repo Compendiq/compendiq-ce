@@ -534,13 +534,13 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --shell-muted: #a3adba;
   --panel-bg: rgb(0 0 0 / 0.20);
   --panel-bg-fallback: rgb(14 19 26 / 0.94);
-  --panel-border: rgb(255 255 255 / 0.08);
+  --panel-border: transparent;
+  --panel-divider: transparent;
   --panel-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.08),
     0 2px 6px rgb(0 0 0 / 45%),
     0 12px 28px -4px rgb(0 0 0 / 65%);
   --nav-hover: rgb(255 255 255 / 0.06);
-  --app-sidebar-translucent: rgb(0 0 0 / 0.22);
+  --app-sidebar-translucent: rgb(0 0 0 / 0.42);
   --workspace-card-bg: rgb(255 255 255 / 0.05);
   --workspace-toolbar-bg: rgb(255 255 255 / 0.04);
   --workspace-well-bg: rgb(0 0 0 / 0.14);
@@ -991,6 +991,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --panel-bg: rgb(255 255 255 / 0.68);
   --panel-bg-fallback: rgb(255 255 255 / 0.92);
   --panel-border: rgb(255 255 255 / 0.62);
+  --panel-divider: var(--color-border);
   --panel-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.75),
     0 1px 3px rgb(20 42 66 / 7%),
@@ -1211,7 +1212,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 @utility app-context-rail {
   background: var(--app-rail-bg);
   border-left-width: 1px;
-  border-color: var(--color-border);
+  border-color: var(--panel-divider);
 }
 
 /* The rail's tab row inherits the rail, exactly as the left navigation's title
@@ -1261,8 +1262,9 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 @utility app-sidebar {
   background: var(--app-sidebar-translucent);
+  background-clip: padding-box;
   border-right-width: 1px;
-  border-color: var(--color-border);
+  border-color: var(--panel-divider);
   flex-shrink: 0;
 }
 
@@ -1880,7 +1882,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    edge keeps that relationship legible in both themes; the flat treatment
    avoids combining a border and elevation on the same surface. */
 .library-search-surface {
-  background: var(--surface-card-elevated, var(--color-card-elevated, var(--color-card)));
+  background: var(--workspace-card-bg);
   border: 1px solid var(--color-border-interactive);
   outline: 2px solid transparent;
   outline-offset: 2px;
@@ -1903,7 +1905,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 .library-search-modes {
-  background: color-mix(in srgb, var(--color-background) 76%, transparent);
+  background: var(--workspace-well-bg);
 }
 
 .library-search-mode-active {
@@ -2128,6 +2130,12 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   }
   .app-workspace :where(.nm-card, .nm-card-interactive, .panel-context, .nm-input, .nm-select, .nm-select-md, .nm-composer, .bg-card):not([role="dialog"]):not([role="alertdialog"]):not(.nm-popover-glass):not(.nm-card-elevated) {
     background-color: var(--color-card);
+  }
+  .app-workspace .library-search-surface {
+    background: var(--surface-card-elevated, var(--color-card-elevated, var(--color-card)));
+  }
+  .app-workspace .library-search-modes {
+    background: var(--color-background);
   }
   .app-workspace :where(.bg-background):not([role="dialog"]):not([role="alertdialog"]) {
     background-color: var(--color-background);

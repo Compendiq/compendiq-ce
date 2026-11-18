@@ -12,10 +12,13 @@ function rule(selector: string): string {
 }
 
 describe('Library search control styling', () => {
-  it('uses a real flat boundary around the compound search surface', () => {
+  it('uses a real flat boundary and translucent workspace card background around the compound search surface', () => {
     const surface = rule('.library-search-surface');
+    const modes = rule('.library-search-modes');
+    expect(surface).toContain('background: var(--workspace-card-bg)');
     expect(surface).toContain('border: 1px solid var(--color-border-interactive)');
     expect(surface).not.toContain('box-shadow');
+    expect(modes).toContain('background: var(--workspace-well-bg)');
   });
 
   it('gives the selected search mode a high-contrast filled state', () => {
