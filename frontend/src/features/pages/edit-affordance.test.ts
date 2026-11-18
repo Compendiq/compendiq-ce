@@ -23,14 +23,18 @@ const source = readFileSync(
   resolve(__dirname, 'PageViewPage.tsx'),
   'utf-8',
 );
+const readToolbarSource = readFileSync(
+  resolve(__dirname, '../../shared/components/article/ArticleReadToolbar.tsx'),
+  'utf-8',
+);
 
 /** The JSX for the Edit trigger, from its opening tag to its closing tag. */
 function editButton(): string {
-  const anchor = source.indexOf('data-testid="edit-page-btn"');
+  const anchor = readToolbarSource.indexOf('data-testid="edit-page-btn"');
   expect(anchor, 'Edit button not found by testid').toBeGreaterThan(-1);
-  const open = source.lastIndexOf('<Button', anchor);
-  const close = source.indexOf('</Button>', anchor);
-  return source.slice(open, close + '</Button>'.length);
+  const open = readToolbarSource.lastIndexOf('<Button', anchor);
+  const close = readToolbarSource.indexOf('</Button>', anchor);
+  return readToolbarSource.slice(open, close + '</Button>'.length);
 }
 
 describe('the Edit affordance', () => {

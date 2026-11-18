@@ -1898,7 +1898,7 @@ export function ArticleRightPane({
           activeInspectorView !== 'details' && 'hidden',
         )}
       >
-      {id && <ArticleAiPolicySection key={id} pageId={id} />}
+      {id && <ArticleAiPolicySection key={id} pageId={id} defaultOpen={false} />}
       {isNewPage ? (
         <div className="px-3 py-4">
           <h3 className="text-xs font-semibold text-foreground">New page draft</h3>
@@ -1931,17 +1931,6 @@ export function ArticleRightPane({
                 </div>
               </div>
             </div>
-            {settings?.confluenceUrl && page.confluenceId && (
-              <a
-                href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1 inline-flex h-8 items-center gap-1.5 rounded text-xs text-primary-ink underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <ExternalLink size={13} className="shrink-0" aria-hidden="true" />
-                <span>Open in Confluence</span>
-              </a>
-            )}
 
             <dl className="mt-2 text-xs">
               {isStandalone ? (
@@ -2019,41 +2008,6 @@ export function ArticleRightPane({
                 </>
               )}
             </dl>
-
-            {!editing && !isStandalone && page.confluenceId && !frozen && (
-              <button
-                type="button"
-                onClick={openResyncConfirm}
-                disabled={resyncMutation.isPending}
-                aria-busy={resyncMutation.isPending}
-                data-testid="article-resync-btn"
-                className="nm-button-ghost mt-2 h-8 px-3 text-xs"
-              >
-                <RefreshCw
-                  size={13}
-                  className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
-                  aria-hidden="true"
-                />
-                <span>{resyncMutation.isPending ? 'Pulling from Confluence…' : 'Pull latest from Confluence…'}</span>
-              </button>
-            )}
-            {!editing && isStandalone && canRelocate && !frozen && (
-              <div className="mt-2">
-                <button
-                  type="button"
-                  onClick={() => setRelocateOpen(true)}
-                  data-testid="relocate-btn"
-                  aria-describedby="relocate-btn-note"
-                  className="nm-button-ghost h-8 px-3 text-xs"
-                >
-                  <ArrowRightLeft size={13} className="shrink-0 opacity-70" aria-hidden="true" />
-                  <span>Move to Confluence…</span>
-                </button>
-                <p id="relocate-btn-note" className="mt-1 text-xs text-muted-foreground">
-                  Confluence becomes the source of record.
-                </p>
-              </div>
-            )}
           </section>
 
           <section className="mt-5" data-testid="document-health">
@@ -2200,26 +2154,8 @@ export function ArticleRightPane({
           </section>
 
           {id && (
-            <PageLifecycleSection pageId={id} page={page} />
+            <PageLifecycleSection pageId={id} page={page} defaultOpen={frozen} />
           )}
-
-          <section className="mt-5">
-            <h3 className="text-xs font-semibold text-foreground">Labels</h3>
-            {page.labels.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className={`inline-flex min-h-6 max-w-full items-center break-words rounded-md border border-border px-2 text-xs font-medium ${neutralChipInk}`}
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-1.5 text-xs text-muted-foreground">No labels assigned</p>
-            )}
-          </section>
         </div>
       ) : null}
       {id && page && (
@@ -2250,129 +2186,6 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {!editing && page && activeInspectorView === 'details' && (
-        <section className="px-3 pb-5" data-testid="article-actions">
-          <h3 className="mb-2 text-xs font-semibold text-foreground">
-            Page actions
-          </h3>
-
-          <div className="space-y-0.5">
-            {id && (
-              <VersionHistory
-                pageId={id}
-                restoreAllowed={!frozen}
-                renderTrigger={(historyOpen) => (
-                  <button
-                    type="button"
-                    className={cn(actionRowBase, historyOpen ? 'nav-selection' : actionRowIdle)}
-                    title="Version history"
-                  >
-                    <History size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                    <span className="truncate">Version history</span>
-                  </button>
-                )}
-              />
-
-            )}
-
-            <button
-              type="button"
-              onClick={handlePinToggle}
-              aria-pressed={isPinned}
-              className={cn(actionRowBase, isPinned ? 'nav-selection' : actionRowIdle)}
-              title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
-            >
-              <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} aria-hidden="true" />
-              <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
-            </button>
-
-            {id && (
-              <button
-                type="button"
-                onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
-                className={actionRowClass}
-                data-testid="show-in-graph-btn"
-              >
-                <GitGraph size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                <span className="truncate">Show in graph</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={handleExportPdf}
-              disabled={exportPdf.isPending}
-              aria-busy={exportPdf.isPending}
-              className={actionRowClass}
-            >
-              {exportPdf.isPending ? (
-                <Loader2 size={15} className="shrink-0 animate-spin opacity-70" aria-hidden="true" />
-              ) : (
-                <FileDown size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-              )}
-              <span className="truncate">Export PDF</span>
-            </button>
-
-            {id && aiAutoTagAvailable && !frozen && (
-              <AutoTagger
-                pageId={id}
-                currentLabels={page.labels}
-                className={actionRowClass}
-              />
-            )}
-
-            {/* A local page's delete is a 30-day restorable trash, so it is an
-                ordinary row. A Confluence page's delete is irreversible and goes
-                upstream, so it sits behind the Danger zone below instead. */}
-            {isStandalone && !frozen && (
-              <button
-                type="button"
-                onClick={handleDelete}
-                className={destructiveRowClass}
-                title={`Move to trash (${deleteHint})`}
-              >
-                <Trash2 size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                <span className="truncate">Move to trash</span>
-              </button>
-            )}
-          </div>
-
-          {!isStandalone && !frozen && (
-            <details className="group mt-2" data-testid="danger-zone">
-              <summary className={cn(destructiveRowClass, 'cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden')}>
-                <ChevronRight
-                  size={13}
-                  className="shrink-0 transition-transform group-open:rotate-90"
-                  aria-hidden="true"
-                />
-                Danger zone
-              </summary>
-              <div className="mt-0.5 space-y-0.5">
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  className={destructiveRowClass}
-                  title={`Delete in Confluence (${deleteHint})`}
-                >
-                  <Trash2 size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                  <span className="truncate">Delete in Confluence…</span>
-                </button>
-                {canRelocate && (
-                  <button
-                    type="button"
-                    onClick={() => setRelocateOpen(true)}
-                    data-testid="relocate-local-btn"
-                    className={cn(destructiveRowClass, 'h-auto min-h-8 items-start py-1.5')}
-                  >
-                    <ArrowRightLeft size={15} className="mt-0.5 shrink-0 opacity-70" aria-hidden="true" />
-                    <span className="min-w-0">Move to a local space — deletes the Confluence page</span>
-                  </button>
-                )}
-              </div>
-            </details>
-          )}
-        </section>
-      )}
       </div>
       )}
 

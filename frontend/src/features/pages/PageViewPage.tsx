@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
 import * as Y from 'yjs';
 import { toBase64 } from 'lib0/buffer';
-import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw, Pencil } from 'lucide-react';
+import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -41,7 +41,7 @@ function labelRefusalMessage(refusal: AiPolicyRefusal): string {
   }
 }
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
-import { FrozenBadge } from '../../shared/components/badges/FrozenBadge';
+import { ArticleReadToolbar } from '../../shared/components/article/ArticleReadToolbar';
 import { AiPolicyChip } from '../../shared/components/badges/AiPolicyChips';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
 import { CollabCommitResponseSchema, type CollabConfig, type SettablePageIcon } from '@compendiq/contracts';
@@ -70,7 +70,6 @@ import type { TocHeading } from '../../shared/components/article/TableOfContents
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
-import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
 import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../shared/lib/trash-copy';
@@ -1458,57 +1457,16 @@ export function PageViewPage() {
                   {sessionActions}
                 </>
               ) : (
-                <>
-                  {(page.labels ?? []).length > 0 && (
-                    <div
-                      className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden"
-                      data-testid="article-tags-readonly"
-                    >
-                      {(page.labels ?? []).map((label) => (
-                        <span
-                          key={label}
-                          className="inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-background/45 px-2.5 text-xs font-medium text-muted-foreground"
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <PresenceAvatarStack viewers={mergedViewers} />
-                    {page.isFrozen === true ? (
-                      // Not a disabled Edit button: a native-disabled control
-                      // takes no focus and no touch, so its `title` is the one
-                      // place the explanation could live and neither keyboard
-                      // nor touch users can reach it. A frozen article states
-                      // its state as text, and Details carries the rest.
-                      <span
-                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--radius-md)]
-                          border border-border px-2.5 text-xs font-medium text-muted-foreground"
-                        data-testid="article-frozen-status"
-                      >
-                        <FrozenBadge frozenVersion={page.frozenVersion} compact />
-                        <span>Frozen — open Details for the baseline</span>
-                      </span>
-                    ) : (
-                      <Button
-                        type="button"
-                        onClick={handleStartEditing}
-                        disabled={saveInFlight}
-                        isLoading={saveInFlight}
-                        title={saveInFlight ? 'Wait for the current save to finish' : 'Edit page'}
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
-                        data-testid="edit-page-btn"
-                        leftIcon={!saveInFlight ? <Pencil size={13} aria-hidden /> : undefined}
-                        rightIcon={!saveInFlight ? <ShortcutHint shortcutId="toggle-edit" /> : undefined}
-                      >
-                        <span>{saveInFlight ? 'Finishing save…' : 'Edit'}</span>
-                      </Button>
-                    )}
-                  </div>
-                </>
+                <ArticleReadToolbar
+                  page={page}
+                  confluenceUrl={settings?.confluenceUrl}
+                  mergedViewers={mergedViewers}
+                  saveInFlight={saveInFlight}
+                  onStartEditing={handleStartEditing}
+                  isPinned={isPinned}
+                  onPinToggle={handlePinToggle}
+                  onDelete={handleDeletePage}
+                />
               )}
             </div>
           )}

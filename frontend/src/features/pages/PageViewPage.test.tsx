@@ -226,6 +226,7 @@ vi.mock('./use-presence', () => ({
 
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useExportPdf: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
@@ -328,6 +329,7 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   usePinPage: () => ({ mutate: mockPinMutate, isPending: false }),
   useUnpinPage: () => ({ mutate: mockUnpinMutate, isPending: false }),
   useDeletePage: () => ({ mutateAsync: mockDeleteMutateAsync, isPending: false }),
+  useResyncPage: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 function createWrapper() {

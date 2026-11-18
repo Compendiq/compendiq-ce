@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { PageAiPolicyDetailFieldsSchema, PageAiPolicyResponseSchema, type AiPolicy } from '@compendiq/contracts';
 import { usePage } from '../../hooks/use-pages';
@@ -8,7 +9,7 @@ import { AiPolicyChip } from '../badges/AiPolicyChips';
 import { ConfirmDialog } from '../ConfirmDialog';
 
 /** Mounted in Details, independently of whether the article read has succeeded. */
-export function ArticleAiPolicySection({ pageId }: { pageId: string }) {
+export function ArticleAiPolicySection({ pageId, defaultOpen = true }: { pageId: string; defaultOpen?: boolean }) {
   const query = usePage(pageId);
   const qc = useQueryClient();
   const [draft, setDraft] = useState<AiPolicy | null>(null);
@@ -64,11 +65,18 @@ export function ArticleAiPolicySection({ pageId }: { pageId: string }) {
     if (!result.isError) { setConflict(false); setDenied(false); setNotice('Current policy refreshed. Review your selection before saving.'); }
   }
 
-  return <section className="space-y-2 px-3 py-4 text-xs" aria-label="Article AI policy" aria-busy={pending || query.isFetching}>
-    <h3 className="font-semibold">AI policy</h3>
+  return <details open={defaultOpen} className="group border-b border-border/60 px-3 py-2.5 text-xs" aria-label="Article AI policy" aria-busy={pending || query.isFetching}>
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-0.5 font-semibold text-foreground marker:content-none [&::-webkit-details-marker]:hidden">
+      <span className="inline-flex items-center gap-1.5">
+        <ChevronRight size={13} className="shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
+        <span>AI policy</span>
+      </span>
+      {policy && <AiPolicyChip policy={policy} />}
+    </summary>
+    <div className="mt-2 space-y-2">
     {permissionLost ? <p role="status">AI policy details are no longer available.</p>
       : query.isLoading ? <p role="status">Loading AI policy…</p>
-        : policy ? <><AiPolicyChip policy={policy} /><p>{AI_POLICY_EXPLANATION[policy]}</p></>
+        : policy ? <p>{AI_POLICY_EXPLANATION[policy]}</p>
           : <p>AI policy is unknown or unsupported. No editable default is assumed.</p>}
     {query.isError && !permissionLost && <p role="alert">{query.data ? 'Cached policy is stale. Refresh before making changes.' : 'AI policy could not be loaded.'}</p>}
     {detail?.aiPolicyActivation === 'foundation_only' && <p>Policy controls are unavailable until enforcement is activated.</p>}
@@ -89,5 +97,6 @@ export function ArticleAiPolicySection({ pageId }: { pageId: string }) {
     <ConfirmDialog open={confirm && editable} title={NO_AI_CONFIRMATION.title}
       description={`The committed change removes ${NO_AI_CONFIRMATION.removes.join(', ')}. It keeps ${NO_AI_CONFIRMATION.remains.join(', ')}. ${NO_AI_CONFIRMATION.limits.join(' ')}`}
       confirmLabel={NO_AI_CONFIRMATION.confirmLabel} onConfirm={() => void save()} onCancel={() => setConfirm(false)} />
-  </section>;
+    </div>
+  </details>;
 }
