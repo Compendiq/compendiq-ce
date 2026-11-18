@@ -1,8 +1,7 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import {
   AlertCircle,
-  ArrowRightLeft,
   CheckCircle2,
   ChevronRight,
   Cpu,
@@ -19,11 +18,9 @@ import {
   PanelRightClose,
   Pin,
   FileDown,
-  GitGraph,
   Loader2,
   RefreshCw,
   Sparkles,
-  Trash2,
   History,
   ShieldCheck,
   X,
@@ -60,7 +57,6 @@ import {
   usePanelCollapseInitial,
 } from '../../hooks/use-panel-collapse-motion';
 import {
-  useDeletePage,
   usePage,
   usePinnedPages,
   usePinPage,
@@ -71,13 +67,11 @@ import {
 } from '../../hooks/use-pages';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useExportPdf, useVerifyPage } from '../../hooks/use-standalone';
-import { usePermission } from '../../hooks/use-permission';
 import { useSettings } from '../../hooks/use-settings';
 import { apiFetch, ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { BLOCK_REASON_LABEL } from '../../lib/article-ai-policy';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../lib/trash-copy';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import type { TocHeading } from './TableOfContents';
 
@@ -359,7 +353,6 @@ export function ArticleRightPane({
   onRequestClose?: () => void;
 } = {}) {
   const location = useLocation();
-  const navigate = useNavigate();
 
   // Extract page ID from pathname instead of useParams, because this component
   // is rendered in AppLayout (outer Route) where descendant route params like
@@ -450,13 +443,11 @@ export function ArticleRightPane({
   }, [id, queryClient]);
   const { data: pinnedData } = usePinnedPages();
   const { data: settings } = useSettings();
-  const deleteMutation = useDeletePage();
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   const resyncMutation = useResyncPage();
   const reembedMutation = useReembedPage();
   const requalityMutation = useRequalityPage();
-  const { allowed: canRelocate } = usePermission('pages:relocate');
   const verifyMutation = useVerifyPage();
   const [relocateOpen, setRelocateOpen] = useState(false);
   const [verifyStatusMsg, setVerifyStatusMsg] = useState<string | null>(null);
@@ -577,7 +568,6 @@ export function ArticleRightPane({
   const [collapsedIds, setCollapsedIds] = useState(() => readCollapsedIds(storageKey));
   const [readingProgress, setReadingProgress] = useState(0);
   const [isResizing, setIsResizing] = useState(false);
-  const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
   const [activeInspectorView, setActiveInspectorView] = useState<InspectorView>(() =>
     isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
@@ -1012,26 +1002,6 @@ export function ArticleRightPane({
   }, [id, queryClient, verifyMutation]);
 
   // Deleting soft-deletes into the 30-day trash, so the confirm copy must
-  // not claim the action "cannot be undone". ConfirmDialog replaces the
-  // native confirm() to match the neumorphic design system. Same flow
-  // and copy as PageViewPage's Alt+Shift+D shortcut.
-  const handleDelete = useCallback(() => {
-    if (!id) return;
-    setConfirmTrashOpen(true);
-  }, [id]);
-
-  const handleConfirmMoveToTrash = useCallback(async () => {
-    if (!id) return;
-    setConfirmTrashOpen(false);
-    try {
-      await deleteMutation.mutateAsync(id);
-      navigate('/');
-      toast.success('Page moved to trash.');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
-    }
-  }, [deleteMutation, id, navigate]);
-
   // Pulling from Confluence overwrites the local title and body, so every
   // entry point (Source block, rail overflow) opens the same confirm; the
   // mutation runs only from its confirm button.
@@ -1136,20 +1106,6 @@ export function ArticleRightPane({
   // reaches Trash, so it gets the irreversible copy rather than a 30-day
   // restore it cannot be given. An unloaded `page` has an unknown source too,
   // so it keeps the no-promise fallback.
-  const trashCopy = page
-    ? (page.source === 'standalone' ? trashConfirmCopy(page.descendantCount) : confluenceDeleteConfirmCopy())
-    : trashConfirmCopy(undefined);
-  const confirmTrashDialog = (
-    <ConfirmDialog
-      open={confirmTrashOpen}
-      title={trashCopy.title}
-      description={trashCopy.description}
-      confirmLabel={trashCopy.confirmLabel}
-      destructive
-      onConfirm={handleConfirmMoveToTrash}
-      onCancel={() => setConfirmTrashOpen(false)}
-    />
-  );
   const relocateDialog = relocateOpen && id && page ? (
     <RelocateDialog
       open
@@ -1677,7 +1633,6 @@ export function ArticleRightPane({
         )}
       </AnimatePresence>
       </div>
-      {confirmTrashDialog}
       {confirmResyncDialog}
       {relocateDialog}
       </>
@@ -1702,8 +1657,6 @@ export function ArticleRightPane({
   );
   const actionRowIdle = 'text-muted-foreground hover:bg-muted hover:text-foreground';
   const actionRowClass = cn(actionRowBase, actionRowIdle);
-  const destructiveRowClass = cn('nm-action-destructive', actionRowShape);
-  const deleteHint = formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac());
   const detailRowClass = 'flex items-center justify-between gap-3 py-1.5';
 
   return (
@@ -2298,7 +2251,7 @@ export function ArticleRightPane({
               data-testid="article-right-pane-resize-grip"
               className={cn(
                 'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-all duration-150',
-                'group-hover:scale-125 group-hover:opacity-100 group-focus-visible:scale-125 group-focus-visible:opacity-100',
+                'group-hover:opacity-100 group-focus-visible:opacity-100',
                 isResizing && 'scale-125 opacity-100',
               )}
             >
@@ -2316,7 +2269,6 @@ export function ArticleRightPane({
         </div>
       )}
     </m.aside>
-    {confirmTrashDialog}
     {confirmResyncDialog}
     {relocateDialog}
     </>

@@ -51,7 +51,7 @@ const codeOf = (file: string) => stripComments(readFileSync(join(SRC, file), 'ut
 
 const UNIFIED = [
   'shared/components/article/EditorBlockMenu.tsx',
-  'shared/components/article/ArticleRightPane.tsx',
+  'shared/components/article/ArticleReadToolbar.tsx',
   'features/settings/panels/ProviderListSection.tsx',
 ];
 
@@ -164,8 +164,11 @@ describe('deleting a page is not promoted by collapsing the inspector', () => {
     expect(rail, 'Delete handler must stay off the rail').not.toMatch(/handleDelete/);
   });
 
-  it('still offers it in the expanded Details tab, through the same confirm', () => {
-    expect(pane).toMatch(/handleDelete/);
-    expect(pane).toMatch(/setConfirmTrashOpen\(true\)/);
+  it('still offers it in the read-mode overflow menu, through the confirm dialog', () => {
+    const readToolbar = codeOf('shared/components/article/ArticleReadToolbar.tsx');
+    const pageView = codeOf('features/pages/PageViewPage.tsx');
+    expect(readToolbar).toMatch(/onSelect=\{onDelete\}/);
+    expect(pageView).toMatch(/handleDeletePage/);
+    expect(pageView).toMatch(/setConfirmTrashOpen\(true\)/);
   });
 });

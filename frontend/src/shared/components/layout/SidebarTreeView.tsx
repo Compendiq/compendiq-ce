@@ -1391,7 +1391,7 @@ export function SidebarTreeView({
             data-testid="sidebar-resize-grip"
             className={cn(
               'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-all duration-150',
-              'group-hover:scale-125 group-hover:opacity-100 group-focus-visible:scale-125 group-focus-visible:opacity-100',
+              'group-hover:opacity-100 group-focus-visible:opacity-100',
               isResizing && 'scale-125 opacity-100',
             )}
           >
