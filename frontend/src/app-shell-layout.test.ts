@@ -215,21 +215,22 @@ describe('Inset shell utilities', () => {
     expect(skeleton).not.toContain('ml-4');
   });
 
-  it('the workspace sidebar uses --app-sidebar-bg with a 1px right divider and transparent toolbars', () => {
+  it('the workspace sidebar uses 75% --app-sidebar-bg with a 1px right divider and transparent toolbars', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
-    expect(sidebar).toMatch(/background:\s*var\(--app-sidebar-bg\)/);
+    expect(sidebar).toMatch(/background:\s*color-mix\(in srgb,\s*var\(--app-sidebar-bg\)\s+75%,\s*transparent\)/);
     expect(sidebar).toMatch(/border-right-width:\s*1px/);
     expect(sidebar).toMatch(/border-color:\s*var\(--color-border\)/);
-    expect(pane).toMatch(/background:\s*var\(--color-card\)/);
+    expect(pane).toMatch(/background:\s*color-mix\(in srgb,\s*var\(--color-card\)\s+75%,\s*transparent\)/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
     );
   });
 
-  it('the workspace utility is the radiused card with its resting shadow', () => {
+  it('the workspace utility is the frosted radiused card with its resting shadow', () => {
     const block = extractBlock(css, '@utility app-workspace {');
-    expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);
+    expect(block).toMatch(/background:\s*transparent/);
+    expect(block).toMatch(/backdrop-filter:\s*blur\(16px\)/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
     expect(block).not.toMatch(/border:/);
     expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
@@ -243,9 +244,9 @@ describe('Inset shell utilities', () => {
     expect(block).not.toMatch(/box-shadow:/);
   });
 
-  it('the context rail utility carries a left border dividing it from the main pane', () => {
+  it('the context rail utility uses 75% --app-rail-bg with a left border dividing it from the main pane', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
-    expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
+    expect(block).toMatch(/background:\s*color-mix\(in srgb,\s*var\(--app-rail-bg\)\s+75%,\s*transparent\)/);
     expect(block).toMatch(/border-left-width:\s*1px/);
     expect(block).toMatch(/border-color:\s*var\(--color-border\)/);
     expect(block).not.toMatch(/box-shadow:/);

@@ -1161,24 +1161,29 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding-top: 4px;
 }
 
-/* The workspace card is defined by value and shape, not by a line: the chassis
-   inset holds it off the frame, the radius cuts its corners, and Pane sits a
-   step above Canvas in both themes (1.101:1 Graphite, 1.171:1 Paper). The 1px
-   hairline that used to trace all four sides was a third statement of the same
-   boundary, and it read as a frame drawn around the work. Do not add it back:
-   retune --app-chassis if the card stops reading as a card. */
+/* The workspace card floats over the diagonal shell gradient with frosted blur
+   while its inner panes (sidebar, main, context rail) each paint 75% opacity
+   (~25% translucency). Value step, radius, and resting shadow draw the card
+   without an outer border. */
 @utility app-workspace {
-  background: var(--app-shell-bg);
+  background: transparent;
+  backdrop-filter: blur(16px) saturate(112%);
   border-radius: var(--app-shell-radius);
   box-shadow: var(--app-workspace-shadow);
   min-width: 0;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .app-workspace {
+    background: var(--app-shell-bg);
+  }
 }
 
 /* The inspector is attached inside the workspace card, beside <main>. The
    card clips it to the shared outer radius; the 1px left hairline is its only
    boundary with the document. Below `md` it is the inspector sheet instead. */
 @utility app-context-rail {
-  background: var(--app-rail-bg);
+  background: color-mix(in srgb, var(--app-rail-bg) 75%, transparent);
   border-left-width: 1px;
   border-color: var(--color-border);
 }
@@ -1229,10 +1234,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-sidebar {
-  background: var(--app-sidebar-bg);
+  background: color-mix(in srgb, var(--app-sidebar-bg) 75%, transparent);
   border-right-width: 1px;
   border-color: var(--color-border);
   flex-shrink: 0;
+}
+
+#mobile-nav-sidebar .app-sidebar {
+  background: var(--app-sidebar-bg);
+}
+
+#mobile-context-sidebar .app-context-rail {
+  background: var(--app-rail-bg);
 }
 
 /* Title and footer bands inherit the sidebar surface; they must not reintroduce Chrome. */
@@ -1240,11 +1253,32 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   background: transparent;
 }
 
-/* Route content is the page users are working on. It paints --color-card,
-   stepping slightly brighter than .app-sidebar beside it; the workspace card
-   clips both to the shared outer radius. */
+/* Route content is the page users are working on. It paints --color-card at
+   75% opacity (~25% translucent over the shell gradient), stepping slightly
+   brighter than .app-sidebar beside it; the workspace card clips both. */
 @utility app-content-pane {
-  background: var(--color-card);
+  background: color-mix(in srgb, var(--color-card) 75%, transparent);
+}
+
+/* All in-flow surfaces inside the main workspace area stay ~25% translucent
+   (75% opaque) so the shell gradient carries uniformly without blocking
+   hover/active state utilities or modal dialogs. */
+@layer utilities {
+  .app-workspace :where(.nm-card, .nm-card-interactive, .panel-context, .nm-input, .nm-select, .nm-select-md, .nm-composer, .bg-card):not([role="dialog"]):not([role="alertdialog"]):not(.nm-popover-glass):not(.nm-card-elevated) {
+    background-color: color-mix(in srgb, var(--color-card) 75%, transparent);
+  }
+
+  .app-workspace :where(.bg-background):not([role="dialog"]):not([role="alertdialog"]) {
+    background-color: color-mix(in srgb, var(--color-background) 75%, transparent);
+  }
+
+  .app-workspace :where(.panel-toolbar):not(.nm-popover-glass) {
+    background-color: color-mix(in srgb, var(--app-header-bg) 75%, transparent);
+  }
+}
+
+.app-workspace :is(.sticky, .panel-toolbar).bg-card {
+  backdrop-filter: blur(12px);
 }
 /* Panel composition primitives. Sidebars share the same chassis, but their
    internal hierarchy comes from quiet chrome, a single context control, and
@@ -2031,8 +2065,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .nm-button-destructive,
   .nm-button-ghost,
   .nm-icon-button,
-  .nm-input {
+  .nm-input,
+  .app-workspace {
     border: 2px solid ButtonText;
+  }
+  .app-workspace {
+    background: Canvas;
+    backdrop-filter: none;
   }
   .nm-button-primary,
   .nm-button-destructive {
@@ -2047,6 +2086,31 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* Opaque fill, no blur — the interactive edge and overlay shadow remain. */
 @media (prefers-reduced-transparency: reduce) {
+  .app-workspace {
+    background: var(--app-shell-bg);
+    backdrop-filter: none;
+  }
+  .app-sidebar {
+    background: var(--app-sidebar-bg);
+  }
+  .app-content-pane {
+    background: var(--color-card);
+  }
+  .app-context-rail {
+    background: var(--app-rail-bg);
+  }
+  .app-workspace :where(.nm-card, .nm-card-interactive, .panel-context, .nm-input, .nm-select, .nm-select-md, .nm-composer, .bg-card):not([role="dialog"]):not([role="alertdialog"]):not(.nm-popover-glass):not(.nm-card-elevated) {
+    background-color: var(--color-card);
+  }
+  .app-workspace :where(.bg-background):not([role="dialog"]):not([role="alertdialog"]) {
+    background-color: var(--color-background);
+  }
+  .app-workspace :where(.panel-toolbar):not(.nm-popover-glass) {
+    background-color: var(--app-header-bg);
+  }
+  .app-workspace :is(.sticky, .panel-toolbar).bg-card {
+    backdrop-filter: none;
+  }
   .nm-popover-glass,
   .app-context-rail .panel-toolbar.nm-popover-glass {
     background-color: var(--color-card-elevated);

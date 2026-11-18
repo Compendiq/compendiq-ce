@@ -548,6 +548,27 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
         expectContrast(`${themeName} muted-foreground on sidebar ${stateName}`, muted, stateBg, 4.5);
         expectContrast(`${themeName} border-interactive on sidebar ${stateName}`, borderInteractive, stateBg, 3);
       }
+
+      // 75%-opaque (25%-translucent) sidebar and main pane composited over the
+      // outer gradient stops still clear WCAG AA contrast and keep sidebar < card.
+      for (const stopName of ['--shell-grad-1', '--shell-grad-5'] as const) {
+        const stop = token(block, stopName);
+        const sbComp = composite(sidebar, 0.75, stop);
+        const cardComp = composite(card, 0.75, stop);
+        expect(
+          luminance(sbComp),
+          `${themeName} 75% sidebar (${sbComp}) over ${stopName} must stay darker than 75% main (${cardComp})`,
+        ).toBeLessThan(luminance(cardComp));
+        for (const [label, ground] of [
+          ['75% sidebar', sbComp],
+          ['75% main', cardComp],
+        ] as const) {
+          expectContrast(`${themeName} foreground on ${label} over ${stopName}`, fg, ground, 4.5);
+          expectContrast(`${themeName} muted-foreground on ${label} over ${stopName}`, muted, ground, 4.5);
+          expectContrast(`${themeName} primary-ink on ${label} over ${stopName}`, primaryInk, ground, 4.5);
+          expectContrast(`${themeName} border-interactive on ${label} over ${stopName}`, borderInteractive, ground, 3);
+        }
+      }
     }
   });
 
