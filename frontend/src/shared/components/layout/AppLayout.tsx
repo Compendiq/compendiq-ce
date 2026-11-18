@@ -499,7 +499,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <span className="flex shrink-0 items-center justify-center md:w-[var(--app-nav-rail-width)]">
               <LogoMark className="size-7 shrink-0" title="Compendiq" />
             </span>
-            <LogoWordmark className="h-7 w-auto shrink-0 md:ml-3" />
+            <LogoWordmark className="h-7 w-auto shrink-0" />
           </Link>
         </div>
         <div className="ml-auto flex min-w-0 items-center justify-end gap-1">

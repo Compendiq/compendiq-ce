@@ -282,8 +282,8 @@ describe('Inset shell utilities', () => {
     const sidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
     expect(panelBgMatch).not.toBeNull();
     expect(sidebarAlphaMatch).not.toBeNull();
-    expect(Number(panelBgMatch![1])).toBeCloseTo(0.05, 5);
-    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.24, 5);
+    expect(Number(panelBgMatch![1])).toBeCloseTo(0.08, 5);
+    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.16, 5);
 
     const lightPanelBgMatch = /--panel-bg:\s*rgb\(255 255 255 \/ ([0-9.]+)\);/.exec(lightBlock);
     const lightSidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(208 212 218 \/ ([0-9.]+)\);/.exec(lightBlock);

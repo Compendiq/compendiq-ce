@@ -532,7 +532,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --shell-pool: rgb(36 44 56 / 0.30);
   --shell-pool-soft: rgb(26 32 42 / 0.14);
   --shell-muted: #a3aab4;
-  --panel-bg: rgb(255 255 255 / 0.05);
+  --panel-bg: rgb(255 255 255 / 0.08);
   --panel-bg-fallback: rgb(18 22 29 / 0.94);
   --panel-border: transparent;
   --panel-divider: transparent;
@@ -541,7 +541,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
     0 2px 6px rgb(0 0 0 / 45%),
     0 12px 28px -4px rgb(0 0 0 / 65%);
   --nav-hover: rgb(255 255 255 / 0.06);
-  --app-sidebar-translucent: rgb(0 0 0 / 0.24);
+  --app-sidebar-translucent: rgb(0 0 0 / 0.16);
   --workspace-card-bg: rgb(255 255 255 / 0.05);
   --workspace-toolbar-bg: rgb(255 255 255 / 0.04);
   --workspace-well-bg: rgb(0 0 0 / 0.14);
