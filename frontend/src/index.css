@@ -532,7 +532,18 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --shell-pool: rgb(38 50 68 / 0.36);
   --shell-pool-soft: rgb(26 36 52 / 0.16);
   --shell-muted: #a3adba;
+  --panel-bg: rgb(0 0 0 / 0.20);
+  --panel-bg-fallback: rgb(14 19 26 / 0.94);
+  --panel-border: rgb(255 255 255 / 0.08);
+  --panel-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 2px 6px rgb(0 0 0 / 45%),
+    0 12px 28px -4px rgb(0 0 0 / 65%);
   --nav-hover: rgb(255 255 255 / 0.06);
+  --app-sidebar-translucent: rgb(0 0 0 / 0.22);
+  --workspace-card-bg: rgb(255 255 255 / 0.05);
+  --workspace-toolbar-bg: rgb(255 255 255 / 0.04);
+  --workspace-well-bg: rgb(0 0 0 / 0.14);
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
@@ -544,8 +555,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --app-header-bg: #0c0c0d;
   --app-shell-bg: var(--color-background);
   --app-sidebar-bg: #141415;
-  --app-rail-bg: var(--color-card);
-  --app-workspace-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px -4px rgba(0, 0, 0, 0.6);
+  /* Attached inside .app-workspace on desktop: transparent so the right panel
+     shares the frosted workspace plate and lets the diagonal shell gradient
+     show through just like <main>. Mobile sheets override to --color-card. */
+  --app-rail-bg: transparent;
+  --app-workspace-shadow: var(--panel-shadow);
   --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
@@ -974,7 +988,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --shell-pool: rgb(196 201 208 / 0.56);
   --shell-pool-soft: rgb(206 211 217 / 0.24);
   --shell-muted: #4b525c;
+  --panel-bg: rgb(255 255 255 / 0.68);
+  --panel-bg-fallback: rgb(255 255 255 / 0.92);
+  --panel-border: rgb(255 255 255 / 0.62);
+  --panel-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.75),
+    0 1px 3px rgb(20 42 66 / 7%),
+    0 8px 24px -4px rgb(20 42 66 / 10%);
   --nav-hover: rgb(255 255 255 / 0.45);
+  --app-sidebar-translucent: rgb(208 212 218 / 0.28);
+  --workspace-card-bg: rgb(255 255 255 / 0.50);
+  --workspace-toolbar-bg: rgb(235 240 245 / 0.55);
+  --workspace-well-bg: rgb(244 246 248 / 0.45);
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
@@ -999,8 +1024,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
   --app-sidebar-bg: #f8fafc;
-  --app-rail-bg: var(--color-card);
-  --app-workspace-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px -2px rgba(0, 0, 0, 0.06);
+  /* Attached inside .app-workspace on desktop: transparent so the right panel
+     shares the frosted workspace plate and lets the diagonal shell gradient
+     show through just like <main>. Mobile sheets override to --color-card. */
+  --app-rail-bg: transparent;
+  --app-workspace-shadow: var(--panel-shadow);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -1161,21 +1189,19 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding-top: 4px;
 }
 
-/* The workspace card floats over the diagonal shell gradient with frosted blur
-   while its inner panes (sidebar, main, context rail) each paint 75% opacity
-   (~25% translucency). Value step, radius, and resting shadow draw the card
-   without an outer border. */
+/* The content panel is a frosted, elevated surface floating on the shell gradient. */
 @utility app-workspace {
-  background: transparent;
+  background: var(--panel-bg);
   backdrop-filter: blur(16px) saturate(112%);
+  border: 1px solid var(--panel-border);
   border-radius: var(--app-shell-radius);
-  box-shadow: var(--app-workspace-shadow);
+  box-shadow: var(--panel-shadow);
   min-width: 0;
 }
 
 @supports not (backdrop-filter: blur(1px)) {
   .app-workspace {
-    background: var(--app-shell-bg);
+    background: var(--panel-bg-fallback);
   }
 }
 
@@ -1183,7 +1209,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    card clips it to the shared outer radius; the 1px left hairline is its only
    boundary with the document. Below `md` it is the inspector sheet instead. */
 @utility app-context-rail {
-  background: color-mix(in srgb, var(--app-rail-bg) 75%, transparent);
+  background: var(--app-rail-bg);
   border-left-width: 1px;
   border-color: var(--color-border);
 }
@@ -1234,7 +1260,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-sidebar {
-  background: color-mix(in srgb, var(--app-sidebar-bg) 75%, transparent);
+  background: var(--app-sidebar-translucent);
   border-right-width: 1px;
   border-color: var(--color-border);
   flex-shrink: 0;
@@ -1245,7 +1271,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 #mobile-context-sidebar .app-context-rail {
-  background: var(--app-rail-bg);
+  background: var(--color-card);
 }
 
 /* Title and footer bands inherit the sidebar surface; they must not reintroduce Chrome. */
@@ -1253,31 +1279,32 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   background: transparent;
 }
 
-/* Route content is the page users are working on. It paints --color-card at
-   75% opacity (~25% translucent over the shell gradient), stepping slightly
-   brighter than .app-sidebar beside it; the workspace card clips both. */
+/* Route content sits inside the frosted .app-workspace plate; keep it
+   transparent so the workspace's translucent fill and blur let the shell
+   gradient shine through the main area. */
 @utility app-content-pane {
-  background: color-mix(in srgb, var(--color-card) 75%, transparent);
+  background: transparent;
 }
 
-/* All in-flow surfaces inside the main workspace area stay ~25% translucent
-   (75% opaque) so the shell gradient carries uniformly without blocking
-   hover/active state utilities or modal dialogs. */
+/* In-flow cards, toolbars, and inputs inside .app-workspace use translucent
+   tints so the shell gradient carries cleanly through the main area without
+   making portalled dialogs or hover/active states transparent. */
 @layer utilities {
   .app-workspace :where(.nm-card, .nm-card-interactive, .panel-context, .nm-input, .nm-select, .nm-select-md, .nm-composer, .bg-card):not([role="dialog"]):not([role="alertdialog"]):not(.nm-popover-glass):not(.nm-card-elevated) {
-    background-color: color-mix(in srgb, var(--color-card) 75%, transparent);
+    background-color: var(--workspace-card-bg);
   }
 
   .app-workspace :where(.bg-background):not([role="dialog"]):not([role="alertdialog"]) {
-    background-color: color-mix(in srgb, var(--color-background) 75%, transparent);
+    background-color: var(--workspace-well-bg);
   }
 
   .app-workspace :where(.panel-toolbar):not(.nm-popover-glass) {
-    background-color: color-mix(in srgb, var(--app-header-bg) 75%, transparent);
+    background-color: var(--workspace-toolbar-bg);
   }
 }
 
 .app-workspace :is(.sticky, .panel-toolbar).bg-card {
+  background-color: var(--panel-bg-fallback);
   backdrop-filter: blur(12px);
 }
 /* Panel composition primitives. Sidebars share the same chassis, but their
@@ -2087,7 +2114,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 /* Opaque fill, no blur — the interactive edge and overlay shadow remain. */
 @media (prefers-reduced-transparency: reduce) {
   .app-workspace {
-    background: var(--app-shell-bg);
+    background: var(--color-card);
     backdrop-filter: none;
   }
   .app-sidebar {
@@ -2097,7 +2124,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     background: var(--color-card);
   }
   .app-context-rail {
-    background: var(--app-rail-bg);
+    background: var(--color-card);
   }
   .app-workspace :where(.nm-card, .nm-card-interactive, .panel-context, .nm-input, .nm-select, .nm-select-md, .nm-composer, .bg-card):not([role="dialog"]):not([role="alertdialog"]):not(.nm-popover-glass):not(.nm-card-elevated) {
     background-color: var(--color-card);
@@ -2109,6 +2136,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     background-color: var(--app-header-bg);
   }
   .app-workspace :is(.sticky, .panel-toolbar).bg-card {
+    background-color: var(--color-card);
     backdrop-filter: none;
   }
   .nm-popover-glass,

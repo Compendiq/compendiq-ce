@@ -66,7 +66,7 @@ describe('Inset shell tokens', () => {
       expect(shell, '--app-shell-bg must be declared').not.toBeNull();
       expect(rail, '--app-rail-bg must be declared').not.toBeNull();
       expect(shell![1]!.trim()).toBe('var(--color-background)');
-      expect(rail![1]!.trim()).toBe('var(--color-card)');
+      expect(rail![1]!.trim()).toBe('transparent');
 
       const sidebarBg = tokenHex(block, '--app-sidebar-bg');
       const cardBg = tokenHex(block, '--color-card');
@@ -215,27 +215,26 @@ describe('Inset shell utilities', () => {
     expect(skeleton).not.toContain('ml-4');
   });
 
-  it('the workspace sidebar uses 75% --app-sidebar-bg with a 1px right divider and transparent toolbars', () => {
+  it('the workspace sidebar uses translucent --app-sidebar-translucent with a 1px right divider and transparent toolbars', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
-    expect(sidebar).toMatch(/background:\s*color-mix\(in srgb,\s*var\(--app-sidebar-bg\)\s+75%,\s*transparent\)/);
+    expect(sidebar).toMatch(/background:\s*var\(--app-sidebar-translucent\)/);
     expect(sidebar).toMatch(/border-right-width:\s*1px/);
     expect(sidebar).toMatch(/border-color:\s*var\(--color-border\)/);
-    expect(pane).toMatch(/background:\s*color-mix\(in srgb,\s*var\(--color-card\)\s+75%,\s*transparent\)/);
+    expect(pane).toMatch(/background:\s*transparent/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
     );
   });
 
-  it('the workspace utility is the frosted radiused card with its resting shadow', () => {
+  it('the workspace utility is the frosted radiused card with its translucent panel ground, 1px hairline border, and resting shadow', () => {
     const block = extractBlock(css, '@utility app-workspace {');
-    expect(block).toMatch(/background:\s*transparent/);
+    expect(block).toMatch(/background:\s*var\(--panel-bg\)/);
     expect(block).toMatch(/backdrop-filter:\s*blur\(16px\)/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
-    expect(block).not.toMatch(/border:/);
-    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
+    expect(block).toMatch(/border:\s*1px solid var\(--panel-border\)/);
     expect(css).not.toMatch(/--app-shell-border-width/);
-    expect(block).toMatch(/box-shadow:\s*var\(--app-workspace-shadow\)/);
+    expect(block).toMatch(/box-shadow:\s*var\(--panel-shadow\)/);
   });
 
   it('the layout shell wrapper does not add a second card around the rail', () => {
@@ -244,9 +243,9 @@ describe('Inset shell utilities', () => {
     expect(block).not.toMatch(/box-shadow:/);
   });
 
-  it('the context rail utility uses 75% --app-rail-bg with a left border dividing it from the main pane', () => {
+  it('the context rail utility uses --app-rail-bg with a left border dividing it from the main pane', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
-    expect(block).toMatch(/background:\s*color-mix\(in srgb,\s*var\(--app-rail-bg\)\s+75%,\s*transparent\)/);
+    expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
     expect(block).toMatch(/border-left-width:\s*1px/);
     expect(block).toMatch(/border-color:\s*var\(--color-border\)/);
     expect(block).not.toMatch(/box-shadow:/);

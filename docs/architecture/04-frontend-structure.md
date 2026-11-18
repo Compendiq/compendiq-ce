@@ -101,12 +101,15 @@ and the compact left destination icon rail (`MainNavChassisRail`, matching
 `--app-nav-rail-width: var(--app-header-height)`, rendering the icon-only
 Pages / AI / Graph links) are transparent over `--app-chassis`, forming a
 uniform-width L-shaped frame around a single rounded **workspace card**
-(`app-workspace`, carrying `--app-workspace-shadow`). Inside the frosted workspace card, the collapsible/resizable route sidebar
-(`SidebarTreeView` / `AiConversationsSidebar` / `SettingsSidebar` on
-`--app-sidebar-bg` at 75% opacity with a 1px right hairline) sits directly to
-the left of `<main>` (`--color-card` at 75% opacity) and the attached inspector
-on article routes (`--app-rail-bg` at 75% opacity), with in-flow workspace
-cards, toolbars, and inputs sharing ~25% translucency. The composition is:
+(`app-workspace`, carrying `--app-workspace-shadow`). Inside the frosted translucent workspace card (`--panel-bg` over the shell
+gradient with `backdrop-filter: blur(16px)` and `--panel-border`), the
+collapsible/resizable route sidebar (`SidebarTreeView` / `AiConversationsSidebar`
+/ `SettingsSidebar` on `--app-sidebar-translucent`, slightly darker than `<main>`
+with a 1px right hairline) sits directly to the left of the transparent `<main>`
+pane and attached inspector (`--app-rail-bg: transparent`) on article routes,
+letting the chassis gradient show through while keeping in-flow workspace cards,
+toolbars, and wells lightly translucent (`--workspace-card-bg` /
+`--workspace-toolbar-bg` / `--workspace-well-bg`). The composition is:
 ```mermaid
 flowchart TB
     chassis["viewport chassis --app-chassis (flat)"]

@@ -880,7 +880,6 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--app-chassis',
     '--app-shell-bg',
     '--app-sidebar-bg',
-    '--app-rail-bg',
     '--shell-grad-1',
     '--shell-grad-2',
     '--shell-grad-3',
@@ -899,9 +898,24 @@ describe('Both themes declare a complete, symmetric token set', () => {
     });
   }
 
-  it('both themes declare shell gradient composition tokens and overlay shadow', () => {
+  it('both themes declare shell gradient composition tokens, frosted panel tokens, and overlay shadow', () => {
     for (const block of [darkBlock, lightBlock]) {
-      for (const name of ['--shell-grad-dir', '--shell-pool-pos', '--shell-pool', '--shell-pool-soft', '--nav-hover']) {
+      for (const name of [
+        '--shell-grad-dir',
+        '--shell-pool-pos',
+        '--shell-pool',
+        '--shell-pool-soft',
+        '--nav-hover',
+        '--app-rail-bg',
+        '--panel-bg',
+        '--panel-bg-fallback',
+        '--panel-border',
+        '--panel-shadow',
+        '--app-sidebar-translucent',
+        '--workspace-card-bg',
+        '--workspace-toolbar-bg',
+        '--workspace-well-bg',
+      ]) {
         expect(block, `${name} must be declared`).toMatch(new RegExp(`${name}:\\s*[^;]+;`));
       }
     }
@@ -1076,7 +1090,7 @@ describe('Flat depth model', () => {
         // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
         if (/^none$/.test(value)) continue;
         if (/^0 0 0 \d+px/.test(value)) continue;
-        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow)\)/.test(value)) continue;
+        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow|panel-shadow)\)/.test(value)) continue;
         // Retired tokens resolve to `transparent`, so they paint nothing.
         if (/var\(--nm-(shadow|highlight)/.test(value)) continue;
         offenders.push(`${selector} → ${value}`);
