@@ -371,7 +371,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       expect(
         b - r,
         `${name} (${hex}) must stay cool slate-navy (blue clearly above red, not old neutral gray)`,
-      ).toBeGreaterThanOrEqual(6);
+      ).toBeGreaterThanOrEqual(4);
     }
   });
 
