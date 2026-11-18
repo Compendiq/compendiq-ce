@@ -469,7 +469,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           the same outer frame visible on the left, right and bottom. It sits
           outside the brighter workspace card. Height is --app-header-height
           so the side inset can grow without stretching this band. */}
-      <header className="app-header relative z-10 flex shrink-0 items-center justify-between px-3">
+      <header className="app-header relative z-10 flex shrink-0 items-center justify-between px-3 md:pl-0">
         <div className="flex min-w-0 items-center gap-3">
           {/* Mobile hamburger — opens sidebar slide-over */}
           <button
@@ -486,12 +486,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
             {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
 
-          {/* Full horizontal lockup (Q-tile + Compendiq wordmark) */}
+          {/* Full horizontal lockup (Q-tile + Compendiq wordmark); on desktop the
+              Q-tile centers inside the --app-nav-rail-width column directly above
+              the left rail icons (Pages / AI / Graph). */}
           <Link
             to="/"
             aria-label="Compendiq home"
             data-testid="header-chassis-slot"
-            className="flex items-center md:ml-3 rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex items-center rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:pl-[calc((var(--app-nav-rail-width)-1.5rem)/2)]"
           >
             <Logo className="h-6 w-auto text-foreground" title="Compendiq" />
           </Link>

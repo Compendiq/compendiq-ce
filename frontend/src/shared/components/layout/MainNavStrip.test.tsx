@@ -59,6 +59,8 @@ describe('MainNavChassisRail', () => {
     expect(nav).toHaveAccessibleName('Main navigation');
     expect(nav.className).toContain('w-[var(--app-nav-rail-width)]');
     expect(nav.className).toContain('flex-col');
+    expect(nav.className).toContain('gap-1.5');
+    expect(nav.className).toContain('pt-0.5');
 
     const pages = screen.getByRole('link', { name: 'Pages' });
     const ai = screen.getByRole('link', { name: 'AI chat, full page' });

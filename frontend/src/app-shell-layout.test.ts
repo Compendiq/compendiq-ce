@@ -207,10 +207,15 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('matches the left icon rail width to the header height and mirrors it in the boot skeleton', () => {
+  it('matches the left icon rail width to the header height, centers the logo mark above the rail icons with matching vertical gap, and mirrors it in the boot skeleton', () => {
     const skeleton = read('shared/components/feedback/AppLoadingFallback.tsx');
+    const navStrip = read('shared/components/layout/MainNavStrip.tsx');
     expect(css).toMatch(/--app-nav-rail-width:\s*var\(--app-header-height\)/);
+    expect(appLayout).toContain('md:pl-[calc((var(--app-nav-rail-width)-1.5rem)/2)]');
+    expect(navStrip).toContain('gap-1.5 pt-0.5');
     expect(skeleton).toContain('w-[var(--app-nav-rail-width)]');
+    expect(skeleton).toContain('gap-1.5 pt-0.5');
+    expect(skeleton).toContain('md:ml-[calc((var(--app-nav-rail-width)-1.5rem)/2)]');
     expect(skeleton).toContain('app-sidebar');
     expect(skeleton).not.toContain('ml-4');
   });
