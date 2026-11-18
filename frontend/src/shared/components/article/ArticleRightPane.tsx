@@ -56,6 +56,10 @@ import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useIsDockWideLayout, useIsInspectorWideLayout } from '../../hooks/use-media-query';
 import {
+  PANEL_COLLAPSE_TRANSITION,
+  usePanelCollapseInitial,
+} from '../../hooks/use-panel-collapse-motion';
+import {
   useDeletePage,
   usePage,
   usePinnedPages,
@@ -144,7 +148,7 @@ function readCollapsedIds(storageKey: string): Set<string> {
   }
 }
 
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
+const COLLAPSED_RIGHT_RAIL_WIDTH = 40;
 
 // ---------- OutlineNode component ----------
 
@@ -401,6 +405,12 @@ export function ArticleRightPane({
   // Below xl the inspector starts as the 40px rail so the article keeps
   // the workspace. Expand (and Alt+I) sets laptopExpanded.
   const collapsed = isSheet ? false : inspectorWide ? userCollapsed : !laptopExpanded;
+  const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
+    collapsed,
+    width,
+    COLLAPSED_RIGHT_RAIL_WIDTH,
+    reduceEffects || isSheet,
+  );
   const handleExpandSidebar = useCallback(() => {
     if (!inspectorWide) setLaptopExpanded(true);
     else if (userCollapsed) toggleSidebar();
@@ -1217,13 +1227,11 @@ export function ArticleRightPane({
           outlineTriggerRef.current?.focus();
         }}
       >
-      <AnimatePresence mode="wait">
         <m.aside
           key="collapsed-rail"
-          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+          initial={collapsedInitial}
+          animate={{ width: COLLAPSED_RIGHT_RAIL_WIDTH, opacity: 1 }}
+          transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-context-rail flex h-full flex-col items-center overflow-hidden"
           aria-label="Page inspector"
           data-testid="article-right-pane-rail"
@@ -1432,7 +1440,6 @@ export function ArticleRightPane({
             )}
           </div>
         </m.aside>
-      </AnimatePresence>
 
       {!editing && page && railOverflowOpen && (
         <div
@@ -1695,9 +1702,9 @@ export function ArticleRightPane({
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
-      initial={reduceEffects ? false : isSheet ? { opacity: 0 } : { width: 0, opacity: 0 }}
+      initial={reduceEffects ? false : isSheet ? { opacity: 0 } : expandedInitial}
       animate={isSheet ? { opacity: 1 } : { width, opacity: 1 }}
-      transition={reduceEffects || isResizing || isSheet ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects || isResizing || isSheet ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className={cn(
         'app-context-rail relative flex flex-col overflow-hidden',
         isResizing && 'select-none',

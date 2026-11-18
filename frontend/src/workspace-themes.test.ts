@@ -911,6 +911,7 @@ describe('Both themes declare a complete, symmetric token set', () => {
         '--panel-bg-fallback',
         '--panel-border',
         '--panel-divider',
+        '--rail-divider',
         '--panel-shadow',
         '--app-sidebar-translucent',
         '--workspace-card-bg',

@@ -17,7 +17,11 @@ import {
 } from 'lucide-react';
 import { ApiError } from '../../lib/api';
 import { getSpaceIcon } from '../spaces/space-icons';
-import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { m, useReducedMotion } from 'framer-motion';
+import {
+  PANEL_COLLAPSE_TRANSITION,
+  usePanelCollapseInitial,
+} from '../../hooks/use-panel-collapse-motion';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 
 import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
@@ -129,8 +133,6 @@ function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
   }
   return ancestors;
 }
-
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
 /**
  * One treatment for every section label in this panel. There were four:
@@ -754,24 +756,28 @@ export function SidebarTreeView({
       : Globe;
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
+  const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
+    collapsed,
+    treeSidebarWidth,
+    COLLAPSED_TREE_SIDEBAR_WIDTH,
+    reduceEffects,
+  );
 
   if (collapsed) {
     return (
-      <AnimatePresence mode="wait">
-        {/* <aside>, not <div>. The expanded panel below is an <aside>, so
+        /* <aside>, not <div>. The expanded panel below is an <aside>, so
             collapsing the rail used to DELETE the complementary landmark from
             the page — a screen-reader user who collapsed the tree lost the
             region, not just its contents. Both branches are the same region in
             two sizes, and both are named: the app renders two unlabelled
             <aside>s otherwise (this and the article inspector), which announce
-            as two indistinguishable "complementary" regions. */}
+            as two indistinguishable "complementary" regions. */
         <m.aside
           key="collapsed-rail"
           aria-label="Page tree"
-          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+          initial={collapsedInitial}
           animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+          transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar flex flex-col items-center overflow-hidden"
         >
           {/* Keep the collapsed control in the same 48px chrome row as the
@@ -817,7 +823,6 @@ export function SidebarTreeView({
           />
 
         </m.aside>
-      </AnimatePresence>
     );
   }
 
@@ -837,9 +842,9 @@ export function SidebarTreeView({
       ref={sidebarRef}
       key="expanded-sidebar"
       aria-label="Page tree"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      initial={expandedInitial}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
-      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects || isResizing ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className={cn(
         'app-sidebar relative flex max-w-full flex-col overflow-hidden',
         isResizing && 'select-none',

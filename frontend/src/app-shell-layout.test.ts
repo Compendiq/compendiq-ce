@@ -248,17 +248,21 @@ describe('Inset shell utilities', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
     expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
     expect(block).toMatch(/border-left-width:\s*1px/);
-    expect(block).toMatch(/border-color:\s*var\(--panel-divider\)/);
+    expect(block).toMatch(/border-color:\s*var\(--rail-divider\)/);
     expect(block).not.toMatch(/box-shadow:/);
     expect(block).not.toMatch(/gradient\(/);
   });
 
-  it('keeps dark mode workspace outer/inner pane borders seamless with the main area and sidebar darker than main', () => {
+  it('keeps dark mode workspace outer/left borders seamless, right rail softly hairlined, headers aligned on --workspace-card-bg, and sidebar darker than main', () => {
     expect(darkBlock).toMatch(/--panel-border:\s*transparent;/);
     expect(darkBlock).toMatch(/--panel-divider:\s*transparent;/);
+    expect(darkBlock).toMatch(/--rail-divider:\s*rgb\(255 255 255 \/ 0\.06\);/);
     const darkShadow = /--panel-shadow:\s*([^;]+);/.exec(darkBlock);
     expect(darkShadow).not.toBeNull();
     expect(darkShadow![1]).not.toMatch(/inset\s+0\s+1px/);
+
+    const railHeader = extractBlock(css, '.app-context-rail .panel-toolbar.nm-popover-glass {');
+    expect(railHeader).toMatch(/background-color:\s*var\(--workspace-card-bg\)/);
 
     const panelBgMatch = /--panel-bg:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
     const sidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);

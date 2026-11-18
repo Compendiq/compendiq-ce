@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
+import { PANEL_COLLAPSE_TRANSITION } from '../../hooks/use-panel-collapse-motion';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
@@ -25,8 +26,6 @@ import { cn } from '../../lib/cn';
  * the `,` shortcut) still apply to SidebarTreeView on the other routes.
  */
 
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
-
 export function SettingsSidebar({
   onNavigate,
   embedMainNav = true,
@@ -45,9 +44,9 @@ export function SettingsSidebar({
   return (
     <m.aside
       data-testid="settings-sidebar"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      initial={false}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
-      transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className="app-sidebar relative flex flex-col overflow-hidden"
     >
       {/* Same 48px chrome height as SidebarTreeView's — the two sidebars share

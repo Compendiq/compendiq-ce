@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { m, useReducedMotion } from 'framer-motion';
 import { PanelLeft, PanelLeftClose, SquarePen } from 'lucide-react';
 import { MainNavStripExpanded, MainNavStripCollapsed } from '../../../shared/components/layout/MainNavStrip';
-import { useUiStore } from '../../../stores/ui-store';
+import {
+  PANEL_COLLAPSE_TRANSITION,
+  usePanelCollapseInitial,
+} from '../../../shared/hooks/use-panel-collapse-motion';
+import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../../shared/lib/cn';
 import { useAiContext } from '../AiContext';
 import { useConversationList } from './use-conversation-list';
 import { ConversationList } from './ConversationList';
 import { filterConversations } from './filter-conversations';
-
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
 /**
  * A filter is a scale affordance, so it appears only at scale — the tree's own
@@ -121,19 +123,24 @@ export function AiConversationsSidebar({
     [treeSidebarWidth, setTreeSidebarWidth],
   );
 
+  const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
+    treeSidebarCollapsed,
+    treeSidebarWidth,
+    COLLAPSED_TREE_SIDEBAR_WIDTH,
+    reduceEffects,
+  );
+
   if (treeSidebarCollapsed) {
     return (
-      <AnimatePresence mode="wait">
-        {/* <aside>, not <div>: both branches are the same region in two sizes,
-            and both are named. */}
+        /* <aside>, not <div>: both branches are the same region in two sizes,
+            and both are named. */
         <m.aside
           key="collapsed-conversations-rail"
           aria-label="Conversations"
           data-testid="ai-conversations-sidebar"
-          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+          initial={collapsedInitial}
+          animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
+          transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar flex flex-col items-center overflow-hidden"
         >
           <button
@@ -164,7 +171,6 @@ export function AiConversationsSidebar({
             <SquarePen size={16} />
           </button>
         </m.aside>
-      </AnimatePresence>
     );
   }
 
@@ -173,9 +179,9 @@ export function AiConversationsSidebar({
       key="expanded-conversations-sidebar"
       aria-label="Conversations"
       data-testid="ai-conversations-sidebar"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      initial={expandedInitial}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
-      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects || isResizing ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className={cn(
         'app-sidebar relative flex max-w-full flex-col overflow-hidden',
         isResizing && 'select-none',
