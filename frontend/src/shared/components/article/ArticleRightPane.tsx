@@ -1232,7 +1232,7 @@ export function ArticleRightPane({
           initial={collapsedInitial}
           animate={{ width: COLLAPSED_RIGHT_RAIL_WIDTH, opacity: 1 }}
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
-          className="app-context-rail flex h-full flex-col items-center overflow-hidden"
+          className="app-context-rail relative flex h-full flex-col items-center overflow-hidden"
           aria-label="Page inspector"
           data-testid="article-right-pane-rail"
         >
@@ -1244,7 +1244,7 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
+          <div className="panel-toolbar nm-popover-glass group relative flex h-12 w-full shrink-0 flex-col items-center justify-center rounded-none border-none shadow-none">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -1439,6 +1439,19 @@ export function ArticleRightPane({
               </div>
             )}
           </div>
+          <span
+            data-rail-hairline
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 left-0 top-0 z-10 flex w-[3px] flex-col items-center"
+          >
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+            <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+            </span>
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+          </span>
         </m.aside>
 
       {!editing && page && railOverflowOpen && (
@@ -1729,7 +1742,7 @@ export function ArticleRightPane({
           context strip). It is not free space: the segmented control is 34px
           (28px segments + 2px track inset + 1px borders), so the row has ~7px
           of breathing room and no more. */}
-      <div className="panel-toolbar absolute inset-x-0 top-0 z-20 flex h-12 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
             and the search-mode toggle: `rounded-md` track, 2px inset, one raised
@@ -1883,7 +1896,7 @@ export function ArticleRightPane({
         aria-label="Details"
         hidden={activeInspectorView !== 'details'}
         className={cn(
-          'min-h-0 flex-1 overflow-y-auto scroll-mask pt-12',
+          'min-h-0 flex-1 overflow-y-auto scroll-mask',
           activeInspectorView !== 'details' && 'hidden',
         )}
       >
@@ -2371,7 +2384,7 @@ export function ArticleRightPane({
         ref={expandedTreeRef}
         role="tabpanel"
         aria-labelledby="page-context-tab-outline"
-        className="min-h-0 flex-1 overflow-y-auto scroll-mask pt-12"
+        className="min-h-0 flex-1 overflow-y-auto scroll-mask"
       >
         {/* Outline header + progress */}
         {headings.length > 0 && (
@@ -2447,24 +2460,34 @@ export function ArticleRightPane({
           title="Drag to resize · Double-click to reset"
         >
           <span
-            className={cn(
-              'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
-              isResizing && 'bg-action/70',
-            )}
+            data-rail-hairline
             aria-hidden="true"
-          />
-          <span
-            data-testid="article-right-pane-resize-grip"
-            className={cn(
-              'pointer-events-none absolute top-1/2 left-0.5 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
-              'group-hover:opacity-100 group-focus-visible:opacity-100',
-              isResizing && 'opacity-100',
-            )}
-            aria-hidden="true"
+            className="flex h-full w-[3px] flex-col items-center"
           >
-            <span className="size-0.5 rounded-full bg-muted-foreground" />
-            <span className="size-0.5 rounded-full bg-muted-foreground" />
-            <span className="size-0.5 rounded-full bg-muted-foreground" />
+            <span
+              className={cn(
+                'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+                isResizing && 'bg-action/70',
+              )}
+            />
+            <span
+              data-testid="article-right-pane-resize-grip"
+              className={cn(
+                'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-opacity',
+                'group-hover:opacity-100 group-focus-visible:opacity-100',
+                isResizing && 'opacity-100',
+              )}
+            >
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+            </span>
+            <span
+              className={cn(
+                'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+                isResizing && 'bg-action/70',
+              )}
+            />
           </span>
         </div>
       )}

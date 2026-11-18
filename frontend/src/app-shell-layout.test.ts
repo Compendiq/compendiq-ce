@@ -263,12 +263,22 @@ describe('Inset shell utilities', () => {
 
     const railHeader = extractBlock(css, '.app-context-rail .panel-toolbar.nm-popover-glass {');
     expect(railHeader).toMatch(/background-color:\s*var\(--workspace-card-bg\)/);
+    expect(railHeader).toMatch(/backdrop-filter:\s*none/);
 
     const panelBgMatch = /--panel-bg:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
     const sidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(0 0 0 \/ ([0-9.]+)\);/.exec(darkBlock);
     expect(panelBgMatch).not.toBeNull();
     expect(sidebarAlphaMatch).not.toBeNull();
+    expect(Number(panelBgMatch![1])).toBeCloseTo(0.30, 5);
+    expect(Number(sidebarAlphaMatch![1])).toBeCloseTo(0.52, 5);
     expect(Number(sidebarAlphaMatch![1])).toBeGreaterThan(Number(panelBgMatch![1]));
+
+    const lightPanelBgMatch = /--panel-bg:\s*rgb\(255 255 255 \/ ([0-9.]+)\);/.exec(lightBlock);
+    const lightSidebarAlphaMatch = /--app-sidebar-translucent:\s*rgb\(208 212 218 \/ ([0-9.]+)\);/.exec(lightBlock);
+    expect(lightPanelBgMatch).not.toBeNull();
+    expect(lightSidebarAlphaMatch).not.toBeNull();
+    expect(Number(lightPanelBgMatch![1])).toBeCloseTo(0.78, 5);
+    expect(Number(lightSidebarAlphaMatch![1])).toBeCloseTo(0.38, 5);
   });
 
   it('mobile is edge-to-edge; md and xl step the inset and card radius', () => {

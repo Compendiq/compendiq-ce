@@ -141,7 +141,7 @@ export function AiConversationsSidebar({
           initial={collapsedInitial}
           animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
-          className="app-sidebar flex flex-col items-center overflow-hidden"
+          className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
           <button
             type="button"
@@ -170,6 +170,20 @@ export function AiConversationsSidebar({
           >
             <SquarePen size={16} />
           </button>
+
+          <span
+            data-rail-hairline
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 right-0 top-0 z-10 flex w-[3px] flex-col items-center"
+          >
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+            <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+            </span>
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+          </span>
         </m.aside>
     );
   }
@@ -305,12 +319,35 @@ export function AiConversationsSidebar({
         title="Drag to resize · Double-click to reset"
       >
         <span
-          className={cn(
-            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
-            isResizing && 'bg-action/70',
-          )}
+          data-rail-hairline
           aria-hidden="true"
-        />
+          className="flex h-full w-[3px] flex-col items-center"
+        >
+          <span
+            className={cn(
+              'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+          />
+          <span
+            data-testid="conversations-resize-grip"
+            className={cn(
+              'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-opacity',
+              'group-hover:opacity-100 group-focus-visible:opacity-100',
+              isResizing && 'opacity-100',
+            )}
+          >
+            <span className="size-[3px] rounded-full bg-muted-foreground" />
+            <span className="size-[3px] rounded-full bg-muted-foreground" />
+            <span className="size-[3px] rounded-full bg-muted-foreground" />
+          </span>
+          <span
+            className={cn(
+              'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+          />
+        </span>
       </div>
     </m.aside>
   );

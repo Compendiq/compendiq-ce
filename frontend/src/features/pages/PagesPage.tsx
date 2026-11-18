@@ -1286,7 +1286,7 @@ export function PagesPage() {
           supporting scope and mode controls. */}
       <section
         aria-labelledby="kb-filters-heading"
-        className="@container space-y-3"
+        className="@container space-y-3 pt-6"
         data-testid="library-filter-panel"
       >
         <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>

@@ -532,7 +532,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --shell-pool: rgb(38 50 68 / 0.36);
   --shell-pool-soft: rgb(26 36 52 / 0.16);
   --shell-muted: #a3adba;
-  --panel-bg: rgb(0 0 0 / 0.20);
+  --panel-bg: rgb(0 0 0 / 0.30);
   --panel-bg-fallback: rgb(14 19 26 / 0.94);
   --panel-border: transparent;
   --panel-divider: transparent;
@@ -541,7 +541,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
     0 2px 6px rgb(0 0 0 / 45%),
     0 12px 28px -4px rgb(0 0 0 / 65%);
   --nav-hover: rgb(255 255 255 / 0.06);
-  --app-sidebar-translucent: rgb(0 0 0 / 0.42);
+  --app-sidebar-translucent: rgb(0 0 0 / 0.52);
   --workspace-card-bg: rgb(255 255 255 / 0.05);
   --workspace-toolbar-bg: rgb(255 255 255 / 0.04);
   --workspace-well-bg: rgb(0 0 0 / 0.14);
@@ -989,7 +989,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --shell-pool: rgb(196 201 208 / 0.56);
   --shell-pool-soft: rgb(206 211 217 / 0.24);
   --shell-muted: #4b525c;
-  --panel-bg: rgb(255 255 255 / 0.68);
+  --panel-bg: rgb(255 255 255 / 0.78);
   --panel-bg-fallback: rgb(255 255 255 / 0.92);
   --panel-border: rgb(255 255 255 / 0.62);
   --panel-divider: var(--color-border);
@@ -999,7 +999,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     0 1px 3px rgb(20 42 66 / 7%),
     0 8px 24px -4px rgb(20 42 66 / 10%);
   --nav-hover: rgb(255 255 255 / 0.45);
-  --app-sidebar-translucent: rgb(208 212 218 / 0.28);
+  --app-sidebar-translucent: rgb(208 212 218 / 0.38);
   --workspace-card-bg: rgb(255 255 255 / 0.50);
   --workspace-toolbar-bg: rgb(235 240 245 / 0.55);
   --workspace-well-bg: rgb(244 246 248 / 0.45);
@@ -1230,11 +1230,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   background: transparent;
 }
 
-/* Match the article view/edit strip's --workspace-card-bg base color while
-   blurring scrolled inspector content beneath it. */
+/* Match the article view/edit strip's --workspace-card-bg base color without a
+   nested backdrop-filter (which would sample .app-workspace's backdrop root
+   instead of the chassis gradient and alter the perceived header color). */
 .app-context-rail .panel-toolbar.nm-popover-glass {
   background-color: var(--workspace-card-bg);
-  backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: none;
+}
+
+/* When a panel renders its segmented hairline + 3-dot grip, suppress the
+   continuous CSS border so the hairline stops cleanly before the 3 dots and
+   resumes after them. */
+.app-context-rail:has([data-rail-hairline]),
+.app-sidebar:has([data-rail-hairline]) {
+  border-color: transparent;
 }
 
 /* Shell surfaces carry the palette without competing with content. The top

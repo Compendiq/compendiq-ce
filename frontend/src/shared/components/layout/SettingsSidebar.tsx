@@ -136,6 +136,20 @@ export function SettingsSidebar({
         })}
       </nav>
 
+      <span
+        data-rail-hairline
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-0 right-0 top-0 z-10 flex w-[3px] flex-col items-center"
+      >
+        <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+        <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+          <span className="size-[3px] rounded-full bg-muted-foreground" />
+          <span className="size-[3px] rounded-full bg-muted-foreground" />
+          <span className="size-[3px] rounded-full bg-muted-foreground" />
+        </span>
+        <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+      </span>
+
     </m.aside>
   );
 }
