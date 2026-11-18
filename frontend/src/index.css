@@ -307,11 +307,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      Every value is verified by src/workspace-themes.test.ts, which parses these
      tokens and COMPUTES WCAG ratios rather than pinning hex literals. Retune a
      surface and it fails with the measured ratio. */
-  --color-background: #0f0f10;          /* Workspace — navigation and AI rail */
+  --color-background: #0d1118;          /* Workspace — cool slate navigation and AI rail */
   --color-foreground: #e7e9eb;          /* Graphite ink */
-  --color-card: #19191a;                /* Pane — shared document, left pane and context rail */
+  --color-card: #131922;                /* Pane — shared document, left pane and context rail */
   --color-card-foreground: #e7e9eb;
-  --color-card-elevated: #1b1b1d;       /* Raised — popovers and dialogs */
+  --color-card-elevated: #19222f;       /* Raised — popovers and dialogs */
   /* Steel — the single brand AND interaction accent: brand mark, primary
      buttons, links, active nav, focus ring. One hue carries both identity and
      every actionable affordance, so "is this clickable?" never depends on
@@ -327,21 +327,20 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Action ink — the neutral affordance for non-accent buttons: light fill,
      dark text. Leaves Steel free to mean "primary action". */
   --color-action: #e7e9eb;             /* matches --color-foreground */
-  --color-action-foreground: #0f0f10;
+  --color-action-foreground: #0d1118;
   --color-action-hover: #f0f2f3;
-  --color-secondary: #1c1d1d;
-  --color-secondary-foreground: #c5c7c8;
-  --color-muted: #1c1d1d;
+  --color-secondary: #1b2432;
+  --color-secondary-foreground: #c4ccd6;
+  --color-muted: #1b2432;
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
-  --color-muted-foreground: #a0a4aa;
-  /* Separate hover, press and selection fills. The brighter Pane (2026-09-12)
-     needs a small hover lift to preserve the visible state step; press and
-     selection retain their existing values and interactive outline.
+  --color-muted-foreground: #a0aab6;
+  /* Separate hover, press and selection fills tuned onto cool deep slate so
+     interactive states harmonize with the diagonal shell gradient.
      Muted remains a resting field fill, independent of the state ladder. */
-  --color-accent: #1d1e1e;             /* hover — 1.051:1 on Pane */
-  --color-pressed: #212226;            /* :active — 1.106:1 */
-  --color-selected: #282a2e;           /* current destination — 1.222:1 */
+  --color-accent: #1c2635;             /* hover — 1.123:1 on Pane */
+  --color-pressed: #212d3f;            /* :active — 1.232:1 */
+  --color-selected: #29374c;           /* current destination — 1.422:1 */
   --color-accent-foreground: #e7e9eb;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
@@ -380,15 +379,14 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
                          border for both jobs and did not meet 1.4.11.)
                          UNTOUCHED by the softening pass: quieting an operable
                          edge is a 1.4.11 question, not a taste one. */
-  --color-border: #222225;
-  --doc-rule: #2a2a2d;
-  /* Lifted 2026-08-31 from #71717a. This token caps how deep a state fill may
-     go: at the widened selected fill (#282a2e) the old value measured 2.97:1,
-     so the edge that marks a selected row fell under 1.4.11. Now 3.48:1 there
-     and 4.37:1 on the pane, which is what gave the dark ladder its room. */
-  --color-border-interactive: #7c7c85;
-  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 90%, transparent);
-  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
+  --color-border: #1f2836;
+  --doc-rule: #293546;
+  /* Lifted 2026-08-31 from #71717a and #7c7c85 to cool slate #798799. Caps how
+     deep a state fill may go while holding 3.288:1 on selected (#29374c) and
+     4.805:1 on pane (#131922). */
+  --color-border-interactive: #798799;
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 82%, transparent);
+  --popover-glass-border: rgb(255 255 255 / 0.12);
   --color-ring: #86aec8;
   --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
@@ -433,7 +431,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Lifted 2026-08-31 from #8b8f99, which measured 4.44:1 on the widened
      selected fill. Worst ground is now 5.11:1, and Graphite still has zero
      simulated CVD collisions across the seven roles. */
-  --color-status-inactive: #979aa3;
+  --color-status-inactive: #95a0ae;
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
@@ -449,7 +447,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
   /* Code colors — matched against --color-code-bg, which sits a step
      BELOW --color-card so a code block reads as recessed, not stacked. */
-  --color-code-bg: #101111;
+  --color-code-bg: #10151f;
   --color-code-keyword: #c69af4;
   --color-code-string: #5ed39b;
   --color-code-function: #8b93f8;
@@ -515,22 +513,52 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Darkest step on the ladder — the viewport gutter around the workspace.
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
-  --app-chassis: #09090a;
+  --app-chassis: #090b0f;
+  /* Shell diagonal colour-gradient + radial highlight pool (Graphite dark).
+     Bottom-left / left edge is darkest (--shell-grad-1 = --app-chassis = #090b0f)
+     ramping smoothly to cool slate-navy at top-right (--shell-grad-5 = #1a2331 +
+     top-right pool at 83% 17%). --shell-muted (#a3adba) clears 4.5:1 against all
+     stops and the lightest stop (#1a2331, 6.96:1). */
+  --shell-grad-dir: to top right;
+  --shell-pool-pos: 83% 17%;
+  --shell-grad-1: #090b0f;
+  --shell-grad-2: #0b0e14;
+  --shell-grad-3: #0e131c;
+  --shell-grad-4: #141c28;
+  --shell-grad-5: #1a2331;
+  --shell-pool: rgb(38 50 68 / 0.36);
+  --shell-pool-soft: rgb(26 36 52 / 0.16);
+  --shell-muted: #a3adba;
+  --panel-bg: rgb(0 0 0 / 0.20);
+  --panel-bg-fallback: rgb(14 19 26 / 0.94);
+  --panel-border: rgb(255 255 255 / 0.08);
+  --panel-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 2px 6px rgb(0 0 0 / 45%),
+    0 12px 28px -4px rgb(0 0 0 / 65%);
+  --nav-hover: rgb(255 255 255 / 0.06);
+  --nav-active: rgb(255 255 255 / 0.10);
+  --nav-active-shadow: 0 1px 2px rgb(0 0 0 / 35%);
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
-  --app-login-ground: #09090a;
-  /* Internal panel-header chrome. Slightly lighter than the viewport chassis
-     and darker than the workspace chrome, so toolbars read as neutral framing
-     rather than another content pane. The top app header uses --app-chassis
-     to complete the continuous outer frame. */
-  --app-header-bg: #0c0c0d;
+  --app-login-ground: #090b0f;
+  /* Internal panel-header chrome — cool slate step below Workspace. */
+  --app-header-bg: #0c1017;
   --app-shell-bg: var(--color-background);
-  --app-rail-bg: var(--color-card);
-  --app-workspace-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px -4px rgba(0, 0, 0, 0.6);
+  /* Attached inside .app-workspace on desktop: keep transparent so the right
+     panel shares the frosted workspace plate and lets the diagonal shell
+     gradient show through just like <main>. Mobile drawer sheets override back
+     to opaque var(--color-card). */
+  --app-rail-bg: transparent;
+  --app-workspace-shadow: var(--panel-shadow);
   --surface-backdrop: var(--app-chassis);
-  --surface-card: var(--color-card);
+  --surface-card: rgb(255 255 255 / 0.045);
+  --surface-card-border: rgb(255 255 255 / 0.09);
   --surface-card-elevated: var(--color-card-elevated);
+  --surface-input: rgb(255 255 255 / 0.05);
+  --shell-control-bg: rgb(255 255 255 / 0.05);
+  --shell-control-border: rgb(255 255 255 / 0.10);
 
   /* Corner language. Retuned down hard from the neumorphic scale
      (20/12/8/4px): soft extrusion needed a large radius to read as a pillow,
@@ -589,8 +617,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Dropdown chevron — dark-theme default. The stroke colour is the
      dark-theme muted-foreground hex (URL-escaped).
      Light theme overrides this in the [data-theme-type="light"] block. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239b9d9e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ba6b5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ba6b5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* Typography preferences are expressed as root attributes so the first-paint
@@ -697,7 +725,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      exactly the range where dense grey text drifts across the AA line. */
   --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
+  --surface-card-border: var(--color-border);
   --surface-card-elevated: var(--color-card-elevated);
+  --surface-input: var(--color-card);
+  --shell-control-bg: var(--color-card);
+  --shell-control-border: var(--color-border);
 
   /* Dropdown chevron — mineral stroke (#616878, URL-escaped to %23616878),
      matching the light theme's --color-muted-foreground. The :root default is
@@ -932,8 +964,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      THE SECONDARY INK SETS THE FLOOR UNDER HOW GREY THIS MAY GO — never a
      ceiling on how light. The left navigation's 12px secondary labels are
      --color-muted-foreground on this surface, so 1.4.3 applies at 4.5:1, and
-     #616878 clears that floor here (5.12:1 on #f5f5f5; 4.70:1 on the prior
-     #e8ecf0). Lighter is always safe for them; any deeper grey needs
+     #616878 clears that floor here (5.44:1 on #fbfbfd; 5.12:1 on the prior
+     #f5f5f5 and 4.70:1 on the prior #e8ecf0). Lighter is always safe for them; any deeper grey needs
      --color-muted-foreground darkened first, and workspace-themes.test.ts pins
      that relationship so the labels cannot be lost to a later retune.
      --color-border-interactive on Canvas is over the 1.4.11 floor. Every
@@ -941,7 +973,31 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      why the ramp reads near-neutral rather than beige. The rail's destinations
      are unaffected: they carry hover and selection with ink and a Steel marker
      line, never a fill. */
-  --app-chassis: #f5f5f5;
+  --app-chassis: #fbfbfd;
+  /* Shell diagonal colour-gradient + bottom-left shade pool (Paper light).
+     Darkest stop is bottom-left (#d0d4da), lightest is top-right (#fbfbfd =
+     --app-chassis). --shell-muted (#4b525c) clears 4.5:1 against the darkest
+     stop (5.30:1) and the pool composite (4.98:1). */
+  --shell-grad-dir: to top right;
+  --shell-pool-pos: 17% 83%;
+  --shell-grad-1: #d0d4da;
+  --shell-grad-2: #dbdfe4;
+  --shell-grad-3: #eceef1;
+  --shell-grad-4: #f6f7f9;
+  --shell-grad-5: #fbfbfd;
+  --shell-pool: rgb(196 201 208 / 0.56);
+  --shell-pool-soft: rgb(206 211 217 / 0.24);
+  --shell-muted: #4b525c;
+  --panel-bg: rgb(255 255 255 / 0.68);
+  --panel-bg-fallback: rgb(255 255 255 / 0.92);
+  --panel-border: rgb(255 255 255 / 0.62);
+  --panel-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.75),
+    0 1px 3px rgb(20 42 66 / 7%),
+    0 8px 24px -4px rgb(20 42 66 / 10%);
+  --nav-hover: rgb(255 255 255 / 0.45);
+  --nav-active: rgb(255 255 255 / 0.78);
+  --nav-active-shadow: 0 1px 2px rgb(20 42 66 / 7%);
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
@@ -965,8 +1021,12 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      outer frame has one colour on all four sides. */
   --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
-  --app-rail-bg: var(--color-card);
-  --app-workspace-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px -2px rgba(0, 0, 0, 0.06);
+  /* Attached inside .app-workspace on desktop: keep transparent so the right
+     panel shares the frosted workspace plate and lets the diagonal shell
+     gradient show through just like <main>. Mobile drawer sheets override back
+     to opaque var(--color-card). */
+  --app-rail-bg: transparent;
+  --app-workspace-shadow: var(--panel-shadow);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -1101,10 +1161,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-chassis {
-  /* One flat colour on every side of the workspace card. The tree column and
-     the header are transparent over it, so any image here (the retired
-     diagonal wash) showed as a tonal band around the card's left corners. */
-  background: var(--app-chassis);
+  /* Diagonal colour-gradient + radial shade pool on the shell root.
+     Solid fallback equals --app-chassis. */
+  background-color: var(--app-chassis);
+  background-image:
+    radial-gradient(64% 58% at var(--shell-pool-pos),
+      var(--shell-pool) 0%,
+      var(--shell-pool-soft) 46%,
+      transparent 82%),
+    linear-gradient(var(--shell-grad-dir),
+      var(--shell-grad-1) 0%,
+      var(--shell-grad-2) 33.333%,
+      var(--shell-grad-3) 62%,
+      var(--shell-grad-4) 84%,
+      var(--shell-grad-5) 100%);
   padding-inline-start: 0;
   padding-inline-end: var(--app-inset);
   padding-bottom: var(--app-inset);
@@ -1116,17 +1186,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding-top: 4px;
 }
 
-/* The workspace card is defined by value and shape, not by a line: the chassis
-   inset holds it off the frame, the radius cuts its corners, and Pane sits a
-   step above Canvas in both themes (1.101:1 Graphite, 1.171:1 Paper). The 1px
-   hairline that used to trace all four sides was a third statement of the same
-   boundary, and it read as a frame drawn around the work. Do not add it back:
-   retune --app-chassis if the card stops reading as a card. */
+/* The content panel is a frosted, elevated surface floating on the shell gradient. */
 @utility app-workspace {
-  background: var(--app-shell-bg);
+  background: var(--panel-bg);
+  backdrop-filter: blur(16px) saturate(112%);
+  border: 1px solid var(--panel-border);
   border-radius: var(--app-shell-radius);
-  box-shadow: var(--app-workspace-shadow);
+  box-shadow: var(--panel-shadow);
   min-width: 0;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .app-workspace {
+    background: var(--panel-bg-fallback);
+  }
 }
 
 /* The inspector is attached inside the workspace card, beside <main>. The
@@ -1159,11 +1232,9 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 /* Shell surfaces carry the palette without competing with content. The top
-   app header continues the Canvas around the workspace on all four sides.
-   The left navigation pane — title, tree, and footer — paints the same
-   surface as main so the workspace reads as one card split by a hairline,
-   not a chrome band beside a reading pane. The detached context rail is the
-   same composition: one pane, its own first row, no band. */
+   app header and desktop left sidebar are transparent so the shell gradient
+   shows through; below the `md` sidebar breakpoint the mobile drawer gets an
+   opaque theme-aware canvas background. */
 @utility app-header {
   /* Let the chassis wash continue through the header without restarting. */
   background: transparent;
@@ -1179,16 +1250,51 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   border-color: var(--color-border);
 }
 
+@media (max-width: 767px) {
+  .app-sidebar {
+    background: var(--app-chassis);
+  }
+  .app-context-rail {
+    background: var(--color-card);
+  }
+}
+
+#mobile-context-sidebar .app-context-rail {
+  background: var(--color-card);
+}
+
+/* Text and nav items sitting directly on the shell gradient use --shell-muted
+   for WCAG AA contrast against the worst-case gradient stop, and translucent
+   --nav-hover / --nav-active fills for state. */
+.app-header,
+.app-sidebar {
+  --color-muted-foreground: var(--shell-muted);
+  --glass-pill-hover: var(--nav-hover);
+}
+
+.app-header .nm-icon-button:hover,
+.app-sidebar .nm-icon-button:hover {
+  background-color: var(--nav-hover);
+  color: var(--color-foreground);
+}
+
+.app-header [aria-current='page'],
+.app-sidebar .nav-selection,
+.app-sidebar [aria-current='page'] {
+  background: var(--nav-active);
+  box-shadow: var(--nav-active-shadow);
+  color: var(--color-foreground);
+}
+
 /* Title and footer bands inherit the pane; they must not reintroduce Chrome. */
 .app-sidebar .panel-toolbar {
   background: transparent;
 }
 
-/* Route content is the page users are working on. It shares --color-card with
-   the left pane so the workspace is one surface; the hairline on the sidebar
-   is the only split. The workspace clips both to the shared outer radius. */
+/* Route content sits inside the frosted .app-workspace plate; keep it
+   transparent so the workspace's translucent fill and blur show through. */
 @utility app-content-pane {
-  background: var(--color-card);
+  background: transparent;
 }
 /* Panel composition primitives. Sidebars share the same chassis, but their
    internal hierarchy comes from quiet chrome, a single context control, and
@@ -1355,7 +1461,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 @utility nm-card {
   border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--surface-card-border, var(--color-border));
   background: var(--surface-card, var(--color-card));
 }
 
@@ -1436,7 +1542,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 @utility nm-card-interactive {
   position: relative;
   border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--surface-card-border, var(--color-border));
   background: var(--surface-card, var(--color-card));
   cursor: pointer;
   outline: 2px solid transparent;
@@ -1836,7 +1942,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding: 0.375rem 0.5rem;
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
-  background: var(--color-card);
+  background: var(--surface-input, var(--color-card));
   transition: border-color 0.12s ease-out, box-shadow 0.12s ease-out;
 
   /* Focus is a 1px ring drawn tight to the border, not a 2px halo bleeding
@@ -1855,7 +1961,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   padding: 0.375rem 0.625rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background: var(--color-card);
+  background: var(--surface-input, var(--color-card));
   color: var(--color-foreground);
   font-size: 0.8125rem;
   line-height: 1.25rem;
@@ -1897,7 +2003,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   height: 1.75rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background-color: var(--color-card);
+  background-color: var(--surface-input, var(--color-card));
   padding: 0 1.75rem 0 0.625rem;
   font-size: var(--text-xs);
   line-height: 1;
@@ -1931,7 +2037,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   height: 2rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-interactive);
-  background-color: var(--color-card);
+  background-color: var(--surface-input, var(--color-card));
   padding: 0 2rem 0 0.625rem;
   font-size: 0.8125rem;
   line-height: 1;
@@ -1975,8 +2081,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .nm-button-destructive,
   .nm-button-ghost,
   .nm-icon-button,
-  .nm-input {
+  .nm-input,
+  .app-workspace {
     border: 2px solid ButtonText;
+  }
+  .app-workspace {
+    background: Canvas;
+    backdrop-filter: none;
   }
   .nm-button-primary,
   .nm-button-destructive {
@@ -1989,11 +2100,30 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   }
 }
 
+/* Native <select> option popups inherit opaque theme card surface rather than UA grey. */
+select.nm-select option,
+select.nm-select-md option {
+  background-color: var(--color-card-elevated);
+  color: var(--color-foreground);
+}
+
 /* Opaque fill, no blur — the interactive edge and overlay shadow remain. */
 @media (prefers-reduced-transparency: reduce) {
+  :root,
+  [data-theme] {
+    --surface-card: var(--color-card);
+    --surface-card-border: var(--color-border);
+    --surface-input: var(--color-card);
+    --shell-control-bg: var(--color-card);
+    --shell-control-border: var(--color-border);
+  }
   .nm-popover-glass,
   .app-context-rail .panel-toolbar.nm-popover-glass {
     background-color: var(--color-card-elevated);
+    backdrop-filter: none;
+  }
+  .app-workspace {
+    background: var(--color-card);
     backdrop-filter: none;
   }
 }

@@ -56,15 +56,16 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('shell keeps the workspace ground while the rail uses the central pane surface in both themes', () => {
+  it('shell keeps the workspace ground while the attached right panel shares its frosted transparency', () => {
     for (const block of [darkBlock, lightBlock]) {
       const shell = /--app-shell-bg:\s*([^;]+);/.exec(block);
       const rail = /--app-rail-bg:\s*([^;]+);/.exec(block);
       expect(shell, '--app-shell-bg must be declared').not.toBeNull();
       expect(rail, '--app-rail-bg must be declared').not.toBeNull();
       expect(shell![1]!.trim()).toBe('var(--color-background)');
-      expect(rail![1]!.trim()).toBe('var(--color-card)');
+      expect(rail![1]!.trim()).toBe('transparent');
     }
+    expect(css).toMatch(/@media\s*\(max-width:\s*767px\)[\s\S]*?\.app-context-rail\s*\{[^}]*background:\s*var\(--color-card\)/);
   });
 
   it('chassis is distinguishable from the shell ground in both themes', () => {
@@ -105,31 +106,46 @@ describe('Inset shell tokens', () => {
   // mode this guards is silent: a chassis retune that keeps "below the pane"
   // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and
   // was the reason the frame had to be deepened when the line went away).
-  it('keeps the pane a visible step above the frame in both themes', () => {
-    for (const [theme, block] of [
-      ['graphite', darkBlock],
-      ['paper', lightBlock],
-    ] as const) {
-      expect(
-        contrast(tokenHex(block, '--color-card'), tokenHex(block, '--app-chassis')),
-        `${theme}: the workspace card needs a readable value step above the chassis`,
-      ).toBeGreaterThanOrEqual(1.08);
+  it('orders the 5-stop shell gradient ramp in both themes (darkest toward left/bottom-left, brightest toward top-right)', () => {
+    const lightStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(lightBlock, `--shell-grad-${n}`)));
+    for (let i = 1; i < lightStops.length; i++) {
+      expect(lightStops[i]!, `light stop ${i + 1} must be lighter than stop ${i}`).toBeGreaterThan(lightStops[i - 1]!);
     }
+    expect(tokenHex(lightBlock, '--shell-grad-5')).toBe(tokenHex(lightBlock, '--app-chassis'));
+    expect(lightBlock).toMatch(/--shell-grad-dir:\s*to top right;/);
+
+    const darkStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(darkBlock, `--shell-grad-${n}`)));
+    for (let i = 1; i < darkStops.length; i++) {
+      expect(darkStops[i]!, `dark stop ${i + 1} must lift toward top-right brightest stop ${i}`).toBeGreaterThan(darkStops[i - 1]!);
+    }
+    expect(tokenHex(darkBlock, '--shell-grad-1')).toBe(tokenHex(darkBlock, '--app-chassis'));
+    expect(darkBlock).toMatch(/--shell-grad-dir:\s*to top right;/);
   });
 
-  it('keeps navigation labels and focus indicators readable on the chassis', () => {
+  it('keeps navigation labels and focus indicators readable across every gradient stop', () => {
     for (const block of [darkBlock, lightBlock]) {
-      const ground = tokenHex(block, '--app-chassis');
-      expect(contrast(tokenHex(block, '--color-muted-foreground'), ground)).toBeGreaterThanOrEqual(4.5);
-      expect(contrast(tokenHex(block, '--color-primary'), ground)).toBeGreaterThanOrEqual(3);
+      const shellMuted = tokenHex(block, '--shell-muted');
+      const primary = tokenHex(block, '--color-primary');
+      for (const n of [1, 2, 3, 4, 5]) {
+        const stop = tokenHex(block, `--shell-grad-${n}`);
+        expect(contrast(shellMuted, stop)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(primary, stop)).toBeGreaterThanOrEqual(3);
+      }
     }
   });
 
-  it('paints the chassis one flat colour so the frame matches on every side of the card', () => {
+  it('paints the chassis with the radial shade pool and 5-stop diagonal colour-gradient', () => {
     const block = extractBlock(css, '@utility app-chassis {');
-    expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
-    expect(block).not.toMatch(/background-image/);
-    expect(css).not.toMatch(/--app-chassis-tones/);
+    expect(block).toMatch(/background-color:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/radial-gradient\(64% 58% at var\(--shell-pool-pos\)/);
+    expect(block).toMatch(/var\(--shell-pool\)\s*0%/);
+    expect(block).toMatch(/var\(--shell-pool-soft\)\s*46%/);
+    expect(block).toMatch(/linear-gradient\(var\(--shell-grad-dir\)/);
+    expect(block).toMatch(/var\(--shell-grad-1\)\s*0%/);
+    expect(block).toMatch(/var\(--shell-grad-2\)\s*33\.333%/);
+    expect(block).toMatch(/var\(--shell-grad-3\)\s*62%/);
+    expect(block).toMatch(/var\(--shell-grad-4\)\s*84%/);
+    expect(block).toMatch(/var\(--shell-grad-5\)\s*100%/);
   });
 
   it('the context rail matches the central pane and stays off the chassis', () => {
@@ -157,9 +173,10 @@ describe('Inset shell utilities', () => {
     }
   });
 
-  it('the chassis utility paints the chassis token and applies inset padding', () => {
+  it('the chassis utility paints the shell gradient and applies inset padding', () => {
     const block = extractBlock(css, '@utility app-chassis {');
-    expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/background-color:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/background-image:/);
     expect(block).toMatch(/padding-inline-start:\s*0/);
     expect(block).toMatch(/padding-inline-end:\s*var\(--app-inset\)/);
     expect(block).not.toMatch(/padding-inline:\s*var\(--app-inset\)/);
@@ -185,24 +202,25 @@ describe('Inset shell utilities', () => {
     expect(skeleton).toContain('w-[var(--app-nav-rail-width)]');
   });
 
-  it('left navigation has a transparent background, inheriting the app-shell ground', () => {
+  it('left navigation is transparent on desktop and opaque below the sidebar breakpoint', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
     expect(sidebar).toMatch(/background:\s*transparent/);
-    expect(pane).toMatch(/background:\s*var\(--color-card\)/);
+    expect(pane).toMatch(/background:\s*transparent/);
+    expect(css).toMatch(/@media \(max-width:\s*767px\)[\s\S]*?\.app-sidebar\s*\{[^}]*background:\s*var\(--app-chassis\)/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
     );
   });
 
-  it('the workspace utility is the radiused card with its resting shadow', () => {
+  it('the workspace utility is the frosted, radiused panel with backdrop-filter fallback', () => {
     const block = extractBlock(css, '@utility app-workspace {');
-    expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);
+    expect(block).toMatch(/background:\s*var\(--panel-bg\)/);
+    expect(block).toMatch(/backdrop-filter:\s*blur\(16px\)\s*saturate\(112%\)/);
+    expect(block).toMatch(/border:\s*1px solid var\(--panel-border\)/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
-    expect(block).not.toMatch(/border:/);
-    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
-    expect(css).not.toMatch(/--app-shell-border-width/);
-    expect(block).toMatch(/box-shadow:\s*var\(--app-workspace-shadow\)/);
+    expect(block).toMatch(/box-shadow:\s*var\(--panel-shadow\)/);
+    expect(css).toMatch(/@supports not \(backdrop-filter:\s*blur\(1px\)\)[\s\S]*?\.app-workspace\s*\{[^}]*background:\s*var\(--panel-bg-fallback\)/);
   });
 
   it('the layout shell wrapper does not add a second card around the rail', () => {

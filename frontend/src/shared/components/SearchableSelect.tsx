@@ -199,12 +199,12 @@ export function SearchableSelect({
             aria-expanded={open}
             aria-controls={open ? listboxId : undefined}
             className={cn(
-              'flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-2 rounded-md border border-border-interactive bg-card px-2.5 text-[0.8125rem] leading-none text-foreground outline-none transition-colors',
+              'flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-2 rounded-md border border-border-interactive bg-[var(--surface-input)] px-2.5 text-[0.8125rem] leading-none text-foreground outline-none transition-colors',
               'hover:bg-accent',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               isSelected && 'font-medium',
               open && 'border-border-interactive bg-accent',
-              disabled && 'cursor-not-allowed opacity-50 hover:bg-card',
+              disabled && 'cursor-not-allowed opacity-50 hover:bg-[var(--surface-input)]',
             )}
           >
             <span className={cn('truncate text-left', !isSelected && 'text-muted-foreground')}>
