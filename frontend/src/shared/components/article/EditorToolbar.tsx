@@ -882,16 +882,12 @@ export function EditorToolbar({
     // Insert so the toolbar never generates a second overflow trigger,
     // horizontal scrollbars, or extra document width.
     //
-    // The row is the full 48px chrome height. It was `calc(3rem-1px)` while
-    // PageViewPage's strip drew a hairline under it and the two had to add up
-    // to 48; that line came off on 2026-08-31, so the subtraction would now
-    // land this row 1px short of the sidebar's chrome row and the inspector's
-    // tab row. NewPagePage's strip keeps its border and is therefore 49px —
-    // it is multi-row chrome with no 48px alignment partner, so nothing reads
-    // that pixel.
+    // The row plus its parent's 1px `border-b` add up to the full 48px chrome
+    // height (47px + 1px = 48px), keeping the hairline on the exact same y as
+    // the left sidebar's and right inspector's `h-12 border-b` bands.
     <div
       ref={containerRef}
-      className="flex h-12 min-h-12 min-w-0 w-full flex-nowrap items-center justify-between gap-x-1 overflow-hidden sm:gap-x-2 py-1 px-1"
+      className="flex h-[calc(3rem-1px)] min-h-[calc(3rem-1px)] min-w-0 w-full flex-nowrap items-center justify-between gap-x-1 overflow-hidden sm:gap-x-2 py-1 px-1"
     >
       <div
         ref={rootRef}

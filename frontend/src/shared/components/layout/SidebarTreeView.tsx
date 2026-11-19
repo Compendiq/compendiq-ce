@@ -784,11 +784,11 @@ export function SidebarTreeView({
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          {/* The toggle's band, identical to the expanded pane's: same 36px
-              height, same 8px inset, same hairline. The toggle must not move
-              when the panel closes. The 12px spacer below restores the 48px
-              chrome height the rest of this rail aligns on. */}
-          <div className="flex h-9 w-full shrink-0 items-center border-b border-border px-2">
+          {/* The toggle's band, identical to the expanded pane's: same 48px
+              height (matching the article toolbar and inspector tab row), same
+              8px inset, same hairline. The toggle must not move when the panel
+              closes. */}
+          <div className="flex h-12 w-full shrink-0 items-center border-b border-border px-2">
             <button
               type="button"
               onClick={() => {
@@ -805,7 +805,6 @@ export function SidebarTreeView({
               <PanelLeft size={15} aria-hidden="true" />
             </button>
           </div>
-          <div className="h-3 w-full shrink-0" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -887,7 +886,7 @@ export function SidebarTreeView({
           the three destinations stay on the chassis rail (and the mobile
           drawer's pill strip, which already carries their names, so the band
           shows the title only when it is not embedded). */}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2">
         <button
           type="button"
           onClick={toggleTreeSidebar}

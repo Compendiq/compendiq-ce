@@ -1182,10 +1182,11 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          {/* Same 48px band, same right inset and same 28px control as the
-              expanded tab row's toggle, so closing the inspector does not move
-              it. The rest of the rail keeps starting on the 48px seam. */}
-          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-end rounded-none border-none px-2 shadow-none">
+          {/* Same 48px band, same right inset, same hairline and same 28px
+              control as the expanded tab row's toggle, so closing the
+              inspector does not move it and the hairline stays continuous with
+              the article toolbar and left sidebar band. */}
+          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-end rounded-none border-0 border-b border-border px-2 shadow-none">
             <button
               type="button"
               onClick={handleExpandSidebar}
@@ -1197,8 +1198,7 @@ export function ArticleRightPane({
             </button>
           </div>
 
-          <div className="my-1 h-px w-6 bg-border" />
-          <div className="group relative flex w-full justify-center">
+          <div className="group relative mt-1.5 flex w-full justify-center">
             <button
               type="button"
               onClick={() => {
@@ -1665,16 +1665,10 @@ export function ArticleRightPane({
           pane was spending 48px restating it. The tabs are the only thing in
           this chrome anyone operates, so they take the row.
 
-          No hairline under it since 2026-08-31: the owner took the 48px rule
-          off every pane. The segmented control below carries its own track and
-          border, so the row still reads as chrome without one, and the height
-          survives because the panes' content must still start on one y.
-
-          `h-12` is that shared height (see SidebarTreeView and PageViewPage's
-          context strip). It is not free space: the segmented control is 34px
-          (28px segments + 2px track inset + 1px borders), so the row has ~7px
-          of breathing room and no more. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
+          Carries the same 48px height and `border-b border-border` hairline as
+          the left sidebar's top band and the article toolbar, so all three
+          panes share one continuous horizontal rule at y = 48px. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-0 border-b border-border shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
             and the search-mode toggle: `rounded-md` track, 2px inset, one raised

@@ -881,11 +881,11 @@ describe('SidebarTreeView', () => {
     expect(toolbar).not.toBeNull();
     expect(toolbar!.className).toMatch(/\bh-12\b/);
 
-    // The toggle sits above the space selector in its own band, and that band
-    // carries the hairline the article toolbar draws under its chrome.
+    // The toggle sits above the space selector in its own 48px band, and that
+    // band carries the hairline the article toolbar and inspector draw at y=48.
     const band = collapse.parentElement!;
     expect(band.className).toContain('border-b');
-    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('px-2');
     expect(band.compareDocumentPosition(toolbar!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -898,7 +898,7 @@ describe('SidebarTreeView', () => {
     const band = expand.parentElement!;
     // Same height, inset and hairline as the expanded pane's band, at the top
     // of the rail — collapsing must not move the control the user just pressed.
-    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('px-2');
     expect(band.className).toContain('border-b');
     expect(screen.getByRole('complementary', { name: 'Page tree' }).firstElementChild).toBe(band);

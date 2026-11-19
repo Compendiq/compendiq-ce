@@ -177,7 +177,7 @@ describe('SettingsSidebar — panel band and collapse', () => {
     });
 
     const band = screen.getByRole('button', { name: 'Collapse sidebar' }).parentElement!;
-    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('border-b');
     expect(within(band).getByTestId('sidebar-destination-title')).toHaveTextContent('Settings');
   });
@@ -189,7 +189,7 @@ describe('SettingsSidebar — panel band and collapse', () => {
 
     const expand = await screen.findByRole('button', { name: 'Expand sidebar' });
     const band = expand.parentElement!;
-    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('px-2');
     expect(band.className).toContain('border-b');
     expect(screen.getByTestId('settings-sidebar').firstElementChild).toBe(band);

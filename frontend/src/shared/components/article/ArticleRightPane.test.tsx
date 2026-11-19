@@ -850,13 +850,12 @@ describe('ArticleRightPane', () => {
       expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
     });
 
-    it('holds the collapsed rail on the expanded toolbar row’s 48px, unlined', () => {
+    it('holds the collapsed rail on the expanded toolbar row’s 48px with the shared bottom hairline', () => {
       renderRail();
       const chrome = screen.getByTestId('article-right-pane-rail').querySelector('.h-12');
       expect(chrome).toHaveClass('h-12');
-      // ADR-010 v1.1 took the 48px rule off every pane; the height is the
-      // alignment now, so a border-b here would be one line starting mid-width.
-      expect(chrome?.className).not.toMatch(/\bborder-b\b/);
+      expect(chrome?.className).toMatch(/\bborder-b\b/);
+      expect(chrome?.className).toMatch(/\bborder-border\b/);
     });
 
     it('keeps Assistant above Outline and parks pin and maintenance behind More', () => {

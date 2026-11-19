@@ -149,11 +149,11 @@ export function AiConversationsSidebar({
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          {/* Same 36px band as the Pages tree's: same height, inset and
+          {/* Same 48px band as the Pages tree's: same height, inset and
               hairline, at the top of the rail, so the toggle does not move when
-              the pane closes. The 12px spacer restores the 48px chrome height
-              the rest of the rail aligns on. */}
-          <div className="flex h-9 w-full shrink-0 items-center border-b border-border px-2">
+              the pane closes and the hairline aligns with the workspace top
+              chrome. */}
+          <div className="flex h-12 w-full shrink-0 items-center border-b border-border px-2">
             <button
               type="button"
               onClick={toggleTreeSidebar}
@@ -164,7 +164,6 @@ export function AiConversationsSidebar({
               <PanelLeft size={15} aria-hidden="true" />
             </button>
           </div>
-          <div className="h-3 w-full shrink-0" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -232,7 +231,7 @@ export function AiConversationsSidebar({
       {/* Panel toggle band + page title — the Pages tree's band, same height,
           inset, control and hairline, so the toggle is in one place across the
           two rails and the page no longer needs a title row. */}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2">
         <button
           type="button"
           onClick={toggleTreeSidebar}
