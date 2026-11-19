@@ -84,7 +84,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { hasFeature } = useEnterprise();
   const aiUsageEnabled = hasFeature('ai_usage_analytics');
 
-  const { data, isLoading } = useAiUsage(dateRange, aiUsageEnabled);
+  const { data, isLoading, isError, error, refetch } = useAiUsage(dateRange, aiUsageEnabled);
   const colors = useThemeColors(buildColors);
 
   // Feature gate: ai_usage_analytics (separate from outer advanced_analytics)
@@ -112,6 +112,25 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
           <div className="nm-card p-4"><ChartSkeleton /></div>
           <div className="nm-card p-4"><ChartSkeleton /></div>
         </div>
+      </div>
+    );
+  }
+
+  if (isError && !data) {
+    return (
+      <div
+        role="alert"
+        className="nm-card p-8 text-center text-sm text-destructive"
+        data-testid="ai-usage-error"
+      >
+        <p>{error instanceof Error ? error.message : 'Failed to load AI usage data.'}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="nm-button-secondary mt-3 text-xs"
+        >
+          Retry
+        </button>
       </div>
     );
   }

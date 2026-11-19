@@ -211,15 +211,17 @@ export function AnalyticsPage() {
           <div className="flex items-center gap-2">
             <input
               type="date"
+              aria-label="Start date"
               value={dateRange.startDate}
               max={dateRange.endDate}
               onChange={(e) => handleDateChange({ startDate: e.target.value })}
               className="nm-card px-2 py-1.5 text-xs"
               data-testid="date-start"
             />
-            <span className="text-xs text-muted-foreground">to</span>
+            <span className="text-xs text-muted-foreground" aria-hidden="true">to</span>
             <input
               type="date"
+              aria-label="End date"
               value={dateRange.endDate}
               min={dateRange.startDate}
               max={today}
@@ -237,24 +239,33 @@ export function AnalyticsPage() {
       </div>
 
       {/* Tab bar */}
-      <div className="nm-card p-1.5 flex gap-1" data-testid="analytics-tabs">
+      <div
+        role="tablist"
+        aria-label="Analytics dashboards"
+        className="nm-card p-1.5 flex gap-1"
+        data-testid="analytics-tabs"
+      >
         {TABS.map((tab) => {
           const Icon = tab.icon;
           const isDisabled = tab.requiresFeature ? !hasFeature(tab.requiresFeature) : false;
+          const isSelected = activeTab === tab.id;
           return (
             <button
               key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={isSelected}
               onClick={() => handleTabChange(tab.id)}
               className={cn(
                 'flex items-center gap-2 rounded px-3 py-2 text-sm transition-colors',
-                activeTab === tab.id
+                isSelected
                   ? 'bg-foreground/10 font-medium'
                   : 'hover:bg-foreground/5',
-                isDisabled && activeTab !== tab.id && 'opacity-50',
+                isDisabled && !isSelected && 'opacity-50',
               )}
               data-testid={`tab-${tab.id}`}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className="h-4 w-4" aria-hidden="true" />
               <span className="hidden sm:inline">{tab.label}</span>
             </button>
           );

@@ -9,8 +9,8 @@ import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
-import { common, createLowlight } from 'lowlight';
 import DOMPurify from 'dompurify';
+import { lowlight } from '../../lib/lowlight';
 import {
   Details,
   DetailsSummary,
@@ -48,28 +48,6 @@ import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
 import type { TocHeading } from './TableOfContents';
 import { handleTableCellTripleClick } from './table-cell-selection';
-
-// Configure DOMPurify to preserve Confluence-specific and comment attributes
-DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-  if (
-    data.attrName === 'data-diagram-name' ||
-    data.attrName === 'data-drawio' ||
-    data.attrName === 'data-confluence-link' ||
-    data.attrName === 'data-type' ||
-    data.attrName === 'data-checked' ||
-    data.attrName === 'data-layout' ||
-    data.attrName === 'data-layout-type' ||
-    data.attrName === 'data-cell-width' ||
-    data.attrName === 'data-border' ||
-    data.attrName === 'data-lucide' ||
-    data.attrName === 'data-comment-id' ||
-    data.attrName === 'data-comment-resolved'
-  ) {
-    data.forceKeepAttr = true;
-  }
-});
-
-const lowlight = createLowlight(common);
 
 const VersionInsert = Mark.create({
   name: 'versionInsert',

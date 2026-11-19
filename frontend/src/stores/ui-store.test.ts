@@ -6,7 +6,6 @@ describe('ui-store', () => {
     localStorage.clear();
     // Reset to default state
     useUiStore.setState({
-      sidebarCollapsed: false,
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
       treeSidebarWidth: 256,
@@ -51,5 +50,23 @@ describe('ui-store', () => {
     await useUiStore.persist.rehydrate();
 
     expect(useUiStore.getState().articleSidebarWidth).toBe(400);
+  });
+
+  it('clamps persisted treeSidebarWidth to the valid [180, 600] range on rehydration', async () => {
+    localStorage.setItem('compendiq-ui', JSON.stringify({
+      state: { treeSidebarWidth: 1200 },
+      version: 0,
+    }));
+
+    await useUiStore.persist.rehydrate();
+    expect(useUiStore.getState().treeSidebarWidth).toBe(600);
+
+    localStorage.setItem('compendiq-ui', JSON.stringify({
+      state: { treeSidebarWidth: 50 },
+      version: 0,
+    }));
+
+    await useUiStore.persist.rehydrate();
+    expect(useUiStore.getState().treeSidebarWidth).toBe(180);
   });
 });

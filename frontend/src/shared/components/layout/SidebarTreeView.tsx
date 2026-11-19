@@ -576,9 +576,17 @@ export function SidebarTreeView({
     }
   }, [spaceDropdownOpen, showSpaceFilter]);
 
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => {
+    resizeCleanupRef.current?.();
+    resizeCleanupRef.current = null;
+  }, []);
+
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
+      resizeCleanupRef.current?.();
       setIsResizing(true);
       const startX = e.clientX;
       const startWidth = treeSidebarWidth;
@@ -588,14 +596,18 @@ export function SidebarTreeView({
         setTreeSidebarWidth(newWidth);
       }
 
-      function onMouseUp() {
+      function cleanup() {
         setIsResizing(false);
         document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
+        document.removeEventListener('mouseup', cleanup);
+        if (resizeCleanupRef.current === cleanup) {
+          resizeCleanupRef.current = null;
+        }
       }
 
+      resizeCleanupRef.current = cleanup;
       document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
+      document.addEventListener('mouseup', cleanup);
     },
     [treeSidebarWidth, setTreeSidebarWidth],
   );
@@ -990,7 +1002,7 @@ export function SidebarTreeView({
                       if (e.key === 'Escape') {
                         e.stopPropagation();
                         if (spaceFilter) setSpaceFilter('');
-                        else setSpaceDropdownOpen(false);
+                        else closeSpaceDropdown();
                       }
                     }}
                     placeholder="Filter spaces"
@@ -1005,7 +1017,7 @@ export function SidebarTreeView({
                 onClick={() => {
                   hasAutoSelectedSpaceRef.current = true;
                   setTreeSidebarSpaceKey(undefined);
-                  setSpaceDropdownOpen(false);
+                  closeSpaceDropdown();
                 }}
                 className={cn(
                   'flex w-full items-center rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
@@ -1027,7 +1039,7 @@ export function SidebarTreeView({
                       onClick={() => {
                         hasAutoSelectedSpaceRef.current = true;
                         setTreeSidebarSpaceKey(space.key);
-                        setSpaceDropdownOpen(false);
+                        closeSpaceDropdown();
                       }}
                       className={cn(
                         'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
@@ -1066,7 +1078,7 @@ export function SidebarTreeView({
                         onClick={() => {
                           hasAutoSelectedSpaceRef.current = true;
                           setTreeSidebarSpaceKey(space.key);
-                          setSpaceDropdownOpen(false);
+                          closeSpaceDropdown();
                         }}
                         className={cn(
                           'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
@@ -1102,7 +1114,7 @@ export function SidebarTreeView({
               {isLocalSpace && treeSidebarSpaceKey && (
                 <button
                   onClick={() => {
-                    setSpaceDropdownOpen(false);
+                    closeSpaceDropdown();
                     navigate(`/spaces/${treeSidebarSpaceKey}/settings`);
                   }}
                   data-testid="space-settings-link"
@@ -1116,7 +1128,7 @@ export function SidebarTreeView({
               {/* Create new space link */}
               <button
                 onClick={() => {
-                  setSpaceDropdownOpen(false);
+                  closeSpaceDropdown();
                   navigate('/spaces/new');
                 }}
                 className="flex w-full items-center gap-1.5 border-t border-border/60 mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-action hover:bg-[var(--glass-pill-hover)] transition-colors"
@@ -1270,7 +1282,7 @@ export function SidebarTreeView({
               <div
                 key={i}
                 className="h-7 animate-pulse rounded-lg bg-foreground/5"
-                style={{ width: `${60 + Math.random() * 30}%`, marginLeft: `${(i % 3) * 16}px` }}
+                style={{ width: `${62 + ((i * 17) % 28)}%`, marginLeft: `${(i % 3) * 16}px` }}
               />
             ))}
           </div>

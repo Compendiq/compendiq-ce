@@ -108,7 +108,7 @@ function GaugeChart({ value, max, label }: { value: number; max: number; label: 
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: DashboardProps) {
-  const { data, isLoading } = useSearchEffectiveness(dateRange);
+  const { data, isLoading, isError, error, refetch } = useSearchEffectiveness(dateRange);
   const colors = useThemeColors(buildColors);
 
   if (isLoading) {
@@ -117,6 +117,25 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="nm-card p-4"><ChartSkeleton /></div>
         ))}
+      </div>
+    );
+  }
+
+  if (isError && !data) {
+    return (
+      <div
+        role="alert"
+        className="nm-card p-8 text-center text-sm text-destructive"
+        data-testid="search-error"
+      >
+        <p>{error instanceof Error ? error.message : 'Failed to load search effectiveness data.'}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="nm-button-secondary mt-3 text-xs"
+        >
+          Retry
+        </button>
       </div>
     );
   }

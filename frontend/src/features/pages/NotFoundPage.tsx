@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Compass, Search, FileText, Trash2 } from 'lucide-react';
 
@@ -17,6 +17,11 @@ export function NotFoundPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [location.pathname]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,7 +42,7 @@ export function NotFoundPage() {
         <Compass size={32} aria-hidden="true" />
       </div>
 
-      <h1 className="text-lg font-semibold tracking-[-0.01em]" tabIndex={-1}>
+      <h1 ref={headingRef} className="text-lg font-semibold tracking-[-0.01em] focus:outline-none" tabIndex={-1}>
         This page doesn&apos;t exist
       </h1>
 

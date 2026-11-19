@@ -30,6 +30,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
+import * as Dialog from '@radix-ui/react-dialog';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
@@ -538,54 +539,64 @@ function RejectDialog({ reviewId, onClose, onDone }: RejectDialogProps) {
   }, [notes, mutation]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      data-testid="ai-review-detail-reject-dialog"
+    <Dialog.Root
+      open
+      onOpenChange={(next) => {
+        if (!next && !mutation.isPending) onClose();
+      }}
     >
-      <div className="w-full max-w-md nm-card-elevated p-5">
-        <h2 className="text-base font-semibold">Reject AI output</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Optional: leave a short note for the author so they can re-run
-          the AI with better instructions.
-        </p>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          maxLength={4000}
-          rows={4}
-          placeholder="(optional notes)"
-          className="mt-3 w-full rounded-md border border-border bg-background p-2 text-sm focus:border-primary focus:outline-none"
-          data-testid="ai-review-detail-reject-notes"
-        />
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={mutation.isPending}
-            className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
-            data-testid="ai-review-detail-reject-cancel-btn"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={mutation.isPending}
-            className="flex items-center gap-1.5 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-            data-testid="ai-review-detail-reject-confirm-btn"
-          >
-            {mutation.isPending ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <X size={14} />
-            )}
-            Confirm reject
-          </button>
-        </div>
-      </div>
-    </div>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+        <Dialog.Content
+          className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 nm-card-elevated p-5 outline-none"
+          data-testid="ai-review-detail-reject-dialog"
+        >
+          <Dialog.Title className="text-base font-semibold">Reject AI output</Dialog.Title>
+          <Dialog.Description className="mt-1 text-xs text-muted-foreground">
+            Optional: leave a short note for the author so they can re-run
+            the AI with better instructions.
+          </Dialog.Description>
+          <label htmlFor="ai-review-reject-notes" className="sr-only">
+            Rejection notes (optional)
+          </label>
+          <textarea
+            id="ai-review-reject-notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            maxLength={4000}
+            rows={4}
+            placeholder="(optional notes)"
+            className="mt-3 w-full rounded-md border border-border bg-background p-2 text-sm focus:border-primary focus:outline-none"
+            data-testid="ai-review-detail-reject-notes"
+          />
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={mutation.isPending}
+              className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+              data-testid="ai-review-detail-reject-cancel-btn"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={mutation.isPending}
+              className="flex items-center gap-1.5 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+              data-testid="ai-review-detail-reject-confirm-btn"
+            >
+              {mutation.isPending ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <X size={14} />
+              )}
+              Confirm reject
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -634,66 +645,80 @@ function EditAndApproveDialog({
   }, [content, notes, mutation]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      data-testid="ai-review-detail-edit-dialog"
+    <Dialog.Root
+      open
+      onOpenChange={(next) => {
+        if (!next && !mutation.isPending) onClose();
+      }}
     >
-      <div className="grid h-[90vh] w-full max-w-4xl grid-rows-[auto_1fr_auto] gap-3 nm-card-elevated p-5">
-        <div>
-          <h2 className="text-base font-semibold">Edit & approve</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            The proposed content is pre-loaded below — edit it freely.
-            Saving will record both the original AI authorship and your
-            edits in the audit trail, then apply your edited version to
-            the page.
-          </p>
-        </div>
-        <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          maxLength={1_000_000}
-          className="h-full w-full resize-none rounded-md border border-border bg-background p-3 font-mono text-sm leading-relaxed focus:border-primary focus:outline-none"
-          data-testid="ai-review-detail-edit-textarea"
-        />
-        <div className="space-y-2">
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            maxLength={4000}
-            rows={2}
-            placeholder="(optional notes)"
-            className="w-full rounded-md border border-border bg-background p-2 text-sm focus:border-primary focus:outline-none"
-            data-testid="ai-review-detail-edit-notes"
-          />
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={mutation.isPending}
-              className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
-              data-testid="ai-review-detail-edit-cancel-btn"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={mutation.isPending}
-              className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              data-testid="ai-review-detail-edit-confirm-btn"
-            >
-              {mutation.isPending ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Check size={14} />
-              )}
-              Save & approve
-            </button>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+        <Dialog.Content
+          className="fixed left-1/2 top-1/2 z-50 grid h-[90vh] w-[calc(100%-2rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_1fr_auto] gap-3 nm-card-elevated p-5 outline-none"
+          data-testid="ai-review-detail-edit-dialog"
+        >
+          <div>
+            <Dialog.Title className="text-base font-semibold">Edit & approve</Dialog.Title>
+            <Dialog.Description className="mt-1 text-xs text-muted-foreground">
+              The proposed content is pre-loaded below — edit it freely.
+              Saving will record both the original AI authorship and your
+              edits in the audit trail, then apply your edited version to
+              the page.
+            </Dialog.Description>
           </div>
-        </div>
-      </div>
-    </div>
+          <label htmlFor="ai-review-edit-content" className="sr-only">
+            Edited content
+          </label>
+          <textarea
+            id="ai-review-edit-content"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            maxLength={1_000_000}
+            className="h-full w-full resize-none rounded-md border border-border bg-background p-3 font-mono text-sm leading-relaxed focus:border-primary focus:outline-none"
+            data-testid="ai-review-detail-edit-textarea"
+          />
+          <div className="space-y-2">
+            <label htmlFor="ai-review-edit-notes" className="sr-only">
+              Approval notes (optional)
+            </label>
+            <textarea
+              id="ai-review-edit-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              maxLength={4000}
+              rows={2}
+              placeholder="(optional notes)"
+              className="w-full rounded-md border border-border bg-background p-2 text-sm focus:border-primary focus:outline-none"
+              data-testid="ai-review-detail-edit-notes"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={mutation.isPending}
+                className="rounded-md border border-border px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+                data-testid="ai-review-detail-edit-cancel-btn"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={mutation.isPending}
+                className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                data-testid="ai-review-detail-edit-confirm-btn"
+              >
+                {mutation.isPending ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Check size={14} />
+                )}
+                Save & approve
+              </button>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

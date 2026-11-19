@@ -1164,7 +1164,7 @@ interface HistoryDialogProps {
 }
 
 function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
-  const { data, isLoading } = useQuery<WebhookDeliveryListResponse>({
+  const { data, isLoading, isError, error, refetch } = useQuery<WebhookDeliveryListResponse>({
     queryKey: ['admin', 'webhooks', subscription.id, 'deliveries'],
     queryFn: () =>
       fetchJson<WebhookDeliveryListResponse>(
@@ -1189,6 +1189,21 @@ function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="h-10 animate-pulse rounded bg-foreground/5" />
           ))}
+        </div>
+      ) : isError && !data ? (
+        <div
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"
+          data-testid="webhook-history-error"
+        >
+          <p>{error instanceof Error ? error.message : 'Failed to load delivery history.'}</p>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="mt-2 rounded-md border border-destructive/30 px-3 py-1 text-xs font-medium hover:bg-destructive/10"
+          >
+            Retry
+          </button>
         </div>
       ) : deliveries.length === 0 ? (
         <div
@@ -1250,7 +1265,20 @@ function DeliveryRow({
         className="cursor-pointer border-b border-border hover:bg-foreground/[0.03]"
         data-testid={`webhook-delivery-row-${delivery.id}`}
       >
-        <td className="py-2 pl-1 pr-2 font-mono">{delivery.attemptNumber}</td>
+        <td className="py-2 pl-1 pr-2 font-mono">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+            aria-expanded={expanded}
+            aria-label={`Toggle details for delivery attempt ${delivery.attemptNumber}`}
+            className="nm-focus-ring rounded px-1 py-0.5 text-left hover:underline"
+          >
+            {delivery.attemptNumber}
+          </button>
+        </td>
         <td className="py-2 pr-2">
           <StatusChip status={delivery.status} />
         </td>

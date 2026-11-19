@@ -16,7 +16,6 @@ describe('Zustand selector patterns', () => {
   describe('useUiStore selectors', () => {
     beforeEach(() => {
       useUiStore.setState({
-        sidebarCollapsed: false,
         treeSidebarCollapsed: false,
         treeSidebarSpaceKey: undefined,
         treeSidebarWidth: 256,
@@ -24,17 +23,16 @@ describe('Zustand selector patterns', () => {
     });
 
     it('returns individual state values via selectors', () => {
-      expect(useUiStore.getState().sidebarCollapsed).toBe(false);
       expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
       expect(useUiStore.getState().treeSidebarSpaceKey).toBeUndefined();
       expect(useUiStore.getState().treeSidebarWidth).toBe(256);
     });
 
     it('selector returns updated value after state change', () => {
-      const selector = (s: ReturnType<typeof useUiStore.getState>) => s.sidebarCollapsed;
+      const selector = (s: ReturnType<typeof useUiStore.getState>) => s.treeSidebarCollapsed;
       expect(selector(useUiStore.getState())).toBe(false);
 
-      useUiStore.getState().toggleSidebar();
+      useUiStore.getState().toggleTreeSidebar();
       expect(selector(useUiStore.getState())).toBe(true);
     });
 
@@ -42,7 +40,7 @@ describe('Zustand selector patterns', () => {
       const treeSidebarWidthBefore = useUiStore.getState().treeSidebarWidth;
 
       // Change an unrelated property
-      useUiStore.getState().toggleSidebar();
+      useUiStore.getState().toggleTreeSidebar();
 
       // treeSidebarWidth should remain unchanged
       expect(useUiStore.getState().treeSidebarWidth).toBe(treeSidebarWidthBefore);
@@ -143,7 +141,6 @@ describe('Zustand selector patterns', () => {
   describe('selector isolation across stores', () => {
     beforeEach(() => {
       useUiStore.setState({
-        sidebarCollapsed: false,
         treeSidebarCollapsed: false,
       });
       useThemeStore.setState({ theme: 'graphite' });
@@ -152,24 +149,24 @@ describe('Zustand selector patterns', () => {
 
     it('changing ui store does not affect theme store', () => {
       const themeBefore = useThemeStore.getState().theme;
-      useUiStore.getState().toggleSidebar();
+      useUiStore.getState().toggleTreeSidebar();
       expect(useThemeStore.getState().theme).toBe(themeBefore);
     });
 
     it('changing theme store does not affect ui store', () => {
-      const sidebarBefore = useUiStore.getState().sidebarCollapsed;
+      const sidebarBefore = useUiStore.getState().treeSidebarCollapsed;
       useThemeStore.getState().setTheme('paper');
-      expect(useUiStore.getState().sidebarCollapsed).toBe(sidebarBefore);
+      expect(useUiStore.getState().treeSidebarCollapsed).toBe(sidebarBefore);
     });
 
     it('changing command palette does not affect other stores', () => {
       const themeBefore = useThemeStore.getState().theme;
-      const sidebarBefore = useUiStore.getState().sidebarCollapsed;
+      const sidebarBefore = useUiStore.getState().treeSidebarCollapsed;
 
       useCommandPaletteStore.getState().open();
 
       expect(useThemeStore.getState().theme).toBe(themeBefore);
-      expect(useUiStore.getState().sidebarCollapsed).toBe(sidebarBefore);
+      expect(useUiStore.getState().treeSidebarCollapsed).toBe(sidebarBefore);
     });
   });
 });

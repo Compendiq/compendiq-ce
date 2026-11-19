@@ -87,7 +87,7 @@ export function OidcCallbackPage() {
 
   if (reloadRequired) {
     return (
-      <div className="bg-background flex min-h-screen items-center justify-center p-4">
+      <main className="bg-background flex min-h-screen items-center justify-center p-4">
         <div className="nm-card w-full max-w-md p-8 text-center" data-testid="oidc-reload-required">
           <h1 className="mb-4 text-xl font-bold text-foreground">Reload to continue</h1>
           <p className="mb-6 text-sm text-muted-foreground" role="alert">
@@ -111,33 +111,37 @@ export function OidcCallbackPage() {
             </button>
           </div>
         </div>
-      </div>
+      </main>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-background flex min-h-screen items-center justify-center p-4">
+      <main className="bg-background flex min-h-screen items-center justify-center p-4">
         <div className="nm-card w-full max-w-md p-8 text-center">
           <h1 className="mb-4 text-xl font-bold text-destructive">SSO Login Failed</h1>
-          <p className="mb-6 text-sm text-muted-foreground">{error}</p>
+          <p className="mb-6 text-sm text-muted-foreground" role="alert">{error}</p>
           <button
+            type="button"
             onClick={() => navigate('/login', { replace: true })}
             className="nm-button-primary px-6 py-2"
           >
             Back to Login
           </button>
         </div>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div className="bg-background flex min-h-screen items-center justify-center p-4">
-      <div className="nm-card w-full max-w-md p-8 text-center">
-        <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+    <main className="bg-background flex min-h-screen items-center justify-center p-4">
+      <div className="nm-card w-full max-w-md p-8 text-center" role="status" aria-live="polite">
+        <div
+          aria-hidden="true"
+          className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent"
+        />
         <p className="text-sm text-muted-foreground">Completing SSO sign-in...</p>
       </div>
-    </div>
+    </main>
   );
 }

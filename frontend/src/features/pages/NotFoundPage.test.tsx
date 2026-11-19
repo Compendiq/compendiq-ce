@@ -72,4 +72,9 @@ describe('NotFoundPage', () => {
     renderAt('/nope');
     expect(screen.getByLabelText('Search pages')).toBeInTheDocument();
   });
+
+  it('moves focus to the 404 heading on mount for screen readers', () => {
+    renderAt('/missing-route');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
+  });
 });
