@@ -382,15 +382,10 @@ describe('PagesPage', () => {
     expect(newPage.className).not.toContain('nm-button-ghost');
   });
 
-  it('opens the Notion import wizard from a ghost control beside New Page', async () => {
+  it('does not render an Import from Notion button in the Library header (lives under New Page)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const importBtn = screen.getByTestId('import-notion-button');
-    expect(importBtn.className).toContain('nm-button-ghost');
-    expect(importBtn.className).not.toContain('nm-button-primary');
-    expect(screen.queryByTestId('notion-import-dialog')).not.toBeInTheDocument();
-    fireEvent.click(importBtn);
-    expect(await screen.findByTestId('notion-import-dialog')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Connect Notion' })).toBeInTheDocument();
+    expect(screen.queryByTestId('import-notion-button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /import from notion/i })).not.toBeInTheDocument();
   });
 
   it('renders the advanced filters toggle button', () => {

@@ -216,7 +216,7 @@ Cornell Notes is a built-in shared template: a two-column **Cues | Notes** table
 
 ### Importing from Notion
 
-This is a **one-shot migrate**, not a live sync. Open it from **Library → Import from Notion** or from **New Page → Import from Notion**.
+This is a **one-shot migrate**, not a live sync. Open it from **New Page → Import from Notion**.
 
 1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one under **Developer tools → Connections** at [app.notion.com/developers/connections](https://app.notion.com/developers/connections) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
 2. Pick what to import in the grouped workspace tree. Selecting a parent selects the importable group below it. Importing a page also discovers its actual embedded child pages and database contents, even if those children were not individually selected. Ordinary links do not import the linked pages. To import only part of a page's contents, select the desired children without their parent; set unwanted databases to **Skip**. Databases offer **Table | Pages | Skip**:

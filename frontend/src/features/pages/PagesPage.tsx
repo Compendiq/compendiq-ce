@@ -40,8 +40,6 @@ import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { CONFLUENCE_SETTINGS_PATH, SPACES_SETTINGS_PATH } from '../../shared/lib/routes';
 import { OnboardingChecklistCard } from '../onboarding/OnboardingChecklistCard';
-import { NotionImportDialog } from './notion-import/NotionImportDialog';
-import { prefetchNotionConnection } from './notion-import/use-notion-import';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_DESCRIPTIONS, SEARCH_MODE_LABELS } from './pages-find';
 
@@ -500,7 +498,6 @@ export function PagesPage() {
   // Bulk selection. Held as a Set of page ids so toggling stays O(1) and the
   // memoised PageListItem only re-renders for rows whose own state changed.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [notionImportOpen, setNotionImportOpen] = useState(false);
   const lastToggledId = useRef<string | null>(null);
 
   // Debounce the search term before it reaches the keyword /pages query.
@@ -1246,16 +1243,6 @@ export function PagesPage() {
             />
             <button
               type="button"
-              onClick={() => setNotionImportOpen(true)}
-              onMouseEnter={() => prefetchNotionConnection(queryClient)}
-              onFocus={() => prefetchNotionConnection(queryClient)}
-              className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
-              data-testid="import-notion-button"
-            >
-              Import from Notion
-            </button>
-            <button
-              type="button"
               onClick={() => navigate('/pages/new')}
               className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
               data-testid="new-page-button"
@@ -1272,7 +1259,6 @@ export function PagesPage() {
           it sits above discovery and the tree and never replaces any of their
           loading / failed / failed-with-cache / empty states. It renders
           nothing once the user dismisses it. */}
-      <NotionImportDialog open={notionImportOpen} onClose={() => setNotionImportOpen(false)} />
       <OnboardingChecklistCard onDismissed={handleChecklistDismissed} />
 
       {/* Pins are the Library's quickest return path, so keep them in the
