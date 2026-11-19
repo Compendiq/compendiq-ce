@@ -30,7 +30,7 @@ test('persisted note replies survive inspector and popover transitions', async (
     expect((await list.json()).comments[0].replies).toHaveLength(1);
 
     await page.goto(`/pages/${id}`);
-    await page.getByTestId('page-context-tab-details').click();
+    await page.getByTestId('page-context-tab-notes').click();
     const thread = page.getByTestId(`comment-thread-${note.id}`);
     await expect(thread).toContainText('Persisted reply');
     await expect(thread).toContainText('1 reply');
@@ -40,7 +40,7 @@ test('persisted note replies survive inspector and popover transitions', async (
     await expect(thread).toContainText('New inspector reply');
     await expect(thread).toContainText('2 replies');
     await page.reload();
-    await page.getByTestId('page-context-tab-details').click();
+    await page.getByTestId('page-context-tab-notes').click();
     await expect(thread).toContainText('Persisted reply');
     await expect(thread).toContainText('New inspector reply');
     await expect(page.locator('.article-viewer .tiptap')).toBeVisible();
