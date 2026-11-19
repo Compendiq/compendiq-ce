@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Network, PanelRightClose, Send, Sparkles, Square, X } from 'lucide-react';
 import { useAiContext, type Message } from '../AiContext';
 import { PolicyRefusalNotice } from '../PolicyRefusalNotice';
@@ -267,7 +267,13 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           that retained partial output (#1801) announces only its short notice. */}
       <div role="alert" data-testid="ai-dock-error-announcer" className="sr-only">
         {(() => {
-          const lastError = [...messages].reverse().find((msg) => msg.isError);
+          let lastError: Message | undefined;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i]?.isError) {
+              lastError = messages[i];
+              break;
+            }
+          }
           return lastError ? (
             <span key={lastError.id}>{lastError.interruption ?? lastError.content}</span>
           ) : null;
@@ -276,7 +282,14 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
       <div role="status" aria-live="polite" data-testid="ai-dock-answer-announcer" className="sr-only">
         {(() => {
           if (isStreaming) return null;
-          const lastAnswer = [...messages].reverse().find((m2) => m2.role === 'assistant' && !m2.isError && m2.content);
+          let lastAnswer: Message | undefined;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const candidate = messages[i];
+            if (candidate && candidate.role === 'assistant' && !candidate.isError && candidate.content) {
+              lastAnswer = candidate;
+              break;
+            }
+          }
           if (!lastAnswer) return null;
           // The same verdict `/ai`'s announcer reaches, and it has to be
           // reached twice because there are two renderers (#1119). A refusal
@@ -707,7 +720,7 @@ function DockUserMessage({ content }: { content: string }) {
  * flush-left prose behind one small violet mark — the asymmetry alone says who
  * is speaking, which is what a narrow column needs.
  */
-function DockMessage({ msg, isLast, isStreaming, isThinking, thinkingElapsed, streamingContent }: DockMessageProps) {
+const DockMessage = memo(function DockMessage({ msg, isLast, isStreaming, isThinking, thinkingElapsed, streamingContent }: DockMessageProps) {
   if (msg.role === 'user') {
     return <DockUserMessage content={msg.content} />;
   }
@@ -783,4 +796,15 @@ function DockMessage({ msg, isLast, isStreaming, isThinking, thinkingElapsed, st
       </div>
     </div>
   );
-}
+}, (prev, next) => {
+  if (prev.msg !== next.msg) return false;
+  if (prev.isLast !== next.isLast) return false;
+  // Historical (non-last) messages do not depend on live streaming state.
+  if (!next.isLast) return true;
+  return (
+    prev.isStreaming === next.isStreaming
+    && prev.isThinking === next.isThinking
+    && prev.thinkingElapsed === next.thinkingElapsed
+    && prev.streamingContent === next.streamingContent
+  );
+});

@@ -18,7 +18,7 @@ import { readLastConfluenceSpace, rememberConfluenceSpace } from './last-conflue
 import { improveMarkdownToHtml } from '../../shared/components/article/improve-markdown';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
-import { parseHeadings } from '../../shared/components/article/TableOfContents';
+import { parseHeadings, type TocHeading } from '../../shared/components/article/TableOfContents';
 import { CREATE_SKILLS } from '../ai/create-skills';
 import type { Editor as EditorType } from '@tiptap/core';
 import { cn } from '../../shared/lib/cn';
@@ -164,15 +164,58 @@ export function NewPagePage() {
     };
   }, [setStoreEditing]);
 
+  const headingSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (headingSyncTimerRef.current !== null) {
+      clearTimeout(headingSyncTimerRef.current);
+      headingSyncTimerRef.current = null;
+    }
+  }, []);
+
+  const extractEditorHeadings = useCallback((editor: EditorType): TocHeading[] => {
+    const doc = editor.state?.doc;
+    if (doc && typeof doc.descendants === 'function') {
+      const headings: TocHeading[] = [];
+      let index = 0;
+      doc.descendants((node) => {
+        if (node.type.name === 'heading') {
+          const level = Number(node.attrs?.level ?? 0);
+          if (level >= 1 && level <= 4) {
+            const text = node.textContent.trim();
+            const rawId = typeof node.attrs?.id === 'string' && node.attrs.id.trim()
+              ? node.attrs.id
+              : `heading-${index}`;
+            index += 1;
+            if (text) {
+              headings.push({ id: rawId, text, level });
+            }
+          }
+          return false;
+        }
+        return true;
+      });
+      return headings;
+    }
+    return parseHeadings(editor.getHTML());
+  }, []);
+
   const syncHeadings = useCallback((editor: EditorType | null) => {
+    if (headingSyncTimerRef.current !== null) {
+      clearTimeout(headingSyncTimerRef.current);
+      headingSyncTimerRef.current = null;
+    }
     if (!editor) {
       setStoreHeadings([]);
       return;
     }
-    const html = editor.getHTML();
-    const headings = parseHeadings(html);
-    setStoreHeadings(headings);
-  }, [setStoreHeadings]);
+    headingSyncTimerRef.current = setTimeout(() => {
+      headingSyncTimerRef.current = null;
+      if (!editor.isDestroyed) {
+        setStoreHeadings(extractEditorHeadings(editor));
+      }
+    }, 250);
+  }, [extractEditorHeadings, setStoreHeadings]);
 
   // Labels declared in an imported file's YAML front-matter (#1133). They can
   // only be applied once the page exists, because `POST /pages` has no labels

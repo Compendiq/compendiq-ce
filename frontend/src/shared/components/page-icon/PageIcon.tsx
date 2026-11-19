@@ -1,9 +1,14 @@
+import { useEffect, useState } from 'react';
 import type { PageIcon as PageIconValue } from '@compendiq/contracts';
 import { getPageBrandIcon } from '@compendiq/contracts';
 import { useAuthenticatedSrc } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
 import { BrandMark } from './BrandMark';
-import { getPageLucideIcon } from './page-lucide-icons';
+import {
+  getCachedPageLucideCatalog,
+  loadPageLucideCatalog,
+  type PageLucideCatalog,
+} from './page-lucide-loader';
 
 export type PageIconSize = 'row' | 'title';
 
@@ -44,27 +49,14 @@ export function PageIcon({
   }
 
   if (icon.kind === 'lucide') {
-    const Glyph = getPageLucideIcon(icon.value);
-    if (!Glyph) return null;
     return (
-      <span
-        aria-hidden="true"
-        className={cn(
-          'inline-flex shrink-0 items-center justify-center',
-          !icon.color && 'text-foreground',
-          size === 'title' && 'page-icon-title',
-          dim.box,
-          className,
-        )}
-        style={icon.color ? { color: icon.color } : undefined}
-      >
-        <Glyph
-          size={dim.lucide}
-          strokeWidth={size === 'title' ? 1.5 : 2}
-          fill={icon.filled ? 'currentColor' : 'none'}
-          className={cn(icon.filled && 'page-icon-filled')}
-        />
-      </span>
+      <LazyLucidePageIcon
+        value={icon.value}
+        color={icon.color}
+        filled={icon.filled}
+        size={size}
+        className={className}
+      />
     );
   }
 
@@ -88,6 +80,58 @@ export function PageIcon({
   }
 
   return <PageIconImage pageId={pageId} sha={icon.value} size={size} className={className} />;
+}
+
+function LazyLucidePageIcon({
+  value,
+  color,
+  filled,
+  size,
+  className,
+}: {
+  value: string;
+  color?: string | null;
+  filled?: boolean;
+  size: PageIconSize;
+  className?: string;
+}) {
+  const [catalog, setCatalog] = useState<PageLucideCatalog | null>(getCachedPageLucideCatalog);
+
+  useEffect(() => {
+    if (catalog) return;
+    let active = true;
+    void loadPageLucideCatalog().then((loaded) => {
+      if (active) setCatalog(loaded);
+    });
+    return () => {
+      active = false;
+    };
+  }, [catalog]);
+
+  const Glyph = catalog?.getPageLucideIcon(value);
+  if (!Glyph) return null;
+  const dim = SIZE[size];
+
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'inline-flex shrink-0 items-center justify-center',
+        !color && 'text-foreground',
+        size === 'title' && 'page-icon-title',
+        dim.box,
+        className,
+      )}
+      style={color ? { color } : undefined}
+    >
+      <Glyph
+        size={dim.lucide}
+        strokeWidth={size === 'title' ? 1.5 : 2}
+        fill={filled ? 'currentColor' : 'none'}
+        className={cn(filled && 'page-icon-filled')}
+      />
+    </span>
+  );
 }
 
 function PageIconImage({

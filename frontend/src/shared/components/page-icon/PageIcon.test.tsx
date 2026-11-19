@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { PageIcon } from './PageIcon';
+import { LucideIconGrid } from './LucideIconGrid';
 
 vi.mock('../../hooks/use-authenticated-src', () => ({
   useAuthenticatedSrc: () => ({ blobSrc: null, loading: false, error: true }),
@@ -18,36 +19,40 @@ describe('PageIcon', () => {
     expect(mark).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it('renders a lucide glyph for a catalogue id', () => {
+  it('renders a lucide glyph for a catalogue id', async () => {
     const { container } = render(<PageIcon icon={{ kind: 'lucide', value: 'rocket' }} pageId="1" />);
-    expect(container.querySelector('svg')).toBeTruthy();
+    await waitFor(() => expect(container.querySelector('svg')).toBeTruthy());
   });
 
-  it('applies a text-palette colour to a lucide glyph', () => {
+  it('applies a text-palette colour to a lucide glyph', async () => {
     const { container } = render(
       <PageIcon icon={{ kind: 'lucide', value: 'rocket', color: '#6366f1' }} pageId="1" />,
     );
-    expect(container.firstElementChild).toHaveStyle({ color: '#6366f1' });
+    await waitFor(() => expect(container.firstElementChild).toHaveStyle({ color: '#6366f1' }));
   });
 
-  it('renders a filled lucide glyph with fill="currentColor" and page-icon-filled class', () => {
+  it('renders a filled lucide glyph with fill="currentColor" and page-icon-filled class', async () => {
     const { container } = render(
       <PageIcon icon={{ kind: 'lucide', value: 'camera', filled: true }} pageId="1" />,
     );
-    const svg = container.querySelector('svg');
-    expect(svg).toBeTruthy();
-    expect(svg).toHaveAttribute('fill', 'currentColor');
-    expect(svg).toHaveClass('page-icon-filled');
+    await waitFor(() => {
+      const svg = container.querySelector('svg');
+      expect(svg).toBeTruthy();
+      expect(svg).toHaveAttribute('fill', 'currentColor');
+      expect(svg).toHaveClass('page-icon-filled');
+    });
   });
 
-  it('renders an outline lucide glyph with fill="none" by default', () => {
+  it('renders an outline lucide glyph with fill="none" by default', async () => {
     const { container } = render(
       <PageIcon icon={{ kind: 'lucide', value: 'camera' }} pageId="1" />,
     );
-    const svg = container.querySelector('svg');
-    expect(svg).toBeTruthy();
-    expect(svg).toHaveAttribute('fill', 'none');
-    expect(svg).not.toHaveClass('page-icon-filled');
+    await waitFor(() => {
+      const svg = container.querySelector('svg');
+      expect(svg).toBeTruthy();
+      expect(svg).toHaveAttribute('fill', 'none');
+      expect(svg).not.toHaveClass('page-icon-filled');
+    });
   });
 
   it('renders a brand logo for a catalogue slug', () => {
@@ -72,5 +77,18 @@ describe('PageIcon', () => {
       <PageIcon icon={{ kind: 'image', value: 'abc' }} pageId="1" />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('paginates LucideIconGrid initially and expands on demand or search', async () => {
+    const onPick = vi.fn();
+    render(<LucideIconGrid onPick={onPick} />);
+
+    const showAllBtn = await screen.findByTestId('page-icon-show-all');
+    const grid = screen.getByTestId('page-icon-lucide-grid');
+    expect(grid.querySelectorAll('button')).toHaveLength(96);
+
+    fireEvent.click(showAllBtn);
+    expect(grid.querySelectorAll('button').length).toBeGreaterThan(96);
+    expect(screen.queryByTestId('page-icon-show-all')).not.toBeInTheDocument();
   });
 });

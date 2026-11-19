@@ -227,15 +227,15 @@ interface PageListItemProps {
   selected?: boolean;
   onToggleSelect?: (id: string, shiftKey: boolean) => void;
   tabIndex?: number;
-  onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
-  onFocus?: () => void;
+  onRowKeyDown?: (index: number, id: string, e: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onRowFocus?: (index: number) => void;
 }
 
 const PageListItem = memo(function PageListItem({
-  pageItem, index: _index, onNavigate, selected = false, onToggleSelect,
+  pageItem, index, onNavigate, selected = false, onToggleSelect,
   showSource = false, showVisibility = false, showQuality = false,
   showIdleEmbedding = false, spaceName = null,
-  tabIndex = 0, onKeyDown, onFocus,
+  tabIndex = 0, onRowKeyDown, onRowFocus,
 }: PageListItemProps) {
   return (
     <m.div
@@ -282,8 +282,8 @@ const PageListItem = memo(function PageListItem({
           type="button"
           onClick={() => onNavigate(pageItem.id)}
           tabIndex={tabIndex}
-          onKeyDown={onKeyDown}
-          onFocus={onFocus}
+          onKeyDown={onRowKeyDown ? (e) => onRowKeyDown(index, pageItem.id, e) : undefined}
+          onFocus={onRowFocus ? () => onRowFocus(index) : undefined}
           data-testid={`page-row-button-${pageItem.id}`}
           // Below `sm` the button may wrap, and `basis-auto` on the title
           // block makes the wrap content-driven: `flex-1`'s basis of 0 never
@@ -433,8 +433,8 @@ const PageListItem = memo(function PageListItem({
   if (prev.showIdleEmbedding !== next.showIdleEmbedding) return false;
   if (prev.spaceName !== next.spaceName) return false;
   if (prev.tabIndex !== next.tabIndex) return false;
-  if (prev.onKeyDown !== next.onKeyDown) return false;
-  if (prev.onFocus !== next.onFocus) return false;
+  if (prev.onRowKeyDown !== next.onRowKeyDown) return false;
+  if (prev.onRowFocus !== next.onRowFocus) return false;
   return true;
 });
 
@@ -1047,7 +1047,21 @@ export function PagesPage() {
     lastToggledId.current = null;
   }, [currentIds]);
 
-  const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
+  const [scrollMargin, setScrollMargin] = useState(0);
+
+  useEffect(() => {
+    const el = listContainerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const next = el.offsetTop;
+      setScrollMargin((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    if (el.parentElement) observer.observe(el.parentElement);
+    return () => observer.disconnect();
+  }, [pageItems.length]);
 
   const virtualizer = useVirtualizer({
     count: pageItems.length,
@@ -1060,6 +1074,7 @@ export function PagesPage() {
 
   const [focusedRowIndex, setFocusedRowIndex] = useState<number>(0);
   const pendingFocusIndexRef = useRef<number | null>(null);
+  const virtualItems = virtualizer.getVirtualItems();
 
   // Clamp out-of-bounds page parameter back to 1 when a filter reduces totalPages
   useEffect(() => {
@@ -1078,7 +1093,7 @@ export function PagesPage() {
         pendingFocusIndexRef.current = null;
       }
     }
-  });
+  }, [virtualItems, focusedRowIndex]);
 
   const handleRowKeyDown = useCallback((index: number, id: string, e: React.KeyboardEvent<HTMLButtonElement>) => {
     if (e.key === 'ArrowDown') {
@@ -2161,7 +2176,7 @@ export function PagesPage() {
                   aria-busy={isLoading}
                   style={{ position: 'relative', height: virtualizer.getTotalSize() }}
                 >
-                  {virtualizer.getVirtualItems().map((virtualRow) => {
+                  {virtualItems.map((virtualRow) => {
                     const pageItem = pageItems[virtualRow.index];
                     if (!pageItem) return null;
                     return (
@@ -2195,8 +2210,8 @@ export function PagesPage() {
                             showIdleEmbedding={showIdleEmbedding}
                             spaceName={pageItem.spaceKey ? spaceNameByKey.get(pageItem.spaceKey) ?? null : null}
                             tabIndex={focusedRowIndex === virtualRow.index ? 0 : -1}
-                            onFocus={() => setFocusedRowIndex(virtualRow.index)}
-                            onKeyDown={(e) => handleRowKeyDown(virtualRow.index, pageItem.id, e)}
+                            onRowFocus={setFocusedRowIndex}
+                            onRowKeyDown={handleRowKeyDown}
                           />
                         </div>
                       </div>

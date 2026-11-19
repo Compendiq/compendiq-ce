@@ -217,7 +217,7 @@ describe('AppLayout', () => {
     expect(screen.getByRole('img', { name: 'Compendiq' })).toBeInTheDocument();
   });
 
-  it('header sits on the chassis grey, outside the brighter workspace card', () => {
+  it('header sits on the chassis grey, outside the brighter workspace card', async () => {
     render(
       <AppLayout>
         <div>article</div>
@@ -233,7 +233,7 @@ describe('AppLayout', () => {
     const header = chassis.querySelector('header');
     expect(header).toBeTruthy();
     expect(workspace.contains(header!)).toBe(false);
-    expect(workspace.contains(screen.getByTestId('article-right-pane'))).toBe(true);
+    expect(workspace.contains(await screen.findByTestId('article-right-pane'))).toBe(true);
     expect(header!.contains(screen.getByTestId('header-session-cluster'))).toBe(true);
   });
 
@@ -419,7 +419,7 @@ describe('AppLayout', () => {
     });
   });
 
-  it('shows the tree sidebar on /pages, swaps to the settings sidebar on /settings', () => {
+  it('shows the tree sidebar on /pages, swaps to the settings sidebar on /settings', async () => {
     // Pages root — Pages tree visible
     const { unmount } = render(
       <AppLayout>
@@ -440,7 +440,7 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/settings') },
     );
     expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
-    expect(screen.getByTestId('settings-sidebar')).toBeInTheDocument();
+    expect(await screen.findByTestId('settings-sidebar')).toBeInTheDocument();
   });
 
   // #1361: the Pages tree leaves /ai entirely. Page navigation there is the

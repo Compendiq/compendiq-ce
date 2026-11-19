@@ -1104,7 +1104,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     staleTime: 30_000,
     enabled: hasConsumers,
   });
-  const models = modelsQuery.data ?? [];
+  const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data]);
 
   // The conversation list is TanStack Query state owned by the pane
   // (`useConversationList`, key ['llm','conversations','list']) since #1361.
@@ -1923,9 +1923,17 @@ export function AiProvider({ children }: { children: ReactNode }) {
   })();
   pageActionDenialReasonRef.current = pageActionDenialReason;
 
-  const value: AiContextValue = {
+  const clearPolicyRefusal = useCallback(
+    () => updateThread(threadKey, () => ({ policyRefusal: null, policyDenial: null })),
+    [threadKey, updateThread],
+  );
+
+  const chatVision = chatDefault?.vision ?? null;
+  const chatVisionModel = chatDefault?.model ?? '';
+
+  const value: AiContextValue = useMemo(() => ({
     policyRefusal: activeThread.policyRefusal,
-    clearPolicyRefusal: () => updateThread(threadKey, () => ({ policyRefusal: null, policyDenial: null })),
+    clearPolicyRefusal,
     policyDenial: activeThread.policyDenial,
     articlePolicy,
     pageActionDenialReason,
@@ -1955,8 +1963,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     models,
     modelsError: modelsQuery.isError,
     refetchModels: modelsQuery.refetch,
-    chatVision: chatDefault?.vision ?? null,
-    chatVisionModel: chatDefault?.model ?? '',
+    chatVision,
+    chatVisionModel,
     input,
     setInput,
     isStreaming,
@@ -1999,7 +2007,81 @@ export function AiProvider({ children }: { children: ReactNode }) {
     isInsertingDiagram,
     setIsInsertingDiagram,
     runStream,
-  };
+  }), [
+    activeThread.policyRefusal,
+    clearPolicyRefusal,
+    activeThread.policyDenial,
+    articlePolicy,
+    pageActionDenialReason,
+    chatAdmitsLocalOnly,
+    retainAi,
+    pageId,
+    page,
+    pageHasChildren,
+    navigate,
+    queryClient,
+    mode,
+    setMode,
+    messages,
+    setMessages,
+    conversationId,
+    setConversationId,
+    activeThreadId,
+    startNewConversation,
+    purgeConversation,
+    loadState,
+    loadError,
+    retryThreadLoad,
+    historyTruncated,
+    composerFocusRequest,
+    model,
+    setModel,
+    models,
+    modelsQuery.isError,
+    modelsQuery.refetch,
+    chatVision,
+    chatVisionModel,
+    input,
+    setInput,
+    isStreaming,
+    setIsStreaming,
+    streamingThreadId,
+    streamingDisplayContent,
+    isThinking,
+    setIsThinking,
+    thinkingElapsed,
+    includeSubPages,
+    setIncludeSubPages,
+    thinkingMode,
+    handleSetThinkingMode,
+    isPageLoading,
+    embeddingStatus,
+    improvementType,
+    setImprovementType,
+    showDiffView,
+    setShowDiffView,
+    improvedContent,
+    setImprovedContent,
+    originalMarkdown,
+    setOriginalMarkdown,
+    layoutTokensLost,
+    setLayoutTokensLost,
+    diffBaseVersion,
+    setDiffBaseVersion,
+    improvementId,
+    setImprovementId,
+    createSkill,
+    setCreateSkill,
+    generatedDraft,
+    setGeneratedDraft,
+    diagramType,
+    setDiagramType,
+    diagramCode,
+    setDiagramCode,
+    isInsertingDiagram,
+    setIsInsertingDiagram,
+    runStream,
+  ]);
 
   return <AiCtx.Provider value={value}>{children}</AiCtx.Provider>;
 }

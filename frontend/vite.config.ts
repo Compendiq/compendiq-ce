@@ -40,11 +40,12 @@ const VENDOR_CHUNKS: Array<[chunk: string, packages: string[]]> = [
     '@radix-ui/react-popover',
     '@radix-ui/react-switch',
   ]],
-  ['ui-utils', ['lucide-react', 'clsx', 'tailwind-merge', 'sonner']],
+  ['ui-utils', ['clsx', 'tailwind-merge', 'sonner']],
   ['zustand', ['zustand']],
-  ['recharts', ['recharts']],
   ['pdf', ['pdf-lib']],
-  // The excel chunk was removed in #303 alongside the exceljs dep.
+  // Note: `recharts` and `lucide-react` are intentionally NOT pinned to eager
+  // vendor chunks so Rolldown keeps Recharts inside the lazy AnalyticsPage
+  // dashboards and keeps the 657-icon `page-lucide-icons` catalog out of boot.
 ];
 
 function manualChunks(id: string): string | undefined {
