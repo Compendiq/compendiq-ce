@@ -134,6 +134,33 @@ describe('AiConversationsSidebar', () => {
     expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
   });
 
+  it('carries the pane band with the page title on desktop', async () => {
+    mockList(3);
+    renderPane({ embedMainNav: false });
+    const expanded = await screen.findByTestId('ai-conversations-sidebar');
+    const collapse = within(expanded).getByRole('button', { name: 'Collapse sidebar' });
+    const band = collapse.parentElement!;
+    // The Pages tree's band: same height, inset and hairline.
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('px-2');
+    expect(band.className).toContain('border-b');
+    expect(within(band).getByTestId('sidebar-destination-title')).toHaveTextContent('AI');
+    expect(expanded.firstElementChild).toBe(band);
+  });
+
+  it('keeps that band as the first row when the rail collapses', async () => {
+    mockList(3);
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    renderPane();
+    const collapsed = await screen.findByTestId('ai-conversations-sidebar');
+    const expand = within(collapsed).getByRole('button', { name: 'Expand sidebar' });
+    const band = expand.parentElement!;
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('px-2');
+    expect(band.className).toContain('border-b');
+    expect(collapsed.firstElementChild).toBe(band);
+  });
+
   it('follows the shared collapse state (the "," shortcut is AppLayout\'s)', async () => {
     mockList(3);
     renderPane();
