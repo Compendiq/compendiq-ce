@@ -4,7 +4,7 @@ import { m } from 'framer-motion';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
-import { firstVisiblePath, settingsPanelFromPath, type AccessContext } from './settings-nav';
+import { firstVisiblePath, settingsPanelFromPath, SETTINGS_TITLE, type AccessContext } from './settings-nav';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 /**
@@ -40,7 +40,7 @@ export function SettingsLayout() {
         fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 mb-4 border-b border-border bg-card sm:-mx-6 [&>h1]:mx-auto [&>h1]:flex [&>h1]:min-h-[calc(3rem-1px)] [&>h1]:max-w-[928px] [&>h1]:items-center [&>h1]:px-4 [&>h1]:py-2 sm:[&>h1]:max-w-[944px] sm:[&>h1]:px-6"
       >
         <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">
-          Settings
+          {SETTINGS_TITLE}
           {panel && (
             <span className="font-normal text-muted-foreground">
               {' · '}

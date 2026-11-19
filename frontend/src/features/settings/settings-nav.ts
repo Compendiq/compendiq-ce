@@ -25,6 +25,13 @@ type SettingsCategoryId =
   | 'governance'
   | 'system';
 
+/**
+ * The Settings route's own page title. Read by `SettingsLayout`'s heading and
+ * by `SettingsSidebar`'s panel band, so the rail cannot say something the page
+ * does not.
+ */
+export const SETTINGS_TITLE = 'Settings';
+
 export interface SettingsNavItem {
   /** URL segment. */
   id: string;

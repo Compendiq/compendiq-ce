@@ -1,13 +1,15 @@
 import { NavLink } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
-import { PANEL_COLLAPSE_TRANSITION } from '../../hooks/use-panel-collapse-motion';
-import { useUiStore } from '../../../stores/ui-store';
+import { PanelLeft, PanelLeftClose } from 'lucide-react';
+import { PANEL_COLLAPSE_TRANSITION, usePanelCollapseInitial } from '../../hooks/use-panel-collapse-motion';
+import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
 import { MainNavStripExpanded } from './MainNavStrip';
 
 import {
   SETTINGS_NAV,
+  SETTINGS_TITLE,
   canSeeItem,
   type AccessContext,
 } from '../../../features/settings/settings-nav';
@@ -21,11 +23,14 @@ import { cn } from '../../lib/cn';
  * drawer (`embedMainNav={true}`) this renders `MainNavStripExpanded` at top.
  * Body: the Settings section nav (was the inner rail inside SettingsLayout).
  *
- * Always open: Settings is a destination rail, not a working view, so there
- * is no collapse control here. The shared `treeSidebarCollapsed` state (and
- * the `,` shortcut) still apply to SidebarTreeView on the other routes.
+ * Since 2026-11-19 it carries the same 36px panel band as the Pages tree and
+ * the `/ai` conversations rail: open/close toggle plus the page title
+ * ("Settings"), then the toolbar-style hairline. Collapsing follows the shared
+ * `treeSidebarCollapsed` state (and the `,` shortcut) like the other rails; the
+ * 40px rail repeats that band at the same inset, so the toggle does not move.
+ * The band's title is desktop-only — the mobile drawer's pill strip already
+ * names its destinations.
  */
-
 export function SettingsSidebar({
   onNavigate,
   embedMainNav = true,
@@ -34,6 +39,8 @@ export function SettingsSidebar({
   embedMainNav?: boolean;
 } = {}) {
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
+  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
+  const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const reduceEffects = useReducedMotion();
 
   const user = useAuthStore((s) => s.user);
@@ -41,10 +48,59 @@ export function SettingsSidebar({
   const { isEnterprise, hasFeature } = useEnterprise();
   const ctx: AccessContext = { isAdmin, isEnterprise, hasFeature };
 
+  const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
+    treeSidebarCollapsed,
+    treeSidebarWidth,
+    COLLAPSED_TREE_SIDEBAR_WIDTH,
+    reduceEffects,
+  );
+
+  if (treeSidebarCollapsed) {
+    return (
+      <m.aside
+        data-testid="settings-sidebar"
+        initial={collapsedInitial}
+        animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
+        transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
+        className="app-sidebar relative flex flex-col items-center overflow-hidden"
+      >
+        {/* The same 36px band as the expanded rail: same height, inset,
+            control and hairline, so the toggle never moves. The 12px spacer
+            restores the 48px chrome height the rest of the rail aligns on. */}
+        <div className="flex h-9 w-full shrink-0 items-center border-b border-border px-2">
+          <button
+            type="button"
+            onClick={toggleTreeSidebar}
+            className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (,)"
+          >
+            <PanelLeft size={15} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="h-3 w-full shrink-0" aria-hidden="true" />
+
+        <span
+          data-rail-hairline
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 -right-px top-0 z-10 flex w-[3px] flex-col items-center"
+        >
+          <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+          <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+            <span className="size-[3px] rounded-full bg-muted-foreground" />
+            <span className="size-[3px] rounded-full bg-muted-foreground" />
+            <span className="size-[3px] rounded-full bg-muted-foreground" />
+          </span>
+          <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+        </span>
+      </m.aside>
+    );
+  }
+
   return (
     <m.aside
       data-testid="settings-sidebar"
-      initial={false}
+      initial={expandedInitial}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className="app-sidebar relative flex flex-col overflow-hidden"
@@ -59,9 +115,29 @@ export function SettingsSidebar({
         </div>
       )}
 
-      {/* No standalone "Settings" header here — the page H1 inside
-          SettingsLayout already carries that title. Saves vertical space and
-          avoids redundant titling. */}
+      {/* Panel toggle band + page title — the Pages tree's band. The page H1
+          inside SettingsLayout adds the active panel ("Settings · Retrieval");
+          this is the room's name, the same way the other rails carry Library /
+          AI / Graph. */}
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+        <button
+          type="button"
+          onClick={toggleTreeSidebar}
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
+        {!embedMainNav && (
+          <span
+            className="min-w-0 truncate text-xs font-semibold text-foreground"
+            data-testid="sidebar-destination-title"
+          >
+            {SETTINGS_TITLE}
+          </span>
+        )}
+      </div>
 
       {/* Settings section nav — group labels get a hairline divider on top
           (skipped for the first group) so the rail visually segments without
