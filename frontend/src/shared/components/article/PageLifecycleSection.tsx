@@ -7,6 +7,7 @@ import { CONFLUENCE_SETTINGS_PATH } from '../../lib/routes';
 import type { PageLifecycleState } from '@compendiq/contracts';
 import { PageBaselineHistory } from './PageBaselineHistory';
 import { PageGovernanceSection } from './PageGovernanceSection';
+import { pillChipClass } from '../badges/neutral-chip';
 import {
   denialExplanation,
   useFreezePage,
@@ -101,7 +102,7 @@ export function PageLifecycleSection({ pageId, page, defaultOpen = true }: PageL
 
   if (!page) {
     return (
-      <section className="mt-5" data-testid="document-lifecycle">
+      <section className="border-t border-border/60 pt-3" data-testid="document-lifecycle">
         <h3 className="text-xs font-semibold text-foreground">Document lifecycle</h3>
         <p className="mt-1.5 text-xs text-muted-foreground">
           The lifecycle state could not be read, so no action is offered here.
@@ -111,7 +112,7 @@ export function PageLifecycleSection({ pageId, page, defaultOpen = true }: PageL
   }
 
   return (
-    <details open={defaultOpen} className="group mt-5 border-t border-border/60 pt-3" data-testid="document-lifecycle">
+    <details open={defaultOpen} className="group border-t border-border/60 py-3" data-testid="document-lifecycle">
       {/* A programmatic focus target, not a control: no outline at rest. The
           shared `nm-focus-ring` keeps a transparent outline at rest, which
           forced-colors mode paints as a permanent box around this heading. */}
@@ -128,8 +129,13 @@ export function PageLifecycleSection({ pageId, page, defaultOpen = true }: PageL
             Document lifecycle
           </h3>
         </span>
-        <span className="text-[11px] font-normal text-muted-foreground">
-          {frozen ? (page.frozenVersion ? `Frozen v${page.frozenVersion}` : 'Frozen') : 'Editable'}
+        <span className={pillChipClass} data-testid="lifecycle-state-pill">
+          {frozen
+            ? <Lock size={12} className="shrink-0" aria-hidden="true" />
+            : <LockOpen size={12} className="shrink-0" aria-hidden="true" />}
+          <span>
+            {frozen ? (page.frozenVersion ? `Frozen v${page.frozenVersion}` : 'Frozen') : 'Editable'}
+          </span>
         </span>
       </summary>
 

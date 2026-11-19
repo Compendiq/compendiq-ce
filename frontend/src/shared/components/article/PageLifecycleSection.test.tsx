@@ -111,6 +111,19 @@ describe('PageLifecycleSection', () => {
     expect(screen.queryByTestId('unfreeze-btn')).not.toBeInTheDocument();
   });
 
+  it('wears the lifecycle state as the same pill as the AI policy chip', () => {
+    const { unmount } = renderSection(EDITABLE);
+    const editable = screen.getByTestId('lifecycle-state-pill');
+    expect(editable).toHaveTextContent('Editable');
+    expect(editable.className).toMatch(/\brounded-full\b/);
+    // The glyph is the channel that survives forced-colors and colour blindness.
+    expect(editable.querySelector('svg')).not.toBeNull();
+    unmount();
+
+    renderSection(FROZEN);
+    expect(screen.getByTestId('lifecycle-state-pill')).toHaveTextContent('Frozen v7');
+  });
+
   it('withholds Freeze without the server capability and explains the refusal in reachable prose', () => {
     renderSection({ ...EDITABLE, canFreeze: false, freezeDeniedReason: 'freeze_busy' });
     expect(screen.queryByTestId('freeze-btn')).not.toBeInTheDocument();

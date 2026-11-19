@@ -272,12 +272,32 @@ describe('ArticleRightPane', () => {
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('heading', { name: 'Source' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Document health' })).toBeInTheDocument();
-    expect(screen.getByTestId('details-notes-section')).toBeInTheDocument();
     expect(screen.getByTestId('document-lifecycle')).not.toHaveAttribute('open');
+    // Notes is its own tab now, so the Details column carries no notes region.
+    expect(screen.queryByTestId('details-notes-section')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Notes/ })).toBeInTheDocument();
     // Read-mode page actions, danger zone, and duplicate labels moved to the read toolbar.
     expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
     expect(screen.queryByTestId('danger-zone')).not.toBeInTheDocument();
     expect(screen.queryByTestId('document-labels')).not.toBeInTheDocument();
+  });
+
+  it('orders Details as Source, AI policy, Document lifecycle, Document health', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const policy = document.querySelector('details[aria-label="Article AI policy"]');
+    expect(policy, 'AI policy section must be mounted in Details').not.toBeNull();
+    const order = [
+      screen.getByTestId('details-source'),
+      policy!,
+      screen.getByTestId('document-lifecycle'),
+      screen.getByTestId('document-health'),
+    ];
+    for (let i = 1; i < order.length; i += 1) {
+      expect(
+        order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
   });
 
   it('opens on the outline when the page has document structure', () => {
@@ -432,7 +452,7 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByRole('heading', { name: 'Source' })).toBeInTheDocument();
     expect(screen.getByText('Confluence · ENG')).toBeInTheDocument();
-    expect(screen.getByText('v7')).toBeInTheDocument();
+    expect(screen.queryByText('v7')).not.toBeInTheDocument();
     expect(screen.getByText('Document health')).toBeInTheDocument();
     expect(screen.getByTestId('embedding-status-badge')).toBeInTheDocument();
     expect(screen.getByTestId('quality-score-badge')).toBeInTheDocument();
@@ -715,12 +735,14 @@ describe('ArticleRightPane', () => {
     });
   });
 
-  it('names the Details tabpanel exactly “Details” even with open notes counted on the tab', async () => {
+  it('counts open notes on the Notes tab and names its panel exactly “Notes”', async () => {
     mockNotes = [{ id: 'n1', parentId: null, resolved: false }];
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    await waitFor(() => expect(screen.getByTestId('page-context-tab-details')).toHaveTextContent('1'));
-    expect(screen.getByRole('tabpanel', { name: 'Details' })).toHaveAttribute('id', 'page-context-panel-details');
+    await waitFor(() => expect(screen.getByTestId('page-context-tab-notes')).toHaveTextContent('1'));
+    expect(screen.getByTestId('page-context-tab-details')).not.toHaveTextContent('1');
+    fireEvent.click(screen.getByTestId('page-context-tab-notes'));
+    expect(screen.getByRole('tabpanel', { name: 'Notes' })).toHaveAttribute('id', 'page-context-panel-notes');
   });
 
   it('mounts the verification status region before anything is recorded', () => {
@@ -1306,11 +1328,15 @@ describe('ArticleRightPane', () => {
     });
   });
 
-  it('renders version and space key in the footer', () => {
+  it('renders the source space key without version or type rows', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText(/v7/)).toBeInTheDocument();
-    expect(screen.getByText(/ENG/)).toBeInTheDocument();
+    expect(screen.getByText('Confluence · ENG')).toBeInTheDocument();
+    // Version and Type left the Source section (owner, 2026-11-19): version
+    // history is the toolbar's job and page type added no decision.
+    expect(screen.queryByText('v7')).not.toBeInTheDocument();
+    expect(screen.queryByText('Version')).not.toBeInTheDocument();
+    expect(screen.queryByText('Type')).not.toBeInTheDocument();
   });
 
   it('places a visible resize grip on the pane edge matching the tree resize affordance', () => {
@@ -1435,16 +1461,19 @@ describe('ArticleRightPane', () => {
       const assistantTab = screen.getByTestId('page-context-tab-assistant');
       const outlineTab = screen.getByTestId('page-context-tab-outline');
       const detailsTab = screen.getByTestId('page-context-tab-details');
+      const notesTab = screen.getByTestId('page-context-tab-notes');
 
       expect(outlineTab).toHaveAttribute('tabIndex', '0');
       expect(assistantTab).toHaveAttribute('tabIndex', '-1');
       expect(detailsTab).toHaveAttribute('tabIndex', '-1');
+      expect(notesTab).toHaveAttribute('tabIndex', '-1');
 
       fireEvent.click(assistantTab);
 
       expect(assistantTab).toHaveAttribute('tabIndex', '0');
       expect(outlineTab).toHaveAttribute('tabIndex', '-1');
       expect(detailsTab).toHaveAttribute('tabIndex', '-1');
+      expect(notesTab).toHaveAttribute('tabIndex', '-1');
     });
 
     it('retains the mounted assistant panel with hidden class when switching tabs to preserve staged state', () => {
@@ -1503,7 +1532,7 @@ describe('ArticleRightPane', () => {
       expect(screen.getByText('No outline yet')).toBeInTheDocument();
     });
 
-    it('reports open notes and opens them with Alt+N', async () => {
+    it('reports open notes on the Notes tab and opens it with Alt+N', async () => {
       useArticleViewStore.setState({
         headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
       });
@@ -1513,29 +1542,23 @@ describe('ArticleRightPane', () => {
       ];
       render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-      // Top tablist has 3 tabs, not 4
-      expect(screen.queryByTestId('page-context-tab-notes')).toBeNull();
+      // Four tabs now: Assistant, Outline, Details, Notes.
+      const notesTab = screen.getByTestId('page-context-tab-notes');
       const detailsTab = screen.getByTestId('page-context-tab-details');
       expect(detailsTab).toBeInTheDocument();
-      // Details tab shows open notes count
-      await waitFor(() => expect(detailsTab).toHaveTextContent('2'));
+      // The open-notes count rides on the Notes tab.
+      await waitFor(() => expect(notesTab).toHaveTextContent('2'));
 
-      // Switch to details tab
-      fireEvent.click(detailsTab);
-      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
-
-      const notesSection = screen.getByTestId('details-notes-section');
-      expect(notesSection).toBeInTheDocument();
-      expect(notesSection).toHaveTextContent('Notes');
-      expect(notesSection).toHaveTextContent('2 open');
+      fireEvent.click(notesTab);
+      expect(notesTab).toHaveAttribute('aria-selected', 'true');
+      expect(detailsTab).toHaveAttribute('aria-selected', 'false');
       expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
 
-
-      // Alt+N hotkey switches to Details tab
+      // Alt+N reaches the same tab from Outline.
       fireEvent.click(screen.getByTestId('page-context-tab-outline'));
-      expect(detailsTab).toHaveAttribute('aria-selected', 'false');
+      expect(notesTab).toHaveAttribute('aria-selected', 'false');
       fireEvent.keyDown(window, { key: 'n', altKey: true });
-      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
+      expect(notesTab).toHaveAttribute('aria-selected', 'true');
     });
   });
 });

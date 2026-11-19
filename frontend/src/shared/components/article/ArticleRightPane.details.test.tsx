@@ -98,31 +98,19 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('Details trust and draft continuity', () => {
-  it('cancels deferred notes scrolling when the inspector unmounts', async () => {
+  it('opens Notes as its own tab and keeps it mounted while another tab is active', async () => {
     renderDetails();
+    fireEvent.click(screen.getByTestId('page-context-tab-notes'));
     await screen.findByText(noteFixture.body);
-    const scroll = vi.fn();
-    const section = screen.getByTestId('details-notes-section');
-    section.scrollIntoView = scroll;
-    vi.useFakeTimers();
-    try {
-      fireEvent.keyDown(window, { key: 'n', altKey: true });
-      cleanup();
-      // Keep an unrelated successor element with the same ID in the document:
-      // a stale callback must not navigate the newly mounted article either.
-      const successor = document.createElement('div');
-      successor.id = 'details-notes-section';
-      successor.scrollIntoView = scroll;
-      document.body.appendChild(successor);
-      try {
-        act(() => { vi.advanceTimersByTime(100); });
-        expect(scroll).not.toHaveBeenCalled();
-      } finally {
-        successor.remove();
-      }
-    } finally {
-      vi.useRealTimers();
-    }
+
+    fireEvent.click(screen.getByTestId('page-context-tab-details'));
+    // The panel survives the switch (hidden, not unmounted) so nothing staged
+    // in it — a filter, a half-typed note — is lost.
+    expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
+    const panel = document.getElementById('page-context-panel-notes');
+    expect(panel).not.toBeNull();
+    expect(panel).toHaveClass('hidden');
+    expect(screen.queryByTestId('details-notes-section')).not.toBeInTheDocument();
   });
 
   it('does not certify failed indexing when the error text is absent and a human verification exists', async () => {
@@ -141,6 +129,7 @@ describe('Details trust and draft continuity', () => {
 
   it('retains note and reply drafts across tabs, honors Cancel, and isolates the next page', async () => {
     const router = renderDetails();
+    fireEvent.click(screen.getByTestId('page-context-tab-notes'));
     await waitFor(() => expect(screen.getByText(noteFixture.body)).toBeVisible());
     fireEvent.click(screen.getByRole('button', { name: 'New note' }));
     const noteInput = screen.getByTestId('comment-textarea');
@@ -151,7 +140,7 @@ describe('Details trust and draft continuity', () => {
 
     fireEvent.click(screen.getByTestId('page-context-tab-outline'));
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('page-context-tab-details'));
+    fireEvent.click(screen.getByTestId('page-context-tab-notes'));
     expect(screen.getByDisplayValue('Unsent page note')).toBeVisible();
     await waitFor(() => expect(screen.getByDisplayValue('Unsent reply')).toBeVisible());
 
@@ -164,6 +153,9 @@ describe('Details trust and draft continuity', () => {
     await act(async () => { await router.navigate('/pages/2'); });
     await waitFor(() => expect(screen.queryByDisplayValue('Unsent page note')).not.toBeInTheDocument());
     expect(screen.queryByDisplayValue('Unsent reply')).not.toBeInTheDocument();
+    // Navigation re-defaults the inspector tab, so reach Notes again before
+    // asserting the next page starts clean.
+    fireEvent.click(screen.getByTestId('page-context-tab-notes'));
     fireEvent.click(await screen.findByRole('button', { name: 'New note' }));
     expect(screen.getByTestId('comment-textarea')).toHaveValue('');
   });
