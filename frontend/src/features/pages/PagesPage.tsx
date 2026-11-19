@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, ChevronLeft, ChevronRight, ChevronDown, FolderOpen, Filter, X, List, Loader2, Lock, Globe, AlertTriangle } from 'lucide-react';
+import { Search, FileText, ChevronLeft, ChevronRight, ChevronDown, FolderOpen, Filter, X, List, Loader2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { type AiPolicy, type AiPolicyBlockReason, type AiPolicyFilter, type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type EmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
@@ -35,7 +35,6 @@ import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { FrozenBadge } from '../../shared/components/badges/FrozenBadge';
-import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { CONFLUENCE_SETTINGS_PATH, SPACES_SETTINGS_PATH } from '../../shared/lib/routes';
@@ -1225,31 +1224,16 @@ export function PagesPage() {
             `mx-auto` on the inner column: this is a workspace pane beside a
             sidebar, not a centered page, so the cap keeps content flush-left. */}
         <div className="mx-auto w-full max-w-7xl">
+          {/* The destination's name lives in the sidebar's panel band next to
+              the pane toggle (owner, 2026-11-19), and New Page lives in the
+              Pages rail (expanded + collapsed), matching AiConversationsSidebar.
+              The heading stays in the document for screen readers and remains
+              the focus landing after the Getting Started checklist removes
+              itself. */}
+          <h1 ref={libraryHeadingRef} tabIndex={-1} className="sr-only">
+            {LIBRARY_HEADING}
+          </h1>
           <div className="max-w-[1180px] space-y-5">
-            <HeaderHost fallbackClassName="mb-1">
-              <div className="flex min-w-0 flex-wrap items-center justify-end gap-3">
-                {/* The destination's name now lives in the sidebar's panel band next
-                    to the pane toggle (owner, 2026-11-19), so the title row that
-                    restated it is gone from sight. The heading stays in the document
-                    for screen readers, and remains the focus landing after the
-                    Getting Started checklist removes itself. */}
-                <h1 ref={libraryHeadingRef} tabIndex={-1} className="sr-only">
-                  {LIBRARY_HEADING}
-                </h1>
-                <div className="flex flex-wrap items-center gap-3 sm:gap-4">
-                  <button
-                    type="button"
-                    onClick={() => navigate('/pages/new')}
-                    className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
-                    data-testid="new-page-button"
-                  >
-                    <Plus size={15} />
-                    <span>New Page</span>
-                    <ShortcutHint shortcutId="new-page" className="border-current bg-transparent text-primary-foreground" />
-                  </button>
-                </div>
-              </div>
-            </HeaderHost>
 
       {/* #1402: the Getting Started checklist. A sibling block, not a wrapper:
           it sits above discovery and the tree and never replaces any of their
@@ -1267,7 +1251,7 @@ export function PagesPage() {
           supporting scope and mode controls. */}
       <section
         aria-labelledby="kb-filters-heading"
-        className="@container space-y-3 pt-6"
+        className="@container space-y-3"
         data-testid="library-filter-panel"
       >
         <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>

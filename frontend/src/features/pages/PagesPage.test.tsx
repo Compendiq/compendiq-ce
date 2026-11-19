@@ -333,12 +333,11 @@ describe('PagesPage', () => {
     expect(screen.getByTestId('kpi-embedding-coverage')).toBeInTheDocument();
   });
 
-  it('keeps New Page out of the 48px header slot and moves Trash out of the title row', () => {
+  it('leaves New Page and Trash to the Pages rail instead of rendering a top button row', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('new-page-button').closest('#app-header-slot')).toBeNull();
-    expect(screen.getByTestId('new-page-button').closest('header')).toBeNull();
+    expect(screen.queryByTestId('new-page-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('trash-link')).not.toBeInTheDocument();
-    expect(screen.getByText('Library').parentElement).toContainElement(screen.getByTestId('new-page-button'));
+    expect(screen.getByRole('heading', { name: 'Library', level: 1 })).toHaveClass('sr-only');
   });
 
   it('renders the page title, search input, and filter controls', () => {
@@ -380,13 +379,6 @@ describe('PagesPage', () => {
     expect(
       pinned.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-  });
-
-  it('makes New Page the filled primary action on this route', () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-    const newPage = screen.getByTestId('new-page-button');
-    expect(newPage.className).toContain('nm-button-primary');
-    expect(newPage.className).not.toContain('nm-button-ghost');
   });
 
   it('does not render an Import from Notion button in the Library header (lives under New Page)', () => {
@@ -3499,14 +3491,14 @@ describe('PagesPage — Getting Started checklist (#1402)', () => {
     restoreRects();
   });
 
-  it('sits between the Library header and the search toolbar', async () => {
+  it('sits between the Library heading and the search toolbar', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
 
     const card = await screen.findByTestId('onboarding-checklist');
     const toolbar = screen.getByTestId('library-filter-panel');
     expect(card.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
-      screen.getByTestId('new-page-button').compareDocumentPosition(card) &
+      screen.getByRole('heading', { name: 'Library', level: 1 }).compareDocumentPosition(card) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });

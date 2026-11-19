@@ -32,6 +32,7 @@ import { useSettings } from '../../hooks/use-settings';
 import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import { Button, IconButton } from '../Button';
+import { ShortcutHint } from '../ShortcutHint';
 import { PageIcon } from '../page-icon/PageIcon';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
@@ -808,6 +809,22 @@ export function SidebarTreeView({
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
+          {/* Primary creation action stays reachable when the rail is collapsed,
+              mirroring AiConversationsSidebar's collapsed New chat glyph. */}
+          <button
+            type="button"
+            onClick={() => {
+              navigate('/pages/new');
+              onNavigate?.();
+            }}
+            data-testid="sidebar-new-page-btn"
+            className="mt-2 flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="New Page"
+            title="New Page (Alt+N)"
+          >
+            <Plus size={15} aria-hidden="true" />
+          </button>
+
           <IconButton
             onClick={() => {
               navigate('/trash');
@@ -1112,6 +1129,30 @@ export function SidebarTreeView({
         </div>
       </div>
 
+      {/* Primary creation action — owned by the Pages rail in both expanded and
+          collapsed states, matching AiConversationsSidebar's New chat row so
+          PagesPage does not carry a lonely right-aligned button row above search. */}
+      <div className="flex shrink-0 items-center px-2 pb-2">
+        <button
+          type="button"
+          onClick={() => {
+            navigate('/pages/new');
+            onNavigate?.();
+          }}
+          aria-label="New Page"
+          title="New Page (Alt+N)"
+          data-testid="sidebar-new-page-btn"
+          className="nm-button-primary h-8 min-w-0 flex-1 justify-start gap-2 px-2.5 text-xs"
+        >
+          <Plus size={14} aria-hidden="true" />
+          <span>New Page</span>
+          <ShortcutHint
+            shortcutId="new-page"
+            className="ml-auto border-current bg-transparent text-primary-foreground"
+          />
+        </button>
+      </div>
+
       {/* A compact navigation shortcut; the Pages dashboard remains the rich
           pinned overview with excerpts and management controls. */}
       {pinnedData && pinnedData.items.length > 0 && (
@@ -1187,23 +1228,10 @@ export function SidebarTreeView({
         </section>
       )}
 
-      {/* Section label with New Page action — no extra hairline. The space-selector row
-          already draws the 1px rule that meets the article toolbar. */}
-      <div className="flex h-7 shrink-0 items-center justify-between px-3">
+      {/* Section label — no extra hairline. New Page lives in its own full-width
+          action row above so it is not duplicated down here. */}
+      <div className="flex h-7 shrink-0 items-center px-3">
         <span className={SECTION_LABEL}>Pages</span>
-        <button
-          type="button"
-          onClick={() => {
-            navigate('/pages/new');
-            onNavigate?.();
-          }}
-          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="New Page"
-          title="New Page (Alt+N)"
-          data-testid="sidebar-new-page-btn"
-        >
-          <Plus size={13} aria-hidden="true" />
-        </button>
       </div>
 
       {/* A refresh failed but the cached tree is still usable. Say so without

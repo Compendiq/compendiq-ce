@@ -608,8 +608,20 @@ describe('SidebarTreeView', () => {
     expect(handle).toHaveAttribute('tabindex', '0');
   });
 
-  it('renders New Page button in sidebar section header and navigates to /pages/new', () => {
+  it('renders New Page primary button in the expanded sidebar and navigates to /pages/new', () => {
     mockNavigate.mockClear();
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const newPageBtn = screen.getByTestId('sidebar-new-page-btn');
+    expect(newPageBtn).toBeInTheDocument();
+    expect(newPageBtn).toHaveAccessibleName('New Page');
+    expect(newPageBtn.className).toContain('nm-button-primary');
+    fireEvent.click(newPageBtn);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
+  });
+
+  it('keeps New Page reachable when the sidebar is collapsed', () => {
+    mockNavigate.mockClear();
+    useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const newPageBtn = screen.getByTestId('sidebar-new-page-btn');
     expect(newPageBtn).toBeInTheDocument();
@@ -1968,7 +1980,7 @@ describe('SidebarTreeNode memoization', () => {
       expect(screen.queryByText(/Confluence/i)).not.toBeInTheDocument();
       expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
 
-      fireEvent.click(screen.getByText('New Page'));
+      fireEvent.click(within(screen.getByTestId('tree-scroll')).getByText('New Page'));
       expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
     });
 
