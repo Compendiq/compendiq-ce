@@ -13,7 +13,7 @@ import {
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
 import { getAiGuardrails, getAiOutputRules, SWISS_SPELLING_INSTRUCTION } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
-import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix, type IncludedPageRef, type SubPagePolicyContext } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
 import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
 import {
@@ -22,6 +22,17 @@ import {
 } from '../../core/services/image-staging.js';
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
 import type { StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
+import { ProviderStreamError, StreamIncompleteError } from '../../domains/llm/services/provider-stream-error.js';
+import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
+import {
+  SEARXNG_CATEGORIES_DEFAULT,
+  SEARXNG_MAX_RESULTS_DEFAULT,
+  SEARXNG_MAX_RESULTS_MAX,
+  SEARXNG_MAX_RESULTS_MIN,
+  SearxngCategoriesSchema,
+  type ConversationTurnAiProvenance,
+  type SearxngSettings,
+} from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
 
@@ -57,7 +68,12 @@ export const MAX_DOCUMENT_TEXT_FOR_LLM = 80_000;
 export interface ResolvedPageRef {
   id: number;
   confluenceId: string | null;
+  source: string;
   title: string;
+}
+
+export function subPageParentKey(page: ResolvedPageRef): string {
+  return page.source === 'confluence' && page.confluenceId ? page.confluenceId : String(page.id);
 }
 
 // pages.id is int4 — only strings that safely fit are tried as internal ids
@@ -71,25 +87,25 @@ interface PageRefReader {
 }
 
 async function lookupPageRef(pageId: string, reader?: PageRefReader): Promise<ResolvedPageRef | undefined> {
-  type Row = { id: number; confluence_id: string | null; title: string };
+  type Row = { id: number; confluence_id: string | null; source: string; title: string };
   // Both lookups carry the gate, so a restricted internal id falls through to
   // the Confluence-id lookup exactly as a missing one does (no oracle).
   const gate = reader ? ` AND ${visiblePagesPredicate(2, 3, 'pages')}` : '';
   const gateValues = reader ? [reader.spaces, reader.userId] : [];
   if (/^\d+$/.test(pageId) && pageId.length <= SAFE_INT4_DIGITS) {
     const byId = await query<Row>(
-      `SELECT id, confluence_id, title FROM pages WHERE id = $1 AND deleted_at IS NULL${gate}`,
+      `SELECT id, confluence_id, title, source FROM pages WHERE id = $1 AND deleted_at IS NULL${gate}`,
       [parseInt(pageId, 10), ...gateValues],
     );
     const row = byId.rows[0];
-    if (row) return { id: row.id, confluenceId: row.confluence_id, title: row.title };
+    if (row) return { id: row.id, confluenceId: row.confluence_id, source: row.source, title: row.title };
   }
   const byConfluenceId = await query<Row>(
-    `SELECT id, confluence_id, title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL${gate}`,
+    `SELECT id, confluence_id, title, source FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL${gate}`,
     [pageId, ...gateValues],
   );
   const row = byConfluenceId.rows[0];
-  return row ? { id: row.id, confluenceId: row.confluence_id, title: row.title } : undefined;
+  return row ? { id: row.id, confluenceId: row.confluence_id, source: row.source, title: row.title } : undefined;
 }
 
 /**
@@ -119,19 +135,19 @@ export async function assembleContextIfNeeded(
   pageId: string | undefined,
   content: string,
   includeSubPages?: boolean,
-  opts?: { protectMedia?: boolean; layoutTokens?: boolean },
-): Promise<{ markdown: string; multiPageSuffix: string }> {
+  opts?: { protectMedia?: boolean; layoutTokens?: boolean; policyContext?: SubPagePolicyContext; parentRef?: ResolvedPageRef },
+): Promise<{ markdown: string; multiPageSuffix: string; includedPageRefs: IncludedPageRef[] }> {
   // Resolve internal-vs-Confluence id: sub-page traversal is keyed on the
   // Confluence id (pages.parent_id; the DB id for standalone pages). A page
   // the caller cannot read, or that does not exist, contributes neither its
   // title nor its sub-page tree: the request falls back to the caller's own
   // content alone, so both cases produce the same prompt.
-  const resolved = includeSubPages && pageId ? await resolveReadablePageRef(userId, pageId) : undefined;
+  const resolved = includeSubPages && pageId ? opts?.parentRef ?? await resolveReadablePageRef(userId, pageId) : undefined;
   if (resolved) {
     const parentHtml = opts?.protectMedia ? protectMedia(content).html : content;
     const assembled = await assembleSubPageContext(
       userId,
-      resolved.confluenceId ?? String(resolved.id),
+      subPageParentKey(resolved),
       parentHtml,
       resolved.title,
       undefined,
@@ -139,11 +155,12 @@ export async function assembleContextIfNeeded(
       // alignment runs against the parent, and without its tokens any
       // Improve of a multi-cell layout page is guaranteed unrecoverable.
       // Sub-page conversions stay token-free (see assembleSubPageContext).
-      { parentLayoutTokens: opts?.layoutTokens === true },
+      { parentLayoutTokens: opts?.layoutTokens === true, policyContext: opts?.policyContext },
     );
     return {
       markdown: assembled.markdown,
       multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
+      includedPageRefs: assembled.includedPageRefs,
     };
   }
 
@@ -153,6 +170,7 @@ export async function assembleContextIfNeeded(
     // requests them.
     markdown: htmlToMarkdown(html, { layoutTokens: opts?.layoutTokens === true }),
     multiPageSuffix: '',
+    includedPageRefs: [],
   };
 }
 
@@ -194,9 +212,9 @@ export async function resolveSystemPrompt(userId: string, key: SystemPromptKey):
  *
  * 1. Return cached response immediately if present.
  * 2. Try to acquire a Redis lock so only one request generates.
- * 3. If the lock is already held by another request, poll until the cached
- *    result appears (or timeout, in which case we return null so the caller
- *    can generate anyway).
+ * 3. If the lock is already held, wait for the cached result. Generate can
+ *    provide its response so the waiter stays connected and retries ownership
+ *    after the current holder releases the lock.
  *
  * The caller MUST pass `lockToken` to `releaseLock()` in a finally block
  * when it is non-null, after writing the generated result to the cache.
@@ -204,22 +222,101 @@ export async function resolveSystemPrompt(userId: string, key: SystemPromptKey):
 export async function checkCacheWithLock(
   llmCache: LlmCache,
   cacheKey: string,
-): Promise<{ cached: CachedLlmResponse | null; lockToken: string | null }> {
+  response?: {
+    request: { raw: import('http').IncomingMessage };
+    reply: FastifyReply;
+  },
+): Promise<{ cached: CachedLlmResponse | null; lockToken: string | null; aborted: boolean }> {
   // Fast path — already in cache
   const cached = await llmCache.getCachedResponse(cacheKey);
-  if (cached) return { cached, lockToken: null };
+  if (cached) return { cached, lockToken: null, aborted: false };
 
   // Try to become the single generator for this key
   const lockToken = await llmCache.acquireLock(cacheKey);
   if (lockToken) {
-    return { cached: null, lockToken };
+    return { cached: null, lockToken, aborted: false };
   }
 
-  // Another request holds the lock — wait for it to populate the cache.
-  // A timeout deliberately returns without ownership so the caller can use
-  // the existing duplicate-generation fallback without releasing that lock.
-  const waited = await llmCache.waitForCachedResponse(cacheKey);
-  return { cached: waited, lockToken: null };
+  if (!response) {
+    const waited = await llmCache.waitForCachedResponse(cacheKey);
+    return { cached: waited, lockToken: null, aborted: false };
+  }
+
+  const { request, reply } = response;
+  if (request.raw.aborted || reply.raw.destroyed) {
+    return { cached: null, lockToken: null, aborted: true };
+  }
+
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  reply.raw.on('close', onClose);
+  let keepAliveTimer: NodeJS.Timeout | undefined;
+
+  const writeKeepAlive = () => {
+    if (controller.signal.aborted || reply.raw.destroyed || reply.raw.writableEnded) {
+      controller.abort();
+      return;
+    }
+    try {
+      reply.raw.write(': keep-alive\n\n');
+    } catch {
+      controller.abort();
+    }
+  };
+
+  try {
+    startSseResponse(reply);
+    writeKeepAlive();
+    keepAliveTimer = setInterval(writeKeepAlive, 1_000);
+    keepAliveTimer.unref?.();
+
+    while (!controller.signal.aborted) {
+      const waited = await llmCache.waitForCachedResponse(
+        cacheKey,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      if (controller.signal.aborted || reply.raw.destroyed) {
+        return { cached: null, lockToken: null, aborted: true };
+      }
+      if (waited) return { cached: waited, lockToken: null, aborted: false };
+
+      const nextLockToken = await llmCache.acquireLock(cacheKey);
+      if (controller.signal.aborted || reply.raw.destroyed) {
+        if (nextLockToken) await llmCache.releaseLock(cacheKey, nextLockToken);
+        return { cached: null, lockToken: null, aborted: true };
+      }
+      if (!nextLockToken) continue;
+
+      const cachedAfterAcquire = await llmCache.getCachedResponse(cacheKey);
+      if (controller.signal.aborted || reply.raw.destroyed) {
+        await llmCache.releaseLock(cacheKey, nextLockToken);
+        return { cached: null, lockToken: null, aborted: true };
+      }
+      if (cachedAfterAcquire) {
+        await llmCache.releaseLock(cacheKey, nextLockToken);
+        return { cached: cachedAfterAcquire, lockToken: null, aborted: false };
+      }
+      return { cached: null, lockToken: nextLockToken, aborted: false };
+    }
+
+    return { cached: null, lockToken: null, aborted: true };
+  } finally {
+    if (keepAliveTimer) clearInterval(keepAliveTimer);
+    reply.raw.removeListener('close', onClose);
+  }
+}
+
+export function startSseResponse(reply: FastifyReply): void {
+  if (reply.raw.headersSent) return;
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
 }
 
 /**
@@ -238,13 +335,7 @@ export function sendCachedSSE(
   extras?: Record<string, unknown>,
   opts?: { cached?: boolean },
 ): void {
-  reply.hijack();
-  reply.raw.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
+  startSseResponse(reply);
   const contentFrame: Record<string, unknown> = { content, done: true };
   if (opts?.cached !== false) contentFrame.cached = true;
   reply.raw.write(`data: ${JSON.stringify(contentFrame)}\n\n`);
@@ -252,6 +343,16 @@ export function sendCachedSSE(
     reply.raw.write(`data: ${JSON.stringify({ ...extras, done: true, final: true })}\n\n`);
   }
   reply.raw.end();
+}
+
+/**
+ * Client-facing text for a failed provider stream; never carries provider
+ * text. Shared by `streamSSE` and Ask so the wire cannot drift (#1728).
+ */
+export function streamFailureMessage(err: unknown): 'Stream ended before completion' | 'Provider error' | 'Stream error' {
+  if (err instanceof StreamIncompleteError) return 'Stream ended before completion';
+  if (err instanceof ProviderStreamError) return 'Provider error';
+  return 'Stream error';
 }
 
 /**
@@ -266,6 +367,7 @@ export async function streamSSE(
   options?: {
     llmCache?: LlmCache;
     cacheKey?: string;
+    lockToken?: string | null;
     postProcess?: (content: string) => OutputSanitizeResult;
     /** Only provider-dispatched calls pass audit metadata; cache hits bypass this helper. */
     audit?: Omit<LlmAuditEntry, 'outputTokens' | 'durationMs' | 'status' | 'errorMessage' | 'outputText'>;
@@ -283,6 +385,20 @@ export async function streamSSE(
      * pre-Accept warning.
      */
     finalExtras?: (content: string) => Record<string, unknown>;
+    /**
+     * #282: the article binding the streamed text was generated under —
+     * written beside the cached output so a later hit can be re-admitted
+     * against the SAME provider revision, locality and page revisions
+     * rather than against whatever the request's current context says.
+     * Independent input records an explicitly empty page set. Missing
+     * provenance is unknown: it cannot be published or replayed as safe.
+     * Publication holds the shared revision guard through the cache write.
+     */
+    cacheProvenance?: ConversationTurnAiProvenance;
+    /** Lets callers avoid persisting a partial response after a stream failure. */
+    onStreamError?: (error: unknown) => void;
+    /** Report whether the stream completed normally or was interrupted. */
+    onFinished?: (result: { status: 'success' | 'error' | 'aborted'; error?: unknown }) => void;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -294,20 +410,27 @@ export async function streamSSE(
   reply.raw.on('close', onClose);
   if (reply.raw.destroyed || request.raw.aborted) controller.abort();
 
-  reply.hijack();
-  reply.raw.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
+  startSseResponse(reply);
 
   let fullContent = '';
   let outputCharacters = 0;
   let usage: StreamChunk['usage'];
+  let streamFailed = false;
   let streamError: unknown;
   const auditStart = Date.now();
   let dispatched = false;
+  const reportStreamError = (error: unknown): void => {
+    streamFailed = true;
+    streamError = error;
+    try {
+      options?.onStreamError?.(error);
+    } catch (callbackError) {
+      logger.error({ err: callbackError }, 'SSE stream error callback failed');
+    }
+  };
+  const stopLockHeartbeat = options?.llmCache && options.cacheKey && options.lockToken
+    ? options.llmCache.startLockHeartbeat(options.cacheKey, options.lockToken)
+    : undefined;
 
   try {
     if (controller.signal.aborted) throw new DOMException('Client disconnected', 'AbortError');
@@ -343,7 +466,23 @@ export async function streamSSE(
       options?.llmCache && options?.cacheKey && fullContent && !controller.signal.aborted &&
       (options.shouldCache?.(fullContent) ?? true)
     ) {
-      await options.llmCache.setCachedResponse(options.cacheKey, fullContent);
+      const { llmCache, cacheKey, cacheProvenance } = options;
+      if (cacheProvenance && options.audit?.userId) {
+        try {
+          // The short publication transaction serializes the SET with policy
+          // mutation. A check followed by an unlocked SET could repopulate
+          // purged output. Replay still revalidates if invalidation fails.
+          await admitArticleStage(cacheProvenance, options.audit.userId, 'chat', async () => {
+            await llmCache.setCachedResponse(cacheKey, fullContent, undefined, cacheProvenance);
+          });
+        } catch {
+          // Inference already completed: keep its usage accounting, but never
+          // publish reusable state when authority changed or is unreadable.
+          logger.info('Direct output cache publication refused');
+        }
+      }
+      // Missing provenance is unknown, including for independent input.
+      // Such output may be displayed, but must not become a reusable entry.
     }
 
     if ((extras || options?.finalExtras) && !controller.signal.aborted) {
@@ -352,41 +491,114 @@ export async function streamSSE(
       );
     }
   } catch (err) {
-    streamError = err;
+    reportStreamError(err);
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
     } else {
-      logger.error({ err }, 'SSE stream error');
-      reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
+      if (err instanceof StreamIncompleteError) {
+        // The provider closed the socket before `[DONE]`: the text the client
+        // already saw is a prefix. Say so on the wire rather than letting the
+        // stream merely stop, so the client never renders it as finished.
+        logger.warn({ receivedCharacters: err.receivedCharacters }, 'SSE stream ended before completion');
+      } else if (err instanceof ProviderStreamError) {
+        // The provider's own text goes to the log only, and only a prefix.
+        logger.warn(
+          { receivedCharacters: err.receivedCharacters, detail: err.detail.slice(0, 200) },
+          'SSE stream: provider reported an error',
+        );
+      } else {
+        logger.error({ err }, 'SSE stream error');
+      }
+      reply.raw.write(`data: ${JSON.stringify({ error: streamFailureMessage(err), done: true })}\n\n`);
     }
   } finally {
-    if (options?.audit && dispatched) {
+    stopLockHeartbeat?.();
+    if (controller.signal.aborted && !streamFailed) {
+      reportStreamError(new DOMException('Client disconnected', 'AbortError'));
+    }
+    if (options?.audit && dispatched && !(streamError instanceof ArticleStageRefusedError)) {
       emitLlmAudit({
         ...options.audit,
         inputTokens: usage?.promptTokens ?? options.audit.inputTokens,
         outputTokens: usage?.completionTokens ?? Math.ceil(outputCharacters / 4),
         durationMs: Date.now() - auditStart,
-        status: streamError || controller.signal.aborted ? 'error' : 'success',
-        ...(streamError || controller.signal.aborted
-          ? { errorMessage: controller.signal.aborted ? 'Client disconnected' : 'Stream error' }
+        status: streamFailed ? 'error' : 'success',
+        ...(streamFailed
+          ? {
+              errorMessage: controller.signal.aborted ? 'Client disconnected' : streamFailureMessage(streamError),
+            }
           : {}),
       });
     }
+    options?.onFinished?.({
+      status: controller.signal.aborted ? 'aborted' : streamFailed ? 'error' : 'success',
+      ...(streamError !== undefined ? { error: streamError } : {}),
+    });
     reply.raw.removeListener('close', onClose);
     reply.raw.end();
   }
 
-  return fullContent;
+  // Only a COMPLETED stream is a result. A failed or truncated stream, or
+  // one the client abandoned, resolves to '' so no caller can persist the
+  // prefix as the finished output (the cache write above is gated the same
+  // way); callers that need the partial text for diagnostics have the
+  // audit entry's output-token count.
+  return streamError || controller.signal.aborted ? '' : fullContent;
 }
 
 /**
- * Get admin-configured SearXNG max results (reads from admin_settings, defaults to 5).
+ * Effective SearXNG result width for a stored `searxng_max_results` value.
+ * Rows written before #1768 can hold 11–20 (the old admin range); the sidecar's
+ * `search_web` schema rejects anything above SEARXNG_MAX_RESULTS_MAX with
+ * -32602, which fetchWebSources swallows into "no sources". Non-numeric →
+ * default; out of range → clamped; both logged so the operator re-saves.
  */
-export async function getSearxngMaxResults(): Promise<number> {
-  const result = await query<{ setting_value: string }>(
-    `SELECT setting_value FROM admin_settings WHERE setting_key = 'searxng_max_results'`,
+export function normalizeSearxngMaxResults(stored: string | undefined): number {
+  if (stored === undefined) return SEARXNG_MAX_RESULTS_DEFAULT;
+  const parsed = parseInt(stored, 10);
+  if (!Number.isFinite(parsed)) {
+    logger.warn({ stored }, 'searxng_max_results is not a number — using the default; re-save SearXNG settings');
+    return SEARXNG_MAX_RESULTS_DEFAULT;
+  }
+  const effective = Math.min(SEARXNG_MAX_RESULTS_MAX, Math.max(SEARXNG_MAX_RESULTS_MIN, parsed));
+  if (effective !== parsed) {
+    logger.warn(
+      { stored, effective },
+      'searxng_max_results is outside the sidecar range — clamped; re-save SearXNG settings',
+    );
+  }
+  return effective;
+}
+
+/**
+ * Effective SearXNG categories for a stored `searxng_categories` value. Rows
+ * written before #1769 were only length-checked, so one can hold a value the
+ * sidecar's `search_web` schema rejects with -32602 (e.g. "general, it"),
+ * which fetchWebSources swallows into "no sources". Such a row falls back to
+ * the default — what the sidecar searched before #1769 — and is logged so the
+ * operator re-saves.
+ */
+function normalizeSearxngCategories(stored: string | undefined): string {
+  if (stored === undefined) return SEARXNG_CATEGORIES_DEFAULT;
+  if (SearxngCategoriesSchema.safeParse(stored).success) return stored;
+  logger.warn(
+    { stored, effective: SEARXNG_CATEGORIES_DEFAULT },
+    'searxng_categories is not a comma-separated category list — using the default; re-save SearXNG settings',
   );
-  return parseInt(result.rows[0]?.setting_value ?? '5', 10);
+  return SEARXNG_CATEGORIES_DEFAULT;
+}
+
+/** Admin-configured SearXNG search settings (admin_settings), normalized into the sidecar's ranges. */
+export async function getSearxngSettings(): Promise<SearxngSettings> {
+  const result = await query<{ setting_key: string; setting_value: string }>(
+    `SELECT setting_key, setting_value FROM admin_settings
+     WHERE setting_key IN ('searxng_max_results', 'searxng_categories')`,
+  );
+  const stored = new Map(result.rows.map((row) => [row.setting_key, row.setting_value]));
+  return {
+    maxResults: normalizeSearxngMaxResults(stored.get('searxng_max_results')),
+    categories: normalizeSearxngCategories(stored.get('searxng_categories')),
+  };
 }
 
 /**

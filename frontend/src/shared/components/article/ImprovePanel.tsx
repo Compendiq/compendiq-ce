@@ -150,7 +150,7 @@ export function ImprovePanel({
             <button
               type="button"
               onClick={onReplace}
-              disabled={!hasResult || isStreaming || !!replaceBlocked}
+              disabled={!hasResult || stream.status !== 'done' || !!replaceBlocked}
               title={replaceBlocked || copy.replaceTitle}
               className="flex items-center gap-1 rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/25 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
@@ -159,7 +159,7 @@ export function ImprovePanel({
             <button
               type="button"
               onClick={onInsertBelow}
-              disabled={!hasResult || isStreaming}
+              disabled={!hasResult || stream.status !== 'done'}
               title={copy.insertTitle}
               className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
@@ -222,7 +222,7 @@ export function ImprovePanel({
       {stream.status === 'error' && (
         <div className="flex flex-col gap-2">
           <p className="text-sm text-destructive" role="alert">{stream.error}</p>
-          <div className="flex gap-1">
+          {!hasResult && <div className="flex gap-1">
             <button
               type="button"
               onClick={retry}
@@ -237,7 +237,7 @@ export function ImprovePanel({
             >
               <X size={13} /> Close
             </button>
-          </div>
+          </div>}
         </div>
       )}
     </div>

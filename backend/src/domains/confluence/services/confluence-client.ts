@@ -99,7 +99,10 @@ export interface AuditRetention {
 interface RetryOptions {
   /** Maximum number of attempts (including the first). Default: 3 */
   maxAttempts?: number;
-  /** Base delay in milliseconds before the first retry. Default: 1000 */
+  /**
+   * Base delay in milliseconds before the first retry; every sleep stays within
+   * RETRY_DELAY_FLOOR_MS and RETRY_DELAY_CEILING_MS. Default: 1000
+   */
   baseDelay?: number;
 }
 
@@ -221,14 +224,15 @@ export class ConfluenceClient {
 
   /**
    * HTTP request with automatic retry on transient errors.
-   * Wraps `fetchOnce` with exponential backoff (max 3 attempts).
+   * Wraps `fetchOnce` with exponential backoff (max 3 attempts). A POST/PUT/DELETE
+   * is re-sent only after a 429 (#1776) — see `isTransientError`.
    */
   private async fetch<T>(path: string, options: {
     method?: string;
     body?: unknown;
     signal?: AbortSignal;
   } = {}): Promise<T> {
-    return withRetry(() => this.fetchOnce<T>(path, options), this.retryOpts);
+    return withRetry(() => this.fetchOnce<T>(path, options), this.retryOpts, options.method);
   }
 
   async getSpaces(start = 0, limit = 100): Promise<PaginatedResponse<ConfluenceSpace>> {
@@ -425,8 +429,11 @@ export class ConfluenceClient {
         `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?expand=version&limit=${limit}&start=${start}`,
       );
       allResults.push(...page.results);
-      if (page.results.length < limit) break;
-      start += limit;
+      // See getAllSpaces: follow `_links.next` rather than `size < limit` (#903).
+      // A server-clamped page is shorter than `limit` while more remain, and
+      // the next offset is what was returned, not what was asked for (#1777).
+      if (!page._links?.next || page.results.length === 0) break;
+      start += page.results.length;
     }
 
     return {
@@ -917,7 +924,8 @@ export class ConfluenceClient {
 
   /**
    * #722/#780: list a page's full version history (metadata only — cheap).
-   * Paginates automatically.
+   * Paginates by following `_links.next`, advancing by the count each page
+   * actually returned (#1777).
    *
    * Confluence DATA CENTER serves the version *list* only at the experimental
    * path `/rest/experimental/content/{id}/version`. On DC, the stable path
@@ -977,8 +985,9 @@ export class ConfluenceClient {
     let start = 0;
     const limit = 100;
     // Defensive cap: never loop forever on a misbehaving `_links.next` (e.g. a
-    // self-referential next link). 1000 pages × 100 = 100k versions is far
-    // beyond any real page's history.
+    // self-referential next link). The cap counts requests, not versions: 1000
+    // pages × 100 = 100k versions, and even a server clamping pages to 25 still
+    // covers 25k — far beyond any real page's history.
     const maxIterations = 1000;
     for (let i = 0; i < maxIterations; i++) {
       const res = await fetchPage(start, limit);
@@ -990,7 +999,9 @@ export class ConfluenceClient {
       // plus the iteration cap above guarantee termination even if a misbehaving
       // API keeps returning a `next` link.
       if (!res._links?.next || res.results.length === 0) break;
-      start += limit;
+      // Advance by what came back, not by `limit`: a page clamped below the
+      // requested 100 would otherwise skip the rest of its window (#1777).
+      start += res.results.length;
     }
     return out;
   }
@@ -1030,7 +1041,8 @@ export function formatCqlDateTime(d: Date): string {
 /**
  * Parses the HTTP `Retry-After` header value into milliseconds.
  * Supports both delay-seconds (e.g. "5") and HTTP-date formats.
- * Returns `undefined` if the header is missing or unparseable.
+ * Returns `undefined` if the header is missing or unparseable. The value is
+ * unbounded; `computeConfluenceRetryDelayMs` bounds the sleep it causes.
  */
 export function parseRetryAfter(header: string | string[] | undefined): number | undefined {
   if (header == null) return undefined;
@@ -1213,13 +1225,29 @@ export class AttachmentTooLargeError extends Error {
 const TRANSIENT_STATUS_CODES = new Set([429, 502, 503, 504]);
 
 /**
+ * Safe methods (RFC 9110 §9.2.1) this client sends: re-sending one cannot
+ * change upstream state. A 502/503/504 or a dropped connection can come back
+ * after Confluence already applied a POST/PUT/DELETE; re-sending it turns that
+ * unknown outcome into a misleading definite error — `400` "A page with this
+ * title already exists", `409` "Version must be incremented" — or repeats its
+ * side effect (#1776).
+ */
+const SAFE_METHODS = new Set(['GET', 'HEAD']);
+
+/**
  * Determines whether an error is transient and the request should be retried.
  * Returns true for:
- *  - ConfluenceError with status 429, 502, 503, or 504
- *  - Network-level errors (ECONNRESET, ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT)
+ *  - ConfluenceError with status 429, whatever the method: the request was
+ *    refused before processing, so re-sending it is safe
+ *  - ConfluenceError with status 502, 503, or 504, and network-level errors
+ *    (ECONNRESET, ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT), for GET/HEAD only; any
+ *    other method gets one attempt and its caller sees this original error
  * Returns false for client errors (400, 401, 403, 404) and other non-transient failures.
+ * `method` is the request's HTTP method; like `fetchOnce`, it defaults to GET.
  */
-export function isTransientError(err: unknown): boolean {
+export function isTransientError(err: unknown, method = 'GET'): boolean {
+  if (err instanceof ConfluenceError && err.statusCode === 429) return true;
+  if (!SAFE_METHODS.has(method)) return false;
   if (err instanceof ConfluenceError) {
     return TRANSIENT_STATUS_CODES.has(err.statusCode);
   }
@@ -1235,14 +1263,55 @@ export function isTransientError(err: unknown): boolean {
 }
 
 /**
+ * Floor on every `withRetry` sleep: one slot of the client's 60 RPM pacing
+ * (`acquireToken`) and the `baseDelay` default, so a `Retry-After: 0` cannot
+ * turn the retry ladder into a hot loop (#1778).
+ */
+export const RETRY_DELAY_FLOOR_MS = 1_000;
+
+/**
+ * Ceiling on every `withRetry` sleep, `Retry-After` included: the per-attempt
+ * request timeout (`AbortSignal.timeout(30_000)` in `fetchOnce`). The sleep runs
+ * outside that timeout; uncapped, a `Retry-After: 3600` parks the call for an
+ * hour. With the defaults a `fetch` call therefore spends at most 150 s in
+ * sleeps and requests: 2 sleeps × 30 s + 3 attempts × 30 s (#1778).
+ */
+export const RETRY_DELAY_CEILING_MS = 30_000;
+
+/** Spreads retries that hit the same failure across up to 500 ms. */
+const RETRY_JITTER_MS = 500;
+
+/**
+ * The sleep `withRetry` takes after failed attempt `attempt` (zero-based):
+ * `min(max(wanted, RETRY_DELAY_FLOOR_MS) + random(0..500)ms, RETRY_DELAY_CEILING_MS)`,
+ * where `wanted` is the server-specified `Retry-After` (`retryAfterMs`, from
+ * `parseRetryAfter`: delay-seconds or HTTP-date) when present, else
+ * `baseDelay * 2^attempt`. A backoff already within the bounds is unchanged.
+ */
+export function computeConfluenceRetryDelayMs(
+  attempt: number,
+  retryAfterMs: number | undefined,
+  baseDelay: number,
+): number {
+  const wanted = retryAfterMs ?? baseDelay * Math.pow(2, attempt);
+  const floored = Math.max(wanted, RETRY_DELAY_FLOOR_MS);
+  return Math.min(floored + Math.random() * RETRY_JITTER_MS, RETRY_DELAY_CEILING_MS);
+}
+
+/**
  * Retries an async operation with exponential backoff and jitter.
  *
- * Delay formula: `baseDelay * 2^attempt + random(0..500)ms`
- * For 429 responses with a Retry-After header, the server-specified delay is used instead.
+ * Delay formula (`computeConfluenceRetryDelayMs`): `baseDelay * 2^attempt + random(0..500)ms`;
+ * every sleep, Retry-After included, stays within RETRY_DELAY_FLOOR_MS (1 s) and
+ * RETRY_DELAY_CEILING_MS (30 s) (#1778).
+ * For 429 responses with a Retry-After header, the server-specified delay replaces `baseDelay * 2^attempt`, but jitter and bounds still apply.
+ * `method` is the HTTP method `fn` sends; it decides which errors are retried
+ * (see `isTransientError`).
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   opts?: RetryOptions,
+  method = 'GET',
 ): Promise<T> {
   const { maxAttempts = 3, baseDelay = 1000 } = opts ?? {};
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -1250,17 +1319,16 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       const isLastAttempt = attempt === maxAttempts - 1;
-      if (isLastAttempt || !isTransientError(err)) {
+      if (isLastAttempt || !isTransientError(err, method)) {
         throw err;
       }
 
-      // Use Retry-After header delay if the server provided one (429 responses)
-      let delay: number;
-      if (err instanceof ConfluenceError && err.retryAfterMs != null) {
-        delay = err.retryAfterMs;
-      } else {
-        delay = baseDelay * Math.pow(2, attempt) + Math.random() * 500;
-      }
+      // A 429's Retry-After when the server sent one, else the backoff.
+      const delay = computeConfluenceRetryDelayMs(
+        attempt,
+        err instanceof ConfluenceError ? err.retryAfterMs : undefined,
+        baseDelay,
+      );
 
       logger.warn(
         {

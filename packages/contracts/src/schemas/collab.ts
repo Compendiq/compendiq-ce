@@ -12,6 +12,21 @@ export const CollabConfigSchema = z.object({
 export type CollabConfig = z.infer<typeof CollabConfigSchema>;
 
 /**
+ * Reasons the gateway sends with WebSocket close 4403
+ * (docs/architecture/12-realtime-collaboration.md). Clients treat any other
+ * reason as `forbidden`.
+ */
+export const CollabRefusalReasonSchema = z.enum(['forbidden', 'readonly', 'rate_limited', 'flag_off']);
+export type CollabRefusalReason = z.infer<typeof CollabRefusalReasonSchema>;
+
+/**
+ * Fixed window of the per-user upgrade limiter (`collab:upgrade:<userId>`).
+ * A `rate_limited` join may retry once a full window has passed since the
+ * refusal.
+ */
+export const COLLAB_UPGRADE_WINDOW_SEC = 60;
+
+/**
  * Positive WebSocket write-admission acknowledgement. Page lifecycle state
  * alone never implies edit authority: read-only viewers receive the same
  * lifecycle revision.

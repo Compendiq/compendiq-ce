@@ -18,6 +18,8 @@ const { apiFetch, logoutApi, ApiError, RefreshUnavailableError } = await import(
 const { beginDraftEdit, persistDraft, readDraft } = await import('./editor-drafts');
 const { readRecentSearches, rememberRecentSearch } = await import('./recent-searches');
 
+const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' };
+
 /** Build a JWT whose payload carries the given `exp` (seconds since epoch). */
 function makeJwt(exp: number): string {
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
@@ -37,7 +39,7 @@ describe('apiFetch', () => {
   beforeEach(() => {
     storeState = {
       accessToken: 'valid-token',
-      user: { id: '1', username: 'test', role: 'user' },
+      user: USER,
       isAuthenticated: true,
       setAuth: mockSetAuth,
       clearAuth: mockClearAuth,
@@ -80,7 +82,7 @@ describe('apiFetch', () => {
       // Refresh call: success
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'new-token', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
       )
@@ -97,7 +99,7 @@ describe('apiFetch', () => {
     // Should have called refresh endpoint
     expect(fetchSpy).toHaveBeenCalledWith('/api/auth/refresh', expect.objectContaining({ method: 'POST' }));
     // Should have set auth with new token
-    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', USER);
   });
 
   it('clears auth and throws when refresh fails on 401', async () => {
@@ -122,7 +124,7 @@ describe('apiFetch', () => {
       .mockResolvedValueOnce(busyResponse('refresh_busy'))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'new-token', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
       )
@@ -138,7 +140,7 @@ describe('apiFetch', () => {
 
     await expect(result).resolves.toEqual({ data: 'ok' });
     expect(refreshCalls()).toBe(3);
-    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', USER);
     expect(mockClearAuth).not.toHaveBeenCalled();
   });
 
@@ -180,6 +182,79 @@ describe('apiFetch', () => {
     expect(mockClearAuth).not.toHaveBeenCalled();
   });
 
+  // #1881: the legacy-client marker. The backend refuses session issuance
+  // to a browser that does not carry it once enforcement is on, so every
+  // request — and the refresh in particular — must identify this bundle.
+  it('marks every request and the refresh it triggers as policy-aware', async () => {
+    storeState.accessToken = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ accessToken: 'new-token', user: USER }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+    await apiFetch('/test', { headers: { 'X-Custom': 'kept' } });
+
+    const [first, refresh, retry] = fetchSpy.mock.calls;
+    expect(first?.[0]).toBe('/api/test');
+    expect((first?.[1]?.headers as Headers).get('X-Compendiq-Client-Protocol')).toBe('1');
+    expect((first?.[1]?.headers as Headers).get('X-Custom')).toBe('kept');
+    expect(refresh?.[0]).toBe('/api/auth/refresh');
+    expect((refresh?.[1]?.headers as Headers).get('X-Compendiq-Client-Protocol')).toBe('1');
+    expect((retry?.[1]?.headers as Headers).get('X-Compendiq-Client-Protocol')).toBe('1');
+  });
+
+  // A policy-aware bundle only sees this through a header-stripping proxy,
+  // and an old tab sees it after a deployment turned enforcement on. Either
+  // way the cookie was never presented to the rotation, the session is not
+  // gone, and the fix is a reload — so it is reported as exactly that.
+  it('maps a 409 client_reload_required on refresh to the reload message, keeps auth and does not retry', async () => {
+    storeState.accessToken = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
+      String(input) === '/api/auth/refresh'
+        ? new Response(JSON.stringify({ error: 'client_reload_required' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        })
+        : new Response('Unauthorized', { status: 401 }),
+    );
+
+    const failure = apiFetch('/test');
+    await expect(failure).rejects.toBeInstanceOf(RefreshUnavailableError);
+    await expect(failure).rejects.toMatchObject({
+      retrySafe: false,
+      message: 'This page is out of date. Reload to continue.',
+    });
+    expect(mockClearAuth).not.toHaveBeenCalled();
+    expect(mockSetAuth).not.toHaveBeenCalled();
+
+    // Fenced like every other indeterminate outcome: the next caller on the
+    // same auth state does not replay the cookie.
+    await expect(apiFetch('/again')).rejects.toMatchObject({
+      message: 'This page is out of date. Reload to continue.',
+    });
+    expect(fetchSpy.mock.calls.filter(([url]) => url === '/api/auth/refresh')).toHaveLength(1);
+  });
+
+  it('still treats an ordinary 409 on refresh as a gone session', async () => {
+    storeState.accessToken = null;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
+      String(input) === '/api/auth/refresh'
+        ? new Response(JSON.stringify({ error: 'Conflict', message: 'nope' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        })
+        : new Response('Unauthorized', { status: 401 }),
+    );
+
+    await expect(apiFetch('/test')).rejects.toThrow('Session expired');
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
   it('deduplicates concurrent refresh calls on multiple 401s', async () => {
     storeState.accessToken = 'expired-token';
 
@@ -196,7 +271,7 @@ describe('apiFetch', () => {
         // Update store so retry calls pick up the new token
         storeState.accessToken = 'refreshed-token';
         return new Response(
-          JSON.stringify({ accessToken: 'refreshed-token', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'refreshed-token', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         );
       }
@@ -242,7 +317,7 @@ describe('apiFetch', () => {
           return new Response(
             JSON.stringify({
               accessToken: 'fresh-token',
-              user: { id: '1', username: 'test', role: 'user' },
+              user: USER,
             }),
             { headers: { 'Content-Type': 'application/json' } },
           );
@@ -263,7 +338,7 @@ describe('apiFetch', () => {
     expect(dataCalls).toHaveLength(1);
     expect((dataCalls[0][1]?.headers as Headers).get('Authorization')).toBe('Bearer fresh-token');
     // Auth store received the fresh token.
-    expect(mockSetAuth).toHaveBeenCalledWith('fresh-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockSetAuth).toHaveBeenCalledWith('fresh-token', USER);
   });
 
   it('attempts refresh on 401 when accessToken exists but expired', async () => {
@@ -273,7 +348,7 @@ describe('apiFetch', () => {
       .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ accessToken: 'refreshed', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'refreshed', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
       )
@@ -461,8 +536,12 @@ describe('logoutApi', () => {
     expect(fetchSpy).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({
       method: 'POST',
       credentials: 'include',
-      headers: { Authorization: 'Bearer my-token' },
+      headers: expect.any(Headers),
     }));
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer my-token');
+    // #1881: logout identifies the bundle like every other session route.
+    expect(headers.get('X-Compendiq-Client-Protocol')).toBe('1');
     expect(mockClearAuth).toHaveBeenCalled();
   });
 
@@ -535,8 +614,11 @@ describe('logoutApi', () => {
     expect(fetchSpy).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({
       method: 'POST',
       credentials: 'include',
-      headers: {},
+      headers: expect.any(Headers),
     }));
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Headers;
+    expect(headers.has('Authorization')).toBe(false);
+    expect(headers.get('X-Compendiq-Client-Protocol')).toBe('1');
     expect(mockClearAuth).toHaveBeenCalled();
   });
 });

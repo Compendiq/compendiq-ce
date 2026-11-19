@@ -1,5 +1,8 @@
-# Python >=3.11. Encoder upgrades require a controlled corpus refresh; see README.
-# Pillow can change resampling and output bytes even with identical source input.
+# Python >=3.11.5. `soupsieve` 4.0 requires it: older 3.11 patch releases have
+# broken possessive quantifiers in `re` (soupsieve 3.0 and 3.0.1 were yanked for
+# the same interpreter bug). Encoder upgrades require a controlled corpus
+# refresh; see README. Pillow can change resampling and output bytes even with
+# identical source input.
 requests==2.34.2
 Pillow==13.0.0
 markdownify==1.2.3
@@ -10,11 +13,15 @@ PyYAML==6.0.3
 # resolve: both of these decide what the page markdown says.
 #
 # `soupsieve` is the CSS-selector engine behind every `select()` in the builder
-# — the 24-entry DROP_SELECTORS sweep, the boxed-figure hoist and the figure
+# — the DROP_SELECTORS sweep, the boxed-figure hoist and the figure
 # collection — so a change in selector semantics silently changes which nodes
 # are dropped, on the one tool whose entire contract is byte reproduction.
+# 4.0 is also the first release outside all four published advisories
+# (GHSA-mmhr-3c5m-f64f, GHSA-6655-6qjp-jx7x, GHSA-7g44-g9rc-x53w,
+# GHSA-4j63-6c4x-wfg4); its selector cache must stay enabled (`NOCACHE` brings
+# back the vulnerable descendant algorithm).
 # `six` is markdownify's, and markdownify is the HTML -> Markdown converter.
-soupsieve==2.9.2
+soupsieve==4.0
 six==1.17.0
 
 # Deliberately NOT pinned: `certifi`, `urllib3`, `idna`, `charset-normalizer`

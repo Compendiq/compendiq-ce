@@ -2,6 +2,14 @@ import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Globe, CheckCircle2, XCircle, Loader2, Trash2, Plus, ExternalLink } from 'lucide-react';
+import {
+  MCP_DOCS_CACHE_TTL_DEFAULT,
+  MCP_DOCS_CACHE_TTL_MAX,
+  MCP_DOCS_CACHE_TTL_MIN,
+  MCP_DOCS_MAX_CONTENT_LENGTH_DEFAULT,
+  MCP_DOCS_MAX_CONTENT_LENGTH_MAX,
+  MCP_DOCS_MAX_CONTENT_LENGTH_MIN,
+} from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { Button } from '../../shared/components/Button';
 
@@ -35,8 +43,8 @@ export function McpDocsTab() {
     domainMode: 'blocklist',
     allowedDomains: ['*'],
     blockedDomains: [],
-    cacheTtl: 3600,
-    maxContentLength: 50000,
+    cacheTtl: MCP_DOCS_CACHE_TTL_DEFAULT,
+    maxContentLength: MCP_DOCS_MAX_CONTENT_LENGTH_DEFAULT,
   });
 
   const [newDomain, setNewDomain] = useState('');
@@ -230,33 +238,47 @@ export function McpDocsTab() {
             )}
           </div>
 
-          {/* Cache TTL */}
+          {/* Cache TTL + content ceiling — the backend sends both to the sidecar with every fetch (#1769) */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-1.5 block text-sm font-medium">Cache TTL (seconds)</label>
+              <label htmlFor="mcp-docs-cache-ttl" className="mb-1.5 block text-sm font-medium">Cache TTL (seconds)</label>
               <input
+                id="mcp-docs-cache-ttl"
                 type="number"
                 value={form.cacheTtl}
-                onChange={(e) => updateField('cacheTtl', parseInt(e.target.value, 10) || 3600)}
-                min={60}
-                max={86400}
+                onChange={(e) => updateField('cacheTtl', parseInt(e.target.value, 10) || MCP_DOCS_CACHE_TTL_DEFAULT)}
+                min={MCP_DOCS_CACHE_TTL_MIN}
+                max={MCP_DOCS_CACHE_TTL_MAX}
+                aria-describedby="mcp-docs-cache-ttl-help"
                 className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
                 data-testid="mcp-docs-cache-ttl"
               />
-              <p className="mt-1 text-xs text-muted-foreground">How long to cache fetched docs (60–86400)</p>
+              <p id="mcp-docs-cache-ttl-help" className="mt-1 text-xs text-muted-foreground">
+                How long a newly fetched document stays cached{' '}
+                <span className="whitespace-nowrap">({MCP_DOCS_CACHE_TTL_MIN}–{MCP_DOCS_CACHE_TTL_MAX})</span>.
+                Documents already cached keep the lifetime they were stored with.
+              </p>
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium">Max Content Length</label>
+              <label htmlFor="mcp-docs-max-length" className="mb-1.5 block text-sm font-medium">Max Content Length</label>
               <input
+                id="mcp-docs-max-length"
                 type="number"
                 value={form.maxContentLength}
-                onChange={(e) => updateField('maxContentLength', parseInt(e.target.value, 10) || 50000)}
-                min={1000}
-                max={500000}
+                onChange={(e) => updateField('maxContentLength', parseInt(e.target.value, 10) || MCP_DOCS_MAX_CONTENT_LENGTH_DEFAULT)}
+                min={MCP_DOCS_MAX_CONTENT_LENGTH_MIN}
+                max={MCP_DOCS_MAX_CONTENT_LENGTH_MAX}
+                aria-describedby="mcp-docs-max-length-help"
                 className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
                 data-testid="mcp-docs-max-length"
               />
-              <p className="mt-1 text-xs text-muted-foreground">Max characters per fetched document</p>
+              <p id="mcp-docs-max-length-help" className="mt-1 text-xs text-muted-foreground">
+                Upper limit on the characters taken from one fetched document{' '}
+                <span className="whitespace-nowrap">
+                  ({MCP_DOCS_MAX_CONTENT_LENGTH_MIN.toLocaleString('en-US')}–{MCP_DOCS_MAX_CONTENT_LENGTH_MAX.toLocaleString('en-US')})
+                </span>.
+                Web search uses up to 5,000 per source and attached URLs up to 10,000, never more than this limit.
+              </p>
             </div>
           </div>
         </>

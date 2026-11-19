@@ -351,16 +351,27 @@ describe('timeConcurrently', () => {
   });
 
   it('measures each task individually, not the wall clock of the batch', async () => {
-    const samples = await timeConcurrently(
-      [
-        async () => { await new Promise((r) => setTimeout(r, 60)); },
-        async () => { await new Promise((r) => setTimeout(r, 0)); },
-      ],
-      2,
-    );
-    const sorted = [...samples].sort((a, b) => a - b);
-    expect(sorted[0]).toBeLessThan(40);
-    expect(sorted[1]).toBeGreaterThanOrEqual(50);
+    // Deterministic clock: the two tasks run in the same batch, so a batch
+    // wall-clock would report ~60ms for BOTH. Per-task timing reports the
+    // exact simulated durations instead.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      const run = timeConcurrently(
+        [
+          async () => { await new Promise((r) => setTimeout(r, 60)); },
+          async () => { await new Promise((r) => setTimeout(r, 0)); },
+        ],
+        2,
+      );
+      await vi.advanceTimersByTimeAsync(60);
+      const samples = await run;
+      const sorted = [...samples].sort((a, b) => a - b);
+      expect(sorted).toHaveLength(2);
+      expect(sorted[0]).toBe(0);
+      expect(sorted[1]).toBe(60);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

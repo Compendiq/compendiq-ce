@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { LlmProvider, LlmProviderInput } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { LOCALITY_HELP_TEXT, declareLocality, localityToSubmit, onEndpointChange, type LocalityDeclaration } from '../../../shared/lib/article-ai-policy';
+import { LocalityChip } from '../../../shared/components/badges/AiPolicyChips';
+import { ProviderLocalityDeclaration } from './ProviderLocalityDeclaration';
 import { Button } from '../../../shared/components/Button';
 import { SearchableSelect } from '../../../shared/components/SearchableSelect';
 import {
@@ -34,7 +37,18 @@ interface Props {
 
 export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Props) {
   const [name, setName] = useState(initial?.name ?? '');
-  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? '');
+  const [baseUrl, setBaseUrlValue] = useState(initial?.baseUrl ?? '');
+  const [locality, setLocality] = useState<LocalityDeclaration>({
+    locality: initial?.locality ?? 'external', confirmedForEndpoint: initial?.baseUrl ?? '',
+  });
+  const [localityTouched, setLocalityTouched] = useState(false);
+  function setBaseUrl(value: string) {
+    if (value !== baseUrl) {
+      setLocality((state) => onEndpointChange(state, value));
+      setLocalityTouched(true);
+    }
+    setBaseUrlValue(value);
+  }
   const [apiKey, setApiKey] = useState('');
   const [authType, setAuthType] = useState<'bearer' | 'none'>(initial?.authType ?? 'bearer');
   const [verifySsl, setVerifySsl] = useState(initial?.verifySsl ?? true);
@@ -176,6 +190,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         verifySsl,
         defaultModel: defaultModel || null,
         ...(apiKey ? { apiKey } : {}),
+        ...(mode === 'create' || localityTouched ? { locality: localityToSubmit(locality, baseUrl) } : {}),
       };
       const saved =
         mode === 'create'
@@ -187,7 +202,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
               method: 'PATCH',
               body: JSON.stringify(body),
             });
-      toast.success('Saved');
+      toast.success(saved.locality === 'local' ? 'Saved — declared local' : saved.locality === 'external' ? 'Saved — External' : 'Saved — locality unknown');
       onSaved(saved);
       onClose();
     } catch (e) {
@@ -280,7 +295,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
               aria-describedby="provider-url-help"
             />
           </label>
-          <p id="provider-url-help" className="mt-1 text-[11px] text-muted-foreground">
+          <p id="provider-url-help" className="mt-1 text-xs text-muted-foreground">
             {activePreset.id === 'custom' ? (
               <>
                 For local servers (LM Studio, vLLM) in Docker, use{' '}
@@ -304,6 +319,20 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             )}
           </p>
         </div>
+        <fieldset className="space-y-2 text-sm" disabled={saving}>
+          <legend>Declared provider locality</legend>
+          {initial && <div>Saved: <LocalityChip locality={initial.locality ?? null} />
+            <ProviderLocalityDeclaration provider={initial} className="text-xs text-muted-foreground" />
+          </div>}
+          <label className="flex items-center gap-2"><input type="radio" name="provider-locality" className="h-4 w-4 shrink-0 accent-primary" checked={localityToSubmit(locality, baseUrl) === 'external'} onChange={() => {
+            setLocality(declareLocality(locality, 'external', baseUrl)); setLocalityTouched(true);
+          }} />External</label>
+          <label className="flex items-center gap-2"><input type="radio" name="provider-locality" className="h-4 w-4 shrink-0 accent-primary" checked={localityToSubmit(locality, baseUrl) === 'local'} onChange={() => {
+            setLocality(declareLocality(locality, 'local', baseUrl)); setLocalityTouched(true);
+          }} />Local / On-premise</label>
+          <p className="text-xs text-muted-foreground">{LOCALITY_HELP_TEXT}</p>
+          <p className="text-xs text-muted-foreground">Changing the endpoint clears the draft declaration. Choose Local again to reconfirm this exact endpoint; otherwise it saves External. Connection tests do not establish locality.</p>
+        </fieldset>
         <label className="block text-sm">
           API Key{' '}
           {initial?.hasApiKey && (
@@ -319,34 +348,37 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
           />
         </label>
         <div className="flex gap-4 text-sm">
-          <label>
+          <label className="inline-flex items-center gap-2">
             <input
               type="radio"
               name="provider-auth"
+              className="h-4 w-4 shrink-0 accent-primary"
               checked={authType === 'bearer'}
               disabled={testing}
               onChange={() => setAuthType('bearer')}
-            />{' '}
+            />
             Bearer
           </label>
-          <label>
+          <label className="inline-flex items-center gap-2">
             <input
               type="radio"
               name="provider-auth"
+              className="h-4 w-4 shrink-0 accent-primary"
               checked={authType === 'none'}
               disabled={testing}
               onChange={() => setAuthType('none')}
-            />{' '}
+            />
             None
           </label>
         </div>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
+            className="h-4 w-4 shrink-0 accent-primary"
             checked={verifySsl}
             disabled={testing}
             onChange={(e) => setVerifySsl(e.target.checked)}
-          />{' '}
+          />
           Verify TLS
         </label>
         <label className="block text-sm">
@@ -375,14 +407,14 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
                 ...listedModels.map((m) => ({ value: m, label: m })),
               ]}
             />
-            <p id="provider-listed-models-help" className="mt-1 text-[11px] text-muted-foreground">
+            <p id="provider-listed-models-help" className="mt-1 text-xs text-muted-foreground">
               Choosing one writes the default model. You can still type an id above if the host did
               not list it.
             </p>
           </div>
         ) : null}
         {presetId !== 'custom' ? (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Saving does not assign use cases. Assign Chat after saving — do not assign a chat-only
             host to Embedding, Rerank, or Image analysis.
           </p>

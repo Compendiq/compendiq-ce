@@ -17,10 +17,11 @@
  * (ADR-025 D8's placement, restated by ADR-027 `:4307-4311`). One consequence
  * worth stating because it is not a defect:
  *
- *  - **There is no per-image score** (`:4318`). A cross-modal cosine was the
- *    one measure of "which picture matched better"; a derived chunk was found
- *    by text, so the only rank in hand is the ROW's fused score. Ordering
- *    therefore uses that, then `part` — never a fabricated similarity.
+ *  - **There is no per-image score** (ADR-027 D12). A cross-modal cosine was
+ *    the one measure of "which picture matched better"; a derived chunk was
+ *    found by text, so the only rank in hand is the ROW's — its position in
+ *    the final result array, reranking and identifier pins included (#1716),
+ *    never its `score` and never a fabricated similarity.
  *
  * #1618 retired ADR-025's whole-set `imageHits` fallback together with the
  * image leg itself. The set it existed for — `image_embedding` assigned and
@@ -58,9 +59,9 @@
  * shown. That is image COUNT beating image BREADTH, the same head dilution
  * `#1106`'s best-chunk-only fusion bounds inside a leg. So selection proceeds
  * in ROUNDS: round 0 is every page's best image, ordered among themselves by
- * the carrying row's fused rank; round 1 is every page's second-best; and so
- * on. A page gets a second slot only once every page with a candidate has had
- * a first.
+ * the carrying row's position in the final result array; round 1 is every
+ * page's second-best; and so on. A page gets a second slot only once every
+ * page with a candidate has had a first.
  *
  * Under D11 that bound is mostly structural — fusion returns one row per page,
  * so a page usually offers exactly one derived candidate — but it stays,
@@ -135,8 +136,9 @@ function base64Length(rawBytes: number): number {
 export const RETRIEVED_IMAGES_BYTE_BUDGET = base64Length(MAX_IMAGE_BYTES);
 
 /**
- * The shape this module needs off a `SearchResult` — its page id, its fused
- * ordering value and the D9.4 provenance of the derived chunk it carries.
+ * The shape this module needs off a `SearchResult` — its page id and the D9.4
+ * provenance of the derived chunk it carries. The row's place in the array
+ * is its rank (#1716), so its `score` is not part of this shape.
  *
  * Structural rather than the imported `SearchResult`, because everything else
  * on that interface is about ranking and none of it belongs to this decision;
@@ -144,8 +146,6 @@ export const RETRIEVED_IMAGES_BYTE_BUDGET = base64Length(MAX_IMAGE_BYTES);
  */
 export interface RetrievedImagePage {
   pageId: number;
-  /** The row's fused rank; the only ordering quantity a derived image has. */
-  score?: number;
   derived?: DerivedProvenance;
 }
 
@@ -222,8 +222,9 @@ interface Candidate {
   source: AttachmentStoreSource;
   key: string;
   /**
-   * The carrying row's fused rank (D11) — the only ordering quantity a
-   * derived image has, since #1618 retired the leg's cross-modal cosine.
+   * The carrying row's index in the final `SearchResult` array, lower first
+   * (#1716): that order is the pipeline's verdict, reranking and identifier
+   * pins included, and a row's `score` no longer describes it.
    */
   rank: number;
 }
@@ -233,7 +234,7 @@ interface Candidate {
  * module docstring for why the obvious flat sort is wrong.
  *
  * `distinctDerivedImages` does the `(pageId, store, key)` dedup and the
- * fused-rank ordering ONCE, shared with the D12 citation append, so a picture
+ * final-order ordering ONCE, shared with the D12 citation append, so a picture
  * the model was shown and a picture the reader was cited cannot be chosen by
  * two different rules. It is the only producer since #1618 retired the leg.
  */
@@ -246,7 +247,7 @@ export function orderRetrievedImageCandidates(pages: RetrievedImagePage[]): Cand
       images = [];
       byPage.set(candidate.pageId, images);
       // Insertion order IS best-page-first: `distinctDerivedImages` is
-      // already sorted by the carrying row's fused rank.
+      // already sorted by the carrying row's array position.
       perPage.push({ pageId: candidate.pageId, images });
     }
     images.push(candidate);
@@ -257,7 +258,7 @@ export function orderRetrievedImageCandidates(pages: RetrievedImagePage[]): Cand
       pageId: image.pageId,
       source: image.derived.attachmentSource,
       key: image.derived.attachmentKey,
-      rank: image.score,
+      rank: image.position,
     });
   }
 
@@ -269,7 +270,7 @@ export function orderRetrievedImageCandidates(pages: RetrievedImagePage[]): Cand
       const image = p.images[round];
       if (image) thisRound.push(image);
     }
-    thisRound.sort((a, b) => b.rank - a.rank);
+    thisRound.sort((a, b) => a.rank - b.rank);
     ordered.push(...thisRound);
   }
   return ordered;

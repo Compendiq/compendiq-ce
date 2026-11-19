@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { SearchHybridQuerySchema, type PageSource } from '@compendiq/contracts';
+import { PageDateFilterSchema, SearchHybridQuerySchema, type AiPolicyFilter, type PageSource } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 // Use the request-scoped memoised wrapper so the search route and downstream
 // rag-service calls resolve the readable-space set once per request. See
@@ -41,14 +41,14 @@ import { toUserFacingEmbeddingError } from '../../domains/llm/services/embedding
  * `%` operator (`cp.title % $1`), which lets the planner use the GIN index
  * `idx_pages_title_trgm` instead of a Seq Scan (#928) — and `%` compares
  * against the GUC, not against this constant. So the retained
- * `similarity(...) > $4` predicate is exact only while the two agree.
+ * `similarity(...)` threshold predicate is exact only while the two agree.
  *
  * Making it configurable therefore means changing the GUC too, and the two
  * ways to do that both cost more than the knob is worth: `SET LOCAL` inside a
  * transaction turns a single pooled `query()` into a checked-out client per
  * search, and a session-level `SET` would leak the value to every other user
- * of that connection. Meanwhile `similarity() > $4` alone, with the `%` filter
- * removed, silently returns the Seq Scan the index exists to avoid.
+ * of that connection. Meanwhile the `similarity()` threshold alone, with the
+ * `%` filter removed, silently returns the Seq Scan the index exists to avoid.
  *
  * If a deployment genuinely needs a different threshold, the honest lever is
  * PostgreSQL's own: `ALTER DATABASE ... SET pg_trgm.similarity_threshold`,
@@ -65,8 +65,8 @@ const TRGM_SIMILARITY_THRESHOLD = 0.3;
  */
 const SearchQuerySchema = SearchHybridQuerySchema.extend({
   author: z.string().optional(),
-  dateFrom: z.string().optional(),
-  dateTo: z.string().optional(),
+  dateFrom: PageDateFilterSchema.optional(),
+  dateTo: PageDateFilterSchema.optional(),
   tags: z.string().optional(),
   sort: z.enum(['relevance', 'modified', 'title']).default('relevance'),
   page: z.coerce.number().int().positive().default(1),
@@ -142,7 +142,7 @@ async function generateSearchEmbedding(
     // file, so neither half can be added or dropped unnoticed — and dropping
     // the wrapper here while leaving the import behind is red, not green.
     const embeddings = await generateEmbedding(
-      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q),
+      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q), { kind: 'non_article', purpose: 'user_query' },
     );
     const embedding = embeddings[0];
     // `!embedding` alone would miss a zero-length inner vector ([[]]) — an
@@ -187,6 +187,7 @@ async function getSearchPageMetadata(
   pageIds: number[],
   searchSpaces: string[],
   userId: string,
+  aiPolicy?: AiPolicyFilter,
 ): Promise<Map<number, {
   source: PageSource;
   isFrozen: boolean;
@@ -194,6 +195,11 @@ async function getSearchPageMetadata(
   frozenVersion: number | null;
 }>> {
   if (pageIds.length === 0) return new Map();
+  // #283: the Library AI-policy filter narrows the authorized set here for
+  // the retrieval-backed modes, so the three modes agree on what the filter
+  // means — an exact match on the stored policy. It is applied AFTER the
+  // visibility predicate as a plain narrowing; it never widens access.
+  const policyClause = aiPolicy ? 'AND cp.ai_policy = $4' : '';
   const { rows } = await query<{
     id: number;
     source: PageSource;
@@ -203,8 +209,9 @@ async function getSearchPageMetadata(
     `SELECT cp.id, cp.source, cp.baseline_id, cp.frozen_version
        FROM pages cp
       WHERE cp.id = ANY($1::int[])
-        AND ${visiblePagesPredicate(2, 3)}`,
-    [pageIds, searchSpaces, userId],
+        AND ${visiblePagesPredicate(2, 3)}
+        ${policyClause}`,
+    aiPolicy ? [pageIds, searchSpaces, userId, aiPolicy] : [pageIds, searchSpaces, userId],
   );
   return new Map(rows.map((row) => [row.id, { source: row.source, ...freezeSummary(row) }]));
 }
@@ -230,7 +237,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
   // GET /api/search — Enhanced full-text search with facets, plus semantic/hybrid mode support.
   fastify.get('/search', async (request, reply) => {
     const params = SearchQuerySchema.parse(request.query);
-    const { q, mode, spaceKey, author, dateFrom, dateTo, tags, sort, page, limit, includeFacets } = params;
+    const { q, mode, spaceKey, author, dateFrom, dateTo, tags, sort, page, limit, includeFacets, aiPolicy } = params;
     const userId = request.userId;
 
     const searchSpaces = await getUserAccessibleSpaces(userId);
@@ -319,7 +326,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
       // the matching note on vectorSearch. Previously this call ignored
       // `spaceKey` entirely, so a user scoping semantic search to one space
       // silently got answers from the whole accessible corpus.
-      const vectorResults = await vectorSearch(userId, questionEmbedding, candidatePool, { spaceKey });
+      // #282: a page-search surface is read by a PERSON — the article AI
+      // policy does not filter authored text here (a `none` page's derived
+      // image text still never surfaces). Declared explicitly, because the
+      // default is the strictest AI reading.
+      const vectorResults = await vectorSearch(userId, questionEmbedding, candidatePool, { spaceKey, aiPolicy: { purpose: 'human' } });
 
       // Deduplicate by pageId (take best chunk per page). The wider fetch is
       // ranking headroom, not a bigger response: authorize the WHOLE deduped
@@ -332,7 +343,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         return true;
       });
 
-      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId, aiPolicy);
       // Pages removed since retrieval, or not readable by this caller, have no
       // canonical result to return.
       const returned = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit);
@@ -410,6 +421,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // #1351: spaceKey narrows both legs — see HybridSearchOptions.spaceKey.
         deduped = await hybridSearch(userId, q, candidatePool, cov, {
           spaceKey,
+          // #282: human-read surface — see the semantic branch's note.
+          aiPolicy: { purpose: 'human' },
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: (meta) => {
@@ -436,7 +449,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         throw err;
       }
 
-      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId, aiPolicy);
       const returned = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit);
 
       // Same row hybridSearch would write — max fused score (pinned NEW rows
@@ -520,27 +533,33 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // Exclude soft-deleted pages
     conditions.push('cp.deleted_at IS NULL');
 
-    // Optional filters
+    // Optional filters — built ONCE and bound to BOTH keyword legs, the
+    // full-text leg and the fuzzy-title leg of the one keyword statement
+    // (#1740, #1741). Each predicate takes the next `$n` after the shared
+    // $1..$3 and appends its value to `values`, the head of that statement's
+    // parameters, so a fuzzy-title hit satisfies every active filter exactly
+    // as a full-text hit does.
+    const filters: string[] = [];
     if (spaceKey) {
-      conditions.push(`cp.space_key = $${paramIndex}`);
+      filters.push(`cp.space_key = $${paramIndex}`);
       values.push(spaceKey);
       paramIndex++;
     }
 
     if (author) {
-      conditions.push(`cp.author = $${paramIndex}`);
+      filters.push(`cp.author = $${paramIndex}`);
       values.push(author);
       paramIndex++;
     }
 
     if (dateFrom) {
-      conditions.push(`cp.last_modified_at >= $${paramIndex}`);
+      filters.push(`cp.last_modified_at >= $${paramIndex}`);
       values.push(dateFrom);
       paramIndex++;
     }
 
     if (dateTo) {
-      conditions.push(`cp.last_modified_at <= $${paramIndex}`);
+      filters.push(`cp.last_modified_at <= $${paramIndex}`);
       values.push(dateTo);
       paramIndex++;
     }
@@ -548,37 +567,62 @@ export async function searchRoutes(fastify: FastifyInstance) {
     if (tags) {
       const tagArray = tags.split(',').map((t) => t.trim()).filter(Boolean);
       if (tagArray.length > 0) {
-        conditions.push(`cp.labels @> $${paramIndex}::text[]`);
+        filters.push(`cp.labels @> $${paramIndex}::text[]`);
         values.push(tagArray);
         paramIndex++;
       }
     }
 
-    const whereClause = conditions.join(' AND ');
+    // #283 Library AI-policy filter on the lexical path. An exact match on
+    // the stored policy, ANDed like every other filter. Deliberately absent
+    // from the base conditions: an UNFILTERED lexical search still finds a
+    // `none`/`local_only` page the caller may read — the policy restricts AI
+    // use, not reading or finding.
+    if (aiPolicy) {
+      filters.push(`cp.ai_policy = $${paramIndex}`);
+      values.push(aiPolicy);
+      paramIndex++;
+    }
+
+    const whereClause = [...conditions, ...filters].join(' AND ');
 
     // No JOIN needed — access control is handled via WHERE clause with RBAC space keys
 
-    // Determine sort order
+    // Determine sort order: ONE order over the deduplicated union of both legs
+    // (#1741), ending in the page id so consecutive LIMIT/OFFSET pages never
+    // share or skip a row. `modified` and `title` interleave the legs.
+    // `relevance` keeps their precedence, because ts_rank and trigram
+    // similarity are not comparable scales: full-text hits by ts_rank first
+    // (`fuzzy` FALSE sorts before TRUE), then fuzzy-only title hits by
+    // similarity.
     let orderClause: string;
     switch (sort) {
       case 'modified':
-        orderClause = 'cp.last_modified_at DESC NULLS LAST';
+        orderClause = 'hits.last_modified_at DESC NULLS LAST, hits.id';
         break;
       case 'title':
-        orderClause = 'cp.title ASC';
+        orderClause = 'hits.title, hits.id';
         break;
       case 'relevance':
       default:
-        orderClause = 'rank DESC';
+        orderClause = 'hits.fuzzy, hits.rank DESC, hits.id';
         break;
     }
 
-    // Run FTS data query (with COUNT(*) OVER() to eliminate separate count query),
-    // trigram query, and facet query in parallel since they are independent.
-    const limitParamIndex = paramIndex;
-    const offsetParamIndex = paramIndex + 1;
+    // One keyword statement (#1741): Path A (full text) and Path B (fuzzy
+    // title via pg_trgm) are unioned first, and Path B drops every page Path A
+    // already holds. Only the union is ordered, offset and limited, so a page
+    // never exceeds `limit` and a page id lands on exactly one page.
+    // COUNT(*) OVER() counts the deduplicated union, which saves a separate
+    // count query. The legs carry only the keys the order needs; the page's
+    // rows then join back to `pages` for their display columns and snippet, so
+    // no body is buffered for the whole union and ts_headline runs for at most
+    // `limit` rows however deep the page. Runs in parallel with the facets.
+    const thresholdParamIndex = paramIndex;
+    const limitParamIndex = paramIndex + 1;
+    const offsetParamIndex = paramIndex + 2;
 
-    const dataQueryPromise = query<{
+    const runKeywordQuery = (pageLimit: number, pageOffset: number) => query<{
       id: number;
       confluence_id: string;
       source: PageSource;
@@ -597,60 +641,59 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon_color: string | null;
       icon_filled: boolean | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
+      `WITH fts AS (
+         SELECT cp.id, cp.title, cp.last_modified_at,
+                ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
+                FALSE AS fuzzy
+         FROM pages cp
+         WHERE ${whereClause}
+       ),
+       trgm AS (
+         SELECT cp.id, cp.title, cp.last_modified_at,
+                similarity(cp.title, $1) AS rank,
+                TRUE AS fuzzy
+         FROM pages cp
+         -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
+         -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
+         -- Scan. The % operator uses pg_trgm's default 0.3 threshold, which matches
+         -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() threshold check
+         -- stays exact without changing which rows match. The keyword filters are
+         -- extra conjuncts and the anti-join against fts sits above the index
+         -- scan: they narrow the % candidates, never replace the operator.
+         WHERE cp.title % $1
+           AND similarity(cp.title, $1) > $${thresholdParamIndex}
+           AND cp.title IS NOT NULL
+           AND ${visiblePagesPredicate(2, 3)}
+           AND cp.deleted_at IS NULL
+           ${filters.map((filter) => `AND ${filter}`).join(' ')}
+           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = cp.id)
+       ),
+       paged AS (
+         SELECT hits.*, COUNT(*) OVER() AS total_count
+         FROM (SELECT * FROM fts UNION ALL SELECT * FROM trgm) hits
+         ORDER BY ${orderClause}
+         LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
+       )
+       SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
-              cp.baseline_id, cp.frozen_version,
-              ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
-              ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
-                          'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
-              COUNT(*) OVER() AS total_count
-       FROM pages cp
-       WHERE ${whereClause}
-       ORDER BY ${orderClause}
-       LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
-      [...values, limit, offset],
+              cp.baseline_id, cp.frozen_version, hits.rank,
+              CASE WHEN hits.fuzzy THEN substring(cp.body_text, 1, 300)
+                   ELSE ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
+                                    'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>')
+              END AS snippet,
+              hits.total_count
+       FROM paged hits
+       JOIN pages cp ON cp.id = hits.id
+       ORDER BY ${orderClause}`,
+      [...values, TRGM_SIMILARITY_THRESHOLD, pageLimit, pageOffset],
     );
-
-    // Path B: Fuzzy title matching via pg_trgm (separate from FTS)
-    // Merges additional title-match results that the FTS query may have missed.
-    const trgmQueryPromise = query<{
-      id: number;
-      confluence_id: string;
-      source: PageSource;
-      baseline_id: string | null;
-      frozen_version: number | null;
-      title: string;
-      space_key: string;
-      body_text: string;
-      rank: number;
-      icon_kind: string | null;
-      icon_value: string | null;
-      icon_color: string | null;
-      icon_filled: boolean | null;
-    }>(
-      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key,
-              cp.baseline_id, cp.frozen_version,
-              substring(cp.body_text, 1, 300) AS body_text,
-              similarity(cp.title, $1) AS rank,
-              cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
-       FROM pages cp
-       -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
-       -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
-       -- Scan. The % operator uses pg_trgm's default 0.3 threshold, which matches
-       -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() > $4 keeps the
-       -- threshold check exact without changing which rows match.
-       WHERE cp.title % $1
-         AND similarity(cp.title, $1) > $4
-         AND cp.title IS NOT NULL
-         AND ${visiblePagesPredicate(2, 3)}
-         AND cp.deleted_at IS NULL
-       ORDER BY rank DESC
-       LIMIT $5`,
-      [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit],
-    );
+    const dataQueryPromise = runKeywordQuery(limit, offset);
 
     // Facet aggregation — opt-in via includeFacets (default: true).
     // Skipping facets avoids 3 UNION ALL subqueries when the caller doesn't need them.
+    // #283: facets describe the FILTERED set when an AI-policy filter is
+    // active, so a count never promises rows the list below will not show.
+    const facetPolicyClause = aiPolicy ? 'AND cp.ai_policy = $4' : '';
     const facetQueryPromise = includeFacets
       ? query<{ facet: string; value: string; count: string }>(
           `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
@@ -659,6 +702,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.space_key IS NOT NULL
+             ${facetPolicyClause}
            GROUP BY cp.space_key
            UNION ALL
            SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
@@ -667,6 +711,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.author IS NOT NULL
+             ${facetPolicyClause}
            GROUP BY cp.author
            UNION ALL
            SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
@@ -675,23 +720,32 @@ export async function searchRoutes(fastify: FastifyInstance) {
            WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
+             ${facetPolicyClause}
            GROUP BY tag`,
-          [q, searchSpaces, userId],
+          aiPolicy ? [q, searchSpaces, userId, aiPolicy] : [q, searchSpaces, userId],
         )
       : Promise.resolve({ rows: [] as Array<{ facet: string; value: string; count: string }> });
 
-    // Execute all three queries in parallel
-    const [dataResult, trgmResult, facetResult] = await Promise.all([
+    // Execute both queries in parallel
+    const [dataResult, facetResult] = await Promise.all([
       dataQueryPromise,
-      trgmQueryPromise,
       facetQueryPromise,
     ]);
 
-    // Extract total from window function (available on every row, take from first)
-    const total = dataResult.rows.length > 0 ? parseInt(dataResult.rows[0]!.total_count, 10) : 0;
+    // `total` is the size of the deduplicated union: COUNT(*) OVER() carries it
+    // on every returned row. A page past the last returns no row to carry it,
+    // so it re-reads the count from the union's first row and stays empty.
+    let totalRow = dataResult.rows[0];
+    if (!totalRow && offset > 0) {
+      totalRow = (await runKeywordQuery(1, 0)).rows[0];
+    }
+    const total = totalRow ? parseInt(totalRow.total_count, 10) : 0;
+    const totalPages = Math.ceil(total / limit);
 
-    // Merge: start with FTS results (higher weight), add trgm-only hits
-    const ftsItems = dataResult.rows.map((row) => ({
+    // Every row maps to one item: the statement already deduplicated and paged
+    // the union, and each page row reads author, lastModifiedAt and labels from
+    // `pages` whichever leg found it.
+    const items = dataResult.rows.map((row) => ({
       id: row.id,
       confluenceId: row.confluence_id,
       source: row.source,
@@ -706,38 +760,13 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
     }));
 
-    const ftsIds = new Set(ftsItems.map((r) => r.id));
-    for (const trgmRow of trgmResult.rows) {
-      if (!ftsIds.has(trgmRow.id)) {
-        ftsItems.push({
-          id: trgmRow.id,
-          confluenceId: trgmRow.confluence_id,
-          source: trgmRow.source,
-          ...freezeSummary(trgmRow),
-          title: trgmRow.title,
-          spaceKey: trgmRow.space_key,
-          author: null,
-          lastModifiedAt: null,
-          labels: [],
-          rank: trgmRow.rank,
-          snippet: trgmRow.body_text,
-          icon: toPageIcon(trgmRow.icon_kind, trgmRow.icon_value, trgmRow.icon_color, trgmRow.icon_filled),
-        });
-      }
-    }
-
-    // After merging trgm results, the actual item count may exceed the FTS-only
-    // total. Adjust so that `total` is never less than the items returned.
-    const adjustedTotal = Math.max(total, ftsItems.length);
-    const totalPages = Math.ceil(adjustedTotal / limit);
-
-    const maxFtsScore = ftsItems.length > 0 ? Math.max(...ftsItems.map((r) => r.rank)) : null;
+    const maxScore = items.length > 0 ? Math.max(...items.map((r) => r.rank)) : null;
     // A semantic/hybrid request downgraded here for zero coverage is the WORST
     // degradation state — during a re-embed window every hybrid search lands
     // on this line. Carry the measured signal onto the row (both fields are
     // null for a genuine keyword-mode request, whose probe never ran) or the
     // outage records as healthy user-chosen keyword searches.
-    recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword', {
+    recordSearchAnalytics(userId, q, items.length, maxScore, 'keyword', {
       degradedReason,
       embeddingCoverage,
       // #1284 — page search, no confidence basis computed. See the semantic
@@ -768,8 +797,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }
 
     return {
-      items: ftsItems,
-      total: adjustedTotal,
+      items,
+      total,
       page,
       limit,
       totalPages,

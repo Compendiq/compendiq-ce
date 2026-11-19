@@ -84,6 +84,16 @@ describe('BackupRunSchema', () => {
     expect(BackupRunSchema.parse({ ...run, jobId: null }).jobId).toBeNull();
     expect(() => BackupRunSchema.parse(run)).toThrow();
   });
+
+  it('carries a nullable prune warning and defaults an absent one to null', () => {
+    const base = { ...run, jobId: null };
+    expect(BackupRunSchema.parse({ ...base, warning: 'DeleteObjects failed (403)' }).warning).toBe(
+      'DeleteObjects failed (403)',
+    );
+    expect(BackupRunSchema.parse({ ...base, warning: null }).warning).toBeNull();
+    expect(BackupRunSchema.parse(base).warning).toBeNull();
+    expect(BackupRunSchema.safeParse({ ...base, warning: 3 }).success).toBe(false);
+  });
 });
 
 describe('BackupStatusResponseSchema', () => {

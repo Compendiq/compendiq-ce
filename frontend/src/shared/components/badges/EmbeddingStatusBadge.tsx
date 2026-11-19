@@ -44,6 +44,8 @@ function getStatusConfig(
   embeddingError?: string | null,
 ): StatusConfig {
   switch (status) {
+    case 'policy_blocked':
+      return { label: 'Indexing: policy blocked', title: 'Article policy or provider locality blocks indexing; keyword search remains available.', badgeClass: '', icon: CircleDashed, animate: false };
     case 'not_embedded':
       return {
         label: 'Not indexed',

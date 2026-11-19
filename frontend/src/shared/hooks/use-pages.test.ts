@@ -592,3 +592,28 @@ describe('onboarding milestone: create or edit a page (#1402)', () => {
     expect(settingsPuts()).toEqual([]);
   });
 });
+
+/**
+ * #1746: the version a successful update answers becomes the page editor's
+ * next optimistic-concurrency base, so a reply that carries no usable version
+ * must fail the save instead of resolving as if the editor knew what it wrote.
+ */
+describe('useUpdatePage response contract (#1746)', () => {
+  it.each([
+    ['a reply without a version', { id: 42, title: 'Edited', source: 'standalone' }],
+    ['a non-JSON reply (apiFetch resolves undefined)', undefined],
+  ])('fails the save on %s', async (_case, reply) => {
+    apiFetchMock.mockResolvedValue(reply);
+    const { wrapper } = createQueryClientAndWrapper();
+    const { result } = renderHook(() => useUpdatePage(), { wrapper });
+
+    act(() => {
+      result.current.mutate({ id: '42', title: 'Edited', bodyHtml: '<p>y</p>', version: 1 });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe(
+      'The server did not confirm which version was saved. Reload the page before saving again.',
+    );
+  });
+});

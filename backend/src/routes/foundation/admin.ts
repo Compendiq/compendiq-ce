@@ -14,15 +14,20 @@ import { listErrors, resolveError, getErrorSummary } from '../../core/services/e
 import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
 import {
+  AI_POLICY_RESERVED_LABEL,
   UpdateAdminSettingsSchema,
   FtsLanguageEnum,
   FTS_LANGUAGES,
+  isReservedAiPolicyLabel,
   type RagConfidenceCalibrationWrite,
   type UpdateAdminSettingsResult,
 } from '@compendiq/contracts';
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
+  getWebhookDeliveriesRetentionDays,
+  getJobHistoryRetentionDays,
+  getNotificationsReadRetentionDays,
   getWorkerBatchSize,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
@@ -71,7 +76,7 @@ import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRu
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { getSmtpConfig, updateSmtpConfig, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
+import { getSmtpConfig, updateSmtpConfig, reloadSmtpConfigFromDb, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
 import { publish } from '../../core/services/redis-cache-bus.js';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 
@@ -113,6 +118,25 @@ const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRat
  * in-flight page write. Exported for the test that pins the pairing.
  */
 export const FTS_REBUILD_LOCK_TIMEOUT_MS = 30_000;
+
+/**
+ * #1881 (design §2.5, gap G1): the global rename/delete rewrites `labels`
+ * with `array_replace` / `array_remove` and never consults the article AI
+ * policy primitive, so renaming `foo → no-ai` would store a reserved label on
+ * rows whose `ai_policy` stays `all`, and deleting `no-ai` would strip the
+ * canonical slot of a stored restriction. Both are refused before any lock or
+ * write, in both switch states; policy-bearing label changes go through the
+ * per-page policy endpoints, which check authority and revisions. Sent as an
+ * explicit reply so the error handler's `safeErrorName` cannot rewrite the
+ * machine-readable code.
+ */
+function reservedAiPolicyLabelRefusal(): { error: string; message: string } {
+  return {
+    error: AI_POLICY_RESERVED_LABEL,
+    message:
+      'This label sets an article AI policy and cannot be renamed or removed globally. Change the policy of the affected articles instead.',
+  };
+}
 
 /**
  * Global label changes are one authored mutation, not a partial bulk operation.
@@ -369,8 +393,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // PUT /api/admin/labels/rename - rename a label across all pages
-  fastify.put('/admin/labels/rename', ADMIN_RATE_LIMIT, async (request) => {
+  fastify.put('/admin/labels/rename', ADMIN_RATE_LIMIT, async (request, reply) => {
     const { oldName, newName } = LabelRenameSchema.parse(request.body);
+    if (isReservedAiPolicyLabel(oldName) || isReservedAiPolicyLabel(newName)) {
+      return reply.code(409).send(reservedAiPolicyLabelRefusal());
+    }
 
     const affectedPages = await updateLabelAcrossPages(oldName, newName);
 
@@ -390,8 +417,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // DELETE /api/admin/labels/:name - remove a label from all pages
-  fastify.delete('/admin/labels/:name', ADMIN_RATE_LIMIT, async (request) => {
+  fastify.delete('/admin/labels/:name', ADMIN_RATE_LIMIT, async (request, reply) => {
     const { name } = LabelNameParamSchema.parse(request.params);
+    if (isReservedAiPolicyLabel(name)) {
+      return reply.code(409).send(reservedAiPolicyLabelRefusal());
+    }
 
     const affectedPages = await updateLabelAcrossPages(name, null);
 
@@ -423,6 +453,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimits,
       llmMaxConcurrentStreamsPerUser,
       adminAccessDeniedRetentionDays,
+      webhookDeliveriesRetentionDays,
+      jobHistoryRetentionDays,
+      notificationsReadRetentionDays,
       registrationMode,
       ftsLanguage,
       ragFetchWidth,
@@ -448,6 +481,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getRateLimits(),
       getStreamCap(),
       getAdminAccessDeniedRetentionDays(),
+      getWebhookDeliveriesRetentionDays(),
+      getJobHistoryRetentionDays(),
+      getNotificationsReadRetentionDays(),
       getRegistrationMode(),
       // #1114 — read the keyword-index language through its own reader for
       // the same reason as the nine below: `getFtsLanguage` DISCARDS a value
@@ -567,6 +603,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // (default 90, [7, 3650]). Resolved via getter so the env fallback
       // + hard default cascade stay in one place.
       adminAccessDeniedRetentionDays,
+      // #1797 — retention for webhook_deliveries attempt rows (default 90, [7, 3650]).
+      webhookDeliveriesRetentionDays,
+      // #1760 — retention for job_history rows and READ notifications (default 90, [7, 3650]).
+      jobHistoryRetentionDays,
+      notificationsReadRetentionDays,
       // AI Safety
       aiGuardrailNoFabrication: guardrails.noFabricationInstruction,
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
@@ -757,6 +798,30 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({
         key: 'admin_access_denied_retention_days',
         value: String(body.adminAccessDeniedRetentionDays),
+      });
+    }
+
+    // #1797 — retention (days) for webhook_deliveries attempt rows.
+    // Zod already enforced the [7, 3650] integer range at the boundary.
+    if (body.webhookDeliveriesRetentionDays !== undefined) {
+      updates.push({
+        key: 'webhook_deliveries_retention_days',
+        value: String(body.webhookDeliveriesRetentionDays),
+      });
+    }
+
+    // #1760 — retention (days) for job_history rows and READ notifications.
+    // Zod already enforced the [7, 3650] integer range at the boundary.
+    if (body.jobHistoryRetentionDays !== undefined) {
+      updates.push({
+        key: 'job_history_retention_days',
+        value: String(body.jobHistoryRetentionDays),
+      });
+    }
+    if (body.notificationsReadRetentionDays !== undefined) {
+      updates.push({
+        key: 'notifications_read_retention_days',
+        value: String(body.notificationsReadRetentionDays),
       });
     }
 
@@ -1240,9 +1305,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   fastify.put('/admin/smtp', async (request) => {
     // #743 — one shared guard: strip the masked-password sentinel round-tripped
-    // by the UI before BOTH the live-transport update and the DB persist below.
+    // by the UI before BOTH the DB persist and the live-transport update below.
+    // #1761 — persist first (one atomic statement), apply to the live transport
+    // only after it succeeds.
     const body = stripMaskedSmtpPass(SmtpUpdateSchema.parse(request.body));
-    updateSmtpConfig(body);
 
     // Persist to admin_settings table
     const entries: Array<{ key: string; value: string }> = [];
@@ -1273,7 +1339,30 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
     }
 
+    // Apply to the live transport only after the rows are committed, so a failed
+    // save (or a failed encryption above) changes neither the database nor the
+    // live configuration (#1761).
+    updateSmtpConfig(body);
+
+    // #1757 — re-read the rows so this replica's live config is the same
+    // function of the database as every other replica's. Then tell the other
+    // replicas. When the re-read fails, apply the saved body again: an older
+    // reload that was in flight may have put the pre-save rows back over the
+    // local apply above, and this replica must keep serving what it saved.
+    // An empty patch wrote nothing, so there is nothing to reload or announce.
+    const rowsWritten = entries.length > 0;
+    if (rowsWritten && !(await reloadSmtpConfigFromDb('writer'))) {
+      updateSmtpConfig(body);
+    }
+
     await logAuditEvent(request.userId, 'ADMIN_ACTION', 'admin_settings', undefined, { action: 'update_smtp_settings' }, request);
+
+    // Never awaited: during a Redis outage `publish` waits in the client's
+    // offline queue, and the response must not. The payload is a bare reload
+    // signal; peers re-read the rows (ADR-024), so no setting travels on it.
+    if (rowsWritten) {
+      void publish('smtp:config:changed', {});
+    }
     return { message: 'SMTP settings updated' };
   });
 

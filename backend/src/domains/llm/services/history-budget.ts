@@ -19,6 +19,7 @@ export interface ReplaySelection {
   /** True when at least one EXCHANGE was left out for budget. Refused turns and
    *  orphan questions are never replay material and do not count. */
   truncated: boolean;
+  selected: ReplayableMessage[];
 }
 
 const strip = ({ role, content }: ChatMessage): ChatMessage => ({ role, content });
@@ -47,10 +48,10 @@ export function selectReplayableHistory(
     if (m.role === 'assistant') {
       const prev = live[i - 1];
       if (prev && prev.role === 'user') {
-        exchangesNewestFirst.push([strip(prev), strip(m)]);
+        exchangesNewestFirst.push([prev, m]);
         i -= 2;
       } else {
-        exchangesNewestFirst.push([strip(m)]);
+        exchangesNewestFirst.push([m]);
         i -= 1;
       }
     } else {
@@ -71,5 +72,6 @@ export function selectReplayableHistory(
     kept.push(exchange);
   }
 
-  return { replay: kept.reverse().flat(), truncated };
+  const selected = kept.reverse().flat();
+  return { replay: selected.map(strip), truncated, selected };
 }

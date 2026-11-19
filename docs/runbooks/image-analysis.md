@@ -151,7 +151,8 @@ is walked. It is raised by:
 | An image is pasted, or imported from an external URL | `writeAttachmentCache` |
 | A draw.io diagram is saved on a local page | `putLocalAttachment` |
 | A page is relocated between Confluence and local | both directions, unconditionally — the move rewrites every `<img src>` |
-| A page's cached attachments are cleared (a new version, an unsync) | `cleanPageAttachments` — this re-queues the page so the next cycle **re-reads** it; it does not shrink the corpus (see below) |
+| A newer upstream version arrives for a synced page | `pruneVersionJumpAttachmentCache` (#1773) — removes only the cached files the incoming body references or no local content names (images a draft still uses stay), then re-queues the page exactly as `cleanPageAttachments` does |
+| A page's cached attachments are cleared (an unsync, and the paths that remove a page) | `cleanPageAttachments` — this re-queues the page so the next cycle **re-reads** it; it does not shrink the corpus (see below) |
 | **Re-analyze all** | the Embeddings-tab action, and the model-change rebuild in §7 |
 
 Every one of those writers goes through **one** writer module,
@@ -438,9 +439,10 @@ beside the knob says so: Settings is the only place this fact is ever stated.
 ### Which pictures, and how many
 
 Selection is **round-robin across pages**: every page contributes its best
-image before any page contributes a second, ordered within each round by the
-row's own rank. A page carrying three near-identical screenshots therefore
-cannot take both slots at the default cap and hide the second page.
+image before any page contributes a second, ordered within each round by where
+the picture's row sits in the answer's final result order (reranking and
+identifier pins included). A page carrying three near-identical screenshots
+therefore cannot take both slots at the default cap and hide the second page.
 
 A picture is attached **once**, however many pages carry it. Analyses are per
 page, so one diagram reused across five pages is five candidates with
@@ -460,8 +462,8 @@ it). Above a cap of 4 the model **can be** shown a picture the reader gets no
 chip for — ADR-025 D8b's wording, and the accurate one: it takes more than four
 usable candidates to reach, so a cap of 8 over a corpus that offers two diverges
 from nothing. It can also happen below 4, because the source list is a flat
-best-first sort across pages while the attachments are picked round-robin, so a
-round-robin slot can land on a page the flat sort has already filled past. The
+list in final result order while the attachments are picked round-robin, so a
+round-robin slot can land on a page the flat list has already filled past. The
 page is still cited either way — what is missing is the chip for that particular
 picture. At the default cap of 2 it cannot happen. If the reader seeing every
 attached picture matters more to you than breadth, keep the cap at 4 or below.
@@ -644,3 +646,36 @@ SELECT count(*) FROM page_embeddings
 `status = 'analyzed'` with no derived chunk means the page is waiting on the
 text embedder (`pagesAwaitingEmbed` on the card); `pending` with a payload means
 the next sweep will flip it `reused`; `failed` names its own reason.
+
+---
+
+## 9. Article AI policy (SPEC-WORK-001)
+
+Every row the analyze step is about to send is first **admitted** against the
+article's `pages.ai_policy` and the RETAINED provider — the one the call would
+actually go to — under the same advisory lock the policy write takes
+(`admitPageForProvider` in `ai-policy-admission.ts`). A refused row is written
+`status = 'policy_blocked'` with `ai_policy_block_reason` set, its payload
+cleared, no attempt charged and no call spent. Blocked is **neither** `processed`
+nor `failed`: the batch result carries a separate `policyBlocked` count (only
+when non-zero), the card's row counts carry `policyBlocked`, and readiness
+treats the row as a verdict, not as pending work.
+
+| `ai_policy_block_reason` | Meaning | How it lifts |
+|---|---|---|
+| `policy_none` | The article is `none`: no AI processing at all | Only a policy write (`updatePageAiPolicies`) — nothing re-queues it |
+| `provider_not_local` | The article is `local_only` and the retained provider is not declared local at its CURRENT configuration revision | Re-checked every batch: the sweep returns such rows to `pending` once the provider is declared local (Settings → AI Models), no policy write needed |
+
+**Policy set to `none`** purges every derived artefact in the same transaction
+as the policy write (`purgeDerivedAiState`): vectors, the averaged embeddings,
+summary, quality scores and image-analysis payloads. The body, attachments and
+versions are untouched. **Relaxing** (`none → local_only/all`,
+`local_only → all`) and tightening `all → local_only` clear the block, flip each
+stage back to its queued state and raise the dirty flags; nothing is generated
+until the next pass admits the page again.
+
+```sql
+-- What is parked, and why?
+SELECT status, ai_policy_block_reason FROM page_image_analyses WHERE page_id = <id>;
+SELECT ai_policy, ai_policy_revision, ai_policy_block_reason FROM pages WHERE id = <id>;
+```

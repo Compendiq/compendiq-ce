@@ -64,6 +64,11 @@ export const PageWriteRecoveryStateSchema = z.object({
     deploymentIdentity: RuntimeIdentitySchema,
     startedAt: z.string().datetime(),
     quiescedAt: z.string().datetime().nullable(),
+    // Set only when a schema upgrade closed this epoch's write gate without an
+    // owner acknowledgment (migration 151b, issue #2063). Such an epoch can
+    // never be `owner_ack`-fenced; started intents need a termination-verified
+    // fence before recovery.
+    upgradeRetiredAt: z.string().datetime().nullable(),
     acknowledgmentId: z.string().uuid().nullable(),
     fencedAt: z.string().datetime().nullable(),
     fenceReason: z.string().max(1000).nullable(),

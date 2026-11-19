@@ -122,6 +122,7 @@ export function EditorBlockMenu({
   useEffect(() => () => { abort(); }, [abort]);
 
   const openAi = useCallback(() => {
+    if (stream.unavailableReason) { toast.info(stream.unavailableReason); return; }
     stream.reset();
     setAiOpen(true);
   }, [stream]);
@@ -350,7 +351,7 @@ export function EditorBlockMenu({
 
           {textActions && live.dropsMacros && (
             <p className="px-2.5 py-1 text-[11px] text-muted-foreground">
-              Improve is unavailable here: a rewrite would drop this block&rsquo;s inline macros.
+              Improve is unavailable here: a rewrite would drop this block&rsquo;s inline macros or emojis.
             </p>
           )}
 
@@ -382,6 +383,7 @@ export function EditorBlockMenu({
         />
       )}
 
+      {stream.unavailableReason && <p role="status" className="px-2.5 py-2 text-xs text-muted-foreground">{stream.unavailableReason}</p>}
       {/* Clean Footer */}
       {!aiOpen && (
         <div className="mt-1 px-2.5 py-1.5 border-t border-border/60 text-[11px] text-muted-foreground flex items-center justify-between rounded-b-xl">

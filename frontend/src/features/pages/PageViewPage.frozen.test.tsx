@@ -16,6 +16,7 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { toast } from 'sonner';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
+import { trashConfirmCopy } from '../../shared/lib/trash-copy';
 
 vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() },
@@ -138,12 +139,9 @@ describe('frozen article write guards', () => {
     renderPage();
 
     await screen.findByTestId('article-frozen-status');
-    // Two affordances, both withheld. `ArticleViewer` injects its overlay
-    // button only when the page supplies a callback, and the diagram node
-    // view offers Edit only while its editor is editable — read mode's
-    // never is. `DrawioEditor` has no read-only form, so neither may open
-    // one: the rendered image is the frozen view.
-    await screen.findByTestId('drawio-diagram-node');
+    // Read mode renders the frozen image, without offering the write-only
+    // DrawioEditor. Assert the visible content, not an editor node-view detail.
+    expect(await screen.findByRole('img', { name: 'flow' })).toBeVisible();
     await waitFor(() => {
       expect(document.querySelector('[data-testid="drawio-edit-btn"]')).toBeNull();
     });
@@ -151,7 +149,7 @@ describe('frozen article write guards', () => {
     expect(screen.queryByTestId('edit-page-btn')).toBeNull();
   });
 
-  it('refuses the empty-article call to action on a frozen article', async () => {
+  it('offers no content, icon or trash entry point on a frozen empty article', async () => {
     currentPage = {
       ...basePage,
       bodyHtml: '',
@@ -161,9 +159,25 @@ describe('frozen article write guards', () => {
     };
     renderPage();
 
-    fireEvent.click(await screen.findByTestId('add-content-btn'));
+    await screen.findByTestId('article-frozen-status');
+    expect(screen.queryByTestId('add-content-btn')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add icon' })).toBeNull();
 
+    // The trash shortcut answers with the reason instead of a confirm the
+    // server would refuse with `page_is_frozen`.
+    fireEvent.keyDown(document, { key: 'D', altKey: true, shiftKey: true });
     expect(toast.info).toHaveBeenCalledWith(expect.stringMatching(/frozen/i));
-    expect(screen.queryByTestId('edit-title-input')).toBeNull();
+    expect(screen.queryByText(trashConfirmCopy(0).title)).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('still offers them on an editable empty article', async () => {
+    currentPage = { ...basePage, bodyHtml: '' };
+    renderPage();
+
+    expect(await screen.findByTestId('add-content-btn')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add icon' })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'D', altKey: true, shiftKey: true });
+    expect(await screen.findByRole('dialog')).toHaveTextContent(trashConfirmCopy(0).title);
   });
 });

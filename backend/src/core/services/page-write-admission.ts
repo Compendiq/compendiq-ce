@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { PAGE_HIERARCHY_LOCK_ID, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
 import { getPool } from '../db/postgres.js';
+import { logger } from '../utils/logger.js';
 import { flushPageWriteInvalidations } from './page-write-invalidation.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
+import { AI_POLICY_ENFORCEMENT_VERSION } from './ai-policy-runtime-guard.js';
 import {
   capturePageWriterDeploymentIdentity,
   verifyLocalPageWriterTermination,
@@ -67,6 +69,36 @@ const INTENT_POLICIES = {
 
 export type IntentKind = keyof typeof INTENT_POLICIES;
 
+/** The intents `commitConfluencePage` reserves for exactly one page: that page's own collaborative Save (#1763). */
+const COLLAB_COMMIT_INTENT_KINDS = ['collab.commit.confluence', 'collab.commit.confluence.media'] satisfies IntentKind[];
+
+/**
+ * How a collaboration-room step treats its page's own pending collaborative
+ * Save (#1763). `proceed`: the step writes no protected page row (frame and
+ * peer-update apply, owner and state reads, a room admission, a BYTEA seed),
+ * so the Save does not fence it. `defer`: the step writes protected rows (the
+ * room persist), so it stays fenced but refuses with `collab_commit_pending`
+ * to be retried once the Save settles. Every other pending intent still
+ * refuses with `page_write_busy`.
+ */
+export type OwnCollabCommit = 'proceed' | 'defer';
+
+/**
+ * The ONE intent shape with an empty target set (#280, migration 137): a
+ * Confluence page created at the space root. It reserves no page row, so
+ * its shape is pinned by the kind, a `null` parent, and the trusted initial
+ * policy/labels it will write in the same transaction as the cache row.
+ * Mirrors `page_write_intents_effect_policy_check`'s root branch.
+ */
+export function isRootCreateEffect(effect: Record<string, unknown>): boolean {
+  return effect.parentPageId === null;
+}
+
+/** The durable root-create row: the only pending intent with no target page. */
+function isRootCreateIntent(row: { kind: string; page_ids: readonly number[]; effect: Record<string, unknown> }): boolean {
+  return row.kind === 'pages.create.confluence' && row.page_ids.length === 0 && isRootCreateEffect(row.effect);
+}
+
 function policyForIntent(kind: string, effect: Record<string, unknown>): IntentPolicy {
   if (!KIND_PATTERN.test(kind)) {
     throw new PageWriteError(400, 'invalid_intent_kind', 'Intent kind must be a stable namespaced identifier');
@@ -87,9 +119,19 @@ function policyForIntent(kind: string, effect: Record<string, unknown>): IntentP
     );
   }
   if (policy.targetMode === 'hierarchy_reference' && (
-    typeof effect.parentPageId !== 'number' ||
-    !Number.isSafeInteger(effect.parentPageId) ||
-    effect.parentPageId <= 0 ||
+    (isRootCreateEffect(effect)
+      ? !(
+          effect.parentConfluenceId === null &&
+          (effect.initialPolicy === 'all' || effect.initialPolicy === 'local_only' || effect.initialPolicy === 'none') &&
+          Array.isArray(effect.initialLabels) &&
+          effect.initialLabels.length <= 50 &&
+          effect.initialLabels.every((l) => typeof l === 'string')
+        )
+      : (
+          typeof effect.parentPageId !== 'number' ||
+          !Number.isSafeInteger(effect.parentPageId) ||
+          effect.parentPageId <= 0
+        )) ||
     (effect.parentConfluenceId !== null &&
       (typeof effect.parentConfluenceId !== 'string' || effect.parentConfluenceId.length === 0)) ||
     typeof effect.spaceKey !== 'string' ||
@@ -142,6 +184,11 @@ export class PageWriteError extends Error {
   }
 }
 
+/** A room persist refused only because its page's own collaborative Save has not settled (#1763). */
+export function isCollabCommitPending(error: unknown): boolean {
+  return error instanceof PageWriteError && error.reason === 'collab_commit_pending';
+}
+
 export type PageRevision = {
   contentRevision: string;
   lifecycleRevision: string;
@@ -182,6 +229,12 @@ export type PageWriteRecoveryAuthorization = {
 };
 
 export type PageWriteReconciliationProof =
+  | {
+      kind: 'generated_labels_compensated';
+      observedAt: string;
+      reference: string;
+      details: { compensationIntentId: string };
+    }
   | {
       kind: 'local_bytes_verified';
       observedAt: string;
@@ -271,6 +324,15 @@ export type PageWriteIntentReconciler = (
       outcome: 'applied' | 'not_applied';
       proof: PageWriteReconciliationProof;
       result: unknown;
+      /**
+       * A side effect that must only become visible once the recovery
+       * transaction has COMMITTED (e.g. the collaborative-room tombstone of a
+       * recovered delete: 4404 is permanent). Awaited exactly once by
+       * `reconcilePageWriteIntent` after the settlement is durable; never
+       * invoked when the transaction rolls back or the settlement is refused.
+       * It cannot undo the settlement, so its failure is logged, not rethrown.
+       */
+      afterCommit?: () => void | Promise<void>;
     }
   | {
       outcome: 'repair_required';
@@ -282,6 +344,48 @@ export type PageWriteIntentRepairer = (intent: PageWriteRecoveryIntent) => Promi
 
 const intentReconcilers = new Map<IntentKind, PageWriteIntentReconciler>();
 const intentRepairers = new Map<IntentKind, PageWriteIntentRepairer>();
+let generatedLabelCompensator: PageWriteIntentRepairer | undefined;
+let canonicalLabelRepairer: PageWriteIntentRepairer | undefined;
+let committedPolicyLabelDispatcher: PageWriteIntentRepairer | undefined;
+
+export function registerCommittedPolicyLabelDispatcher(dispatcher: PageWriteIntentRepairer): void {
+  if (committedPolicyLabelDispatcher) throw new PageWriteError(409, 'reconciler_already_registered', 'Policy label dispatcher is already registered');
+  committedPolicyLabelDispatcher = dispatcher;
+}
+
+/** Trusted canonical-only recovery; never a general remote replay capability. */
+export function registerCanonicalLabelRepairer(repairer: PageWriteIntentRepairer): void {
+  if (canonicalLabelRepairer) throw new PageWriteError(409, 'reconciler_already_registered', 'Canonical label repair is already registered');
+  canonicalLabelRepairer = repairer;
+}
+
+function isOrdinaryAcknowledgedLabelIntent(row: IntentRow): boolean {
+  return ['page.labels', 'pages.bulk.tags', 'pages.bulk.replace_tags', 'pages.create.labels'].includes(row.kind)
+    && row.recovery_mode === 'remote_terminal_only' && row.effect.effectClass === 'remote'
+    && !Object.hasOwn(row.effect, 'autoTagStage') && row.page_ids.length === 1
+    && row.actor_id !== null && row.remote_effect_started_at !== null
+    && row.remote_effects_completed_at !== null;
+}
+
+/** Only the trusted generated-label reconciler may install this capability. */
+export function registerGeneratedLabelCompensator(repairer: PageWriteIntentRepairer): void {
+  if (generatedLabelCompensator) throw new PageWriteError(409, 'reconciler_already_registered', 'Generated label compensation is already registered');
+  generatedLabelCompensator = repairer;
+}
+
+function isGeneratedLabelIntent(row: IntentRow): boolean {
+  const stage = row.effect.autoTagStage as Record<string, unknown> | undefined;
+  return row.kind === 'page.labels' && row.recovery_mode === 'remote_terminal_only'
+    && row.effect.effectClass === 'remote' && row.page_ids.length === 1
+    && row.effect.pageId === row.page_ids[0] && typeof row.effect.confluenceId === 'string'
+    && row.actor_id !== null && !!stage && stage.usecase === 'auto_tag' && stage.userId === row.actor_id
+    && typeof stage.model === 'string' && stage.model.length > 0;
+}
+
+function isAcknowledgedGeneratedLabelIntent(row: IntentRow): boolean {
+  return isGeneratedLabelIntent(row)
+    && row.remote_effect_started_at !== null && row.remote_effects_completed_at !== null;
+}
 
 /**
  * Register trusted server code for one closed intent kind. HTTP handlers must
@@ -318,6 +422,7 @@ export type PageWriteRecoveryState = {
     deploymentIdentity: Record<string, unknown>;
     startedAt: string;
     quiescedAt: string | null;
+    upgradeRetiredAt: string | null;
     acknowledgmentId: string | null;
     fencedAt: string | null;
     fenceReason: string | null;
@@ -460,8 +565,10 @@ function normalizePageIds(pageIds: readonly number[], allowEmpty = false): numbe
 }
 
 function samePageIds(left: readonly number[], right: readonly number[]): boolean {
-  const a = normalizePageIds(left);
-  const b = normalizePageIds(right);
+  // Both sides may be empty only for the root create intent (migration 137);
+  // the durable CHECK refuses an empty set for every other kind.
+  const a = normalizePageIds(left, true);
+  const b = normalizePageIds(right, true);
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
@@ -607,11 +714,21 @@ async function registerRuntimeOnClient(client: PoolClient, runtimeId: string): P
   if (runtimeId.length === 0 || runtimeId.length > 200) {
     throw new PageWriteError(400, 'invalid_runtime_id', 'Runtime id is invalid');
   }
+  // Both protocol versions this build enforces are declared at registration:
+  // the protected-writer protocol (#276, migration 124) and the article AI
+  // policy protocol (#1881, migration 151). Each has a BEFORE INSERT guard
+  // that refuses an older version once its feature is active.
   await client.query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-     VALUES ($1, $2::jsonb, $3)
+    `INSERT INTO page_writer_runtimes
+       (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+     VALUES ($1, $2::jsonb, $3, $4)
      ON CONFLICT (runtime_id) DO NOTHING`,
-    [runtimeId, JSON.stringify(await processDeploymentIdentity), PAGE_WRITER_ENFORCEMENT_VERSION],
+    [
+      runtimeId,
+      JSON.stringify(await processDeploymentIdentity),
+      PAGE_WRITER_ENFORCEMENT_VERSION,
+      AI_POLICY_ENFORCEMENT_VERSION,
+    ],
   );
   const result = await client.query<{
     fenced_at: Date | null;
@@ -681,8 +798,12 @@ async function loadPageStates(
   client: PoolClient,
   pageIds: readonly number[],
   allowDurablyDeleted = false,
+  allowEmpty = false,
 ): Promise<PageStateRow[]> {
-  const ids = normalizePageIds(pageIds);
+  // `allowEmpty` is for recovery of the one empty-target intent shape (the
+  // root Confluence create, migration 137); every admission path still
+  // requires at least one page id.
+  const ids = normalizePageIds(pageIds, allowEmpty);
   const result = await client.query<PageStateRow>(
     `SELECT id, content_revision::text, lifecycle_revision::text, baseline_id
        FROM pages
@@ -774,20 +895,28 @@ async function assertNoCompetingIntent(
   client: PoolClient,
   pageIds: readonly number[],
   exceptId?: string,
+  ownCollabCommit?: OwnCollabCommit,
 ): Promise<void> {
   if (pageIds.length === 0) return;
-  const result = await client.query<{ id: string }>(
-    `SELECT id
+  const ids = normalizePageIds(pageIds);
+  // A foreign row sorts first (false < true), so this one row decides.
+  const result = await client.query<{ own_collab_commit: boolean }>(
+    `SELECT kind = ANY($3::text[]) AND page_ids = $1::integer[] AS own_collab_commit
        FROM page_write_intents
       WHERE status = 'pending'
         AND page_ids && $1::integer[]
         AND ($2::uuid IS NULL OR id <> $2::uuid)
+      ORDER BY own_collab_commit
       LIMIT 1`,
-    [normalizePageIds(pageIds), exceptId ?? null],
+    [ids, exceptId ?? null, COLLAB_COMMIT_INTENT_KINDS],
   );
-  if (result.rows[0]) {
-    throw new PageWriteError(409, 'page_write_busy', 'Another external page write is unresolved');
+  const competing = result.rows[0];
+  if (!competing) return;
+  if (ownCollabCommit !== undefined && competing.own_collab_commit) {
+    if (ownCollabCommit === 'proceed') return;
+    throw new PageWriteError(409, 'collab_commit_pending', "The page's own collaborative Save has not settled");
   }
+  throw new PageWriteError(409, 'page_write_busy', 'Another external page write is unresolved');
 }
 
 /**
@@ -843,16 +972,30 @@ export async function lockPageLifecycle(
  * Lock and validate a protected write on the same client that will execute it.
  * The caller must already have opened a transaction and must not acquire any
  * collaboration, attachment, move, or page-row lock before calling this.
+ * `ownCollabCommit` is for collaboration-room steps on one page only (#1763);
+ * see `OwnCollabCommit`.
  */
 export async function lockPageWrites(
   client: PoolClient,
   pageIds: readonly number[],
-  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission; hierarchyExclusive?: boolean } = {},
+  options: {
+    intent?: PageWriteIntent;
+    admission?: PageRuntimeAdmission;
+    hierarchyExclusive?: boolean;
+    ownCollabCommit?: OwnCollabCommit;
+  } = {},
 ): Promise<void> {
   if (options.intent && options.admission) {
     throw new PageWriteError(400, 'invalid_write_admission', 'A write cannot use two admission tokens');
   }
   const ids = normalizePageIds(pageIds, true);
+  if (options.ownCollabCommit && (options.intent || options.hierarchyExclusive || ids.length !== 1)) {
+    throw new PageWriteError(
+      400,
+      'invalid_write_admission',
+      'Only a single-page collaboration-room step may pass its own collaborative Save',
+    );
+  }
   const tokenRuntimeId = options.intent?.runtimeId ?? options.admission?.runtimeId;
   if (tokenRuntimeId !== processRuntimeId) {
     // Tokenless SQL still belongs to this process epoch. Keep its row locked
@@ -864,7 +1007,7 @@ export async function lockPageWrites(
       finishLocalOperation();
     }
   }
-  if (ids.length === 0 && (options.intent || options.admission)) {
+  if (ids.length === 0 && options.admission) {
     throw new PageWriteError(400, 'invalid_page_ids', 'An admission token cannot cover an empty page set');
   }
   if (options.intent) await assertRuntimeActive(client, options.intent.runtimeId);
@@ -873,7 +1016,17 @@ export async function lockPageWrites(
     await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
   }
   await lockPageLifecycle(client, ids);
-  if (ids.length === 0) return;
+  if (ids.length === 0) {
+    if (!options.intent) return;
+    // The only token with no page rows is the root create intent (#280,
+    // migration 137). Its durable row is still locked and validated so a
+    // forged empty token cannot pass as an arbitrary pending intent.
+    const durable = await loadPendingIntentForUpdate(client, options.intent);
+    if (durable.kind !== 'pages.create.confluence' || !isRootCreateEffect(durable.effect)) {
+      throw new PageWriteError(400, 'invalid_page_ids', 'An admission token cannot cover an empty page set');
+    }
+    return;
+  }
   if (options.intent) {
     const durable = await loadPendingIntentForUpdate(client, options.intent);
     const rows = await loadPageStates(client, ids, true);
@@ -926,17 +1079,70 @@ export async function lockPageWrites(
     if (String(rows[0]!.lifecycle_revision) !== admission.lifecycleRevision) {
       throw new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after room admission');
     }
-    await assertNoCompetingIntent(client, ids);
+    await assertNoCompetingIntent(client, ids, undefined, options.ownCollabCommit);
     return;
   }
 
-  await assertNoCompetingIntent(client, ids);
+  await assertNoCompetingIntent(client, ids, undefined, options.ownCollabCommit);
+}
+
+/** Policy-only supersession may obsolete an acknowledged generated label effect.
+ * Ordinary writes and unacknowledged remote effects retain their existing fence.
+ * Rebase only recovery's row token; the retained AI stage is never rewritten.
+ */
+export async function withAiPolicyWriteTransaction<T>(
+  pageIds: readonly number[], operation: (client: PoolClient) => Promise<T>,
+  replacesPolicyLabelDebt = false,
+): Promise<T> {
+  return withPageWriterOperation(() => inTransaction(async (client) => {
+    await lockPageWriterRuntime(client, processRuntimeId);
+    await lockPageLifecycle(client, pageIds);
+    assertEditable(await loadPageStates(client, pageIds));
+    const pending = await client.query<IntentRow>(
+      `SELECT * FROM page_write_intents WHERE status = 'pending' AND page_ids && $1::int[] FOR UPDATE`,
+      [normalizePageIds(pageIds)],
+    );
+    const supersedableLabels = (row: IntentRow) => replacesPolicyLabelDebt && row.kind === 'pages.create.labels'
+      && row.effect.localPolicyCommitted === true && row.remote_effect_started_at === null
+      && row.recovery_started_at === null;
+    if (pending.rows.some((row) => !supersedableLabels(row) && (!isGeneratedLabelIntent(row)
+      || row.remote_effect_started_at === null || row.recovery_started_at !== null))) {
+      throw new PageWriteError(409, 'page_write_busy', 'Another external page write is unresolved');
+    }
+    // Retirement rolls back with a refused CAS; the callback reserves fresh debt.
+    for (const row of pending.rows.filter(supersedableLabels)) {
+      await client.query(`UPDATE page_write_intents SET status = 'cancelled', settled_at = NOW(),
+        settlement_reason = 'policy_target_superseded', settlement_proof = '{"assertion":"no_remote_io_began"}'::jsonb
+        WHERE id = $1`, [row.id]);
+    }
+    const before = await client.query<{ id: number; ai_policy: string }>(
+      'SELECT id, ai_policy FROM pages WHERE id = ANY($1::int[])', [pageIds]);
+    const result = await operation(client);
+    const after = await client.query<{ id: number; ai_policy: string }>(
+      'SELECT id, ai_policy FROM pages WHERE id = ANY($1::int[])', [pageIds]);
+    const rank = (policy: string) => ['all', 'local_only', 'none'].indexOf(policy);
+    for (const row of pending.rows.filter((row) => !supersedableLabels(row))) {
+      const oldPolicy = before.rows.find((page) => page.id === row.page_ids[0])!.ai_policy;
+      const newPolicy = after.rows.find((page) => page.id === row.page_ids[0])!.ai_policy;
+      if (rank(oldPolicy) < 0 || rank(newPolicy) <= rank(oldPolicy)) {
+        throw new PageWriteError(409, 'page_write_busy', 'Only a restriction may supersede generated work');
+      }
+      await client.query(`INSERT INTO page_generated_label_supersessions
+        (intent_id, runtime_id, original_revisions, original_effect, effect_started_at)
+        SELECT id, runtime_id, revisions, effect, effect_started_at FROM page_write_intents
+        WHERE id = $1 ON CONFLICT (intent_id) DO NOTHING`, [row.id]);
+      const revisions = revisionsForRows(await loadPageStates(client, row.page_ids));
+      await client.query('UPDATE page_write_intents SET revisions = $2::jsonb WHERE id = $1',
+        [row.id, JSON.stringify(revisions)]);
+    }
+    return result;
+  }));
 }
 
 export async function withPageWriteTransaction<T>(
   pageIds: readonly number[],
   operation: (client: PoolClient) => Promise<T>,
-  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission } = {},
+  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission; ownCollabCommit?: OwnCollabCommit } = {},
 ): Promise<T> {
   beginLocalOperation(options.intent !== undefined || options.admission !== undefined);
   try {
@@ -983,11 +1189,19 @@ async function reservePageWriteIntentOnClient(
   input: PageWriteIntentInput,
   runtimeId: string,
 ): Promise<PageWriteIntent> {
-  const pageIds = normalizePageIds(input.pageIds);
   const effect = cloneBoundedObject(input.effect, 'intent_effect');
   const policy = policyForIntent(input.kind, effect);
   const hierarchyReference = policy.targetMode === 'hierarchy_reference';
-  if (hierarchyReference && (pageIds.length !== 1 || pageIds[0] !== effect.parentPageId)) {
+  const rootCreate = hierarchyReference && isRootCreateEffect(effect);
+  const pageIds = normalizePageIds(input.pageIds, rootCreate);
+  if (rootCreate && pageIds.length !== 0) {
+    throw new PageWriteError(
+      400,
+      'hierarchy_reference_mismatch',
+      'A root-creation intent reserves no page row',
+    );
+  }
+  if (hierarchyReference && !rootCreate && (pageIds.length !== 1 || pageIds[0] !== effect.parentPageId)) {
     throw new PageWriteError(
       400,
       'hierarchy_reference_mismatch',
@@ -998,7 +1212,7 @@ async function reservePageWriteIntentOnClient(
   await assertRuntimeActive(client, runtimeId);
   if (hierarchyReference) await lockPageLifecycle(client, pageIds);
   else await lockPageWrites(client, pageIds);
-  const rows = await loadPageStates(client, pageIds);
+  const rows = rootCreate ? [] : await loadPageStates(client, pageIds);
   if (hierarchyReference) await assertNoCompetingIntent(client, pageIds);
   if (input.expectedRevisions) assertExpectedRevisions(rows, input.expectedRevisions);
   const revisions = revisionsForRows(rows);
@@ -1109,6 +1323,7 @@ async function markPageWriteIntentEffectFinished<T>(
   intent: PageWriteIntent,
   phase: PageWriteIntentPhase<T>,
   result: T,
+  started: IntentRow,
 ): Promise<void> {
   const terminalResult =
     phase.kind === 'remote' && phase.completesRemoteWork
@@ -1118,7 +1333,26 @@ async function markPageWriteIntentEffectFinished<T>(
         )
       : null;
   await inTransaction(async (client) => {
-    await lockPageWrites(client, intent.pageIds, { intent });
+    await assertRuntimeActive(client, intent.runtimeId);
+    await lockPageLifecycle(client, intent.pageIds);
+    // This is not an exported completion bypass. Only the original running
+    // callback can supply the snapshot obtained by the successful start gate.
+    const superseded = phase.kind === 'remote' && phase.completesRemoteWork
+      && intent.runtimeId === processRuntimeId && localIntentEffects.get(intent.id) === 'running'
+      && started.actor_id !== null
+      && isGeneratedLabelIntent(started)
+      ? await client.query(`SELECT 1 FROM page_generated_label_supersessions s
+          JOIN page_write_intents i ON i.id = s.intent_id
+          WHERE s.intent_id = $1 AND s.runtime_id = $2 AND i.runtime_id = s.runtime_id
+            AND s.original_revisions = $3::jsonb AND s.original_effect = $4::jsonb
+            AND i.effect = s.original_effect AND i.actor_id = $5
+            AND i.effect_started_at = s.effect_started_at
+            AND i.status = 'pending' AND i.recovery_started_at IS NULL
+            AND i.remote_effect_started_at IS NOT NULL AND i.remote_effects_completed_at IS NULL
+            AND i.remote_terminal_result IS NULL
+          FOR UPDATE OF i`, [intent.id, intent.runtimeId, JSON.stringify(intent.revisions),
+        JSON.stringify(started.effect), started.actor_id]) : null;
+    if (superseded?.rowCount !== 1) await lockPageWrites(client, intent.pageIds, { intent });
     await assertRecoveryAdminForIntent(client, intent);
     const updated = await client.query(
       `UPDATE page_write_intents
@@ -1190,7 +1424,7 @@ export async function runPageWriteIntentEffect<T>(
       localIntentRecoveryModes.set(intent.id, durable.recovery_mode);
     }
     const result = await operation();
-    await markPageWriteIntentEffectFinished(intent, phase, result);
+    await markPageWriteIntentEffectFinished(intent, phase, result, durable);
     localIntentEffects.set(intent.id, 'succeeded');
     localIntentFailedRemotePhases.delete(intent.id);
     return result;
@@ -1206,6 +1440,80 @@ export async function runPageWriteIntentEffect<T>(
   } finally {
     notifyLocalDrainWaiters();
   }
+}
+
+export type GeneratedLabelRequest = { before: string[]; after: string[] };
+
+/** Called only inside the original running phase. Receipts certify I/O, not
+ * permission to publish; every subsequent request still needs fresh authority. */
+export async function runGeneratedLabelRequest(
+  intent: PageWriteIntent,
+  requestIndex: number,
+  request: GeneratedLabelRequest,
+  preflight: (client: PoolClient) => Promise<void>,
+  dispatch: () => Promise<void>,
+): Promise<void> {
+  if (intent.runtimeId !== processRuntimeId || localIntentEffects.get(intent.id) !== 'running'
+    || !Number.isSafeInteger(requestIndex) || requestIndex < 0) {
+    throw new PageWriteError(409, 'intent_effect_state', 'Generated request requires its running original writer');
+  }
+  const descriptor = cloneBoundedObject(request, 'generated_request');
+  const started = await inTransaction(async (client) => {
+    await lockPageWrites(client, intent.pageIds, { intent });
+    const durable = await loadPendingIntentForUpdate(client, intent);
+    if (!isGeneratedLabelIntent(durable) || durable.recovery_started_at !== null) {
+      throw new PageWriteError(409, 'intent_effect_state', 'Not an original generated-label phase');
+    }
+    await preflight(client);
+    const previous = await client.query<{ request_index: number; acknowledged_at: Date | null; request: GeneratedLabelRequest }>(
+      'SELECT request_index, acknowledged_at, request FROM page_generated_label_requests WHERE intent_id = $1 ORDER BY request_index', [intent.id]);
+    if (previous.rows.length !== requestIndex || previous.rows.some((row, index) => row.request_index !== index || !row.acknowledged_at)
+      || (requestIndex > 0 && JSON.stringify(previous.rows[requestIndex - 1]!.request.after) !== JSON.stringify(request.before))) {
+      throw new PageWriteError(409, 'intent_outcome_unknown', 'Generated request sequence is not an acknowledged prefix');
+    }
+    await client.query(`INSERT INTO page_generated_label_requests
+      (intent_id, request_index, runtime_id, actor_id, original_revisions, original_effect, request)
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)`,
+    [intent.id, requestIndex, intent.runtimeId, durable.actor_id, JSON.stringify(intent.revisions), JSON.stringify(durable.effect), JSON.stringify(descriptor)]);
+    return durable;
+  });
+  await dispatch();
+  // Only this callback can acknowledge its exact dispatched request. A policy
+  // supersession may change the row token but never these immutable identities.
+  await inTransaction(async (client) => {
+    await assertRuntimeActive(client, intent.runtimeId);
+    await lockPageLifecycle(client, intent.pageIds);
+    const updated = await client.query(`UPDATE page_generated_label_requests r SET acknowledged_at = NOW()
+      FROM page_write_intents i WHERE r.intent_id = $1 AND r.request_index = $2
+        AND r.runtime_id = $3 AND r.actor_id = $4 AND r.original_effect = $5::jsonb
+        AND r.original_revisions = $6::jsonb AND r.request = $7::jsonb
+        AND r.acknowledged_at IS NULL AND i.id = r.intent_id AND i.runtime_id = r.runtime_id
+        AND i.actor_id = r.actor_id AND i.effect = r.original_effect
+        AND i.status = 'pending' AND i.recovery_started_at IS NULL
+        AND (i.revisions = r.original_revisions OR EXISTS (
+          SELECT 1 FROM page_generated_label_supersessions s WHERE s.intent_id = i.id
+            AND s.runtime_id = r.runtime_id AND s.original_revisions = r.original_revisions
+            AND s.original_effect = r.original_effect AND s.effect_started_at = i.effect_started_at))`,
+    [intent.id, requestIndex, intent.runtimeId, started.actor_id, JSON.stringify(started.effect), JSON.stringify(intent.revisions), JSON.stringify(descriptor)]);
+    if (updated.rowCount !== 1) throw new PageWriteError(409, 'intent_token_mismatch', 'Generated request acknowledgment lost ownership');
+  });
+}
+
+/** NULL means no complete known prefix, never an inferred successful request. */
+export async function acknowledgedGeneratedLabelPrefix(
+  client: Pick<PoolClient, 'query'>, intentId: string,
+): Promise<GeneratedLabelRequest | null> {
+  const result = await client.query<{ request_index: number; acknowledged_at: Date | null; request: GeneratedLabelRequest; bound: boolean }>(
+    `SELECT r.request_index, r.acknowledged_at, r.request,
+            (r.actor_id = i.actor_id AND r.original_effect = i.effect
+              AND r.runtime_id = first.runtime_id AND r.original_revisions = first.original_revisions
+              AND r.original_effect = first.original_effect) AS bound
+       FROM page_generated_label_requests r JOIN page_write_intents i ON i.id = r.intent_id
+       JOIN page_generated_label_requests first ON first.intent_id = r.intent_id AND first.request_index = 0
+      WHERE r.intent_id = $1 ORDER BY r.request_index`, [intentId]);
+  if (!result.rows.length || result.rows.some((row, index) => row.request_index !== index || !row.acknowledged_at
+    || row.bound !== true || (index > 0 && JSON.stringify(result.rows[index - 1]!.request.after) !== JSON.stringify(row.request.before)))) return null;
+  return { before: result.rows[0]!.request.before, after: result.rows[result.rows.length - 1]!.request.after };
 }
 
 export async function completePageWriteIntent<T>(
@@ -1237,7 +1545,7 @@ export async function completePageWriteIntent<T>(
       const finalRows = await client.query<PageStateRow>(
         `SELECT id, content_revision::text, lifecycle_revision::text, baseline_id
            FROM pages WHERE id = ANY($1::integer[]) ORDER BY id`,
-        [normalizePageIds(intent.pageIds)],
+        [normalizePageIds(intent.pageIds, true)],
       );
       assertHierarchyReferenceUnchanged(finalRows.rows, durable);
       const settlementProof = effectClass === 'remote'
@@ -1279,12 +1587,18 @@ export async function completePageWriteIntent<T>(
       const durable = await getPool().query<{
         status: string;
         cache_invalidation_pending: boolean;
+        generated_terminal: boolean;
       }>(
-        `SELECT status, cache_invalidation_pending
+        `SELECT status, cache_invalidation_pending,
+                (kind = 'page.labels' AND effect ? 'autoTagStage'
+                  AND remote_effects_completed_at IS NOT NULL) AS generated_terminal
            FROM page_write_intents
           WHERE id = $1 AND runtime_id = $2`,
         [intent.id, intent.runtimeId],
       );
+      if (durable.rows[0]?.status === 'pending' && durable.rows[0].generated_terminal) {
+        localIntentEffects.set(intent.id, 'failed');
+      }
       if (durable.rows[0]?.status === 'completed') {
         localIntentEffects.delete(intent.id);
         localIntentRecoveryModes.delete(intent.id);
@@ -1403,7 +1717,9 @@ export async function admitPageRuntime(
     if (runtimeId) await registerRuntime(runtimeId);
     const admission = await inTransaction(async (client) => {
       await assertRuntimeActive(client, id);
-      await lockPageWrites(client, [pageId]);
+      // A room admission does not wait for its page's own collaborative Save;
+      // a request admission (another Save) does (#1763).
+      await lockPageWrites(client, [pageId], purpose === 'collab_room' ? { ownCollabCommit: 'proceed' } : {});
       const rows = await loadPageStates(client, [pageId]);
       const admissionId = randomUUID();
       const lifecycleRevision = String(rows[0]!.lifecycle_revision);
@@ -1531,6 +1847,34 @@ export async function quiescePageWriterRuntime(
   }
   const runtimeId = await getPageWriterRuntimeId();
 
+  // Refuse an epoch this process must not drain before closing the local gate:
+  // closing it is irreversible, and `waitForLocalRuntimeDrain` can never finish
+  // once an upgrade-retired epoch's admissions can no longer be released. The
+  // transaction below re-reads this state under the runtime row lock.
+  const durableState = await getPool().query<{
+    fenced_at: Date | null;
+    quiesced_at: Date | null;
+    quiescence_ack: string | null;
+  }>(
+    `SELECT fenced_at, quiesced_at, quiescence_ack
+       FROM page_writer_runtimes
+      WHERE runtime_id = $1`,
+    [runtimeId],
+  );
+  if (!durableState.rows[0]) {
+    throw new PageWriteError(409, 'runtime_unknown', 'The writer runtime is not registered');
+  }
+  if (durableState.rows[0].fenced_at) {
+    throw new PageWriteError(409, 'runtime_fenced', 'This writer runtime has been permanently fenced');
+  }
+  if (durableState.rows[0].quiesced_at && !durableState.rows[0].quiescence_ack) {
+    throw new PageWriteError(
+      409,
+      'runtime_upgrade_retired',
+      'This writer epoch was retired by a schema upgrade and has no owner acknowledgment',
+    );
+  }
+
   // Accept and durably record the retirement request while the actor's admin
   // row is SHARE-locked. Only a committed request may close the process gate.
   await inTransaction(async (client) => {
@@ -1555,9 +1899,10 @@ export async function quiescePageWriterRuntime(
   const acknowledgmentId = await inTransaction(async (client) => {
     const current = await client.query<{
       fenced_at: Date | null;
+      quiesced_at: Date | null;
       quiescence_ack: string | null;
     }>(
-      `SELECT fenced_at, quiescence_ack
+      `SELECT fenced_at, quiesced_at, quiescence_ack
          FROM page_writer_runtimes
         WHERE runtime_id = $1
         FOR UPDATE`,
@@ -1568,6 +1913,17 @@ export async function quiescePageWriterRuntime(
     }
     if (current.rows[0].fenced_at) {
       throw new PageWriteError(409, 'runtime_fenced', 'This writer runtime has been permanently fenced');
+    }
+    // A schema upgrade can close an epoch's gate without an owner
+    // acknowledgment (`upgrade_retired_at`, migration 151b). Never answer with
+    // an acknowledgment that was not stored: the owner_ack fence that follows
+    // would fail, after this call had claimed success.
+    if (current.rows[0].quiesced_at && !current.rows[0].quiescence_ack) {
+      throw new PageWriteError(
+        409,
+        'runtime_upgrade_retired',
+        'This writer epoch was retired by a schema upgrade and has no owner acknowledgment',
+      );
     }
     const activeAdmissions = await client.query<{ exists: boolean }>(
       `SELECT EXISTS (
@@ -1620,12 +1976,19 @@ export async function quiescePageWriterRuntime(
     );
     if (current.rows[0].quiescence_ack) return current.rows[0].quiescence_ack;
     const ack = randomUUID();
-    await client.query(
+    const acknowledged = await client.query(
       `UPDATE page_writer_runtimes
           SET quiesced_at = NOW(), quiescence_ack = $2
         WHERE runtime_id = $1 AND quiesced_at IS NULL`,
       [runtimeId, ack],
     );
+    if (acknowledged.rowCount !== 1) {
+      throw new PageWriteError(
+        409,
+        'runtime_quiescence_conflict',
+        'The runtime retired before this acknowledgment was stored',
+      );
+    }
     return ack;
   });
   return {
@@ -1821,6 +2184,26 @@ export async function fencePageWriterRuntime(
 }
 
 /**
+ * Run a reconciler's post-commit side effect. The settlement is already
+ * durable, so — like the delete routes' per-id `Promise.allSettled` — a failure
+ * must neither skip the rest of the publication nor report a settled intent as
+ * a failed recovery.
+ */
+async function runAfterSettlement(
+  intentId: string,
+  afterCommit: (() => void | Promise<void>) | undefined,
+): Promise<void> {
+  if (!afterCommit) return;
+  const [outcome] = await Promise.allSettled([Promise.resolve().then(afterCommit)]);
+  if (outcome.status === 'rejected') {
+    logger.warn(
+      { err: outcome.reason, intentId },
+      'page-write recovery: a post-settlement side effect failed after the intent settled',
+    );
+  }
+}
+
+/**
  * Reconcile an unknown I/O outcome after the original runtime has a
  * server-proven fence. The proof comes only from trusted server code registered
  * for the closed intent kind; HTTP callers can supply neither a verifier nor a
@@ -1859,10 +2242,12 @@ export async function reconcilePageWriteIntent(
       throw new PageWriteError(404, 'intent_not_found', 'The write intent does not exist');
     }
     const discoveredIntent = discovered.rows[0];
+    const knownGeneratedPrefix = isGeneratedLabelIntent(discoveredIntent)
+      && await acknowledgedGeneratedLabelPrefix(getPool(), intentId) !== null;
     if (
       discoveredIntent.recovery_mode === 'remote_terminal_only' &&
       discoveredIntent.remote_effect_started_at !== null &&
-      discoveredIntent.remote_effects_completed_at === null
+      discoveredIntent.remote_effects_completed_at === null && !knownGeneratedPrefix
     ) {
       throw new PageWriteError(
         409,
@@ -1895,7 +2280,7 @@ export async function reconcilePageWriteIntent(
       }
       await lockPageLifecycle(client, token.pageIds);
       const durable = await loadPendingIntentForUpdate(client, token);
-      const rows = await loadPageStates(client, durable.page_ids, true);
+      const rows = await loadPageStates(client, durable.page_ids, true, isRootCreateIntent(durable));
       const liveIds = new Set(rows.map((row) => row.id));
       const missingIds = durable.page_ids
         .filter((pageId) => !liveIds.has(pageId))
@@ -2011,7 +2396,7 @@ export async function reconcilePageWriteIntent(
       }
       await lockPageLifecycle(client, attemptToken.pageIds);
       const durable = await loadPendingIntentForUpdate(client, attemptToken);
-      const rows = await loadPageStates(client, durable.page_ids, true);
+      const rows = await loadPageStates(client, durable.page_ids, true, isRootCreateIntent(durable));
       const liveIds = new Set(rows.map((row) => row.id));
       const missingIds = durable.page_ids
         .filter((pageId) => !liveIds.has(pageId))
@@ -2034,7 +2419,10 @@ export async function reconcilePageWriteIntent(
   
       const reconciled = await verifier(client, recoveryIntentFromRow(durable));
       if (policyForIntent(durable.kind, durable.effect).targetMode === 'hierarchy_reference') {
-        assertHierarchyReferenceUnchanged(await loadPageStates(client, durable.page_ids, true), durable);
+        assertHierarchyReferenceUnchanged(
+          await loadPageStates(client, durable.page_ids, true, isRootCreateIntent(durable)),
+          durable,
+        );
       }
       if (reconciled.outcome === 'repair_required') {
         if (durable.recovery_mode !== 'local_verified') {
@@ -2050,7 +2438,15 @@ export async function reconcilePageWriteIntent(
         reconciled.proof as unknown as Record<string, unknown>,
         'reconciliation_proof',
       ) as unknown as PageWriteReconciliationProof;
+      const compensated = proof.kind === 'generated_labels_compensated'
+        && (isAcknowledgedGeneratedLabelIntent(durable) || (isGeneratedLabelIntent(durable)
+          && await acknowledgedGeneratedLabelPrefix(client, durable.id) !== null))
+        && reconciled.outcome === 'not_applied'
+        && proof.details.compensationIntentId === durable.id
+        && (await client.query(`SELECT 1 FROM page_generated_label_compensations
+          WHERE intent_id = $1 AND completed_at IS NOT NULL AND in_flight = FALSE`, [durable.id])).rowCount === 1;
       const proofKinds = [
+        'generated_labels_compensated',
         'local_bytes_verified',
         'local_effect_absence_verified',
         'local_intended_absence_verified',
@@ -2129,7 +2525,7 @@ export async function reconcilePageWriteIntent(
           details.remoteEffectsCompleted === true &&
           typeof details.terminalEvidence === 'string' &&
           details.terminalEvidence.length > 0);
-      const proofMatchesRecoveryMode =
+      const proofMatchesRecoveryMode = compensated ||
         (durable.recovery_mode === 'remote_conditional' &&
           proof.kind === 'remote_conditional_effect_converged') ||
         (durable.recovery_mode === 'remote_terminal_only' &&
@@ -2188,11 +2584,33 @@ export async function reconcilePageWriteIntent(
         kind: 'settled' as const,
         result: { intentId: durable.id, status },
         invalidationPending: settled.rows[0]?.cache_invalidation_pending === true,
+        afterCommit: reconciled.afterCommit,
       };
     });
   
+    if ((isAcknowledgedGeneratedLabelIntent(discoveredIntent) || knownGeneratedPrefix) && generatedLabelCompensator) {
+      // The claim, original epoch fence and admin check above are durable.
+      // The compensator journals its separate remote progress; it must never
+      // reuse the original phase markers or overwrite the original receipt.
+      await inTransaction(async (client) => {
+        await lockPageWrites(client, recoveryToken.pageIds, { intent: recoveryToken });
+        await assertActiveRecoveryAdmin(client, authorization.actorId);
+      });
+      await generatedLabelCompensator(recoveryToken);
+    }
+    if (isOrdinaryAcknowledgedLabelIntent(discoveredIntent) && canonicalLabelRepairer) {
+      await canonicalLabelRepairer(recoveryToken);
+    }
+    if (recoveryToken.kind === 'pages.create.labels' && recoveryToken.effect.localPolicyCommitted === true
+      && recoveryToken.remoteEffectStartedAt === null && committedPolicyLabelDispatcher) {
+      // First dispatch only: unknown unversioned outcomes remain fenced above.
+      await committedPolicyLabelDispatcher(recoveryToken);
+    }
     const inspected = await verifyAndSettle(recoveryToken);
     if (inspected.kind === 'settled') {
+      // `inTransaction` has resolved: the settlement is COMMITTED. Only now
+      // may the verifier's deferred side effect run.
+      await runAfterSettlement(recoveryToken.id, inspected.afterCommit);
       localIntentEffects.delete(recoveryToken.id);
       localIntentRecoveryModes.delete(recoveryToken.id);
       localIntentFailedRemotePhases.delete(recoveryToken.id);
@@ -2230,6 +2648,7 @@ export async function reconcilePageWriteIntent(
         'The trusted repair did not produce an exactly verifiable terminal state',
       );
     }
+    await runAfterSettlement(recoveryToken.id, repaired.afterCommit);
     localIntentEffects.delete(recoveryToken.id);
     localIntentRecoveryModes.delete(recoveryToken.id);
     localIntentFailedRemotePhases.delete(recoveryToken.id);
@@ -2280,11 +2699,12 @@ export async function getPageWriteRecoveryState(pageId?: number): Promise<PageWr
       started_at: Date;
       quiesced_at: Date | null;
       quiescence_ack: string | null;
+      upgrade_retired_at: Date | null;
       fenced_at: Date | null;
       fence_reason: string | null;
     }>(
       `SELECT runtime_id, deployment_identity, started_at, quiesced_at,
-              quiescence_ack::text, fenced_at, fence_reason
+              quiescence_ack::text, upgrade_retired_at, fenced_at, fence_reason
          FROM page_writer_runtimes
         WHERE runtime_id IN (
           SELECT runtime_id
@@ -2317,6 +2737,7 @@ export async function getPageWriteRecoveryState(pageId?: number): Promise<PageWr
       deploymentIdentity: publicDeploymentIdentity(row.deployment_identity),
       startedAt: asIso(row.started_at),
       quiescedAt: row.quiesced_at ? asIso(row.quiesced_at) : null,
+      upgradeRetiredAt: row.upgrade_retired_at ? asIso(row.upgrade_retired_at) : null,
       acknowledgmentId: row.quiescence_ack,
       fencedAt: row.fenced_at ? asIso(row.fenced_at) : null,
       fenceReason: row.fence_reason,

@@ -37,6 +37,11 @@ const TONE_CLASS: Record<PageStateTone, string> = {
   // `working` clears AA as-is: text-status-ai on its own /10 tint measured
   // 4.98/4.94:1 on hovered Graphite/Paper rows (5.78/6.00:1 resting).
   working: 'border-status-ai/40 bg-status-ai/10 text-status-ai',
+  // #281/#283: policy outcomes are neutral CATEGORIES, not failures — no
+  // amber, no red, no Steel. The dashed/dotted hairline is the channel that
+  // tells them apart from idle and from each other in forced-colors.
+  policy: `border-dashed border-border ${neutralChipInk}`,
+  recovering: `border-dotted border-border ${neutralChipInk}`,
 };
 
 export function PageStateBadge({ className, ...input }: PageStateInput & { className?: string }) {

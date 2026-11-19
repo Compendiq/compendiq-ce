@@ -76,7 +76,11 @@ const MessageBubble = memo(function MessageBubble({
           'max-w-[80%] rounded-2xl px-4 py-3 text-sm xl:max-w-2xl',
           msg.role === 'user'
             ? 'bg-primary/10 text-foreground'
-            : msg.isError
+            // A partial-less failure paints the whole bubble destructive. With
+            // a partial retained (#1801) the bubble stays an ordinary answer
+            // surface — the text in it IS an answer, just cut short — and the
+            // notice beneath carries the destructive treatment on its own.
+            : msg.isError && !msg.interruption
               ? 'border border-destructive/40 bg-destructive/10'
               // The #1105 refusal (#1119): the ordinary bubble ground plus a
               // hairline. A value step and a 1px border is all ADR-010 v0.6
@@ -90,7 +94,13 @@ const MessageBubble = memo(function MessageBubble({
         // in the same render, which AT generally does not announce (MDN alert
         // role). The primed announcer next to the message list handles SR
         // announcement; this bubble is the visual surface only.
-        data-testid={msg.isError ? 'message-error' : msg.isRefusal ? 'message-refusal' : undefined}
+        data-testid={
+          msg.isError && !msg.interruption
+            ? 'message-error'
+            : msg.isRefusal
+              ? 'message-refusal'
+              : undefined
+        }
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
@@ -105,7 +115,7 @@ const MessageBubble = memo(function MessageBubble({
               <TypingIndicator />
             </div>
           ) : null)
-        ) : msg.isError ? (
+        ) : msg.isError && !msg.interruption ? (
           // Error messages render as plain text (not Markdown) so the
           // destructive color isn't overridden by the prose styles.
           <p className="text-destructive">{msg.content}</p>
@@ -118,11 +128,24 @@ const MessageBubble = memo(function MessageBubble({
             <p className="mt-2 whitespace-pre-wrap text-foreground">{msg.content}</p>
           </>
         ) : (
-          <div className="prose prose-sm max-w-none">
-            {msg.content ? (
-              <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-            ) : null}
-          </div>
+          <>
+            <div className="prose prose-sm max-w-none">
+              {msg.content ? (
+                <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
+              ) : null}
+            </div>
+            {msg.interruption && (
+              // The retained partial above is readable and copyable like any
+              // answer; this short line is what failed. Plain text, outside
+              // the prose block, so the destructive colour holds.
+              <p
+                className="mt-3 border-t border-destructive/40 pt-2 text-destructive"
+                data-testid="message-error"
+              >
+                {msg.interruption}
+              </p>
+            )}
+          </>
         )}
         {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
           <div className="mt-3 space-y-2">
@@ -165,6 +188,7 @@ const MessageBubble = memo(function MessageBubble({
   if (prev.msg.id !== next.msg.id) return false;
   if (prev.msg.content !== next.msg.content) return false;
   if (prev.msg.isError !== next.msg.isError) return false;
+  if (prev.msg.interruption !== next.msg.interruption) return false;
   // Without this, the placeholder committed as a refusal keeps the bubble it
   // was already rendering: `content` changes on the same commit today, so the
   // bug would only surface for an empty-bodied refusal — a landmine, not a
@@ -318,11 +342,15 @@ export function AiAssistantPage() {
           they may announce twice — over-announcing beats silence.
           The child span is keyed by message id: Ask mode appends on retry, so
           a repeated identical failure derives byte-identical text — only a
-          freshly inserted node makes AT announce it again. */}
+          freshly inserted node makes AT announce it again. A failure that
+          retained partial output (#1801) announces only its short notice —
+          the partial is an answer body, not an alert. */}
       <div role="alert" data-testid="ai-error-announcer" className="sr-only">
         {(() => {
           const lastError = [...messages].reverse().find((msg) => msg.isError);
-          return lastError ? <span key={lastError.id}>{lastError.content}</span> : null;
+          return lastError ? (
+            <span key={lastError.id}>{lastError.interruption ?? lastError.content}</span>
+          ) : null;
         })()}
       </div>
 

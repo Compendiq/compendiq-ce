@@ -2262,6 +2262,11 @@ existing reader's `=` predicate.
 
 ## ADR-013: Draw.io / Diagrams.net Support
 
+> Current implementation note (#1792): inline diagram editing now exists.
+> XML-only attachments remain editable `.drawio` source files; without a real
+> PNG the page shows an unavailable preview instead of labelling XML as an
+> image. This does not require a rasterizer or a vision-analysis provider.
+
 ### Context
 Confluence pages often contain draw.io diagrams. These are stored as Confluence macros (`ac:structured-macro` with `ac:name="drawio"`) with diagram data in page attachments.
 
@@ -2637,7 +2642,7 @@ The DDL order inside the transaction is `TRUNCATE` → `DROP INDEX IF EXISTS` �
 
 **Capability is probed, not declared.** An OpenAI-compatible `/v1/models` response carries no capability field, and Ollama's capability data lives on native `/api/show` — off-limits under this ADR's shim rule. `vision-probe.ts` sends a committed three-band PNG (yellow/purple/green, deliberately not red/green/blue — the sequence a blind guesser is likeliest to emit) with a prompt constraining the reply to naming the bands in order. Only a reply that does so counts as `true`; the read path (`getVisionCapability`) never blocks a request on a probe — it returns the stored verdict immediately and schedules a background refresh, bounded by in-flight de-duplication per `provider+model` and a cooldown, so a model stuck at `null` cannot fire a probe on every request.
 
-**`null` means undetermined, and is refused.** Verdicts are `true` (the model demonstrably read the pixels); `false` only for a response that definitively rejected the image part or a 200 that ignored it; `null` for everything else, including 5xx, network errors, an open circuit breaker, and every other 4xx. "Definitively rejected" is deliberately narrow: **415 on its own** (Unsupported Media Type has no other reading), and **400 or 422 only when the response body actually mentions the image**. `chat()` throws `LlmHttpError`, which carries the status and a truncated slice of the provider's body as *fields* precisely so this decision can be made without re-parsing a human-readable message — and so the body stays off `message`, which `pages-tags.ts` surfaces to callers.
+**`null` means undetermined, and is refused.** Verdicts are `true` (the model demonstrably read the pixels); `false` only for a response that definitively rejected the image part or a 200 that ignored it; `null` for everything else, including 5xx, network errors, an open circuit breaker, and every other 4xx. Reasoning blocks (`<think>…</think>`) are not part of the answer: only the visible reply is matched, and a 200 that was cut off inside reasoning, or by the token limit, without naming the bands in order is `null`, not "a 200 that ignored it". "Definitively rejected" is deliberately narrow: **415 on its own** (Unsupported Media Type has no other reading), and **400 or 422 only when the response body actually mentions the image**. `chat()` throws `LlmHttpError`, which carries the status and a truncated slice of the provider's body as *fields* precisely so this decision can be made without re-parsing a human-readable message — and so the body stays off `message`, which `pages-tags.ts` surfaces to callers.
 
 422 gets the same body condition as 400 rather than counting on its own, which reads stricter than it is: 422 is pydantic's default for **any** request-body validation failure, so every FastAPI-based OpenAI-compatible server (vLLM, LocalAI, llama-cpp-python) answers 422 for an unrecognised field — including `max_tokens`, which the probe itself sends, and whatever `thinkingExtras` adds. A bare 400 or 422, or one saying `Unsupported parameter: 'max_tokens'` / `maximum context length` / `invalid role` / `extra fields not permitted`, falls through to `null` — those come back from fully vision-capable models, and 429/401/403/404/413 say nothing about image support at all.
 
@@ -2875,6 +2880,17 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 - After all pages are processed, sweep: `DELETE FROM access_control_entries WHERE source='confluence' AND synced_at < <run start>`. Rows that were not refreshed are gone (restriction removed in Confluence, or a specific user was de-listed). `source='local'` rows are never touched.
 - A Confluence `userKey` that has no matching Compendiq user (no OIDC login yet) is skipped with an `ACE_SYNC_SKIPPED_UNMAPPED_USER` audit event. Safe default: implicit deny — the ACE never materialises, so `userCanAccessPage` will not grant read.
 
+> **Amended (#859, #1771):** the sweep is scoped to the spaces the run
+> synced (#859) and, within them, to pages whose restrictions the run
+> re-read — `pages.restrictions_synced_at >= <run start>`, stamped by the
+> write that mirrors the page. An incremental run walks only modified pages,
+> so the unscoped sweep deleted every unmodified restricted page's entries
+> (#1771). Rows on pages a run does not re-read keep their last mirror; a
+> de-listed principal is removed on the next run that re-reads the page —
+> the sweep also runs when the run's walk throws, so only a process crash,
+> or a failure of the sweep itself, between the re-read and the sweep defers
+> it to the next re-read.
+
 **Query-time contract (`backend/src/domains/llm/services/rag-service.ts`):**
 - Overfetch compensation: when the flag is on, both the vector-search and keyword-search stages pull `ceil(topK * 1.5)` candidates instead of `topK`. The post-filter needs headroom because any given page can be filtered out.
 - After `reciprocalRankFusion`, iterate the merged list and keep only entries where `userCanAccessPage(userId, page.id)` is true. Slice to `topK` at the end to keep the response size stable.
@@ -2942,8 +2958,8 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 **Consequences:**
 - EE deployments with the flag on: sync runs take longer (proportional to restricted-page count), and RAG respects Confluence's per-page visibility.
 - CE deployments and EE without the flag: zero behaviour change. The Confluence client methods, the post-filter branch, and the 1.5x overfetch bump are all gated by `isFeatureEnabled('rag_permission_enforcement')`.
-- A Confluence admin removing a restriction or adding a user to an existing one takes effect on Compendiq's next sync (not instant). The sync cadence is `SYNC_INTERVAL_MIN` (default 15 min); documented in the ADMIN-GUIDE.
-- Integration tests in `backend/src/domains/confluence/services/sync-service.integration.test.ts` + `backend/src/domains/llm/services/rag-service.integration.test.ts` are the regression guard.
+- A Confluence admin removing a restriction or adding a user to an existing one takes effect when a Compendiq sync next re-reads the page (not instant). *(Amended #1771.)* Incremental runs (`SYNC_INTERVAL_MIN`, default 15 min) re-read only pages edited inside their modified-pages window, and a full walk runs only on a space's first sync or after it went ≥24 h without a successful sync — so a restriction-only change on an unedited page, a de-listing included, waits for the next full walk or edit; on a healthy schedule that means until the page is edited. A run that fails partway still sweeps the pages it re-read. Documented in the ADMIN-GUIDE.
+- Integration tests in `backend/src/domains/confluence/services/sync-service.integration.test.ts`, `backend/src/domains/confluence/services/sync-service-incremental-ace-sweep.integration.test.ts` + `backend/src/domains/llm/services/rag-service.integration.test.ts` are the regression guard.
 
 ---
 
@@ -4508,8 +4524,9 @@ entry and adds provenance to it.** On `/llm/ask` a page whose best hit is a
 derived chunk is cited as a page source exactly as today (its `chunkText` is
 the evidence the model saw). Additionally, for each distinct
 `(pageId, attachment_source, attachment_key)` among the answer's top-K
-derived rows — best fused rank first, capped at `MAX_IMAGE_SOURCES` (4) —
-one `kind: 'image'` entry is appended after the page and web entries, with
+derived rows — best final result order first (array position; reranking and
+identifier pins included), capped at `MAX_IMAGE_SOURCES` (4) — one
+`kind: 'image'` entry is appended after the page and web entries, with
 `similarity: null` (there is no cross-modal score to fabricate *(epic)*),
 `attachmentUrl` from `buildPageImageUrl` (so `SourceThumbnail`, the
 `ATTACHMENT_URL_PATTERN` guard and the attachment sweep's persisted-URL walk
@@ -4520,6 +4537,22 @@ together with `kind`/`attachmentUrl`, never singly; conversation replay
 re-applies visibility so a revoked page's entry is dropped, hash or no hash.
 A shared `contentHash` is provenance, never an authorization shortcut
 *(epic)*.
+
+*Amended, #1716 (maintainer decision, 2026-11-10 — final array order wins):*
+D12 first ordered the image citations by the carrying row's fused rank, and
+`distinctDerivedImages` sorted on that `score`. It broke `SearchResult`'s own
+contract — the array order is the pipeline's verdict, and consumers never
+re-sort by `score` — so a page the reranker moved up, or an identifier pin (a
+new pin carries `score: 0` and leads by position alone), could have its
+picture cited after, or instead of, a lower-ranked page's. The order is now
+the carrying row's position in the final result array (after fusion, the
+ranking prior, rerank, MMR, the pins and the deep-search merge), then
+`part`, `pageId` and `attachmentKey`; a picture two rows carry is cited once,
+from the earlier row. D11's answer-time pick ranks each round-robin round by
+the same position, so the cited picture and the picture the model is shown
+are still chosen by one rule. `score` stays on the entry, `similarity` stays
+null — no cross-modal score — and retrieval itself (`hybridSearch`, rerank,
+the pins, `fuseWithStableHead`, the `multiQuerySearch` merge) is unchanged.
 
 **D13 — The analysis worker adopts the #1612 batch pattern, one queue, one
 lease, a three-step batch of which only the last needs a model, and a

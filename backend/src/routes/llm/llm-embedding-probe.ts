@@ -43,6 +43,7 @@ export async function llmEmbeddingProbeRoutes(fastify: FastifyInstance) {
           },
           model,
           'probe',
+          { kind: 'non_article', purpose: 'provider_probe' },
         );
         const first = vectors[0] ?? [];
         return { dimensions: first.length };

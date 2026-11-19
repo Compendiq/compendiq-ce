@@ -174,8 +174,8 @@ describe.skipIf(!dependenciesAvailable)('PUT /api/pages/:id/labels — real pers
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ labels: ['existing', 'standalone-new'] });
-    expect(await labelsFor(standalonePageId)).toEqual(['existing', 'standalone-new']);
+    expect(response.json()).toEqual({ labels: ['existing', 'standalone-new', 'all-ai'] });
+    expect(await labelsFor(standalonePageId)).toEqual(['existing', 'standalone-new', 'all-ai']);
     expect(mockRequest).not.toHaveBeenCalled();
   });
 
@@ -192,8 +192,8 @@ describe.skipIf(!dependenciesAvailable)('PUT /api/pages/:id/labels — real pers
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ labels: ['existing', 'remote-new'] });
-    expect(await labelsFor(integerPageId)).toEqual(['existing', 'remote-new']);
+    expect(response.json()).toEqual({ labels: ['existing', 'remote-new', 'all-ai'] });
+    expect(await labelsFor(integerPageId)).toEqual(['existing', 'remote-new', 'all-ai']);
 
     const storedCredentials = await query<{ confluence_pat: string }>(
       'SELECT confluence_pat FROM user_settings WHERE user_id = $1',
@@ -208,6 +208,7 @@ describe.skipIf(!dependenciesAvailable)('PUT /api/pages/:id/labels — real pers
     expect(addOptions).toMatchObject({ method: 'POST' });
     expect(JSON.parse(String(addOptions?.body))).toEqual([
       { prefix: 'global', name: 'remote-new' },
+      { prefix: 'global', name: 'all-ai' },
     ]);
     expect((addOptions?.headers as Record<string, string>).Authorization).toBe(
       `Bearer ${CONFLUENCE_PAT}`,
@@ -228,8 +229,8 @@ describe.skipIf(!dependenciesAvailable)('PUT /api/pages/:id/labels — real pers
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ labels: ['legacy', 'from-confluence-id'] });
-    expect(await labelsFor(confluenceLookupPageId)).toEqual(['legacy', 'from-confluence-id']);
+    expect(response.json()).toEqual({ labels: ['legacy', 'from-confluence-id', 'all-ai'] });
+    expect(await labelsFor(confluenceLookupPageId)).toEqual(['legacy', 'from-confluence-id', 'all-ai']);
     expect(mockRequest).toHaveBeenCalledTimes(1);
     expect(new URL(String(mockRequest.mock.calls[0]![0])).pathname).toBe(
       `/rest/api/content/${confluenceLookupId}/label`,

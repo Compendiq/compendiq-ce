@@ -49,6 +49,111 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
+For standalone `POST /api/pages`, `parentId` accepts a numeric page PK
+(including zero-padded decimal text) or an exact Confluence content ID.
+The Confluence text arm supports large and opaque IDs without int4 coercion.
+Creation stores the resolved parent's source-aware key: its PK as text for a
+standalone parent, its Confluence content ID for a Confluence parent. For a
+visible, unambiguous parent, detail retains that stored key while tree and
+breadcrumb projections identify the parent by its internal numeric PK.
+Omitting `parentId` creates a NULL-parent root. Explicit empty text is rejected
+before lookup, even beside an existing empty Confluence identity; explicit
+JSON null remains a schema 400. Missing, deleted or ambiguous supplied parents
+return the same generic 400 `Parent page not found`, without collision details.
+The same-local-space check, ownership-agnostic parent validation and separate
+cascade owner/source guards are unchanged. Existing padded parent rows are not
+repaired by this new-creation fix.
+
+### Standalone Trash and restore (#1742)
+
+`GET /api/pages/trash` lists only the caller's deleted standalone articles.
+Every item retains its existing fields and ISO dates and adds REQUIRED
+`spaceKey: string | null` (the raw stored key) and `spaceMissing: boolean`.
+Missing-space articles remain listed. NULL and historical `__local__` are
+valid virtual roots, so `spaceMissing` is false for both; an existing
+Confluence container is also not missing. These fields are snapshot hints,
+not a restore reservation or permission to show a target picker.
+
+`POST /api/pages/:id/restore` accepts a positive integer page PK
+(1–2147483647; decimal URL padding is accepted), not a Confluence identifier.
+Ordinary restore needs no body; `{}` is equivalent. Success remains
+`{"id":42,"title":"Trashed note","restored":true}`; an already-live owned
+standalone article returns `restored:false`, without repair or new effects.
+Explicit null/scalar/array bodies and null/numeric/empty target fields are
+validation400s. Unknown object fields strip; raw target keys are not trimmed
+or case-folded.
+
+If the root's real space M is absent, a bodyless request returns exactly:
+
+```json
+{"statusCode":409,"error":"Conflict","reason":"restore_space_missing","message":"The space \"M\" no longer exists. Choose a space to restore into.","missingSpaceKey":"M","canChooseTarget":true}
+```
+
+Only this current true response permits a deliberate retry with
+`{"targetSpaceKey":"EXISTING_LOCAL_KEY"}` or
+`{"targetSpaceKey":"__local__"}`. The latter stores NULL. Local containers
+are not restricted to their creator. No target is guessed/created and no
+automatic request retry occurs. Stored NULL/`__local__` and existing stored
+spaces allow omitted or identical effective targets only; they cannot be
+moved by restore. An existing Confluence container preserves ordinary
+standalone restore but is not a valid rehome destination.
+
+Only authorized same-trash-batch rows carrying M are rekeyed, atomically with
+untrash in one statement. Every other retained nonvirtual space must exist.
+If another batch key N is missing, the entire restore refuses, including
+after selecting a valid root target:
+
+```json
+{"statusCode":409,"error":"Conflict","reason":"restore_space_missing","message":"The space \"N\" for another page in this trash batch no longer exists. This batch cannot be restored by choosing a target for this page.","missingSpaceKey":"N","canChooseTarget":false}
+```
+
+`canChooseTarget` is a REQUIRED boolean on every missing-space refusal,
+assigned from that transaction's current refusal state. False has no root
+target remedy. Clients must show the current message and not open/reopen a
+picker for false, absent or malformed flags. Never infer permission from
+cached list metadata, message parsing or historical key equality: another
+client may restore/rehome/retrash between attempts. A new explicit bodyless
+request may legitimately return true for a different current root state.
+Bulk reports both missing-space states without retry loops.
+
+The other new semantic refusals use the same existing route envelope:
+
+```json
+{"statusCode":400,"error":"ValidationError","reason":"restore_target_not_applicable","message":"A restore target can only be chosen when the stored space no longer exists."}
+```
+
+```json
+{"statusCode":409,"error":"Conflict","reason":"restore_target_space_invalid","message":"The selected restore space is unavailable. Choose an existing local space."}
+```
+
+Unknown/deleted/nonlocal targets share the generic invalid-target response
+without exposing target source/owner/title or access. Missing keys describe
+only the authorized owner's standalone batch, not foreign/traversal pages.
+Existing owner/source/ancestor/import/ambiguity/frozen/pending refusals retain
+their precedence and envelopes; old PageWriteError bodies may omit message.
+No new wrapper, reason beyond these three, general move/repair, purge or
+Confluence-sourced-row behavior is introduced.
+
+Actual rehome detaches only the restored root when its unique resolved LIVE
+direct parent is in a different effective space; child links, paths/depths
+and non-actionable/unresolved parents stay unchanged. Restore holds all
+existing final spaces FOR SHARE through commit; local deletion locks its row
+FOR UPDATE before counting/deleting. Deletion still refuses only live pages,
+not trash; a concurrent loser refuses instead of producing a live orphan.
+`PAGE_RESTORED` audit adds raw `targetSpaceKey` (including `__local__`) and
+`missingSpaceKey` only for actual rehome; padded URL resource identity stays
+raw. Audit restoredCount uses actual updated rows, not a new response field.
+
+### Duplicate lookup
+
+`GET /api/pages/:id/duplicates` accepts a standalone page's internal numeric ID
+or a Confluence page's content ID. Both the source and candidates use the
+caller's page visibility, including restrictions; inaccessible, deleted,
+missing, or visibly ambiguous sources return an empty `duplicates` array.
+Standalone rows' historical Confluence IDs are not source identifiers.
+`GET /api/admin/duplicates` scans the same caller-visible corpus, but its
+pair cap and average-to-average scoring differ from the per-page candidate scan.
+
 ## Example Requests
 
 ### Health Check
@@ -140,6 +245,46 @@ well as the returned items. Omitting it leaves visibility unfiltered; access
 rules still apply in every case. Filter-based bulk selection uses the same
 visibility condition.
 
+#### Page date filters
+
+`dateFrom` and `dateTo` on page lists, search requests and filter-mode bulk
+operations share this exact supported ISO/RFC3339-style profile:
+
+- A valid proleptic-Gregorian `YYYY-MM-DD` date, with four-digit year
+  **0001–9999** and zero-padded month/day.
+- Or `YYYY-MM-DDTHH:mm:ss[.fraction](Z|+HH:mm|-HH:mm)`, with the same calendar
+  rule, uppercase **T/Z**, mandatory seconds, local hours **00–23**,
+  minutes/seconds **00–59**, and an optional **1–6 digit** fraction.
+  Signed UTC offsets require a colon, hours **00–15** and minutes **00–59**
+  (maximum magnitude **15:59**). `Z`, `+00:00` and `-00:00` are all accepted.
+  Brackets and parentheses here describe the grammar, not literal input.
+
+Values stay raw strings: no trimming, timezone normalization or rounding.
+Encode a positive offset's `+` as `%2B` in URLs; for example,
+`dateFrom=2025-06-15T12:00:00%2B05:30`.
+Bounds remain inclusive `>=` / `<=` timestamp comparisons. A date-only value
+means midnight in the PostgreSQL session TimeZone, not necessarily UTC:
+`dateTo=2025-06-15` includes exact midnight and earlier, but excludes later
+times that day. Equal date-only bounds match midnight alone; individually
+valid reversed bounds remain accepted and return an empty selection.
+Visibility, trash rules, count-drift checks and raw cache identity are unchanged.
+
+Invalid/out-of-profile inputs fail with `400 ValidationError` before date-filter
+SQL or bulk selection/effects. Omitted fields are allowed; explicit empty or
+whitespace strings, year0000/extended years, naive/minute-only/lowercase or
+space-separated timestamps, compact offsets, named zones, leap seconds,24:00,
+PostgreSQL keywords (`now`, `today`, `epoch`, `infinity`) and fractions longer
+than six digits are unsupported. This is not acceptance of every RFC3339 or
+PostgreSQL date spelling.
+
+**Compatibility choice (#1738):** malformed dates previously reached PostgreSQL
+and could return500, but not every new400 replaces a500. Previously parseable
+out-of-profile inputs could succeed200 or reach CountDrift409; another
+precondition could already return400 (for example, bulk sync with Confluence
+disabled). PostgreSQL could round a seven-digit bulk-delete bound and select
+and trash a row under the existing drift tolerance. Such bounds are now
+rejected, not silently rounded; the valid-filter count-drift behavior is unchanged.
+
 ### Get a Page
 
 ```bash
@@ -195,9 +340,25 @@ curl "http://localhost:3051/api/search?q=deployment&mode=hybrid" \
   -H "Authorization: Bearer <access-token>"
 ```
 
+In `mode=keyword`, `items` pages one deduplicated list of full-text matches and
+typo-tolerant title matches. No page holds more than `limit` items, each result
+appears on exactly one page, and `total` counts the whole list on every page
+(`totalPages` is `ceil(total / limit)`). A `page` past the last returns no items
+and the same `total`. `sort=relevance` lists full-text matches by text rank,
+then title-only matches by similarity; `sort=modified` and `sort=title` order
+both together. The page id breaks ties.
+
 Every search item includes `source: "standalone" | "confluence"`, taken from
 the current page record in every search mode and fallback path. A named
 `spaceKey` or historical `confluenceId` does not determine provenance.
+
+In `mode=keyword`, `spaceKey`, `author`, `dateFrom`, `dateTo`, `tags` and
+`aiPolicy` apply to every returned item, including typo-tolerant title
+matches.
+
+`dateFrom`/`dateTo` are validated against the [page date-filter profile](#page-date-filters)
+in every search mode. Applying those bounds to results remains keyword-mode
+behavior; this does not add date filtering to semantic/hybrid retrieval.
 
 ### Readiness Probe (for Kubernetes / Docker)
 

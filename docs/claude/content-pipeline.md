@@ -1,0 +1,537 @@
+# Content Pipeline
+
+Moved verbatim from `CLAUDE.md`. Paths are relative to the repository root.
+
+## Content Pipeline (ADR-003)
+
+Confluence DC 9.2 = XHTML Storage Format only (no ADF). Pipeline:
+```
+Confluence (XHTML) ⇄ confluenceToHtml/htmlToConfluence ⇄ DB (body_storage XHTML, body_html clean, body_text plain)
+DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: HTML}
+```
+Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
+
+PDF export draws text in fonts vendored under `backend/src/core/services/fonts`
+(SIL OFL 1.1, rebuilt by `tools/pdf-fonts/prepare.py`; the backend build copies
+them into `dist`): Noto Sans Regular, Bold and Italic, Noto Sans Mono for code,
+Noto Sans SC for Chinese and Japanese and Noto Sans KR for Hangul (both in their
+Regular weight, also in bold or italic text). A character its face lacks falls
+back to Noto Sans Mono (in code: Noto Sans Regular), then SC, then KR, so
+arrows, box drawing and similar symbols print as written. A character no
+bundled font covers prints as U+FFFD: Arabic, Hebrew, Armenian, Georgian, Indic
+and Thai scripts, emoji, symbols such as ✔ ✘ ☑ ➜ ❤, and rare CJK. Controls and
+other invisible characters print nothing. Text is composed (NFC) first, a tab
+is four spaces and, outside code blocks, a newline is a space; each run is
+measured in the font that draws it. Fonts are embedded as subsets, SC and KR
+only when the text needs them; a missing font file fails the export.
+
+**Confluence links live in the href (#1748).** The editor's Link mark keeps no
+`data-*` attribute, so `confluenceToHtml` writes an `ac:link` as
+`#confluence-page:<title>`, `#confluence-attachment:<filename>` or
+`#confluence-anchor:<anchor>`, percent-encoded, then `?` and the link's other
+`ac:*` / `ri:*` attributes, and `htmlToConfluence` rebuilds the `ac:link` from
+that href alone. Parse and build it only through `core/services/confluence-link.ts`
+(the converter, `link-extractor.ts` and the baseline manifest do); keep reading
+the pre-#1748 shape, the title or filename as written, as the fallback to the
+encoded reading. Deferred, unchanged by #1748 (the converters and Improve keep
+these links): the editor loses a link whose body is an image (a block node, so
+a save lifts it out of the paragraph) or inline code (StarterKit's Code mark
+excludes every other mark, so the Link mark leaves it; a fix changes the Code
+mark contract in both schemas), splits a link whose text mixes inline code with
+other text into two links around the code, and on a collaborative save splits a
+link around a line break (Yjs keeps marks on text only). Pinned by
+`content-converter.links.test.ts`.
+
+`body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
+imports, drafts, version text; Notion imports join parts with blank lines, restores copy
+stored text), so `htmlToText` must equal what the page shows: the HTML parser decodes
+entities once and nothing decodes again (#1735). Rows written before #1735 keep their double-decoded text until
+their next write; there is no backfill.
+
+PDF tables split tall rows at wrapped-line boundaries across pages, retaining
+column positions and borders. A fitting first header row repeats on continuation
+pages only when it leaves room for at least one body line; an oversized header
+itself continues without repetition. Cells sit on a span-aware grid as wide as
+its widest row: thead, tbody, then tfoot rows, each row's own cells covering
+their `colspan` (missing, 0 or non-numeric count as 1). `rowspan` is ignored:
+cells of the rows below shift left. A spanning cell wraps at the combined width
+of its columns within each band, with no border inside it. Grids wider than 14
+columns print in bands of at most 14 equal columns (at least 35.38 pt, two
+glyphs wide), one below the other. A later band holds only the rows with a
+cell starting in it (a crossing cell repeats there), plus the header row's
+share of the band; a header cell prints again in a later band only if its
+piece there would also repeat on a continuation page, so an oversized header
+cell prints once. A band in which no cell starts is skipped.
+
+PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Noto Sans Mono
+cells): the rest of a long line continues flush left on the next row, unmarked,
+and each row is placed and paginated like a source line. Tabs expand to four
+spaces before measuring; blank lines keep their row. Text is measured as drawn
+(pdf-lib applies no kerning), and a word wider than its line (URL, hash)
+breaks between characters in body text and table cells.
+
+Draw.io XML-only attachments remain editable `.drawio` sources, not fake
+`.png` files. Publish a preview only after validating PNG chunks, checksums
+and raster stream; otherwise the wrapper names the unavailable preview and
+retains its source URL. Missing previews and sources are rechecked even on
+unchanged pages, without counting an intentionally absent preview as a
+permanent download failure. Both TipTap schemas must round-trip that URL and
+the `drawio-preview-unavailable` marker so a later preview save removes the
+obsolete message. Read and edit mode share `loadDrawioSource`: try XML without
+stale cache, then an actual decoded PNG containing editable draw.io metadata.
+Validate every XML page, preserving the complete multi-page file and valid empty
+graphs. Support the packaged editor's URI/double-URI tEXt and legacy raw-deflate
+zTXt formats, with bounded expansion. HTTP 200, MIME type, and filename are not
+proof of editable content. Never substitute an empty diagram on load failure.
+An attachment-candidate fallback is not an authentication retry: one logical
+load may invoke the shared refresh helper only once. Propagate refresh
+unavailability immediately, keeping auth state and the helper's marked-busy
+retry policy; never replay an uncertain rotation through the PNG candidate.
+Synthetic refresh-success fixtures must satisfy the shared `AuthResponseSchema`,
+including UUID user IDs. Assert request sequences and preserved session state,
+not incidental error-message wording.
+A missing local source is unknown upstream availability, not proof of absence:
+retain the converted source locator on page-only publication (including PUT,
+bulk sync and recovery). The existing authorized attachment GET resolves it
+on demand; only validated local raster bytes may become a preview.
+Lazy `.drawio` reads also resolve `.xml` and extensionless upstream titles.
+All sync and lazy paths classify bytes, including names ending in `.xml` or
+`.drawio`: actual PNG becomes a preview, actual XML becomes source, and other
+payloads are not cached. A preferred source title containing PNG or unrelated
+bytes must not shadow another valid XML source: continue through the supported
+source candidates, retaining any validated PNG separately. A Confluence-to-local move
+must refuse before any cutover or upstream deletion if a referenced draw.io
+source is not preserved as XML in its prepared attachments. Open/save the
+diagram first, then retry the move; never rewrite an unpreserved source.
+Extensionless previews are classified even beside an existing XML source;
+classification receipts suppress repeated downloads of unchanged bare sources.
+A version-jump sync removes a diagram's cached `<name>.png`, `<name>.drawio`
+and `<name>.drawio.png` together when the incoming body references it, keeps
+all three when only local content (body, draft, history) does — by source
+locator, or by the `data-diagram-name` wrapper alone in HTML written before
+2026-10-28 — and never removes dot-file receipts.
+Attachment saves and their recovery publish newly valid previews into existing
+HTML under the same writer fence, never by reconverting stale storage. Update
+plain text and invalidate persisted collaborative bytes with that presentation.
+Incremental sync also reconciles stale presentation when both files exist,
+through the existing conflict policy rather than an unconditional body write.
+Read mode uses the draw.io schema renderer, not the editor-only React node view,
+so the admitted Edit Diagram callback remains reachable for source-only nodes.
+Remove its overlay when that callback is withdrawn (including a live freeze).
+
+**Emoticons round-trip (#1750).** `confluenceToHtml` turns each `ac:emoticon` into an
+empty `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅"
+role="img" aria-label="tick">`: the JSON object holds every attribute in source order
+(`ac:name`, `ac:emoji-*`, any other; `<`/`>` written `\u003c`/`\u003e`); the label (an
+emoji, or Confluence's text form `:shortname:`/`(name)`) is drawn by
+`.confluence-emoticon::before`, so the span adds no text to `body_text`, embeddings,
+Markdown or #1751's task matching. `htmlToConfluence` writes exactly the carried
+attributes back, self-closed (`<ac:emoticon ac:name="tick" />`; `<`, `>`, tab, LF and CR in a
+value as character references). `confluenceEmoticon`
+(inline atom: `emoticonAttrs`, `label`, `name`) is in both TipTap schemas, rendered
+by `renderHTML` alone (no node view), never a tab stop. `span.confluence-emoticon` is in `MEDIA_SELECTOR`: AI Improve freezes it
+as one inline token, never a div, so a task holding one stays a task (#1752). A
+page synced before #1750 shows emoticons only after its body is re-derived.
+
+A pasted image is uploaded once. `planLocalImagesForConfluence` uploads every
+`img[src^="/api/attachments/"]` that has neither `data-confluence-filename` nor
+`data-confluence-image-source`, and gives it both (`attachment`): the shape
+`confluenceToHtml` writes for a synced attachment and `htmlToConfluence` turns
+into `ri:attachment`. A collaborative Confluence Save copies those markers into
+the room's live and persisted Yjs document after its intent settles (#1764);
+otherwise the room's next 2 s persist drops them and every later Save uploads
+the image again.
+
+**A Confluence task keeps its id (#1751).** `ac:task-id` (canonical, at most
+2^63 − 1) rides in `data-task-id`, declared as `taskId` on `taskItem` in both
+TipTap schemas (`ConfluenceTaskItem`, registered by the editor and by read mode,
+whose copy is serialized with its schema; `keepOnSplit: false`). Every
+write-back over an existing page passes the stored `body_storage`: a task keeps
+the id it carries (of two carriers of one id, the one with the stored task's
+text), a task without one takes the id of a stored task with exactly its text,
+and any other task gets the next free number above every id in the page and its
+storage (deterministic: publishing a version restore re-derives the digest).
+Only on a page synced before #1751 (`legacyTasks`: its stored `body_html` holds
+tasks and none carries an id; for a collaborative Save, the room's
+`compendiq.meta` Y.Map lacks `confluenceTaskIds`) do the tasks left pair with
+the stored tasks left in order when they are as many. Draft publish stores the
+ids it wrote in the live body; like the image markers above, a collaborative
+Save sets them on the room's task items after its intent settles, in the
+transaction that also sets `confluenceTaskIds`. The task body is TaskItem's
+content `div`, never its checkbox `<label>`. AI Improve carries no ids (turndown
+writes `- [ ]`) and never pairs: only tasks with unchanged text get theirs back
+on apply.
+
+**`body_html` never contains a raw structured macro (#1438).**
+`confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
+clone nested `ac:structured-macro` nodes after their dedicated handler pass.
+Conversion therefore repeats to a fixed point with a strict monotonic guard:
+the raw macro count must decrease on every pass, or conversion throws rather
+than returning partial HTML or deleting the malformed macro. A cloned supported
+macro stays raw for the next dedicated pass; it must never be downgraded into
+the lossless long-tail `confluence-macro-unknown` node. Native `panel` renders
+through the existing info-panel node but carries `data-macro-name="panel"` and
+arbitrary direct text parameters through the editor, so write-back emits
+`ac:name="panel"` rather than permanently coercing it to `info`.
+
+**Dedicated macro handlers keep every parameter (#1749).** `code`, `toc` and
+`status` keep canonical parameters in their own attributes (code `language`
+class + `data-title`, toc `data-<name>`, status `data-color` + text) and every
+other direct text parameter in `data-macro-params`. `codeBlock`, `mermaidBlock`
+(which claims a code macro whose language is mermaid), `confluenceToc` and
+`confluenceStatus` declare it as `macroParams` in both TipTap schemas, and so
+does read mode's code block, because a copy out of read mode is serialized with
+that schema. The parity test is one-way: it fails when the collab schema lacks
+an attribute the frontend declares; the frontend declarations are pinned by
+Editor.test.tsx, ArticleViewer.test.tsx and MermaidBlockExtension.test.tsx. The
+reverse pass skips a carried copy of a canonical name. The code language is the
+whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
+TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
+code language, but not a code block's `data-title`/`data-macro-params`. Only
+`body_html` converted after #1749 holds the carriers: a page synced earlier gets
+them when its body is next re-derived from Confluence (an upstream change, or
+a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
+or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
+`POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
+unchanged pages). A save before that still drops them.
+
+**Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
+accessible native, relation and block-host ancestors omitted from Search without
+listing every page body; existing bounded row probes only advise table defaults.
+Inline wiki databases remain selectable. Normalize UUID spelling, not titles,
+and reject cyclic edges without losing nodes. The picker batches confirmed IDs
+into requests of up to 200; explicit database exclusions travel with every batch.
+
+The remote tree metadata is cached, but imported markers are read live from
+this user's nontrashed standalone pages on EVERY public tree GET, including
+cache hits. UUID case/hyphens are normalized; no title or Confluence metadata
+row owns an import identity. Enrichment changes only request-owned parsed
+nodes after the metadata cache write completes. A failed authoritative marker
+read fails the request rather than inventing false or stale markers.
+
+Both successful relocation cutovers clear `notion_page_id` in the same UPDATE
+as the source/owner change, keeping the universal page PK and dependencies.
+Re-import therefore allocates a distinct standalone page; it must not rebind
+the moved copy. The exact original token belongs in relocation preparation
+for rollback, not in generic intent metadata. Safe pre-allocation 23505
+reconciliation stays distinct from an admitted uncertain failure, which remains
+failed and pending rather than being mapped to success or force-cleared.
+
+**Notion import plans before persisting.** Pages and databases share parent-first
+allocation, preserving the selected root and wiki home bodies. Actual embedded
+child pages/databases expand their owned descendants; mentions never imply
+ownership. Property-only embedded databases fold into parent tables, never also
+row articles, including later row-only batches. Article-bearing rows keep their
+bodies and correct parent; wiki containers remain articles. Successfully imported
+direct children use one existing Child pages macro per parent. Return discovered
+outcomes too, for failure reporting, cache invalidation and audit. Per-owner plus
+selected-ID locks protect dynamic overlaps. Re-import preserves bodies unless
+overwrite is requested; never automatically delete older row articles or local
+edits to remove duplicates.
+
+**Notion import is not request-scoped.** `POST /api/notion/import` returns 202
+and runs `runNotionImport` off the request. `GET /api/notion/import/status` is
+the result. A Knowledge Base with nested pages outruns nginx
+`proxy_read_timeout 300` at Notion's 3 req/s; waiting on the POST is the FTS
+rebuild 504 (browser error, work continues). Never put paced Notion traffic
+back on that HTTP request. Start is `SET NX` on a per-user lock with a 10-minute
+safety TTL (renewed while the walk runs) — a second POST while the lock is held
+is 409. Renew, release, and terminal status writes are Lua compare-and-swap on
+the lock token (same as Confluence `SYNC_LOCK_TTL`). `importing` is not a 24h
+mutex; a missing Redis status key is idle. Redis SET NX throwing fail-closes.
+
+
+**That 3 req/s budget is spent by `NotionClient`, not by its callers (#1553).**
+`waitForSlot` reserves the next *start* 334 ms out, and it reserves
+synchronously — before any `await` — so concurrent callers each take their own
+slot and the tree's three `pLimit(5)` waves plus the importer's row-body checks
+still overlap. Never serialize on completion instead: that caps the client at
+1/(interval + latency) rather than 1/interval (≈1.6 req/s at Notion's typical
+latency, half the budget) and silently makes every caller-side `pLimit` inert —
+measured `peakConcurrentLookups` of 1, which is why both tree concurrency tests
+now assert a floor as well as the cap. 429/529 retry on any method; 500/502/503/504
+only on GET/DELETE and on the two POSTs that are reads (`/v1/search`,
+`/v1/databases/:id/query` — a transient 5xx mid-pagination is exactly what the
+ladder is for, and this client issues no writes, so a future write POST must
+stay off that list). Six attempts. `Retry-After` wins over the exponential
+ladder but is floored at one pacing slot (a proxy answering `Retry-After: 0`
+must not turn the ladder into a hot loop) and capped at 60 s, because that sleep
+sits outside `AbortSignal.timeout` and would otherwise park an import past every
+request timeout. Notion-hosted attachment bytes live on S3, which is not part of
+the integration's budget: `fetchMedia` retries them but takes no slot for a URL
+off the API origin.
+
+**Markdown import** on the New Page form is a *conversion*, not a create (#1133).
+`POST /api/pages/import/preview` parses YAML front-matter, runs `markdownToHtml` and
+sanitizes — and persists nothing. The form loads the result into the editor the way
+"Use Template" does, and the normal `POST /api/pages` create saves it with the space,
+parent and visibility the user chose. It replaces `POST /api/pages/import`, which
+inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
+a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
+
+`markdownToHtml` renders GFM task items as `ul[data-type="taskList"] >
+li[data-type="taskItem"][data-checked]`, splitting a list that mixes task and
+plain items into runs (ordered plain runs keep `start`), for every caller —
+AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
+draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
+which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
+text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+status lozenges, Jira links and images are inline and keep their tasks. The
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
+`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+
+`data-diagram-name` is admitted by name and as URI-safe, so a
+` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
+(#1754). A diagram name is text: consumers encode it (`encodeURIComponent`,
+`safeAttachmentPath`) and never use it as a URL. `htmlToMarkdown` writes a name-only
+placeholder's name raw into its fence, so the import drops a name with a line break or other
+control character, one that marked reads as a closing fence (three backticks, then only backticks
+or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
+`data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
+the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
+
+Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
+the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
+`ImportMarkdownSchema`'s 1,000,000 **characters** → the client precheck in `NewPagePage`.
+1,000,000 characters is up to 3 MB of UTF-8 and ~6 MB of JSON-escaped request body, so an
+edge limit set to the same *number* as the schema still refuses files the schema accepts —
+which is what produced an HTML 413 from nginx naming a limit the app had never heard of.
+The edge is **shared with every other `/api/` route**, so size it to the largest `bodyLimit`
+behind it (the draw.io attachment route's 40 MiB), never to the route you happen to be
+working on; `frontend/src/nginx-api-body-limit.test.ts` parses them out of the backend and
+fails if the edge drops below any of them.
+`parseFrontMatter` tolerates CRLF and a leading BOM because failing to match is **silent**:
+the `---` block renders as body and the import reports success with title and labels gone.
+It also reads YAML block lists (`tags:` then `  - ops` lines, quoted items, trailing `#`
+comments) as arrays — they used to import as no labels without a warning (#1753). Only a
+top-level (unindented) key opens a list, and items end at the first line that is not an item,
+blank or comment, so a list under another key never reaches `tags`/`labels`. YAML comment
+rules apply: `- #ops` is an empty item (write `- '#ops'`). A scalar `tags: ops` is still not a label.
+An indented key opens no list but is still read as a top-level key (pre-existing), so a nested
+`tags:` replaces a top-level `tags` list with `''`.
+
+**Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
+`POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
+(structural `content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided
+by **magic-byte sniffing**, never the client's `Content-Type` — a mismatch against the claimed
+extension is a 415. Zip containers (docx/odt) are bounded by `ZIP_LIMITS` and, for docx,
+repacked stored before `mammoth` sees them, because mammoth's own inflater is unbounded.
+ODT is read by one linear pass over `content.xml` that tracks element depth — never a regex
+per element, which ended a paragraph at a nested note's `</text:p>` (#1734): a note or text
+box splits its paragraph in document order, at most 64 paragraphs are tracked open, and
+character references are decoded once (invalid code points become U+FFFD). It never loads
+or interprets a DTD and expands only the five XML entities and numeric references; do not
+swap in an XML/DOM parser that expands declared entities (jsdom's XML mode does).
+ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
+the existing entry limit; do not expand each run without a shared budget.
+RTF is one linear token scan over the file's bytes: `\uN` replaces its group-scoped `\ucN`
+fallback, `\'hh` bytes decode through `TextDecoder` in the `\ansicpgN` code page (windows-1252
+when absent or unsupported; 932/936/949/950 as double-byte runs, 949 as full Windows cp949;
+per-font `\fcharsetN` is not read), `\binN` data is skipped, listed destination groups drop
+whole with everything nested in them, and malformed input never throws.
+
+**Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
+never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format
+by magic bytes (png/jpeg/webp/gif — **SVG is never accepted**, both because vision encoders
+need raster and because SVG carries script/XXE risk) and stages the validated bytes in Redis
+under a per-user, content-addressed handle (`llm:img:<userId>:<sha256>`, 15-minute TTL). Generate
+and Improve accept that handle and are refused with a 422 unless the resolved `chat` model
+has separately probed as vision-capable (`llm_model_capabilities`, migration 087) — capability
+is probed with a known-content image, never declared, because neither the OpenAI-compatible
+`/v1/models` response nor Ollama's off-limits native `/api/show` exposes it. `sanitizeLlmInput`
+cannot inspect pixels, so prompt injection rendered as an image is an accepted, documented
+risk (ADR-021's `#1154` amendment) — not something this path mitigates.
+
+**That Redis is shared and `noeviction`, so staging is capacity-gated (#1183).** A full
+instance rejects *writes* — BullMQ enqueue included — so `stageImage` reads `INFO memory`
+first and answers **503** when the write would take Redis past
+`IMAGE_STAGING_MAX_REDIS_PERCENT` (default 80) of `maxmemory`: the image feature degrades
+instead of sync, re-embed, summary and quality all failing to enqueue. The check **fails
+open** — `maxmemory: 0`, an unreadable reply, or an `INFO` that a hardened deployment has
+renamed all proceed — because an unreadable reply is not evidence of pressure, and per
+request the write is its own backstop: an `OOM` reply from the `SET` maps to the same 503.
+**Don't restate that as "the worst case is a slower 503".** It is true per request and false
+per deployment: where `INFO` is unreadable the ceiling never engages, staging fills Redis,
+and `OOM` only arrives once BullMQ enqueue is failing beside it — such deployments are back
+to the per-user mitigation and their operators must watch `used_memory` themselves. Even
+where it engages, the check is check-then-write: concurrent uploads inside the window pass
+on the same pre-write reading and can collectively overshoot the reserve, so the percentage
+is a soft target under burst, not a hard guarantee. Don't add
+a cache in front of the check (a stale "there is room" admits every upload in the window on
+one reading) and don't replace it with a staged-bytes counter (a TTL expiry can't decrement
+one, so it drifts up until the feature wedges). `MAX_IMAGE_BYTES` is **5 MB** and is the only
+*memory* ceiling; `MAX_IMAGE_DIMENSION` stays **4096** on purpose — dimensions bound what the
+model looks at, not what Redis holds, and 4096 typically stays reachable in WebP or in JPEG at
+moderate quality. Both are pinned by tests, so moving either is a deliberate capacity decision.
+
+**The frontend half normalises before it stages.** `shared/lib/downscale-image.ts`
+re-encodes **every** attached image — not only oversized ones — to **WebP within a 1568px
+longest edge**, so the server never sees anything else and most of its rejections
+(format, dimensions, payload size) are unreachable. `shared/hooks/use-attachments.ts` owns
+both attachment slots on all three AI composers (`/ai` Generate, `/ai` Improve, the dock):
+it routes every intake path — click, drop, paste — decides in **one** place whether a file
+is a document or an image, owns the shared composer drop target, and holds the 20 MB
+document gate. The upload zones gate nothing; they report the file they were handed and
+render what they are given. Two rules follow from that: **SVG is refused client-side**,
+never rasterized around the server's sniff; and passing **`isDragOver`** to
+`DocumentUploadZone` is what declares "the parent owns the drop target", after which the
+component attaches no drag handlers of its own — omit it while the hook is listening and
+every drop fires twice.
+
+The **`vision` tri-state must never collapse to a boolean**: `false` means probed and
+refused, `null` means never established (an inconclusive probe — rate limit, auth hiccup,
+open breaker), and they render different text (`VisionBadge`: "Text-only" vs
+"Unconfirmed"). Only `true` enables image attachment. The dock's single **Attach document
+or image** control stays available for documents in every state; its shared router refuses
+an image with the verdict-specific reason when vision is not `true`. Attachment cards remain
+their own DOM rows (`composerRowClass`), and the one shared trigger follows those rows, so
+focus follows what the eye reads (WCAG 2.4.3). Don't reintroduce `order-*` anywhere in a
+composer; `expectComposerFocusOrder` fails on it.
+
+**A wrong verdict is correctable, and `probe_error` is admin-only** (#1184). Settings → AI Models
+carries a **Re-check** control on the chat row — `POST /admin/llm-usecases/chat/reprobe-vision`,
+a blocking probe of the pair `resolveUsecase('chat')` resolves — plus a disclosure exposing
+`probed_at` and `probe_error` from `GET /admin/llm-usecases/chat/vision-capability`. Both are
+`requireAdmin`. **Never extend `UsecaseDefaultSchema` with `probeError`**: `GET
+/llm/usecase-default` is `fastify.authenticate` but *not* admin-gated, and the probe error is
+the provider's raw body, which `llm-http-error.ts` keeps off client-visible paths because it
+can echo request fragments and internal topology. It is truncated at
+`PROBE_ERROR_MAX_CHARS` on the way out and rendered as plain JSX text — never
+`dangerouslySetInnerHTML`, never a Markdown renderer.
+
+## MCP Sidecar Sessions
+
+The `mcp-docs` sidecar owns the Streamable HTTP session. An unknown or
+terminated `mcp-session-id` gets `404` with the SDK's JSON-RPC body
+(`-32001 Session not found`) on POST, GET and DELETE; a non-initialize request
+without the header gets `400 -32000`. The `/mcp` shared-secret guard runs
+before either answer. Idle eviction uses `MCP_DOCS_SESSION_TTL_MS` (default
+30 min); it is a sidecar-process variable and is not mapped by the stock
+Compose files.
+
+The backend client (`backend/src/core/services/mcp-docs-client.ts`) retries a
+request exactly once, after dropping its cached connection, and only on a
+transport-level `StreamableHTTPError` whose status is 404 or 400 (400 keeps a
+not-yet-upgraded sidecar working). Keep the predicate status-based. Never
+retry a tool `isError` result or any other error: a 4xx is produced before a
+tool runs, so re-sending cannot double outbound SearXNG/fetch traffic, whereas
+retrying a tool error would. The retry re-sends the same URL or keyword query
+only — no article content. Concurrent callers must share one in-flight
+connect; publish `client`/`transport` only after `initialize` succeeds.
+
+The real-sidecar validation
+(`backend/src/core/services/mcp-docs-client.integration.test.ts`) spawns the
+worktree's `mcp-docs/src` against a fake SearXNG through idle eviction and a
+restart. It installs the sidecar's production dependencies into a temp dir
+(`npm ci --omit=dev --prefer-offline`) because `mcp-docs` is not a root
+workspace; it runs in the PR Check `Tests` job and must fail, never skip, when
+npm, Redis or the sidecar is unavailable.
+
+## SearXNG Sidecar
+
+`fetch_url` caches at most the first 100 000 characters of a document's
+markdown (`CACHE_MAX_CHARS` in `mcp-docs/src/cache/redis-cache.ts`, equal to
+the tool's `ABSOLUTE_MAX_LENGTH`), whatever the download size: the Redis it
+shares with the BullMQ queues runs `noeviction` (#658), so a 5 MiB document
+must not become a 5 MiB value (#1770). `contentLength` stays the full length
+and `storedLength` says how much is stored; an entry without `storedLength`
+predates the bound, holds the whole document and stays readable, so the
+`mcp:docs:url:` namespace is not versioned for this additive field. A read the
+stored prefix cannot answer in full — a `start_index` at or beyond it, or a
+window crossing it — is a cache miss: fetch again, answer from the fresh
+document and re-store the bounded entry. Never answer it with a short slice
+(a caller paging by `max_length` would lose text), and never raise one of the
+two constants alone. Only the markdown is bounded; `title` and `url` are
+stored as fetched. `mcp-docs/src/tools/fetch-url.integration.test.ts` pins
+this against real Redis (`MCP_DOCS_TEST_REDIS_URL`; never skip).
+
+`mcp-docs` calls SearXNG directly, so `[botdetection].trusted_proxies`
+defaults to loopback only; never re-add a blanket Docker subnet. A deployment
+that actually proxies SearXNG may set `SEARXNG_TRUSTED_PROXIES` to
+comma-separated proxy IPs/CIDRs. The renderer must validate each entry and
+fail startup on malformed input; never trust all forwarded headers. The
+derived image keeps upstream ClearURLs fetches primary and patches only their
+all-failed branch to load the pinned local baseline. Keep the patch strict so
+an upstream integration-point change fails the image build.
+
+`search_web` caches only the requested bounded result width and category
+list: its Redis key is the sanitized query plus that effective width plus the
+`categories` string. Keep the width in cache identity because cached results
+are already truncated; a narrower request must not poison a later wider
+request, or vice versa. Keep the categories in it because SearXNG answers a
+different result set per category list.
+Use the versioned `mcp:docs:search:v3:` namespace: `v2` hashed query plus
+width, so one `v2` entry would answer every category list (and the
+unversioned legacy keys were query-only). Never read a legacy or `v2` entry as
+a `v3` result; let their TTL expire without flushing shared Redis. Bump the
+version again whenever the identity changes.
+
+Admin settings reach the sidecar as tool arguments on every call — never as a
+Redis config key or an environment override (#1769). `fetch_url` takes
+`cache_ttl` (60–86400 s: the admin Cache TTL; `CACHE_TTL_SECONDS` when absent;
+a cache hit never rewrites an entry's TTL) and a `max_length` the backend caps
+at the admin Max Content Length (1000–100000, the sidecar's
+`ABSOLUTE_MAX_LENGTH`; callers keep 5000 for web search, 2000 for test-fetch
+and 10 000 for attached URLs). `search_web` takes `categories`
+(`^[a-z0-9_]+(,[a-z0-9_]+)*$`, at most 200 characters, default `general`).
+The SearXNG URL is `SEARXNG_URL` on the sidecar only: no tool argument, Redis
+key, admin route or UI field may carry a search host. Stored values outside
+these ranges are clamped or fall back on read with a warning
+(`getMcpDocsSettings`, `getSearxngSettings`). The sidecar does not depend on
+contracts, so `MCP_DOCS_*` / `SearxngCategoriesSchema` and the tool schema are
+pinned by literal tests on both sides —
+`packages/contracts/src/schemas/{mcp-docs,searxng.categories}.test.ts` and
+`mcp-docs/src/admin-settings.integration.test.ts`, which boots the sidecar
+with real Redis (`MCP_DOCS_TEST_REDIS_URL`; never skip) and serves
+`fetch_url` from a preloaded `fetch` stub because the SSRF guard refuses
+loopback. Never widen one side alone.
+
+`search_web` accepts `num_results` 1–10 (`MAX_NUM_RESULTS`). The admin setting
+`searxng_max_results` shares that range through
+`SEARXNG_MAX_RESULTS_{MIN,MAX,DEFAULT}` in `@compendiq/contracts`; the sidecar
+does not depend on contracts, so both sides are pinned with literal tests —
+`packages/contracts/src/schemas/searxng.test.ts` for the constants and
+`mcp-docs/src/search-web-limits.test.ts`, which boots the sidecar against a
+loopback SearXNG and proves the tool accepts 1–10, defaults to 5 and rejects
+0/11 (real Redis via `MCP_DOCS_TEST_REDIS_URL`; never skip). Stored values
+outside the range are clamped on read (`getSearxngSettings`) with a warning,
+and `POST /admin/searxng/test` searches with the saved width. Never widen one
+side alone (#1768).
+
+The MCP cache-width regression is mandatory in the sidecar test suite and uses
+real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The
+PR Check sidecar job provisions Redis and sets this explicitly. Missing
+configuration fails the suite rather than skipping the regression.
+
+`search_web` accepts a `query` of at most 200 characters and 30
+whitespace-separated words — a data-leakage control (`MAX_QUERY_LENGTH` /
+`MAX_WORD_COUNT` in `mcp-docs/src/security/query-sanitizer.ts`; the tool
+schema's `max(200)` in `mcp-docs/src/index.ts`). The public LLM contract
+enforces the same bounds up front: `searchQuery` on the
+ask/generate/improve/summarize request schemas is `WebSearchQuerySchema`
+(`trim().min(1).max(WEB_SEARCH_QUERY_MAX_CHARS)` plus a
+`WEB_SEARCH_QUERY_MAX_WORDS` refine) in `@compendiq/contracts`, so an
+over-long or blank query is a `400 ValidationError` at the API boundary
+instead of a silently empty search. The backend never truncates an explicit
+`searchQuery`; only the derived default queries are sliced to 200 characters.
+The sidecar does not depend on contracts, so both sides are pinned with
+literal tests — `packages/contracts/src/schemas/llm.test.ts`,
+`mcp-docs/src/security/query-sanitizer.test.ts` and the running-sidecar cases
+in `mcp-docs/src/search-web-limits.test.ts`. Never widen one side alone
+(#1767).
+
+## Analytics PDF Export
+
+The analytics dashboards' PDF is built in the browser by
+`frontend/src/shared/lib/export-helpers.ts`, which loads `pdf-lib` on demand,
+unless an EE renderer is registered with `setPdfRendererOverlay` (it receives
+the rows and metadata unchanged). The CE renderer draws with pdf-lib's standard
+Helvetica fonts, which encode only WinAnsi (Windows-1252), so the cover prints
+the date range as `<start> to <end>` and every caller-supplied string (title,
+user name, instance URL, KPIs, column names, cells) passes through
+`createTextGuard`: NFC first, whitespace the font lacks becomes a space, any
+other character it lacks becomes `?`, and the cover then says so. Non-Latin
+analytics data (Cyrillic or CJK titles and queries) is therefore lossy in this
+PDF; the dashboards themselves show it intact, and the integrity hash still
+covers the original rows. A failed export downloads nothing and shows an error
+toast (see `docs/claude/ui-ux.md`) (#1732).

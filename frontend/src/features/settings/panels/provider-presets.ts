@@ -8,7 +8,8 @@
 export type ProviderPresetId =
   | 'openai'
   | 'deepseek'
-  | 'groq'
+  | 'anthropic'
+  | 'grok'
   | 'mistral'
   | 'openrouter'
   | 'together'
@@ -51,12 +52,22 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     urlHelper: 'OpenAI-compatible /v1. The suggested model is editable.',
   },
   {
-    id: 'groq',
-    label: 'Groq',
-    baseUrl: 'https://api.groq.com/openai/v1',
+    id: 'anthropic',
+    label: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    authType: 'bearer',
+    suggestedModel: 'claude-sonnet-5-5',
+    urlPlaceholder: 'https://api.anthropic.com/v1',
+    urlHelper:
+      "Anthropic's OpenAI-compatible /v1. The suggested model is editable; its compatibility layer ignores most unsupported fields.",
+  },
+  {
+    id: 'grok',
+    label: 'Grok',
+    baseUrl: 'https://api.x.ai/v1',
     authType: 'bearer',
     suggestedModel: '',
-    urlPlaceholder: 'https://api.groq.com/openai/v1',
+    urlPlaceholder: 'https://api.x.ai/v1',
     urlHelper: 'OpenAI-compatible /v1. Type a model id.',
   },
   {

@@ -4,6 +4,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { LoginPage } from './LoginPage';
 import { apiFetch, ApiError } from '../../shared/lib/api';
+import { reloadPage } from '../../shared/lib/client-protocol';
+import type * as ClientProtocol from '../../shared/lib/client-protocol';
 import { useAuthStore } from '../../stores/auth-store';
 import { toast } from 'sonner';
 
@@ -14,6 +16,12 @@ vi.mock('../../shared/lib/api', async (importOriginal) => {
 
 vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn() },
+}));
+
+// jsdom's `location.reload` is unforgeable; the panel reloads through this seam.
+vi.mock('../../shared/lib/client-protocol', async (importOriginal) => ({
+  ...(await importOriginal<typeof ClientProtocol>()),
+  reloadPage: vi.fn(),
 }));
 
 type OidcOpt = Record<string, unknown> | 'reject';
@@ -44,8 +52,8 @@ function mockApi(
     registration?: RegOpt;
     loginVariant?: LoginVariantOpt;
     edition?: EditionOpt;
-    login?: 'ok' | { statusCode: number; message?: string };
-    register?: { statusCode: number; message: string };
+    login?: 'ok' | { statusCode: number; message?: string; body?: unknown };
+    register?: { statusCode: number; message: string; body?: unknown };
   } = {},
 ) {
   const oidc = opts.oidc ?? { enabled: false, issuer: null, name: null, enterpriseRequired: false };
@@ -73,13 +81,17 @@ function mockApi(
     }
     if (u.includes('/auth/register')) {
       if (opts.register) {
-        throw new ApiError(opts.register.statusCode, opts.register.message);
+        const error = new ApiError(opts.register.statusCode, opts.register.message);
+        error.body = opts.register.body ?? null;
+        throw error;
       }
       return { accessToken: 'tok', user: { id: 'u1', username: 'newuser', role: 'user' } } as never;
     }
     if (u.includes('/auth/login')) {
       if (opts.login && opts.login !== 'ok') {
-        throw new ApiError(opts.login.statusCode, opts.login.message ?? 'Session expired');
+        const error = new ApiError(opts.login.statusCode, opts.login.message ?? 'Session expired');
+        error.body = opts.login.body ?? null;
+        throw error;
       }
       return { accessToken: 'tok', user: { id: 'u1', username: 'simon', role: 'user' } } as never;
     }
@@ -997,6 +1009,54 @@ describe('LoginPage', () => {
       await submitWrongPassword();
 
       expect(await screen.findByRole('alert')).toHaveTextContent('Cannot reach the server');
+    });
+
+    // #1881: the backend refused BEFORE checking the credentials because this
+    // bundle did not identify itself as policy-aware. Never "wrong password".
+    it('maps client_reload_required to the reload message with a reload control, not a credential failure', async () => {
+      mockApi({
+        login: { statusCode: 409, message: 'Conflict', body: { error: 'client_reload_required' } },
+      });
+      renderLoginPage();
+      await submitWrongPassword();
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('This page is out of date. Reload to continue.');
+      expect(alert).not.toHaveTextContent("don't match");
+      expect(screen.getByLabelText('Username')).not.toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid', 'true');
+      expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reload page' }));
+      expect(vi.mocked(reloadPage)).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers the same reload on registration', async () => {
+      mockApi({
+        oidc: 'reject',
+        registration: { allowRegistration: true },
+        register: { statusCode: 409, message: 'Conflict', body: { error: 'client_reload_required' } },
+      });
+      renderLoginPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Create one' }));
+      await screen.findByLabelText('Confirm password');
+
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'newuser' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password123' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('This page is out of date. Reload to continue.');
+      expect(screen.getByRole('button', { name: 'Reload page' })).toBeInTheDocument();
+    });
+
+    it('keeps an ordinary 409 on login as a request failure without a reload control', async () => {
+      mockApi({ login: { statusCode: 409, message: 'Conflict', body: { error: 'Conflict' } } });
+      renderLoginPage();
+      await submitWrongPassword();
+
+      await screen.findByRole('alert');
+      expect(screen.queryByRole('button', { name: 'Reload page' })).not.toBeInTheDocument();
     });
   });
 

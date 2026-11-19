@@ -26,6 +26,9 @@ const validReadPayload = {
   // image leg for MRL truncation.
   reembedHistoryRetention: 150,
   adminAccessDeniedRetentionDays: 90,
+  webhookDeliveriesRetentionDays: 90,
+  jobHistoryRetentionDays: 90,
+  notificationsReadRetentionDays: 90,
   // Compendiq/compendiq-ee#113 Phase B-3 — required on read so a GET response
   // can never silently drop the cluster-wide LLM queue settings.
   llmConcurrency: 4,
@@ -322,6 +325,41 @@ describe('adminAccessDeniedRetentionDays (issue #264)', () => {
     });
   });
 });
+
+// ─── #1760 — job history / read-notification retention windows ───────────
+describe.each(['jobHistoryRetentionDays', 'notificationsReadRetentionDays'] as const)(
+  '%s (issue #1760)',
+  (field) => {
+    describe('read schema', () => {
+      it.each([7, 30, 3650])('accepts %s', (days) => {
+        expect(AdminSettingsSchema.parse({ ...validReadPayload, [field]: days })[field]).toBe(days);
+      });
+
+      it.each([6, 3651, 30.5])('rejects %s', (days) => {
+        expect(() => AdminSettingsSchema.parse({ ...validReadPayload, [field]: days })).toThrow();
+      });
+
+      it('requires the field to be present (not optional on read)', () => {
+        const { [field]: _omitted, ...withoutField } = validReadPayload;
+        expect(() => AdminSettingsSchema.parse(withoutField)).toThrow();
+      });
+    });
+
+    describe('update schema', () => {
+      it.each([7, 45, 3650])('accepts %s', (days) => {
+        expect(UpdateAdminSettingsSchema.parse({ [field]: days })[field]).toBe(days);
+      });
+
+      it('treats an omitted field as undefined (leave unchanged)', () => {
+        expect(UpdateAdminSettingsSchema.parse({})[field]).toBeUndefined();
+      });
+
+      it.each([6, 3651, 30.5])('rejects %s', (days) => {
+        expect(() => UpdateAdminSettingsSchema.parse({ [field]: days })).toThrow();
+      });
+    });
+  },
+);
 
 // ─── #113 Phase B-3 — llmConcurrency / llmMaxQueueDepth validation ─────────
 describe('llmConcurrency (Compendiq/compendiq-ee#113 Phase B-3)', () => {

@@ -1,8 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   AlertCircle,
-  ArrowRightLeft,
   CheckCircle2,
   ChevronRight,
   Cpu,
@@ -19,11 +18,9 @@ import {
   PanelRightClose,
   Pin,
   FileDown,
-  GitGraph,
   Loader2,
   RefreshCw,
   Sparkles,
-  Trash2,
   History,
   ShieldCheck,
   X,
@@ -38,6 +35,7 @@ import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { PageLifecycleSection } from './PageLifecycleSection';
+import { ArticleAiPolicySection } from './ArticleAiPolicySection';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { neutralChipInk, statusChipClass } from '../badges/neutral-chip';
 import { formatDateStamp } from '../../lib/format-relative-time';
@@ -55,7 +53,10 @@ import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useIsDockWideLayout, useIsInspectorWideLayout } from '../../hooks/use-media-query';
 import {
-  useDeletePage,
+  PANEL_COLLAPSE_TRANSITION,
+  usePanelCollapseInitial,
+} from '../../hooks/use-panel-collapse-motion';
+import {
   usePage,
   usePinnedPages,
   usePinPage,
@@ -66,12 +67,11 @@ import {
 } from '../../hooks/use-pages';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useExportPdf, useVerifyPage } from '../../hooks/use-standalone';
-import { usePermission } from '../../hooks/use-permission';
 import { useSettings } from '../../hooks/use-settings';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
+import { BLOCK_REASON_LABEL } from '../../lib/article-ai-policy';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../lib/trash-copy';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import type { TocHeading } from './TableOfContents';
 
@@ -142,7 +142,7 @@ function readCollapsedIds(storageKey: string): Set<string> {
   }
 }
 
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
+const COLLAPSED_RIGHT_RAIL_WIDTH = 40;
 
 // ---------- OutlineNode component ----------
 
@@ -262,6 +262,11 @@ type HealthRemedy = 'index' | 'retry-index' | 'requality' | 'assistant' | null;
 /**
  * One Document-health action: a 32px ghost button whose pending state is
  * carried by the label, a spinner and `aria-busy` together.
+ *
+ * #1882: `blocked` is the server-reported policy block for this action's
+ * stage. The button stays focusable (`aria-disabled`, never `disabled`, so
+ * keyboard and screen-reader users can reach it), refuses the click, and is
+ * described by the visible sentence naming the policy reason.
  */
 function HealthAction({
   onClick,
@@ -271,6 +276,8 @@ function HealthAction({
   pendingLabel,
   testId,
   title,
+  blocked = false,
+  describedBy,
 }: {
   onClick: () => void;
   pending?: boolean;
@@ -279,16 +286,20 @@ function HealthAction({
   pendingLabel?: string;
   testId: string;
   title?: string;
+  blocked?: boolean;
+  describedBy?: string;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => { if (!blocked) onClick(); }}
       disabled={pending}
       aria-busy={pending}
+      aria-disabled={blocked || undefined}
+      aria-describedby={blocked ? describedBy : undefined}
       data-testid={testId}
       title={title}
-      className="nm-button-ghost h-8 px-3 text-xs"
+      className={cn('nm-button-ghost h-8 px-3 text-xs', blocked && POLICY_BLOCKED_ACTION_CLASS)}
     >
       {pending ? (
         <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" />
@@ -299,6 +310,13 @@ function HealthAction({
     </button>
   );
 }
+
+/**
+ * A refused action must not paint as accepted on hover/press. Opacity stays
+ * at 0.7 (never 0.45) so 13px labels keep their contrast.
+ */
+const POLICY_BLOCKED_ACTION_CLASS =
+  'aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent';
 
 // ---------- ArticleRightPane ----------
 
@@ -335,7 +353,6 @@ export function ArticleRightPane({
   onRequestClose?: () => void;
 } = {}) {
   const location = useLocation();
-  const navigate = useNavigate();
 
   // Extract page ID from pathname instead of useParams, because this component
   // is rendered in AppLayout (outer Route) where descendant route params like
@@ -381,6 +398,12 @@ export function ArticleRightPane({
   // Below xl the inspector starts as the 40px rail so the article keeps
   // the workspace. Expand (and Alt+I) sets laptopExpanded.
   const collapsed = isSheet ? false : inspectorWide ? userCollapsed : !laptopExpanded;
+  const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
+    collapsed,
+    width,
+    COLLAPSED_RIGHT_RAIL_WIDTH,
+    reduceEffects || isSheet,
+  );
   const handleExpandSidebar = useCallback(() => {
     if (!inspectorWide) setLaptopExpanded(true);
     else if (userCollapsed) toggleSidebar();
@@ -394,22 +417,48 @@ export function ArticleRightPane({
   const editing = useArticleViewStore((s) => s.editing);
 
   const queryClient = useQueryClient();
-  const { data: page } = usePage(id);
+  const pageQuery = usePage(id);
+  // #283 permission loss. A 401/403/404 on the page read means the caller may
+  // no longer see this article: the cached detail (source, health, labels,
+  // policy) must not keep rendering from the stale cache, so `page` is
+  // undefined for the rest of this component and the Details tab shows an
+  // unavailable notice instead. The cached entry is removed so a later
+  // mount cannot re-paint it. Only the inspector's own cache is touched —
+  // the editor's collaborative document and drafts live elsewhere and are
+  // deliberately left alone.
+  const pageReadDenied = !!pageQuery.error
+    && pageQuery.error instanceof ApiError
+    && [401, 403, 404].includes(pageQuery.error.statusCode);
+  const page = pageReadDenied ? undefined : pageQuery.data;
+  // Evict the denied entry when this observer lets go of it (navigation or
+  // unmount). Removing it while an observer is still subscribed would make
+  // TanStack recreate and refetch the query, and a 403 would loop; while
+  // mounted the gate above already keeps the stale detail off the screen.
+  const pageReadDeniedRef = useRef(false);
+  pageReadDeniedRef.current = pageReadDenied;
+  useEffect(() => () => {
+    if (pageReadDeniedRef.current && id) {
+      queryClient.removeQueries({ queryKey: ['pages', id], exact: true });
+    }
+  }, [id, queryClient]);
   const { data: pinnedData } = usePinnedPages();
   const { data: settings } = useSettings();
-  const deleteMutation = useDeletePage();
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   const resyncMutation = useResyncPage();
   const reembedMutation = useReembedPage();
   const requalityMutation = useRequalityPage();
-  const { allowed: canRelocate } = usePermission('pages:relocate');
   const verifyMutation = useVerifyPage();
   const [relocateOpen, setRelocateOpen] = useState(false);
   const [verifyStatusMsg, setVerifyStatusMsg] = useState<string | null>(null);
   const [confirmResyncOpen, setConfirmResyncOpen] = useState(false);
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+  // A frozen article refuses every protected write (`423 page_is_frozen`):
+  // labels, relocation, trash, version restore, a Confluence pull. Those
+  // entry points are not offered at all; reading, history, Pin, graph, export
+  // and the derived-data maintenance actions stay (#277).
+  const frozen = page?.isFrozen === true;
   const verifiedAt = page?.verifiedAt ?? null;
   const verifiedDateStr = verifiedAt ? formatDateStamp(verifiedAt) : null;
 
@@ -418,6 +467,15 @@ export function ArticleRightPane({
   const overallHealth = useMemo((): { label: string; tone: 'warning' | 'active' | 'neutral'; remedy: HealthRemedy } => {
     const indexing = page?.embeddingStatus
       ?? (page?.embeddingDirty ? 'not_embedded' : undefined);
+    if (indexing === 'policy_blocked' || page?.qualityStatus === 'policy_blocked' || page?.summaryStatus === 'policy_blocked') {
+      return { label: 'AI stages are policy blocked — not completed. Reading and keyword search remain available.', tone: 'neutral', remedy: null };
+    }
+    // #283: requeued-after-block is its own state — not "not yet indexed"
+    // (which offers Index now, a remedy the queue is already applying) and
+    // not a completed result.
+    if (page?.aiPolicyRecovering) {
+      return { label: 'AI work recovering — requeued after a policy or provider change, not completed.', tone: 'active', remedy: null };
+    }
     if (indexing === 'failed') {
       return {
         label: page?.qualityStatus === 'failed'
@@ -457,7 +515,20 @@ export function ArticleRightPane({
       tone: 'neutral',
       remedy: null,
     };
-  }, [page?.embeddingStatus, page?.embeddingDirty, page?.qualityStatus, page?.qualityScore]);
+  }, [page?.embeddingStatus, page?.embeddingDirty, page?.qualityStatus, page?.qualityScore, page?.summaryStatus, page?.aiPolicyRecovering]);
+
+  // #1882: maintenance actions follow the SERVER's verdict — the stages whose
+  // current status is `policy_blocked`, derived server-side — never the policy
+  // label, so a recovering page or a since-declared local provider is not
+  // refused here. Blocked actions stay reachable and say why.
+  const reembedBlocked = page?.aiPolicyBlockedStages?.includes('embedding') ?? false;
+  const requalityBlocked = page?.aiPolicyBlockedStages?.includes('quality') ?? false;
+  const policyBlockReasonText = page?.aiPolicyBlockReason
+    ? BLOCK_REASON_LABEL[page.aiPolicyBlockReason]
+    : 'Blocked by article AI policy or provider locality (reason not reported by the server)';
+  const policyReasonIdBase = useId();
+  const healthPolicyReasonId = `${policyReasonIdBase}-health`;
+  const railPolicyReasonId = `${policyReasonIdBase}-rail`;
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -497,7 +568,6 @@ export function ArticleRightPane({
   const [collapsedIds, setCollapsedIds] = useState(() => readCollapsedIds(storageKey));
   const [readingProgress, setReadingProgress] = useState(0);
   const [isResizing, setIsResizing] = useState(false);
-  const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
   const [activeInspectorView, setActiveInspectorView] = useState<InspectorView>(() =>
     isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
@@ -505,8 +575,16 @@ export function ArticleRightPane({
   // Keep local note/reply drafts across tab switches; the page key resets them on navigation.
   const [detailsMounted, setDetailsMounted] = useState(() => activeInspectorView === 'details');
 
+  const notesScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (notesScrollTimer.current !== null) clearTimeout(notesScrollTimer.current);
+    notesScrollTimer.current = null;
+  }, [id]);
+
   const scrollToNotesSection = useCallback(() => {
-    setTimeout(() => {
+    if (notesScrollTimer.current !== null) clearTimeout(notesScrollTimer.current);
+    notesScrollTimer.current = setTimeout(() => {
+      notesScrollTimer.current = null;
       const el = document.getElementById('details-notes-section');
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
@@ -924,26 +1002,6 @@ export function ArticleRightPane({
   }, [id, queryClient, verifyMutation]);
 
   // Deleting soft-deletes into the 30-day trash, so the confirm copy must
-  // not claim the action "cannot be undone". ConfirmDialog replaces the
-  // native confirm() to match the neumorphic design system. Same flow
-  // and copy as PageViewPage's Alt+Shift+D shortcut.
-  const handleDelete = useCallback(() => {
-    if (!id) return;
-    setConfirmTrashOpen(true);
-  }, [id]);
-
-  const handleConfirmMoveToTrash = useCallback(async () => {
-    if (!id) return;
-    setConfirmTrashOpen(false);
-    try {
-      await deleteMutation.mutateAsync(id);
-      navigate('/');
-      toast.success('Page moved to trash.');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
-    }
-  }, [deleteMutation, id, navigate]);
-
   // Pulling from Confluence overwrites the local title and body, so every
   // entry point (Source block, rail overflow) opens the same confirm; the
   // mutation runs only from its confirm button.
@@ -991,7 +1049,7 @@ export function ArticleRightPane({
   // on the next interval tick (QUALITY_CHECK_INTERVAL_MINUTES, default 60min).
   // Same silent-no-op handling as Re-sync / Re-embed.
   const handleRequality = useCallback(() => {
-    if (!id) return;
+    if (!id || requalityBlocked) return;
     requalityMutation.mutate(id, {
       onSuccess: (data) => {
         if (data.succeeded > 0) {
@@ -1005,12 +1063,12 @@ export function ArticleRightPane({
       onError: (err) =>
         toast.error(err instanceof Error ? err.message : 'Quality re-check failed.'),
     });
-  }, [id, requalityMutation]);
+  }, [id, requalityBlocked, requalityMutation]);
 
   // Re-embed this article for RAG. Same bulk-endpoint passthrough as resync.
   // Same silent-no-op handling as Re-sync (see comment above).
   const handleReembed = useCallback(() => {
-    if (!id) return;
+    if (!id || reembedBlocked) return;
     reembedMutation.mutate(id, {
       onSuccess: (data) => {
         if (data.succeeded > 0) {
@@ -1030,7 +1088,7 @@ export function ArticleRightPane({
         }
       },
     });
-  }, [id, reembedMutation]);
+  }, [id, reembedBlocked, reembedMutation]);
 
   if (!id && !isNewPage) return null;
 
@@ -1048,20 +1106,6 @@ export function ArticleRightPane({
   // reaches Trash, so it gets the irreversible copy rather than a 30-day
   // restore it cannot be given. An unloaded `page` has an unknown source too,
   // so it keeps the no-promise fallback.
-  const trashCopy = page
-    ? (page.source === 'standalone' ? trashConfirmCopy(page.descendantCount) : confluenceDeleteConfirmCopy())
-    : trashConfirmCopy(undefined);
-  const confirmTrashDialog = (
-    <ConfirmDialog
-      open={confirmTrashOpen}
-      title={trashCopy.title}
-      description={trashCopy.description}
-      confirmLabel={trashCopy.confirmLabel}
-      destructive
-      onConfirm={handleConfirmMoveToTrash}
-      onCancel={() => setConfirmTrashOpen(false)}
-    />
-  );
   const relocateDialog = relocateOpen && id && page ? (
     <RelocateDialog
       open
@@ -1139,14 +1183,12 @@ export function ArticleRightPane({
           outlineTriggerRef.current?.focus();
         }}
       >
-      <AnimatePresence mode="wait">
         <m.aside
           key="collapsed-rail"
-          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-context-rail flex h-full flex-col items-center overflow-hidden"
+          initial={collapsedInitial}
+          animate={{ width: COLLAPSED_RIGHT_RAIL_WIDTH, opacity: 1 }}
+          transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
+          className="app-context-rail relative flex h-full flex-col items-center overflow-hidden"
           aria-label="Page inspector"
           data-testid="article-right-pane-rail"
         >
@@ -1158,22 +1200,7 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
-            <button
-              onClick={handleExpandSidebar}
-              className={railIconBtn}
-              aria-label="Expand inspector"
-              title="Expand inspector (.)"
-            >
-              <PanelRight size={16} />
-            </button>
-            <span
-              role="tooltip"
-              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-            >
-              Expand inspector · .
-            </span>
-          </div>
+          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-center rounded-none border-none shadow-none" aria-hidden="true" />
 
           <div className="my-1 h-px w-6 bg-border" />
           <div className="group relative flex w-full justify-center">
@@ -1353,8 +1380,31 @@ export function ArticleRightPane({
               </div>
             )}
           </div>
+          <div className="mb-1.5 mt-auto flex w-full shrink-0 justify-end pr-1.5">
+            <button
+              type="button"
+              onClick={handleExpandSidebar}
+              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Expand inspector"
+              title="Expand inspector (.)"
+            >
+              <PanelRight size={15} aria-hidden="true" />
+            </button>
+          </div>
+          <span
+            data-rail-hairline
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 -left-px top-0 z-10 flex w-[3px] flex-col items-center"
+          >
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+            <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+            </span>
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+          </span>
         </m.aside>
-      </AnimatePresence>
 
       {!editing && page && railOverflowOpen && (
         <div
@@ -1365,7 +1415,7 @@ export function ArticleRightPane({
           className="absolute right-full z-30 mr-1 w-56 nm-popover-glass p-1.5"
           style={{ top: railOverflowTop }}
         >
-                    <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                    <div className="px-2.5 pb-1 pt-2 text-xs font-semibold text-muted-foreground">
                       Inspector
                     </div>
                     {activeInspectorView !== 'details' && (
@@ -1395,12 +1445,13 @@ export function ArticleRightPane({
                       <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current')} />
                       <span className="truncate">{isPinned ? 'Unpin page' : 'Pin page'} · {pinHint}</span>
                     </button>
-                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-xs font-semibold text-muted-foreground">
                       Page actions
                     </div>
                     {id && (
                       <VersionHistory
                         pageId={id}
+                        restoreAllowed={!frozen}
                         renderTrigger={() => (
                           <button
                             type="button"
@@ -1443,10 +1494,10 @@ export function ArticleRightPane({
                       </a>
                     )}
 
-                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-xs font-semibold text-muted-foreground">
                       Maintenance &amp; AI
                     </div>
-                    {aiAutoTagAvailable && id && (
+                    {aiAutoTagAvailable && id && !frozen && (
                       <AutoTagger
                         pageId={id}
                         currentLabels={page?.labels ?? []}
@@ -1454,7 +1505,7 @@ export function ArticleRightPane({
                         className={railMenuItem}
                       />
                     )}
-                    {page.confluenceId && (
+                    {page.confluenceId && !frozen && (
                       <button
                         onClick={openResyncConfirm}
                         disabled={resyncMutation.isPending}
@@ -1471,10 +1522,24 @@ export function ArticleRightPane({
                         <span className="truncate">Pull from Confluence…</span>
                       </button>
                     )}
+                    {/* #1882: the rail has no Details sentence beside it, so the
+                        reason the two items below are refused is said first —
+                        seen before focus reaches them — and names only those
+                        items (Auto-tag has its own gate). */}
+                    {(reembedBlocked || requalityBlocked) && (
+                      <p id={railPolicyReasonId} className="px-2.5 pb-1.5 pt-1 text-xs text-muted-foreground" data-testid="article-rail-policy-reason">
+                        {policyBlockReasonText}.{' '}
+                        {reembedBlocked && requalityBlocked
+                          ? 'Re-embed for search and Re-check quality are unavailable.'
+                          : `${reembedBlocked ? 'Re-embed for search' : 'Re-check quality'} is unavailable.`}
+                      </p>
+                    )}
                     <button
                       onClick={handleReembed}
                       disabled={reembedMutation.isPending}
-                      className={railMenuItem}
+                      aria-disabled={reembedBlocked || undefined}
+                      aria-describedby={reembedBlocked ? railPolicyReasonId : undefined}
+                      className={cn(railMenuItem, reembedBlocked && POLICY_BLOCKED_ACTION_CLASS)}
                       aria-label="Re-embed for search"
                       title="Re-embed for search"
                       data-testid="article-reembed-rail-btn"
@@ -1489,7 +1554,9 @@ export function ArticleRightPane({
                     <button
                       onClick={handleRequality}
                       disabled={requalityMutation.isPending}
-                      className={railMenuItem}
+                      aria-disabled={requalityBlocked || undefined}
+                      aria-describedby={requalityBlocked ? railPolicyReasonId : undefined}
+                      className={cn(railMenuItem, requalityBlocked && POLICY_BLOCKED_ACTION_CLASS)}
                       aria-label="Re-check quality"
                       title="Re-check quality"
                       data-testid="article-requality-rail-btn"
@@ -1566,7 +1633,6 @@ export function ArticleRightPane({
         )}
       </AnimatePresence>
       </div>
-      {confirmTrashDialog}
       {confirmResyncDialog}
       {relocateDialog}
       </>
@@ -1591,8 +1657,6 @@ export function ArticleRightPane({
   );
   const actionRowIdle = 'text-muted-foreground hover:bg-muted hover:text-foreground';
   const actionRowClass = cn(actionRowBase, actionRowIdle);
-  const destructiveRowClass = cn('nm-action-destructive', actionRowShape);
-  const deleteHint = formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac());
   const detailRowClass = 'flex items-center justify-between gap-3 py-1.5';
 
   return (
@@ -1600,9 +1664,9 @@ export function ArticleRightPane({
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
-      initial={reduceEffects ? false : isSheet ? { opacity: 0 } : { width: 0, opacity: 0 }}
+      initial={reduceEffects ? false : isSheet ? { opacity: 0 } : expandedInitial}
       animate={isSheet ? { opacity: 1 } : { width, opacity: 1 }}
-      transition={reduceEffects || isResizing || isSheet ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects || isResizing || isSheet ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className={cn(
         'app-context-rail relative flex flex-col overflow-hidden',
         isResizing && 'select-none',
@@ -1627,7 +1691,7 @@ export function ArticleRightPane({
           context strip). It is not free space: the segmented control is 34px
           (28px segments + 2px track inset + 1px borders), so the row has ~7px
           of breathing room and no more. */}
-      <div className="panel-toolbar absolute inset-x-0 top-0 z-20 flex h-12 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
             and the search-mode toggle: `rounded-md` track, 2px inset, one raised
@@ -1737,15 +1801,17 @@ export function ArticleRightPane({
         </button>
         </div>
 
-        <button
-          type="button"
-          onClick={isSheet ? onRequestClose : handleCollapseSidebar}
-          className="nm-icon-button shrink-0"
-          aria-label={isSheet ? 'Close page inspector' : 'Collapse page sidebar'}
-          title={isSheet ? 'Close inspector' : 'Collapse sidebar (.)'}
-        >
-          {isSheet ? <X size={16} aria-hidden="true" /> : <PanelRightClose size={16} aria-hidden="true" />}
-        </button>
+        {isSheet && (
+          <button
+            type="button"
+            onClick={onRequestClose}
+            className="nm-icon-button shrink-0"
+            aria-label="Close page inspector"
+            title="Close inspector"
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       {assistantMounted && (
@@ -1781,15 +1847,24 @@ export function ArticleRightPane({
         aria-label="Details"
         hidden={activeInspectorView !== 'details'}
         className={cn(
-          'min-h-0 flex-1 overflow-y-auto scroll-mask pt-12',
+          'min-h-0 flex-1 overflow-y-auto scroll-mask',
           activeInspectorView !== 'details' && 'hidden',
         )}
       >
+      {id && <ArticleAiPolicySection key={id} pageId={id} defaultOpen={false} />}
       {isNewPage ? (
         <div className="px-3 py-4">
           <h3 className="text-xs font-semibold text-foreground">New page draft</h3>
           <p className="mt-2 text-xs text-muted-foreground">
             Configure space, title, and content, then click Create Page to publish.
+          </p>
+        </div>
+      ) : pageReadDenied ? (
+        <div className="px-3 py-4" data-testid="details-unavailable">
+          <h3 className="text-xs font-semibold text-foreground">Details unavailable</h3>
+          <p className="mt-2 text-xs text-muted-foreground" role="status">
+            This article&apos;s details are no longer available to you. Cached source, health and label
+            information has been removed; anything you typed in the editor is kept.
           </p>
         </div>
       ) : page ? (
@@ -1809,17 +1884,6 @@ export function ArticleRightPane({
                 </div>
               </div>
             </div>
-            {settings?.confluenceUrl && page.confluenceId && (
-              <a
-                href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1 inline-flex h-8 items-center gap-1.5 rounded text-xs text-primary-ink underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <ExternalLink size={13} className="shrink-0" aria-hidden="true" />
-                <span>Open in Confluence</span>
-              </a>
-            )}
 
             <dl className="mt-2 text-xs">
               {isStandalone ? (
@@ -1897,41 +1961,6 @@ export function ArticleRightPane({
                 </>
               )}
             </dl>
-
-            {!editing && !isStandalone && page.confluenceId && (
-              <button
-                type="button"
-                onClick={openResyncConfirm}
-                disabled={resyncMutation.isPending}
-                aria-busy={resyncMutation.isPending}
-                data-testid="article-resync-btn"
-                className="nm-button-ghost mt-2 h-8 px-3 text-xs"
-              >
-                <RefreshCw
-                  size={13}
-                  className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
-                  aria-hidden="true"
-                />
-                <span>{resyncMutation.isPending ? 'Pulling from Confluence…' : 'Pull latest from Confluence…'}</span>
-              </button>
-            )}
-            {!editing && isStandalone && canRelocate && (
-              <div className="mt-2">
-                <button
-                  type="button"
-                  onClick={() => setRelocateOpen(true)}
-                  data-testid="relocate-btn"
-                  aria-describedby="relocate-btn-note"
-                  className="nm-button-ghost h-8 px-3 text-xs"
-                >
-                  <ArrowRightLeft size={13} className="shrink-0 opacity-70" aria-hidden="true" />
-                  <span>Move to Confluence…</span>
-                </button>
-                <p id="relocate-btn-note" className="mt-1 text-xs text-muted-foreground">
-                  Confluence becomes the source of record.
-                </p>
-              </div>
-            )}
           </section>
 
           <section className="mt-5" data-testid="document-health">
@@ -1946,6 +1975,24 @@ export function ArticleRightPane({
               )}
               <span data-testid="document-health-summary">{overallHealth.label}</span>
             </div>
+            {/* #281/#283: the server's OWN block reason and the stages it
+                refused now, or the recovering verdict after a policy/provider
+                change — visible prose, never a tooltip, and never inferred
+                from a bare status. */}
+            {page.aiPolicyBlockedStages && page.aiPolicyBlockedStages.length > 0 && (
+              <p id={healthPolicyReasonId} className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-policy-reason">
+                {policyBlockReasonText}
+                {' — '}
+                {page.aiPolicyBlockedStages.map((s) => ({ embedding: 'indexing', summary: 'summary', quality: 'quality' })[s]).join(', ')}
+                {' not completed. Relaxing the policy or assigning a declared-local provider requeues eligible work.'}
+              </p>
+            )}
+            {page.aiPolicyRecovering && (
+              <p className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-recovering">
+                Recovering: previously policy-blocked work was requeued after a policy or provider change and has
+                not completed yet. This is not a completed result.
+              </p>
+            )}
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5" data-testid="document-health-actions">
               {overallHealth.remedy === 'index' && (
                 <HealthAction
@@ -2002,6 +2049,8 @@ export function ArticleRightPane({
                   label="Re-index for search"
                   pendingLabel="Queuing…"
                   testId="article-reembed-btn"
+                  blocked={reembedBlocked}
+                  describedBy={healthPolicyReasonId}
                 />
               )}
               {overallHealth.remedy !== 'requality' && (
@@ -2012,6 +2061,8 @@ export function ArticleRightPane({
                   label="Re-check quality"
                   pendingLabel="Queuing…"
                   testId="article-requality-btn"
+                  blocked={requalityBlocked}
+                  describedBy={healthPolicyReasonId}
                 />
               )}
             </div>
@@ -2056,26 +2107,8 @@ export function ArticleRightPane({
           </section>
 
           {id && (
-            <PageLifecycleSection pageId={id} page={page} />
+            <PageLifecycleSection pageId={id} page={page} defaultOpen={frozen} />
           )}
-
-          <section className="mt-5">
-            <h3 className="text-xs font-semibold text-foreground">Labels</h3>
-            {page.labels.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className={`inline-flex min-h-6 max-w-full items-center break-words rounded-md border border-border px-2 text-xs font-medium ${neutralChipInk}`}
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-1.5 text-xs text-muted-foreground">No labels assigned</p>
-            )}
-          </section>
         </div>
       ) : null}
       {id && page && (
@@ -2093,7 +2126,7 @@ export function ArticleRightPane({
       )}
 
 
-      {page && id && aiAutoTagAvailable && editing && (
+      {page && id && aiAutoTagAvailable && editing && !frozen && (
         <div className="px-3 pb-4" data-testid="article-actions-edit">
           <h3 className="mb-2 text-xs font-semibold text-foreground">
             Page actions
@@ -2106,128 +2139,6 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {!editing && page && activeInspectorView === 'details' && (
-        <section className="px-3 pb-5" data-testid="article-actions">
-          <h3 className="mb-2 text-xs font-semibold text-foreground">
-            Page actions
-          </h3>
-
-          <div className="space-y-0.5">
-            {id && (
-              <VersionHistory
-                pageId={id}
-                renderTrigger={(historyOpen) => (
-                  <button
-                    type="button"
-                    className={cn(actionRowBase, historyOpen ? 'nav-selection' : actionRowIdle)}
-                    title="Version history"
-                  >
-                    <History size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                    <span className="truncate">Version history</span>
-                  </button>
-                )}
-              />
-
-            )}
-
-            <button
-              type="button"
-              onClick={handlePinToggle}
-              aria-pressed={isPinned}
-              className={cn(actionRowBase, isPinned ? 'nav-selection' : actionRowIdle)}
-              title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
-            >
-              <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} aria-hidden="true" />
-              <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
-            </button>
-
-            {id && (
-              <button
-                type="button"
-                onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
-                className={actionRowClass}
-                data-testid="show-in-graph-btn"
-              >
-                <GitGraph size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                <span className="truncate">Show in graph</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={handleExportPdf}
-              disabled={exportPdf.isPending}
-              aria-busy={exportPdf.isPending}
-              className={actionRowClass}
-            >
-              {exportPdf.isPending ? (
-                <Loader2 size={15} className="shrink-0 animate-spin opacity-70" aria-hidden="true" />
-              ) : (
-                <FileDown size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-              )}
-              <span className="truncate">Export PDF</span>
-            </button>
-
-            {id && aiAutoTagAvailable && (
-              <AutoTagger
-                pageId={id}
-                currentLabels={page.labels}
-                className={actionRowClass}
-              />
-            )}
-
-            {/* A local page's delete is a 30-day restorable trash, so it is an
-                ordinary row. A Confluence page's delete is irreversible and goes
-                upstream, so it sits behind the Danger zone below instead. */}
-            {isStandalone && (
-              <button
-                type="button"
-                onClick={handleDelete}
-                className={destructiveRowClass}
-                title={`Move to trash (${deleteHint})`}
-              >
-                <Trash2 size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                <span className="truncate">Move to trash</span>
-              </button>
-            )}
-          </div>
-
-          {!isStandalone && (
-            <details className="group mt-2" data-testid="danger-zone">
-              <summary className={cn(destructiveRowClass, 'cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden')}>
-                <ChevronRight
-                  size={13}
-                  className="shrink-0 transition-transform group-open:rotate-90"
-                  aria-hidden="true"
-                />
-                Danger zone
-              </summary>
-              <div className="mt-0.5 space-y-0.5">
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  className={destructiveRowClass}
-                  title={`Delete in Confluence (${deleteHint})`}
-                >
-                  <Trash2 size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                  <span className="truncate">Delete in Confluence…</span>
-                </button>
-                {canRelocate && (
-                  <button
-                    type="button"
-                    onClick={() => setRelocateOpen(true)}
-                    data-testid="relocate-local-btn"
-                    className={cn(destructiveRowClass, 'h-auto min-h-8 items-start py-1.5')}
-                  >
-                    <ArrowRightLeft size={15} className="mt-0.5 shrink-0 opacity-70" aria-hidden="true" />
-                    <span className="min-w-0">Move to a local space — deletes the Confluence page</span>
-                  </button>
-                )}
-              </div>
-            </details>
-          )}
-        </section>
-      )}
       </div>
       )}
 
@@ -2237,7 +2148,7 @@ export function ArticleRightPane({
         ref={expandedTreeRef}
         role="tabpanel"
         aria-labelledby="page-context-tab-outline"
-        className="min-h-0 flex-1 overflow-y-auto scroll-mask pt-12"
+        className="min-h-0 flex-1 overflow-y-auto scroll-mask"
       >
         {/* Outline header + progress */}
         {headings.length > 0 && (
@@ -2292,7 +2203,20 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {/* Resize handle — on the left operable edge, matching the tree's resize affordance */}
+      {/* Footer collapse toggle & resize handle — pinned to the right edge so the icon stays fixed when toggling */}
+      {!isSheet && (
+        <div className="panel-toolbar flex shrink-0 items-center justify-end border-t border-[var(--rail-divider)] py-1.5 pl-2 pr-1.5">
+          <button
+            type="button"
+            onClick={handleCollapseSidebar}
+            className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Collapse page sidebar"
+            title="Collapse sidebar (.)"
+          >
+            <PanelRightClose size={15} aria-hidden="true" />
+          </button>
+        </div>
+      )}
       {!isSheet && (
         <div
           role="separator"
@@ -2313,29 +2237,38 @@ export function ArticleRightPane({
           title="Drag to resize · Double-click to reset"
         >
           <span
-            className={cn(
-              'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
-              isResizing && 'bg-action/70',
-            )}
+            data-rail-hairline
             aria-hidden="true"
-          />
-          <span
-            data-testid="article-right-pane-resize-grip"
-            className={cn(
-              'pointer-events-none absolute top-1/2 left-0.5 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
-              'group-hover:opacity-100 group-focus-visible:opacity-100',
-              isResizing && 'opacity-100',
-            )}
-            aria-hidden="true"
+            className="-ml-px flex h-full w-[3px] flex-col items-center"
           >
-            <span className="size-0.5 rounded-full bg-muted-foreground" />
-            <span className="size-0.5 rounded-full bg-muted-foreground" />
-            <span className="size-0.5 rounded-full bg-muted-foreground" />
+            <span
+              className={cn(
+                'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+                isResizing && 'bg-action/70',
+              )}
+            />
+            <span
+              data-testid="article-right-pane-resize-grip"
+              className={cn(
+                'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-all duration-150',
+                'group-hover:opacity-100 group-focus-visible:opacity-100',
+                isResizing && 'scale-125 opacity-100',
+              )}
+            >
+              <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+              <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+              <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+            </span>
+            <span
+              className={cn(
+                'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+                isResizing && 'bg-action/70',
+              )}
+            />
           </span>
         </div>
       )}
     </m.aside>
-    {confirmTrashDialog}
     {confirmResyncDialog}
     {relocateDialog}
     </>

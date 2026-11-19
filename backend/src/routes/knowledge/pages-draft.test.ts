@@ -433,6 +433,69 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       });
     });
 
+    it('publishes a Confluence draft\'s tasks with the ids Confluence has, and the live body keeps them (#1751)', async () => {
+      const pageId = await seedConfluencePage();
+      await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [
+        pageId,
+        '<p>live storage</p><ac:task-list><ac:task><ac:task-id>7</ac:task-id>'
+        + '<ac:task-status>incomplete</ac:task-status><ac:task-body>Ship it</ac:task-body></ac:task></ac:task-list>',
+        '<p>draft</p><ul data-type="taskList">'
+        + '<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label>'
+        + '<div><p>Ship it</p></div></li>'
+        + '<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label>'
+        + '<div><p>New task</p></div></li></ul>',
+      ]);
+
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1])).toEqual(['7', '8']);
+      // TaskItem's checkbox markup stays in the editor: the task bodies are the content.
+      expect(sent).not.toMatch(/<input|<label/);
+      // Publication keeps the draft's HTML as the live body: with the ids it was published with.
+      const stored = await storedPage(pageId);
+      expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['7', '8']);
+    });
+
+    describe('the order pairing of a page synced before ids were carried (#1751)', () => {
+      const STORAGE = '<p>live storage</p><ac:task-list>'
+        + '<ac:task><ac:task-id>7</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Ship it</ac:task-body></ac:task>'
+        + '<ac:task><ac:task-id>8</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Write docs</ac:task-body></ac:task>'
+        + '</ac:task-list>';
+
+      /** TaskItem's markup for `texts`, without data-task-id. */
+      function draftTasks(...texts: string[]): string {
+        return `<p>draft</p><ul data-type="taskList">${texts.map((text) => '<li data-checked="false" data-type="taskItem">'
+          + `<label><input type="checkbox"><span></span></label><div><p>${text}</p></div></li>`).join('')}</ul>`;
+      }
+
+      async function publishedTaskIds(liveBodyHtml: string, draftBodyHtml: string): Promise<string[]> {
+        const pageId = await seedConfluencePage();
+        await query('UPDATE pages SET body_html = $2, body_storage = $3, draft_body_html = $4 WHERE id = $1', [
+          pageId, liveBodyHtml, STORAGE, draftBodyHtml,
+        ]);
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+        expect(response.statusCode, response.body).toBe(200);
+        const sent = confluenceRequests[0]!.body.body.storage.value;
+        return [...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]!);
+      }
+
+      it('gives a draft\'s edited tasks the stored ids in order when the live body carries no id (#1751)', async () => {
+        const legacyLive = '<p>live</p><ul data-type="taskList">'
+          + '<li data-type="taskItem" data-checked="false">Ship it</li>'
+          + '<li data-type="taskItem" data-checked="false">Write docs</li></ul>';
+        expect(await publishedTaskIds(legacyLive, draftTasks('Ship it today', 'Write docs'))).toEqual(['7', '8']);
+      });
+
+      it('gives the draft tasks that replace every task of a live body that carries ids new ids (#1751)', async () => {
+        const carriedLive = '<p>live</p><ul data-type="taskList">'
+          + '<li data-type="taskItem" data-checked="false" data-task-id="7">Ship it</li>'
+          + '<li data-type="taskItem" data-checked="false" data-task-id="8">Write docs</li></ul>';
+        expect(await publishedTaskIds(carriedLive, draftTasks('Alpha', 'Beta'))).toEqual(['9', '10']);
+      });
+    });
+
     it('rolls back draft publication when its collaborative snapshot cannot be invalidated', async () => {
       const pageId = await seedConfluencePage();
       const before = await storedPage(pageId);

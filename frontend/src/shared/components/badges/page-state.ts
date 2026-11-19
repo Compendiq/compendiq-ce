@@ -1,4 +1,6 @@
-import type { QualityStatus, SummaryStatus } from '../../hooks/use-pages';
+import type { AiPolicyBlockReason } from '@compendiq/contracts';
+import type { EmbeddingStatus, QualityStatus, SummaryStatus } from '../../hooks/use-pages';
+import { BLOCK_REASON_LABEL } from '../../lib/article-ai-policy';
 
 /**
  * Resolves a page's background-pipeline state to at most ONE badge.
@@ -38,13 +40,24 @@ import type { QualityStatus, SummaryStatus } from '../../hooks/use-pages';
  * file exports only a component (react-refresh).
  */
 
-export type PageStateTone = 'failed' | 'idle' | 'working';
+/**
+ * `policy` and `recovering` (#281/#283) are distinct from every other tone:
+ * a policy-blocked stage is neither a failure to retry nor healthy silence,
+ * and recovering work is queued again after a policy/provider change — not
+ * finished, not failed.
+ */
+export type PageStateTone = 'failed' | 'idle' | 'working' | 'policy' | 'recovering';
 
 export interface PageStateInput {
   /** True when the page's embedding is missing or stale. */
   embeddingDirty?: boolean;
+  /** #283: the rich status, so a `policy_blocked` index is distinguishable from dirty. */
+  embeddingStatus?: EmbeddingStatus;
   summaryStatus?: SummaryStatus;
   qualityStatus?: QualityStatus | null;
+  /** #281/#283: the server's persisted block reason and recovering verdict. */
+  aiPolicyBlockReason?: AiPolicyBlockReason | null;
+  aiPolicyRecovering?: boolean;
   /**
    * When false, idle "Not indexed" resolves to null. Failures and in-flight
    * work still render. The Library list turns this off at rest so an unindexed
@@ -63,10 +76,42 @@ export interface PageState {
 
 export function resolvePageState({
   embeddingDirty,
+  embeddingStatus,
   summaryStatus,
   qualityStatus,
+  aiPolicyBlockReason,
+  aiPolicyRecovering,
   showIdleEmbedding = true,
 }: PageStateInput): PageState | null {
+  // Policy-blocked stages outrank everything: the reason is the server's own
+  // persisted one when it sent it, and only a generic policy/locality
+  // sentence when it did not (older server) — never an invented cause.
+  const blockedStages = [
+    embeddingStatus === 'policy_blocked' ? 'Indexing' : '',
+    summaryStatus === 'policy_blocked' ? 'Summary' : '',
+    qualityStatus === 'policy_blocked' ? 'Quality' : '',
+  ].filter(Boolean);
+  if (blockedStages.length > 0) {
+    const reason = aiPolicyBlockReason ? BLOCK_REASON_LABEL[aiPolicyBlockReason] : 'Blocked by article AI policy or provider locality';
+    return {
+      label: `${blockedStages.join(' & ')}: policy blocked`,
+      title: `${reason}. Reading and keyword search remain available.`,
+      tone: 'policy',
+    };
+  }
+  // Recovering: the server says eligible work was requeued after a block and
+  // has not completed. Distinct from ordinary pending (no block ever
+  // recorded) and from success.
+  if (aiPolicyRecovering) {
+    return {
+      label: 'AI work recovering',
+      title: 'Previously policy-blocked work was requeued after a policy or provider change and is not completed yet.',
+      tone: 'recovering',
+    };
+  }
+  if (summaryStatus === 'pending' || qualityStatus === 'pending') {
+    return { label: 'AI work pending', title: 'Eligible work is queued, not completed. This includes recovery after policy or assignment changes.', tone: 'working' };
+  }
   // Named per pipeline, not a bare "Failed": a page that was scored once and
   // then fails re-analysis keeps its last score, so QualityScoreBadge renders
   // its OWN "Analysis Failed" state right beside this one. Two badges both

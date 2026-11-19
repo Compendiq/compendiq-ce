@@ -1,5 +1,6 @@
 import type { ConfluenceClient } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { upsertVersionMetadata, fillVersionBody } from '../../../core/services/version-snapshot.js';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -45,7 +46,7 @@ export async function getHistoricalBody(
   client: ConfluenceClient,
 ): Promise<{ bodyHtml: string; bodyText: string }> {
   const storage = await client.getHistoricalPageBody(confluenceId, versionNumber);
-  const bodyHtml = confluenceToHtml(storage, confluenceId);
+  const bodyHtml = (await materializeDrawioPreviews(confluenceToHtml(storage, confluenceId), confluenceId)).html;
   const bodyText = htmlToText(bodyHtml);
   await fillVersionBody(pageId, versionNumber, bodyHtml, bodyText);
   return { bodyHtml, bodyText };

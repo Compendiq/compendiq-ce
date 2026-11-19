@@ -34,6 +34,17 @@ describe('rewriteAttachmentRefs (#1123)', () => {
     expect(refs).toEqual([{ local: 'chart.png', target: 'chart.png' }]);
   });
 
+  it('re-keys and stages source-only draw.io attachments', () => {
+    const { html, refs } = rewriteAttachmentRefs(
+      '<div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/attachments/42/flow.drawio"><span>Preview unavailable</span></div>',
+      ['/api/attachments/42/'],
+      '/api/local-attachments/7/',
+      false,
+    );
+    expect(html).toContain('data-drawio-source="/api/local-attachments/7/flow.drawio"');
+    expect(refs).toEqual([{ local: 'flow.drawio', target: 'flow.drawio' }]);
+  });
+
   // ── Review finding B1: cross-page references ──────────────────────────────
   //
   // `getLocalFilenameForImageSource` mints a synthetic `stem.xref-<hash>.ext`
@@ -218,6 +229,23 @@ describe('rewriteAttachmentRefs (#1123)', () => {
 
     expect(html).toContain('href="/api/attachments/900001/spec.pdf"');
     expect(html).not.toContain('data-confluence-filename');
+  });
+
+  it('leaves a Confluence attachment link alone, and it still writes back as one (#1748)', () => {
+    const synced = confluenceToHtml(
+      '<p><ac:image><ri:attachment ri:filename="chart.png" /></ac:image>'
+      + '<ac:link><ri:attachment ri:filename="report 2024.pdf" />'
+      + '<ac:plain-text-link-body><![CDATA[report]]></ac:plain-text-link-body></ac:link></p>',
+      '42',
+    );
+    const { html, refs } = rewriteAttachmentRefs(synced, ['/api/attachments/42/'], '/api/attachments/900001/', true);
+
+    expect(refs).toEqual([{ local: 'chart.png', target: 'chart.png' }]);
+    expect(html).toContain('href="#confluence-attachment:report%202024.pdf"');
+    expect(htmlToConfluence(html)).toContain(
+      '<ac:link><ri:attachment ri:filename="report 2024.pdf"></ri:attachment>'
+      + '<ac:plain-text-link-body><![CDATA[report]]></ac:plain-text-link-body></ac:link>',
+    );
   });
 
   it('leaves an unrelated page\'s attachments alone', () => {

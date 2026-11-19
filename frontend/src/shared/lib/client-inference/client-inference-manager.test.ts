@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ClientInferenceManager, type ClientInferenceOrgPolicy } from './client-inference-manager';
+import {
+  ClientInferenceManager,
+  type ClientInferenceManagerOptions,
+  type ClientInferenceOrgPolicy,
+} from './client-inference-manager';
+import type { ClientAssetManifest } from '@compendiq/contracts';
 import type { WorkerEvent, WorkerRequest } from './worker-protocol';
-import { LOCAL_COMPLETION_MODEL, LOCAL_COMPLETION_PROVIDER } from './worker-protocol';
+import { CLIENT_INFERENCE_MODEL_ID, LOCAL_COMPLETION_PROVIDER } from './worker-protocol';
 import type { DeviceGpuProfile } from './device-gpu-profile';
 import { ApiError } from '../api';
 
@@ -20,7 +25,7 @@ class FakeWorker {
 
   constructor(opts?: { autoReady?: boolean; autoResult?: string | null }) {
     this.autoReady = opts?.autoReady ?? true;
-    this.autoResult = opts?.autoResult ?? ' hello';
+    this.autoResult = opts?.autoResult === undefined ? ' hello' : opts.autoResult;
   }
 
   postMessage(data: WorkerRequest): void {
@@ -67,6 +72,7 @@ function compactManager(
   fetchOrgPolicy?: () => Promise<ClientInferenceOrgPolicy>,
 ): ClientInferenceManager {
   return new ClientInferenceManager({
+    fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
     createWorker: () => worker as unknown as Worker,
     probe: async () => COMPACT,
     hasCache: async () => hasCache,
@@ -82,7 +88,7 @@ describe('ClientInferenceManager (#1418)', () => {
     const mgr = compactManager(worker, false);
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const decision = await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -97,7 +103,7 @@ describe('ClientInferenceManager (#1418)', () => {
     const mgr = compactManager(worker);
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const first = await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: false,
       withoutServer: true,
@@ -107,7 +113,7 @@ describe('ClientInferenceManager (#1418)', () => {
     await Promise.resolve();
     await Promise.resolve();
     const decision = await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: false,
       withoutServer: true,
@@ -117,7 +123,7 @@ describe('ClientInferenceManager (#1418)', () => {
       kind: 'local',
       response: {
         completion: ' hello',
-        model: LOCAL_COMPLETION_MODEL,
+        model: `client:${CLIENT_INFERENCE_MODEL_ID}`,
         provider: LOCAL_COMPLETION_PROVIDER,
       },
     });
@@ -129,7 +135,7 @@ describe('ClientInferenceManager (#1418)', () => {
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.ensureProbed();
     const args = {
-      input: { prefix: 'The capital of France is ', maxTokens: 8 },
+      input: { pageId: 42, prefix: 'The capital of France is ', maxTokens: 8 },
       signal: new AbortController().signal,
       assigned: false,
       withoutServer: true,
@@ -162,7 +168,7 @@ describe('ClientInferenceManager (#1418)', () => {
     const mgr = compactManager(worker);
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const decision = await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: false,
       withoutServer: false,
@@ -176,7 +182,7 @@ describe('ClientInferenceManager (#1418)', () => {
     const mgr = compactManager(worker);
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -187,7 +193,7 @@ describe('ClientInferenceManager (#1418)', () => {
     await Promise.resolve();
     const controller = new AbortController();
     const pending = mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: controller.signal,
       assigned: true,
       withoutServer: true,
@@ -195,13 +201,89 @@ describe('ClientInferenceManager (#1418)', () => {
     });
     await Promise.resolve();
     await Promise.resolve();
+    await vi.waitFor(() => expect(worker.messages.some((m) => m.type === 'complete')).toBe(true));
     const complete = worker.messages.filter((m) => m.type === 'complete').at(-1);
     expect(complete).toBeDefined();
     controller.abort();
-    await expect(pending).resolves.toEqual({ kind: 'server' });
+    await expect(pending).resolves.toEqual({ kind: 'off' });
+    expect(worker.messages).toContainEqual(expect.objectContaining({ type: 'abort', targetId: complete!.id }));
     worker.emit({ id: complete!.id, type: 'result', text: ' late' });
     await Promise.resolve();
-    await expect(pending).resolves.toEqual({ kind: 'server' });
+    await expect(pending).resolves.toEqual({ kind: 'off' });
+  });
+
+  it.each(['none', 'missing', 'offline', 'changed'])('refuses local %s policy without a server fallback', async (mode) => {
+    const worker = new FakeWorker();
+    let reads = 0;
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT, hasCache: async () => true,
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
+      fetchArticlePolicy: async () => {
+        reads++;
+        if (mode === 'offline') throw new Error('offline');
+        if (mode === 'missing') return {};
+        return { authorized: true, pageId: 42, aiPolicy: mode === 'none' ? 'none' : 'local_only', aiPolicyRevision: reads > 1 ? 1 : 0 };
+      },
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const args = { input: { pageId: 42, prefix: 'private', maxTokens: 8 },
+      signal: new AbortController().signal, assigned: true, withoutServer: true, wordMode: true };
+    await mgr.decideComplete(args);
+    await waitForLoad(worker);
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    expect(await mgr.decideComplete(args)).toEqual({ kind: 'off' });
+    expect(worker.messages.filter((m) => m.type === 'complete')).toHaveLength(mode === 'changed' ? 1 : 0);
+    mgr.dispose();
+  });
+
+  it('rejects a local result aborted during its final authoritative policy read', async () => {
+    const worker = new FakeWorker();
+    const controller = new AbortController();
+    let reads = 0;
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
+      fetchArticlePolicy: async () => {
+        if (++reads === 2) controller.abort();
+        return { authorized: true, pageId: 42, aiPolicy: 'local_only', aiPolicyRevision: 0 };
+      },
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const args = { input: { pageId: 42, prefix: 'private' }, signal: controller.signal,
+      assigned: true, withoutServer: true, wordMode: false };
+    await mgr.decideComplete(args);
+    await waitForLoad(worker);
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    expect(await mgr.decideComplete(args)).toEqual({ kind: 'off' });
+    expect(reads).toBe(2);
+    mgr.dispose();
+  });
+
+  it.each(['before', 'after', 'unbound'])('blocks %s authorization without cached permission', async (when) => {
+    const worker = new FakeWorker();
+    let reads = 0;
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT, hasCache: async () => true,
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
+      fetchArticlePolicy: async () => {
+        reads++;
+        if (when === 'before' || (when === 'after' && reads === 2)) throw new ApiError(403, 'Forbidden');
+        return { authorized: when !== 'unbound', pageId: 42, aiPolicy: 'local_only', aiPolicyRevision: 0 };
+      },
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const args = { input: { pageId: 42, prefix: 'private draft' }, signal: new AbortController().signal,
+      assigned: true, withoutServer: true, wordMode: false };
+    await mgr.decideComplete(args);
+    await waitForLoad(worker);
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    expect(await mgr.decideComplete(args)).toEqual({ kind: 'off' });
+    expect(worker.messages.filter((m) => m.type === 'complete')).toHaveLength(when === 'after' ? 1 : 0);
+    mgr.dispose();
   });
 
   it('does not fetch ONNX on construct (SPEC-019)', () => {
@@ -220,7 +302,7 @@ describe('ClientInferenceManager (#1418)', () => {
     const mgr = compactManager(worker);
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -229,7 +311,7 @@ describe('ClientInferenceManager (#1418)', () => {
     await Promise.resolve();
     await Promise.resolve();
     const pending = mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -245,7 +327,7 @@ describe('ClientInferenceManager (#1418)', () => {
     const mgr = compactManager(worker, true);
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const args = {
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -268,7 +350,8 @@ describe('ClientInferenceManager (#1418)', () => {
   it('retries load after an explicit predownload following a terminal failure', async () => {
     const worker = new FakeWorker({ autoReady: false });
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => true,
       fetchManifest: async () => ({
@@ -287,7 +370,7 @@ describe('ClientInferenceManager (#1418)', () => {
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -306,7 +389,8 @@ describe('ClientInferenceManager (#1418)', () => {
   it('rejects predownload when cached bytes cannot start the GPU model', async () => {
     const worker = new FakeWorker({ autoReady: false });
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       fetchManifest: async () => ({
         enabled: true,
@@ -350,7 +434,8 @@ describe('ClientInferenceManager (#1418)', () => {
     }));
     // No hasCache seam: jsdom has no OPFS, so the real probe reports no model.
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       fetchManifest,
       downloadFile: async () => new Blob(['x']),
@@ -358,7 +443,7 @@ describe('ClientInferenceManager (#1418)', () => {
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const args = {
-      input: { prefix: 'The capital of France is ', maxTokens: 8 },
+      input: { pageId: 42, prefix: 'The capital of France is ', maxTokens: 8 },
       signal: new AbortController().signal,
       assigned: false,
       withoutServer: true,
@@ -387,7 +472,7 @@ describe('ClientInferenceManager (#1418)', () => {
     const mgr = compactManager(worker, true);
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const args = {
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -404,7 +489,8 @@ describe('ClientInferenceManager (#1418)', () => {
   it('posts the access token on load so the worker can authorize asset GETs', async () => {
     const worker = new FakeWorker({ autoReady: false });
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => true,
       accessToken: () => 'tok-9',
@@ -412,7 +498,7 @@ describe('ClientInferenceManager (#1418)', () => {
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -427,7 +513,8 @@ describe('ClientInferenceManager (#1418)', () => {
   it('loads the active Hub model id from the manifest', async () => {
     const worker = new FakeWorker({ autoReady: false });
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => true,
       fetchManifest: async () => ({
@@ -446,7 +533,7 @@ describe('ClientInferenceManager (#1418)', () => {
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
-      input: { prefix: 'Rotate the', maxTokens: 48 },
+      input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -462,7 +549,8 @@ describe('ClientInferenceManager (#1418)', () => {
     const worker = new FakeWorker();
     let cached = true;
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => cached,
     });
@@ -481,7 +569,7 @@ describe('ClientInferenceManager (#1418)', () => {
     }));
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const decision = await mgr.decideComplete({
-      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      input: { pageId: 42, prefix: 'hello ', suffix: '', maxTokens: 16 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -501,7 +589,7 @@ describe('ClientInferenceManager (#1418)', () => {
     }));
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const decision = await mgr.decideComplete({
-      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      input: { pageId: 42, prefix: 'hello ', suffix: '', maxTokens: 16 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -520,7 +608,7 @@ describe('ClientInferenceManager (#1418)', () => {
     }));
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const first = await mgr.decideComplete({
-      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      input: { pageId: 42, prefix: 'hello ', suffix: '', maxTokens: 16 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: false,
@@ -530,7 +618,7 @@ describe('ClientInferenceManager (#1418)', () => {
     await Promise.resolve();
     await Promise.resolve();
     const decision = await mgr.decideComplete({
-      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      input: { pageId: 42, prefix: 'hello ', suffix: '', maxTokens: 16 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: false,
@@ -552,7 +640,8 @@ describe('ClientInferenceManager (#1418)', () => {
   it('treats a missing policy endpoint as allowed', async () => {
     const worker = new FakeWorker();
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => true,
       fetchOrgPolicy: async () => {
@@ -561,7 +650,7 @@ describe('ClientInferenceManager (#1418)', () => {
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
-      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      input: { pageId: 42, prefix: 'hello ', suffix: '', maxTokens: 16 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -570,7 +659,7 @@ describe('ClientInferenceManager (#1418)', () => {
     await Promise.resolve();
     await Promise.resolve();
     const decision = await mgr.decideComplete({
-      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      input: { pageId: 42, prefix: 'hello ', suffix: '', maxTokens: 16 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -582,7 +671,8 @@ describe('ClientInferenceManager (#1418)', () => {
   it('fails closed to disabled_server_only when the policy read errors', async () => {
     const worker = new FakeWorker();
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => true,
       fetchOrgPolicy: async () => {
@@ -591,7 +681,7 @@ describe('ClientInferenceManager (#1418)', () => {
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     const decision = await mgr.decideComplete({
-      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      input: { pageId: 42, prefix: 'hello ', suffix: '', maxTokens: 16 },
       signal: new AbortController().signal,
       assigned: true,
       withoutServer: true,
@@ -604,7 +694,8 @@ describe('ClientInferenceManager (#1418)', () => {
   it('treats an empty policy payload as allowed', async () => {
     const worker = new FakeWorker();
     const mgr = new ClientInferenceManager({
-      createWorker: () => worker as unknown as Worker,
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => true,
       fetchOrgPolicy: async () => undefined as unknown as ClientInferenceOrgPolicy,
@@ -612,5 +703,208 @@ describe('ClientInferenceManager (#1418)', () => {
     expect(() => mgr.setFlags({ adminEnabled: true, userEnabled: true })).not.toThrow();
     await mgr.refreshOrgPolicy();
     expect(mgr.orgPolicySnapshot()).toEqual(INACTIVE_POLICY);
+  });
+});
+
+describe('ClientInferenceManager active-model switch (#1812)', () => {
+  const MODEL_A = 'onnx-community--Qwen2.5-0.5B-Instruct';
+  const MODEL_B = 'HuggingFaceTB--SmolLM2-135M-Instruct';
+  const COMPLETE = {
+    input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
+    assigned: true,
+    withoutServer: true,
+    wordMode: false,
+  };
+
+  const manifestFor = (active: string): ClientAssetManifest => ({
+    enabled: true,
+    activeModelId: active,
+    models: [MODEL_A, MODEL_B].map((id) => ({
+      id, kind: 'onnx' as const, bytes: 1, installed: true, available: true,
+      files: [{ name: 'config.json', bytes: 1 }],
+    })),
+  });
+
+  function switchableManager(
+    worker: FakeWorker,
+    overrides: (selection: { active: string }) => Partial<ClientInferenceManagerOptions> = () => ({}),
+  ) {
+    const selection = { active: MODEL_A };
+    const mgr = new ClientInferenceManager({
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchManifest: async () => manifestFor(selection.active),
+      downloadFile: async () => new Blob(['x']),
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
+      ...overrides(selection),
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    return { mgr, selection };
+  }
+
+  const lastLoad = (worker: FakeWorker) => worker.messages.filter((m) => m.type === 'load').at(-1)!;
+
+  const summary = (worker: FakeWorker) => worker.messages
+    .filter((m) => m.type !== 'abort')
+    .map((m) => (m.type === 'load' ? `load:${m.modelId}` : m.type));
+
+  it('reloads the newly active model, unloads the old one and reports it', async () => {
+    const worker = new FakeWorker();
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    expect(mgr.loadedModel()).toBe(MODEL_A);
+
+    selection.active = MODEL_B;
+    await mgr.predownload();
+    expect(mgr.isReady()).toBe(true);
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+
+    const decision = await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    expect(decision).toMatchObject({ kind: 'local', response: { model: `client:${MODEL_B}` } });
+    expect(summary(worker)).toEqual([`load:${MODEL_A}`, 'unload', `load:${MODEL_B}`, 'complete']);
+  });
+
+  it('never lets a superseded in-flight load become ready', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    const loadA = await waitForLoad(worker);
+
+    selection.active = MODEL_B;
+    let downloaded = false;
+    const downloading = mgr.predownload().then(() => { downloaded = true; });
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+    const loadB = worker.messages.filter((m) => m.type === 'load').at(-1)!;
+
+    worker.emit({ id: loadA.id, type: 'ready', modelId: MODEL_A });
+    await Promise.resolve();
+    expect(mgr.isReady()).toBe(false);
+    expect(mgr.loadedModel()).toBeNull();
+    expect(downloaded).toBe(false);
+
+    worker.emit({ id: loadB.id, type: 'ready', modelId: MODEL_B });
+    await downloading;
+    expect(mgr.isReady()).toBe(true);
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('keeps a ready model when the active selection did not change', async () => {
+    const worker = new FakeWorker();
+    const { mgr } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    await mgr.predownload();
+    expect(summary(worker)).toEqual([`load:${MODEL_A}`]);
+    expect(mgr.loadedModel()).toBe(MODEL_A);
+  });
+
+  it('does not let a request error cancel the newly requested load', async () => {
+    const worker = new FakeWorker({ autoResult: null });
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    const completing = mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(summary(worker)).toContain('complete'));
+    const complete = worker.messages.find((m) => m.type === 'complete')!;
+
+    worker.autoReady = false;
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+    worker.emit({ id: complete.id, type: 'error', code: 'oom', message: 'out of memory' });
+    expect(await completing).toEqual({ kind: 'server' });
+
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await expect(downloading).resolves.toBeUndefined();
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('ignores a superseded load failure', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    const loadA = await waitForLoad(worker);
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+
+    worker.emit({ id: loadA.id, type: 'error', code: 'oom', message: 'out of memory' });
+    expect(mgr.lastErrorCategory()).toBeNull();
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await expect(downloading).resolves.toBeUndefined();
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('does not let a stale passive load replace a newer one', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const firstManifest = Promise.withResolvers<ClientAssetManifest>();
+    let manifestCalls = 0;
+    const { mgr, selection } = switchableManager(worker, (current) => ({
+      fetchManifest: () => (++manifestCalls === 1
+        ? firstManifest.promise
+        : Promise.resolve(manifestFor(current.active))),
+    }));
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(manifestCalls).toBe(1));
+
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toEqual([`load:${MODEL_B}`]));
+    firstManifest.resolve(manifestFor(MODEL_A));
+    await vi.waitFor(() => expect(manifestCalls).toBe(2));
+    await Promise.resolve();
+
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await downloading;
+    expect(summary(worker)).toEqual([`load:${MODEL_B}`]);
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('does not report a model that was replaced during the policy read', async () => {
+    const worker = new FakeWorker();
+    let hold: PromiseWithResolvers<unknown> | null = null;
+    const { mgr, selection } = switchableManager(worker, () => ({
+      fetchArticlePolicy: () => hold?.promise
+        ?? Promise.resolve({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    }));
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+
+    hold = Promise.withResolvers<unknown>();
+    const completing = mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    worker.autoReady = false;
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+    const policy = hold;
+    hold = null;
+    policy.resolve({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 });
+
+    expect(await completing).toEqual({ kind: 'server' });
+    expect(summary(worker)).not.toContain('complete');
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await downloading;
+  });
+
+  it('keeps a load that started before the device probe resolved', async () => {
+    const worker = new FakeWorker();
+    const probe = Promise.withResolvers<DeviceGpuProfile>();
+    let probing = false;
+    const { mgr } = switchableManager(worker, () => ({
+      probe: () => {
+        probing = true;
+        return probe.promise;
+      },
+    }));
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(probing).toBe(true));
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    probe.resolve(COMPACT);
+    await downloading;
+    expect(summary(worker)).toEqual([`load:${MODEL_A}`]);
+    expect(mgr.loadedModel()).toBe(MODEL_A);
   });
 });

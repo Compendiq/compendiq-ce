@@ -45,18 +45,29 @@ const noteFixture = {
   resolved: false,
 };
 
-function renderDetails(overrides: Partial<typeof pageFixture> = {}) {
+let autoTagModel: string | null = null;
+
+const versionsFixture = {
+  pageId: '1',
+  versions: [
+    { versionNumber: 2, title: 'Engineering handbook', editedAt: '2026-09-01T12:00:00Z', syncedAt: null, author: null, message: null, isCurrent: true },
+    { versionNumber: 1, title: 'Engineering handbook', editedAt: '2026-08-01T12:00:00Z', syncedAt: null, author: null, message: null, isCurrent: false },
+  ],
+};
+
+function renderDetails(overrides: Partial<typeof pageFixture> & { isFrozen?: boolean } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
     let data: unknown;
     if (url.pathname.endsWith('/comments')) data = [noteFixture];
     else if (url.pathname === '/api/pages/pinned') data = { items: [] };
+    else if (url.pathname === '/api/pages/1/versions') data = versionsFixture;
     else if (/^\/api\/pages\/\d+$/.test(url.pathname)) {
       data = { ...pageFixture, ...overrides, id: url.pathname.split('/').at(-1) };
     } else if (url.pathname === '/api/settings') {
       data = { confluenceUrl: 'https://confluence.example.com' };
     } else if (url.pathname === '/api/permissions/check') data = { allowed: true };
-    else if (url.pathname === '/api/llm/usecase-default') data = { model: null };
+    else if (url.pathname === '/api/llm/usecase-default') data = { model: autoTagModel };
     else if (url.pathname === '/api/spaces' || url.pathname === '/api/spaces/local') data = [];
     else return new Response(JSON.stringify({ error: `Unexpected request: ${url.pathname}` }), { status: 404 });
     return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
@@ -77,6 +88,7 @@ function renderDetails(overrides: Partial<typeof pageFixture> = {}) {
 }
 
 beforeEach(() => {
+  autoTagModel = null;
   window.innerWidth = 1280;
   useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarLaptopExpanded: true, articleSidebarWidth: 400 });
   useArticleViewStore.setState({ headings: [], editing: false });
@@ -86,6 +98,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('Details trust and draft continuity', () => {
+  it('cancels deferred notes scrolling when the inspector unmounts', async () => {
+    renderDetails();
+    await screen.findByText(noteFixture.body);
+    const scroll = vi.fn();
+    const section = screen.getByTestId('details-notes-section');
+    section.scrollIntoView = scroll;
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(window, { key: 'n', altKey: true });
+      cleanup();
+      // Keep an unrelated successor element with the same ID in the document:
+      // a stale callback must not navigate the newly mounted article either.
+      const successor = document.createElement('div');
+      successor.id = 'details-notes-section';
+      successor.scrollIntoView = scroll;
+      document.body.appendChild(successor);
+      try {
+        act(() => { vi.advanceTimersByTime(100); });
+        expect(scroll).not.toHaveBeenCalled();
+      } finally {
+        successor.remove();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not certify failed indexing when the error text is absent and a human verification exists', async () => {
     renderDetails({ embeddingStatus: 'failed', verifiedAt: '2026-09-02T12:00:00Z' });
     await waitFor(() => expect(screen.getByText('Search indexing failed')).toBeVisible());

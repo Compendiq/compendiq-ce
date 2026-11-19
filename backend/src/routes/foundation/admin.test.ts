@@ -7,10 +7,15 @@ import { adminRoutes } from './admin.js';
 // Mock external dependencies. Passthrough keeps the real encryptPat/decryptPat
 // (used by PUT /admin/smtp to encrypt smtp_pass at rest, #738) while stubbing
 // the key-rotation entry point.
-vi.mock('../../core/utils/crypto.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/utils/crypto.js')>()),
-  reEncryptPat: vi.fn().mockReturnValue(null),
-}));
+vi.mock('../../core/utils/crypto.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/utils/crypto.js')>();
+  return {
+    ...actual,
+    // #1761 — spy-wrapped so a test can make encryption fail once.
+    encryptPat: vi.fn(actual.encryptPat),
+    reEncryptPat: vi.fn().mockReturnValue(null),
+  };
+});
 
 vi.mock('../../core/services/audit-service.js', () => ({
   getAuditLog: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 50 }),
@@ -62,6 +67,9 @@ vi.mock('nodemailer', () => {
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
+  getWebhookDeliveriesRetentionDays: vi.fn().mockResolvedValue(90),
+  getJobHistoryRetentionDays: vi.fn().mockResolvedValue(90),
+  getNotificationsReadRetentionDays: vi.fn().mockResolvedValue(90),
   // Worker batch sizes — the real row → default cascade is covered in
   // `admin-retrieval-settings.test.ts` against the real service.
   getWorkerBatchSize: vi.fn().mockResolvedValue(5),
@@ -120,13 +128,36 @@ vi.mock('../../domains/llm/services/llm-queue.js', () => ({
   setLlmMaxQueueDepthClusterWide: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #1757 — spy-wrapped passthroughs so the PUT /admin/smtp tests can check the
+// handler's order (persist → apply → reload → audit → publish) and the
+// cluster signal, while the real email-service and (inactive) bus still run.
+vi.mock('../../core/services/email-service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/services/email-service.js')>();
+  return {
+    ...actual,
+    updateSmtpConfig: vi.fn(actual.updateSmtpConfig),
+    reloadSmtpConfigFromDb: vi.fn(actual.reloadSmtpConfigFromDb),
+  };
+});
+vi.mock('../../core/services/redis-cache-bus.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/services/redis-cache-bus.js')>();
+  return { ...actual, publish: vi.fn(actual.publish) };
+});
+
 import nodemailer from 'nodemailer';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
-import { decryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
+import { decryptPat, encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
-import { getAdminAccessDeniedRetentionDays as mockGetAdminAccessDeniedRetentionDays } from '../../core/services/admin-settings-service.js';
+import {
+  getAdminAccessDeniedRetentionDays as mockGetAdminAccessDeniedRetentionDays,
+  getJobHistoryRetentionDays as mockGetJobHistoryRetentionDays,
+  getNotificationsReadRetentionDays as mockGetNotificationsReadRetentionDays,
+} from '../../core/services/admin-settings-service.js';
+import { logAuditEvent } from '../../core/services/audit-service.js';
+import { reloadSmtpConfigFromDb, updateSmtpConfig } from '../../core/services/email-service.js';
+import { publish } from '../../core/services/redis-cache-bus.js';
 
 describe('Admin routes', () => {
   let app: ReturnType<typeof Fastify>;
@@ -780,6 +811,110 @@ describe('Admin routes', () => {
     });
   });
 
+  // ─── #1797 — webhookDeliveriesRetentionDays wiring ──────────────────────
+  describe('webhookDeliveriesRetentionDays (issue #1797)', () => {
+    it('GET /api/admin/settings returns the getter value (90 default)', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).webhookDeliveriesRetentionDays).toBe(90);
+    });
+
+    it('PUT /api/admin/settings persists webhookDeliveriesRetentionDays via UPSERT', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { webhookDeliveriesRetentionDays: 45 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const upsert = calls.find(([sql, args]) =>
+        typeof sql === 'string' &&
+        sql.includes('INSERT INTO admin_settings') &&
+        Array.isArray(args) &&
+        args[0] === 'webhook_deliveries_retention_days',
+      );
+      expect(upsert).toBeTruthy();
+      expect((upsert![1] as unknown[])[1]).toBe('45');
+    });
+
+    it.each([6, 3651, 30.5])('PUT rejects %s with 400 (validated by Zod)', async (value) => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { webhookDeliveriesRetentionDays: value },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  // ─── #1760 — jobHistoryRetentionDays / notificationsReadRetentionDays wiring ──
+  describe.each([
+    {
+      field: 'jobHistoryRetentionDays',
+      key: 'job_history_retention_days',
+      getter: mockGetJobHistoryRetentionDays,
+    },
+    {
+      field: 'notificationsReadRetentionDays',
+      key: 'notifications_read_retention_days',
+      getter: mockGetNotificationsReadRetentionDays,
+    },
+  ])('$field (issue #1760)', ({ field, key, getter }) => {
+    it('GET /api/admin/settings returns the getter value', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+      (getter as ReturnType<typeof vi.fn>).mockResolvedValueOnce(120);
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)[field]).toBe(120);
+    });
+
+    it('GET /api/admin/settings returns 90 by default', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+      expect(JSON.parse(response.body)[field]).toBe(90);
+    });
+
+    it('PUT /api/admin/settings persists the field via UPSERT', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { [field]: 7 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const upsert = calls.find(([sql, args]) =>
+        typeof sql === 'string' &&
+        sql.includes('INSERT INTO admin_settings') &&
+        Array.isArray(args) &&
+        args[0] === key,
+      );
+      expect(upsert).toBeTruthy();
+      expect((upsert![1] as unknown[])[1]).toBe('7');
+    });
+
+    it.each([6, 3651, 30.5])('PUT rejects %s with 400 (validated by Zod)', async (value) => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { [field]: value },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
   // ─── #264 — adminAccessDeniedRetentionDays wiring ───────────────────────
   describe('adminAccessDeniedRetentionDays (issue #264)', () => {
     it('GET /api/admin/settings returns the value produced by the getter (90 default)', async () => {
@@ -858,6 +993,27 @@ describe('Admin routes', () => {
     });
   });
 
+  // #1757 — PUT /admin/smtp re-reads the smtp_* rows after its upsert, so the
+  // SMTP suites that check the live configuration back the mocked `query`
+  // with a small in-memory admin_settings: the upsert stores its rows and the
+  // reload's SELECT returns them.
+  const smtpSettingsStore = () => {
+    const rows = new Map<string, string>();
+    const impl = async (sql: unknown, params?: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO admin_settings')) {
+        const [keys, values] = params as [string[], string[]];
+        keys.forEach((key, i) => rows.set(key, values[i]!));
+        return { rows: [], rowCount: keys.length };
+      }
+      if (typeof sql === 'string' && sql.includes(`LIKE 'smtp_%'`)) {
+        const result = [...rows].map(([setting_key, setting_value]) => ({ setting_key, setting_value }));
+        return { rows: result, rowCount: result.length };
+      }
+      return { rows: [], rowCount: 0 };
+    };
+    return { rows, impl };
+  };
+
   // ========================
   // SMTP settings — masked password sentinel (issue #743)
   // ========================
@@ -868,7 +1024,7 @@ describe('Admin routes', () => {
     const SMTP_MASK = '••••••••';
 
     it('keeps the real password on the live transport when the masked sentinel is round-tripped', async () => {
-      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+      (mockQuery as ReturnType<typeof vi.fn>).mockImplementation(smtpSettingsStore().impl);
 
       // 1. Admin saves real credentials.
       let response = await app.inject({
@@ -1018,6 +1174,272 @@ describe('Admin routes', () => {
       const keys = params[0] as string[];
       const values = params[1] as string[];
       expect(values[keys.indexOf('smtp_pass')]).toBe('');
+    });
+  });
+
+  // ========================
+  // SMTP settings — persist before apply (issue #1761)
+  // ========================
+  // A failed save must leave the live configuration untouched; a successful
+  // one must make the live configuration match the persisted rows.
+  describe('PUT /api/admin/smtp - persist before apply (#1761)', () => {
+    const mockedQuery = mockQuery as ReturnType<typeof vi.fn>;
+    const mockedCreateTransport = nodemailer.createTransport as ReturnType<typeof vi.fn>;
+    const isUpsert = (sql: unknown) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings');
+    const findUpsert = () =>
+      (mockedQuery.mock.calls as Array<[string, unknown[]]>).find(([sql]) => isUpsert(sql));
+
+    const previous = {
+      host: 'smtp.previous.local',
+      port: 587,
+      secure: false,
+      user: 'previous-user',
+      pass: 'previous-secret',
+      from: 'previous@test.local',
+      enabled: true,
+    };
+
+    const put = (payload: Record<string, unknown>) =>
+      app.inject({ method: 'PUT', url: '/api/admin/smtp', payload });
+    const getConfig = async () => JSON.parse((await app.inject({ method: 'GET', url: '/api/admin/smtp' })).body);
+
+    // Establishes the "previous" live configuration through the route itself.
+    beforeEach(async () => {
+      const store = smtpSettingsStore();
+      mockedQuery.mockImplementation(store.impl);
+      // Move away first so applying `previous` always drops any cached transport.
+      expect((await put({ ...previous, host: 'smtp.reset.local' })).statusCode).toBe(200);
+      expect((await put(previous)).statusCode).toBe(200);
+      vi.clearAllMocks();
+      mockedQuery.mockImplementation(store.impl);
+    });
+
+    const sendTestMail = async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/admin/smtp/test', payload: { to: 'admin@test.local' } });
+      expect(res.statusCode).toBe(200);
+      return mockedCreateTransport.mock.calls.map((c) => (c[0] as { host: string }).host);
+    };
+
+    it('answers 500 and keeps the live configuration and transport when the upsert rejects', async () => {
+      mockedQuery.mockImplementation(async (sql: unknown) => {
+        if (isUpsert(sql)) throw new Error('admin_settings write rejected');
+        return { rows: [], rowCount: 0 };
+      });
+
+      const res = await put({ host: 'smtp.rejected.local', port: 2525, enabled: false });
+      expect(res.statusCode).toBe(500);
+
+      const config = await getConfig();
+      expect(config.host).toBe(previous.host);
+      expect(config.port).toBe(previous.port);
+      expect(config.enabled).toBe(true);
+
+      // The transport built for the next send uses the previous host.
+      expect(await sendTestMail()).toEqual([previous.host]);
+    });
+
+    it('keeps the live configuration when encrypting the password fails', async () => {
+      (encryptPat as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+        throw new Error('encryption unavailable');
+      });
+
+      const res = await put({ host: 'smtp.rejected.local', pass: 'new-secret', enabled: false });
+      expect(res.statusCode).toBe(500);
+      expect(findUpsert()).toBeUndefined();
+
+      const config = await getConfig();
+      expect(config.host).toBe(previous.host);
+      expect(config.enabled).toBe(true);
+      expect(await sendTestMail()).toEqual([previous.host]);
+    });
+
+    it('makes the live configuration equal the persisted rows after a successful save', async () => {
+      const next = {
+        host: 'smtp.next.local',
+        port: 2525,
+        secure: true,
+        user: 'next-user',
+        pass: 'next-secret',
+        from: 'next@test.local',
+        enabled: false,
+      };
+      const res = await put(next);
+      expect(res.statusCode).toBe(200);
+
+      const upsert = findUpsert();
+      expect(upsert).toBeDefined();
+      const keys = upsert![1][0] as string[];
+      const values = upsert![1][1] as string[];
+      const row = (key: string) => values[keys.indexOf(key)];
+
+      const config = await getConfig();
+      expect(row('smtp_host')).toBe(config.host);
+      expect(Number(row('smtp_port'))).toBe(config.port);
+      expect(row('smtp_secure') === 'true').toBe(config.secure);
+      expect(row('smtp_user')).toBe(config.user);
+      expect(row('smtp_from')).toBe(config.from);
+      expect(row('smtp_enabled') === 'true').toBe(config.enabled);
+      expect(decryptPat(row('smtp_pass'))).toBe(next.pass);
+      expect(config.pass).toBe('••••••••');
+      expect(config).toMatchObject({ host: next.host, port: next.port, secure: next.secure, enabled: next.enabled });
+    });
+
+    it('answers 200 for an empty body without an upsert and leaves the configuration unchanged', async () => {
+      const res = await put({});
+      expect(res.statusCode).toBe(200);
+      expect(findUpsert()).toBeUndefined();
+
+      const config = await getConfig();
+      expect(config).toMatchObject({
+        host: previous.host,
+        port: previous.port,
+        secure: previous.secure,
+        user: previous.user,
+        from: previous.from,
+        enabled: previous.enabled,
+      });
+    });
+  });
+
+  // ========================
+  // SMTP settings — every replica reloads after a save (issue #1757)
+  // ========================
+  // After a committed save the handler re-reads the rows, writes the audit row
+  // and only then signals the other replicas, without waiting for the signal.
+  describe('PUT /api/admin/smtp - reload and replica signal (#1757)', () => {
+    const mockedQuery = mockQuery as ReturnType<typeof vi.fn>;
+    const mockedPublish = publish as ReturnType<typeof vi.fn>;
+    const isUpsert = (sql: unknown) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings');
+    const isSmtpSelect = (sql: unknown) => typeof sql === 'string' && sql.includes(`LIKE 'smtp_%'`);
+    const queryCallOrder = (match: (sql: unknown) => boolean) =>
+      mockedQuery.mock.invocationCallOrder.filter((_, i) => match(mockedQuery.mock.calls[i]![0]));
+
+    const put = (payload: Record<string, unknown>) =>
+      app.inject({ method: 'PUT', url: '/api/admin/smtp', payload });
+    const getConfig = async () => JSON.parse((await app.inject({ method: 'GET', url: '/api/admin/smtp' })).body);
+
+    let store: ReturnType<typeof smtpSettingsStore>;
+    beforeEach(() => {
+      store = smtpSettingsStore();
+      mockedQuery.mockImplementation(store.impl);
+    });
+
+    it('signals the other replicas after a successful save, with an empty payload', async () => {
+      const res = await put({ host: 'smtp.saved.local', pass: 'saved-secret', enabled: true });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockedPublish).toHaveBeenCalledTimes(1);
+      expect(mockedPublish).toHaveBeenCalledWith('smtp:config:changed', {});
+      expect(reloadSmtpConfigFromDb).toHaveBeenCalledWith('writer');
+    });
+
+    it('neither reloads nor signals when the upsert fails', async () => {
+      mockedQuery.mockImplementation(async (sql: unknown, params?: unknown[]) => {
+        if (isUpsert(sql)) throw new Error('admin_settings write rejected');
+        return store.impl(sql, params);
+      });
+
+      const res = await put({ host: 'smtp.rejected.local', enabled: true });
+
+      expect(res.statusCode).toBe(500);
+      expect(reloadSmtpConfigFromDb).not.toHaveBeenCalled();
+      expect(queryCallOrder(isSmtpSelect)).toEqual([]);
+      expect(logAuditEvent).not.toHaveBeenCalled();
+      expect(mockedPublish).not.toHaveBeenCalled();
+    });
+
+    it('neither reloads nor signals for an empty patch, which writes no row', async () => {
+      const res = await put({});
+
+      expect(res.statusCode).toBe(200);
+      expect(queryCallOrder(isUpsert)).toEqual([]);
+      expect(reloadSmtpConfigFromDb).not.toHaveBeenCalled();
+      expect(queryCallOrder(isSmtpSelect)).toEqual([]);
+      expect(mockedPublish).not.toHaveBeenCalled();
+    });
+
+    it('persists, applies, reloads, audits and only then signals', async () => {
+      const heldRead = Promise.withResolvers<void>();
+      mockedQuery.mockImplementation(async (sql: unknown, params?: unknown[]) => {
+        if (isSmtpSelect(sql)) await heldRead.promise;
+        return store.impl(sql, params);
+      });
+
+      const response = put({ host: 'smtp.ordered.local', port: 2525, enabled: true });
+      await vi.waitFor(() => expect(queryCallOrder(isSmtpSelect)).toHaveLength(1));
+      // The reload is awaited: nothing after it has run while its read is held.
+      expect(logAuditEvent).not.toHaveBeenCalled();
+      expect(mockedPublish).not.toHaveBeenCalled();
+      heldRead.resolve();
+      expect((await response).statusCode).toBe(200);
+
+      const [upsertAt] = queryCallOrder(isUpsert);
+      const [applyAt] = (updateSmtpConfig as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
+      const [reloadAt] = (reloadSmtpConfigFromDb as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
+      const [rereadAt] = queryCallOrder(isSmtpSelect);
+      const [auditAt] = (logAuditEvent as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
+      const [publishAt] = mockedPublish.mock.invocationCallOrder;
+      expect([upsertAt, applyAt, reloadAt, rereadAt, auditAt, publishAt].every((n) => n !== undefined)).toBe(true);
+      expect(upsertAt!).toBeLessThan(applyAt!);
+      expect(applyAt!).toBeLessThan(reloadAt!);
+      expect(reloadAt!).toBeLessThan(rereadAt!);
+      expect(rereadAt!).toBeLessThan(auditAt!);
+      expect(auditAt!).toBeLessThan(publishAt!);
+    });
+
+    it('answers and writes the audit row while the signal never settles (Redis outage)', async () => {
+      mockedPublish.mockReturnValueOnce(new Promise<void>(() => { /* offline queue: never settles */ }));
+
+      const res = await put({ host: 'smtp.outage.local', enabled: true });
+
+      expect(res.statusCode).toBe(200);
+      expect(logAuditEvent).toHaveBeenCalledWith(
+        'admin-user-id', 'ADMIN_ACTION', 'admin_settings', undefined, { action: 'update_smtp_settings' }, expect.anything(),
+      );
+      expect(mockedPublish).toHaveBeenCalledTimes(1);
+      expect((await getConfig()).host).toBe('smtp.outage.local');
+    });
+
+    it('keeps the locally applied save and still signals when the re-read fails', async () => {
+      mockedQuery.mockImplementation(async (sql: unknown, params?: unknown[]) => {
+        if (isSmtpSelect(sql)) throw new Error('connection lost');
+        return store.impl(sql, params);
+      });
+
+      const res = await put({ host: 'smtp.local-apply.local', port: 2626, enabled: true });
+
+      expect(res.statusCode).toBe(200);
+      expect(await getConfig()).toMatchObject({ host: 'smtp.local-apply.local', port: 2626, enabled: true });
+      expect(mockedPublish).toHaveBeenCalledWith('smtp:config:changed', {});
+    });
+
+    it('keeps the save when an older in-flight reload puts the pre-save rows back and the re-read fails', async () => {
+      expect((await put({ host: 'smtp.before.local', port: 587, enabled: false })).statusCode).toBe(200);
+      vi.clearAllMocks();
+
+      // An older reload (a peer's bus event) read the rows before this save and
+      // answers only after it; the writer's own re-read then fails.
+      const heldOlderRead = Promise.withResolvers<void>();
+      let smtpSelects = 0;
+      mockedQuery.mockImplementation(async (sql: unknown, params?: unknown[]) => {
+        if (!isSmtpSelect(sql)) return store.impl(sql, params);
+        smtpSelects += 1;
+        if (smtpSelects > 1) throw new Error('connection lost');
+        const preSaveRows = await store.impl(sql, params);
+        await heldOlderRead.promise;
+        return preSaveRows;
+      });
+      const olderReload = reloadSmtpConfigFromDb('bus');
+      await vi.waitFor(() => expect(smtpSelects).toBe(1));
+
+      const response = put({ host: 'smtp.after.local', port: 2727, enabled: true });
+      await vi.waitFor(() => expect(reloadSmtpConfigFromDb).toHaveBeenCalledWith('writer'));
+      heldOlderRead.resolve();
+
+      expect(await olderReload).toBe(true); // applied the pre-save rows
+      expect((await response).statusCode).toBe(200);
+      expect(smtpSelects).toBe(2);
+      expect(await getConfig()).toMatchObject({ host: 'smtp.after.local', port: 2727, enabled: true });
     });
   });
 

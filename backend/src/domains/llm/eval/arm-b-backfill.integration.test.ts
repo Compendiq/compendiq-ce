@@ -249,7 +249,8 @@ describe.skipIf(!dbAvailable)('arm B backfill driver (#1619)', () => {
     // reasoning would change every arm's answer behaviour. Same provider, same
     // tolerant host, the product's own chat entrypoint.
     const cfg = { providerId, baseUrl, apiKey: null, authType: 'none' as const, verifySsl: true };
-    await chat(cfg, MODEL, [{ role: 'user', content: 'hi' }]);
+    const transportContext = { kind: 'non_article', purpose: 'synthetic_evaluation' } as const;
+    await chat(cfg, MODEL, [{ role: 'user', content: 'hi' }], { transportContext });
     expect(requestBodies).toHaveLength(1);
     expect(requestBodies[0]).not.toHaveProperty('think');
     expect(requestBodies[0]).not.toHaveProperty('chat_template_kwargs');
@@ -257,12 +258,12 @@ describe.skipIf(!dbAvailable)('arm B backfill driver (#1619)', () => {
     // And with Think ON the same call sends the OPPOSITE of the analysis hints,
     // which is what makes `nonThinking` a per-call decision rather than a
     // provider-wide one.
-    await chat(cfg, MODEL, [{ role: 'user', content: 'hi' }], { thinking: true });
+    await chat(cfg, MODEL, [{ role: 'user', content: 'hi' }], { transportContext, thinking: true });
     expect(requestBodies[1]).toMatchObject({ think: true, chat_template_kwargs: { enable_thinking: true } });
 
     // Precedence, because both flags can reach one request: suppression wins,
     // so no caller can hand the analysis path a thinking pass.
-    await chatCompletion(cfg, MODEL, [{ role: 'user', content: 'hi' }], { thinking: true, nonThinking: true });
+    await chatCompletion(cfg, MODEL, [{ role: 'user', content: 'hi' }], { transportContext, thinking: true, nonThinking: true });
     expect(requestBodies[2]).toMatchObject({ think: false, chat_template_kwargs: { enable_thinking: false } });
   }, 60_000);
 });

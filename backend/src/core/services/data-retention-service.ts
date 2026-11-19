@@ -13,21 +13,35 @@
  *   - standalone pages in the trash (soft-deleted) for more than 30 days —
  *       the Trash UI promises "purged after 30 days"; Confluence-synced pages
  *       have their own purge in sync-service (upstream re-confirmation).
+ *   - webhook_deliveries (#1797): attempt ledger rows of terminal outbox
+ *       items older than the admin-configurable window (default 90d).
+ *   - job_history (#1760): every row is terminal (completed / failed), so
+ *       rows older than the admin-configurable window (default 90d).
+ *   - notifications (#1760): READ notifications older than the
+ *       admin-configurable window (default 90d). Unread notifications are
+ *       never deleted, whatever their age.
  *
  * Retention periods are configurable via environment variables:
  *   RETENTION_AUDIT_LOG_DAYS, RETENTION_SEARCH_ANALYTICS_DAYS,
  *   RETENTION_ERROR_LOG_DAYS, RETENTION_VERSIONS_MAX,
  *   RETENTION_ADMIN_ACCESS_DENIED_DAYS (env fallback for the admin-configurable
  *   `admin_access_denied_retention_days` setting — consulted only when the DB
- *   row is absent).
+ *   row is absent), RETENTION_WEBHOOK_DELIVERIES_DAYS (same, for
+ *   `webhook_deliveries_retention_days`), RETENTION_JOB_HISTORY_DAYS (same, for
+ *   `job_history_retention_days`), RETENTION_NOTIFICATIONS_READ_DAYS (same, for
+ *   `notifications_read_retention_days`).
  */
 
+import type { PoolClient } from 'pg';
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { safeIntOr } from '../utils/safe-int.js';
 import {
   getAdminAccessDeniedRetentionDays,
   getPendingSyncVersionsRetentionDays,
+  getWebhookDeliveriesRetentionDays,
+  getJobHistoryRetentionDaysStrict,
+  getNotificationsReadRetentionDaysStrict,
 } from './admin-settings-service.js';
 import { logAuditEvent } from './audit-service.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
@@ -108,6 +122,10 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   // whose pending versions have all been pruned.
   results['pending_sync_versions'] = await runPendingSyncVersionsRetention();
 
+  // Webhook delivery-attempt ledger retention (#1797). Terminal-outbox
+  // items only; never touches webhook_outbox itself.
+  results['webhook_deliveries'] = await runWebhookDeliveriesRetention();
+
   // Count-based retention for page_versions
   // #828: safeIntOr guards against a non-numeric RETENTION_VERSIONS_MAX (NaN
   // would break the `WHERE rn > $1` bind and disable page_versions pruning).
@@ -143,6 +161,12 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
     logger.error({ err }, 'Page versions retention cleanup failed');
     results.page_versions = 0;
   }
+
+  // job_history and read-notification retention (#1760). Run after the
+  // sweeps above; each is independent and never throws, so a failure here
+  // cannot change another sweep's result.
+  results['job_history'] = await runJobHistoryRetention();
+  results['notifications_read'] = await runReadNotificationsRetention();
 
   return results;
 }
@@ -338,6 +362,12 @@ export async function purgeExpiredStandalonePages(): Promise<number> {
  * abandons a conflict doesn't see a stale `conflict_pending = TRUE` flag
  * on the conflicts list after the row was retention-pruned.
  *
+ * #1796: both statements run in ONE transaction. As separate autocommits,
+ * a failed recompute after a successful delete lost the affected page ids
+ * for good — the next sweep found no pending rows and never repaired the
+ * stale flag. Rolling the delete back keeps the pending row, so the next
+ * sweep retries the whole unit.
+ *
  * Emits a single `RETENTION_PRUNED` audit row with the count, including
  * zero-row sweeps (compliance heartbeat — see Finding #4 in the umbrella
  * loop). Never throws.
@@ -356,8 +386,16 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
 
   const pool = getPool();
   let deleted = 0;
+  let affectedPages = 0;
 
+  // Acquire inside the try: a saturated/unreachable pool makes connect()
+  // reject (connectionTimeoutMillis), and that must stay contained in this
+  // sweep like every other failure — "Never throws".
+  let client: PoolClient | null = null;
   try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
     // Capture the affected page_ids in the same statement so the followup
     // recompute targets only the rows we actually changed (no full-table
     // scan of `pages`). The CTE delete + RETURNING keeps both halves in
@@ -368,7 +406,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
     // would report the number of distinct PAGES as the deleted-row count
     // (wrong compliance attestation). Return every deleted row and dedupe
     // page ids in JS instead.
-    const result = await pool.query<{ page_id: number }>(
+    const result = await client.query<{ page_id: number }>(
       `WITH deleted AS (
          DELETE FROM pending_sync_versions
           WHERE detected_at < NOW() - INTERVAL '1 day' * $1
@@ -380,6 +418,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
 
     deleted = result.rows.length;
     const affectedPageIds = [...new Set(result.rows.map((r) => r.page_id))];
+    affectedPages = affectedPageIds.length;
 
     // Recompute `pages.conflict_pending` for any page whose queue was
     // just drained. We can't unconditionally set FALSE — a page may have
@@ -387,7 +426,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
     // one (rare but possible if conflicts pile up faster than the admin
     // resolves them).
     if (affectedPageIds.length > 0) {
-      await pool.query(
+      await client.query(
         `UPDATE pages
             SET conflict_pending = EXISTS (
                   SELECT 1 FROM pending_sync_versions
@@ -405,14 +444,29 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
       );
     }
 
+    await client.query('COMMIT');
+  } catch (err) {
+    await client?.query('ROLLBACK').catch(() => {});
+    logger.error(
+      { err, retentionDays: days },
+      'pending_sync_versions retention cleanup failed',
+    );
+    return 0;
+  } finally {
+    client?.release();
+  }
+
+  try {
     if (deleted > 0) {
       logger.info(
-        { deleted, retentionDays: days, pages: affectedPageIds.length },
+        { deleted, retentionDays: days, pages: affectedPages },
         'pending_sync_versions retention cleanup completed',
       );
     }
 
     // Heartbeat audit row — see umbrella loop comments for rationale.
+    // Written after COMMIT: the attestation must describe a prune that
+    // actually landed, and an audit write failure must not undo the prune.
     await logAuditEvent(
       null,
       'RETENTION_PRUNED',
@@ -427,7 +481,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
   } catch (err) {
     logger.error(
       { err, retentionDays: days },
-      'pending_sync_versions retention cleanup failed',
+      'pending_sync_versions retention heartbeat audit failed',
     );
   }
 
@@ -471,4 +525,185 @@ export function stopRetentionWorker(): void {
     retentionIntervalHandle = null;
     logger.info('Data retention worker stopped');
   }
+}
+
+const WEBHOOK_DELIVERIES_PURGE_BATCH_SIZE = 10_000;
+
+/**
+ * Prune `webhook_deliveries` (the per-attempt delivery ledger, migration 068)
+ * older than `webhook_deliveries_retention_days` (#1797).
+ *
+ * Only ledger rows whose outbox item is TERMINAL (`done` / `dead`) are
+ * deleted: the delivery worker derives the next attempt number from
+ * `COUNT(*) FROM webhook_deliveries WHERE outbox_id = $1`, so purging the
+ * history of a `pending` / `dispatched` item would reset its retry budget.
+ *
+ * Never touches `webhook_outbox` — terminal-outbox retention is a separate,
+ * unimplemented policy (see #1760 for the job_history / notifications sweep).
+ *
+ * Batched (LIMIT 10_000), parameterised, emits a RETENTION_PRUNED heartbeat
+ * even for zero-row runs, never throws.
+ */
+async function runWebhookDeliveriesRetention(): Promise<number> {
+  let days: number;
+  try {
+    days = await getWebhookDeliveriesRetentionDays();
+  } catch (err) {
+    logger.error({ err }, 'Failed to resolve webhook_deliveries_retention_days; skipping purge');
+    return 0;
+  }
+
+  const pool = getPool();
+  let totalDeleted = 0;
+
+  try {
+    for (;;) {
+      const { rowCount } = await pool.query(
+        `DELETE FROM webhook_deliveries
+           WHERE id IN (
+             SELECT d.id
+               FROM webhook_deliveries d
+               JOIN webhook_outbox o ON o.id = d.outbox_id
+              WHERE d.attempted_at < NOW() - INTERVAL '1 day' * $1
+                AND o.status IN ('done', 'dead')
+              LIMIT $2
+           )`,
+        [days, WEBHOOK_DELIVERIES_PURGE_BATCH_SIZE],
+      );
+      const n = rowCount ?? 0;
+      totalDeleted += n;
+      if (n > 0) {
+        logger.debug(
+          { batch: n, totalSoFar: totalDeleted, retentionDays: days },
+          'webhook_deliveries retention batch deleted',
+        );
+      }
+      if (n < WEBHOOK_DELIVERIES_PURGE_BATCH_SIZE) break;
+    }
+    if (totalDeleted > 0) {
+      logger.info(
+        { deleted: totalDeleted, retentionDays: days },
+        'webhook_deliveries retention cleanup completed',
+      );
+    }
+    // #307 Finding #4: always emit (heartbeat), including zero-row runs.
+    await logAuditEvent(
+      null,
+      'RETENTION_PRUNED',
+      'table',
+      'webhook_deliveries',
+      {
+        table: 'webhook_deliveries',
+        rows_pruned: totalDeleted,
+        retention_days: days,
+      },
+    );
+  } catch (err) {
+    logger.error({ err, retentionDays: days }, 'webhook_deliveries retention cleanup failed');
+  }
+  return totalDeleted;
+}
+
+const BATCHED_PURGE_SIZE = 10_000;
+
+/**
+ * One batched, age-based sweep over a table with an integer primary key.
+ * `deleteSql` is a literal owned by this module: `$1` is the window in days,
+ * `$2` the batch size, and the outer DELETE repeats the full predicate beside
+ * `id IN (...)` so a row that changed between the subquery and the delete is
+ * re-checked. Table names are never interpolated from input.
+ *
+ * Failure semantics mirror `runWebhookDeliveriesRetention`: an unreadable
+ * setting skips the sweep (0); a failing delete is logged, returns the rows
+ * deleted so far and emits no heartbeat; nothing here ever throws.
+ */
+async function runBatchedRetention(sweep: {
+  /** Results key, heartbeat `resourceId` and `details.table`. */
+  name: 'job_history' | 'notifications_read';
+  settingKey: string;
+  /** Strict resolver: rejects when the `admin_settings` read fails (row absent is not a failure). */
+  getDays: () => Promise<number>;
+  deleteSql: string;
+}): Promise<number> {
+  let days: number;
+  try {
+    days = await sweep.getDays();
+  } catch (err) {
+    logger.error({ err }, `Failed to resolve ${sweep.settingKey}; skipping purge`);
+    return 0;
+  }
+
+  const pool = getPool();
+  let totalDeleted = 0;
+
+  try {
+    for (;;) {
+      const { rowCount } = await pool.query(sweep.deleteSql, [days, BATCHED_PURGE_SIZE]);
+      const n = rowCount ?? 0;
+      totalDeleted += n;
+      if (n > 0) {
+        logger.debug(
+          { batch: n, totalSoFar: totalDeleted, retentionDays: days },
+          `${sweep.name} retention batch deleted`,
+        );
+      }
+      if (n < BATCHED_PURGE_SIZE) break;
+    }
+    if (totalDeleted > 0) {
+      logger.info(
+        { deleted: totalDeleted, retentionDays: days },
+        `${sweep.name} retention cleanup completed`,
+      );
+    }
+    // #307 Finding #4: always emit (heartbeat), including zero-row runs.
+    await logAuditEvent(null, 'RETENTION_PRUNED', 'table', sweep.name, {
+      table: sweep.name,
+      rows_pruned: totalDeleted,
+      retention_days: days,
+    });
+  } catch (err) {
+    logger.error({ err, retentionDays: days }, `${sweep.name} retention cleanup failed`);
+  }
+  return totalDeleted;
+}
+
+/**
+ * Prune `job_history` (the Postgres record of finished queue jobs, migration
+ * 050) older than `job_history_retention_days` (#1760). Every row is terminal
+ * (`completed` / `failed`), so eligibility is age alone.
+ */
+function runJobHistoryRetention(): Promise<number> {
+  return runBatchedRetention({
+    name: 'job_history',
+    settingKey: 'job_history_retention_days',
+    getDays: getJobHistoryRetentionDaysStrict,
+    deleteSql: `DELETE FROM job_history
+                 WHERE created_at < NOW() - INTERVAL '1 day' * $1
+                   AND id IN (
+                     SELECT id FROM job_history
+                      WHERE created_at < NOW() - INTERVAL '1 day' * $1
+                      LIMIT $2
+                   )`,
+  });
+}
+
+/**
+ * Prune READ `notifications` older than `notifications_read_retention_days`
+ * (#1760). Unread notifications are never deleted, whatever their age.
+ */
+function runReadNotificationsRetention(): Promise<number> {
+  return runBatchedRetention({
+    name: 'notifications_read',
+    settingKey: 'notifications_read_retention_days',
+    getDays: getNotificationsReadRetentionDaysStrict,
+    deleteSql: `DELETE FROM notifications
+                 WHERE is_read = TRUE
+                   AND created_at < NOW() - INTERVAL '1 day' * $1
+                   AND id IN (
+                     SELECT id FROM notifications
+                      WHERE is_read = TRUE
+                        AND created_at < NOW() - INTERVAL '1 day' * $1
+                      LIMIT $2
+                   )`,
+  });
 }

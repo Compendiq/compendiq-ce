@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EnterpriseContext } from '../../../shared/enterprise/enterprise-context';
 import type { EnterpriseContextValue } from '../../../shared/enterprise/types';
@@ -149,5 +149,24 @@ describe('AiUsageDashboard', () => {
     });
     expect(screen.getByText('qwen3:4b')).toBeInTheDocument();
     expect(screen.getByText('chat')).toBeInTheDocument();
+  });
+
+  it('passes its rows, title and KPIs to the PDF export handler (#1732)', async () => {
+    mockFetch.mockResolvedValue(mockData);
+    const onExportPdf = vi.fn();
+    renderDashboard(undefined, { onExportPdf });
+
+    fireEvent.click(await screen.findByTestId('ai-export-pdf'));
+
+    expect(onExportPdf).toHaveBeenCalledTimes(1);
+    expect(onExportPdf).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'requests', date: '2025-01-01', requests: 100 }),
+        expect.objectContaining({ type: 'tokens', model: 'qwen3:4b' }),
+        expect.objectContaining({ type: 'breakdown', action: 'chat' }),
+      ]),
+      'AI Usage',
+      expect.arrayContaining([expect.objectContaining({ label: 'Total requests', value: 250 })]),
+    );
   });
 });

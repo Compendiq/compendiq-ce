@@ -1,12 +1,12 @@
-import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { BookOpen, Bot, Share2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/cn';
 
 /**
- * The "Pages / AI / Graph" destinations. At desktop widths they are flat tabs
- * in the top app header (`MainNavHeaderTabs`); below `md` they head the
+ * The "Pages / AI / Graph" destinations. At desktop widths (`md+`) they render
+ * vertically as icon-only links in the compact outer chassis rail
+ * (`MainNavChassisRail`, outside `app-workspace`); below `md` they head the
  * mobile drawer through a sidebar's `embedMainNav` (`MainNavStripExpanded`,
  * or `MainNavStripCollapsed` for a collapsed tree). The sidebars are
  * `SidebarTreeView` on `/` and `/pages/*`, `AiConversationsSidebar` on `/ai`
@@ -104,73 +104,60 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 }
 
 /**
- * App destinations as Notion flat tabs in the top bar (app-header).
- * Sits next to the brand logo on desktop (md+).
+ * Compact desktop left icon rail on the `--app-chassis` frame (`md+`),
+ * outside `app-workspace`. Renders `MAIN_NAV_ITEMS` vertically as icons only
+ * with no text labels, matching `MainNavStripCollapsed`'s active/hover indicator.
  */
-export function MainNavHeaderTabs({ onNavigate }: MainNavStripProps) {
+export function MainNavChassisRail({ onNavigate }: MainNavStripProps = {}) {
   const location = useLocation();
   return (
     <nav
-      data-testid="main-nav-header"
+      data-testid="main-nav-chassis"
       aria-label="Main navigation"
-      className="hidden md:flex h-full items-center gap-1 ml-2"
+      className="hidden md:flex w-[var(--app-nav-rail-width)] shrink-0 self-stretch flex-col items-center gap-1.5 pt-1.5"
     >
       {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
         const active = isActive(location.pathname, path);
+        const accessibleLabel = ariaLabel ?? label;
         return (
           <Link
             key={path}
             to={path}
             onClick={onNavigate}
-            title={`${ariaLabel ?? label} (${shortcut})`}
-            aria-label={ariaLabel}
+            title={`${accessibleLabel} (${shortcut})`}
+            aria-label={accessibleLabel}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              'group relative flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'group relative flex size-8 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
                 ? 'text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-[var(--glass-pill-hover)]',
+                : 'text-muted-foreground hover:text-foreground',
             )}
           >
+            <span
+              data-testid="nav-marker"
+              aria-hidden="true"
+              className={cn(
+                'absolute -left-1 top-1/2 -translate-y-1/2 w-1 rounded-full transition-all duration-150',
+                active
+                  ? 'h-5 bg-primary-ink'
+                  : 'h-0 bg-foreground/70 group-hover:h-3',
+              )}
+            />
             <Icon
-              size={14}
+              size={18}
+              aria-hidden="true"
               className={cn(
                 'transition-colors',
                 active
                   ? 'text-primary-ink'
                   : 'text-muted-foreground group-hover:text-foreground',
               )}
-              aria-hidden="true"
             />
-            <span>{label}</span>
-            {active && (
-              <span
-                data-testid="nav-tab-active-indicator"
-                aria-hidden="true"
-                className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary-ink"
-              />
-            )}
           </Link>
         );
       })}
     </nav>
-  );
-}
-
-/**
- * Desktop left column on the chassis, left of the workspace card. It hosts
- * the route's sidebar (tree, conversations or settings) directly on the
- * chassis; the destinations themselves live in the header.
- */
-export function MainNavChassisRail({ children }: { children: ReactNode }) {
-  return (
-    <aside
-      data-testid="main-nav-chassis"
-      aria-label="Navigation sidebar"
-      className="hidden md:flex shrink-0 self-stretch"
-    >
-      {children}
-    </aside>
   );
 }
 
@@ -201,6 +188,7 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
             )}
             title={`${ariaLabel ?? label} (${shortcut})`}
             aria-label={ariaLabel ?? label}
+            aria-current={active ? 'page' : undefined}
           >
             <span
               data-testid="nav-marker"
@@ -214,6 +202,7 @@ export function MainNavStripCollapsed({ onNavigate }: MainNavStripProps) {
             />
             <Icon
               size={16}
+              aria-hidden="true"
               className={cn(
                 'transition-colors',
                 active

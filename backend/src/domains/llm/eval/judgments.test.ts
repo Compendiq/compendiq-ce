@@ -421,6 +421,22 @@ describe('auditSample (O2/O3 as a check, not a serialised constant)', () => {
     expect(audit.powerNote).toContain('2 of O2\'s sample conditions are unmet');
   });
 
+  // #1821: the audit iterated the SUPPLIED `perLanguage` entries, so a control
+  // carrying no DE block raised no shortfall and an EN-only 197 beside a
+  // complete image sample read `full` with `shortfalls: []`.
+  it.each([
+    ['EN only', ['en'], { en: 197 }, 'missing de'],
+    ['DE only', ['de'], { de: 197 }, 'missing en'],
+    ['a duplicate EN block', ['en', 'en', 'de'], { en: 197, de: 197 }, 'duplicate en'],
+    ['an unknown FR block', ['en', 'de', 'fr'], { en: 197, de: 197, fr: 197 }, 'unknown fr'],
+  ] as const)('cannot decide on a control with %s', (_name, languages, perLanguage, problem) => {
+    const control: ControlEndpoints = { ...controls, languages: [...languages], perLanguage, n: 197 * languages.length };
+    const audit = auditSample(labels(190, 4, 48), [control]);
+    expect(audit.shortfalls).toEqual([`control languages (B vs C): ${problem} (O4: exactly one en and one de block per arm)`]);
+    expect(audit.powerMode).toBe('undecidable');
+    expect(audit.primaryPower).toBeNull();
+  });
+
   it('states the floor\'s power as the ADR does: 0.80 at 144, 0.90 at 190', () => {
     expect(auditSample(labels(144, 3, 48), []).primaryPower).toBeCloseTo(0.8023, 4);
     expect(auditSample(labels(190, 4, 48), []).primaryPower).toBeCloseTo(0.8996, 4);
@@ -443,7 +459,43 @@ describe('scoreControls (O4, pooled EN + DE)', () => {
     expect(scored.recallAt5).toMatchObject({ wins: 2, losses: 1, ties: 3, n: 6 });
     expect(scoreControls(c, b, { seed: 1, iterations: 10 }, CONTROL_PAIRS.legacyC)).toMatchObject({ pair: CONTROL_PAIRS.legacyC });
     expect(() => scoreControls(c, [{ ...b[0]!, model: 'bge-m3' }, b[1]!], { seed: 1, iterations: 10 })).toThrow(/model differs/);
-    expect(() => scoreControls(c, [b[0]!], { seed: 1, iterations: 10 })).toThrow(/same languages/);
+    expect(() => scoreControls(c, [b[0]!], { seed: 1, iterations: 10 })).toThrow(/Controls \(candidate\): missing de/);
+  });
+
+  // #1821: equal non-empty arrays were the only check, so EN-only on both arms
+  // scored as the pooled O4 control (and a duplicate or foreign block pooled in).
+  describe('requires exactly one EN and one DE block on each side', () => {
+    const valid = () => [control('en', () => [1]), control('de', () => [1])];
+    const invalid = [
+      ['EN only', () => [control('en', () => [1])], 'missing de'],
+      ['DE only', () => [control('de', () => [1])], 'missing en'],
+      ['a duplicate EN block', () => [control('en', () => [1]), control('en', () => [1]), control('de', () => [1])], 'duplicate en'],
+      ['an unknown FR block', () => [control('en', () => [1]), control('de', () => [1]), control('fr', () => [1])], 'unknown fr'],
+    ] as const;
+
+    it.each(invalid)('refuses %s on both arms', (_name, side, problem) => {
+      expect(() => scoreControls(side(), side(), { seed: 1, iterations: 10 })).toThrow(`Controls (baseline): ${problem}`);
+    });
+    it.each(invalid)('refuses %s on the baseline arm', (_name, side, problem) => {
+      expect(() => scoreControls(side(), valid(), { seed: 1, iterations: 10 })).toThrow(`Controls (baseline): ${problem}`);
+    });
+    it.each(invalid)('refuses %s on the candidate arm', (_name, side, problem) => {
+      expect(() => scoreControls(valid(), side(), { seed: 1, iterations: 10 })).toThrow(`Controls (candidate): ${problem}`);
+    });
+    it('names every problem on a side', () => {
+      const side = [control('en', () => [1]), control('en', () => [1]), control('fr', () => [1])];
+      expect(() => scoreControls(valid(), side, { seed: 1, iterations: 10 })).toThrow('Controls (candidate): missing de, duplicate en, unknown fr');
+    });
+  });
+
+  it('scores a valid EN + DE pair in either supplied order', () => {
+    const scored = scoreControls(
+      [control('de', () => [1]), control('en', () => [1])],
+      [control('en', () => [1]), control('de', () => [9])],
+      { seed: 1, iterations: 10 },
+    );
+    expect(scored).toMatchObject({ n: 6, languages: ['de', 'en'], perLanguage: { en: 3, de: 3 } });
+    expect(scored.recallAt5).toMatchObject({ wins: 0, losses: 3, ties: 3, n: 6 });
   });
 
   // Amendment A-3: `--control-a` scored a pair it did not name — nothing in

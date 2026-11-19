@@ -20,8 +20,8 @@ async function seedPage(): Promise<number> {
 
 async function baselineFixtureIds(pageId: number): Promise<{ baselineId: string; intentId: string }> {
   await query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-     VALUES ('baseline-fixture', '{"kind":"test"}'::jsonb)
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
+     VALUES ('baseline-fixture', '{"kind":"test"}'::jsonb, 1)
      ON CONFLICT (runtime_id) DO NOTHING`,
   );
   const result = await query<{ id: string; baseline_id: string }>(

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { toast } from 'sonner';
 import { SyncTab } from './panels/SyncTab';
 
 // SyncTab is prop-less: it self-fetches the sync overview plus the quality /
@@ -271,6 +272,34 @@ describe('Settings SyncTab', () => {
         '/api/sync',
         expect.objectContaining({ method: 'POST' }),
       );
+    });
+  });
+
+  // #1775: a manual sync is refused (409) while ANY run holds the
+  // deployment-global sync lock — another user's, or the scheduler's — even
+  // though this user's own status reads idle and the button is enabled. The
+  // refusal has to reach the user, in the server's words.
+  it('shows the server message when Sync Now is refused', async () => {
+    const message = 'A Confluence sync is currently running. Wait for it to finish and try again.';
+    mockFetchResponses();
+    const answer = fetchSpy.getMockImplementation()!;
+    fetchSpy.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+      if (path.includes('/api/sync') && options?.method === 'POST') {
+        return new Response(JSON.stringify({ message, status: { userId: 'user-1', status: 'idle' } }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return answer(url, options);
+    });
+    vi.mocked(toast.error).mockClear();
+    render(<SyncTab />, { wrapper: createWrapper() });
+
+    fireEvent.click(await screen.findByTestId('sync-overview-sync-now'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(message);
     });
   });
 

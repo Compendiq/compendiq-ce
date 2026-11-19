@@ -4,8 +4,8 @@ import { resolve } from 'path';
 import { extractBlock } from './test-utils';
 
 /**
- * Inset application shell: viewport chassis → rounded app shell →
- * integrated workspace (nav + main) + detached context rail.
+ * Inset application shell: viewport chassis (top header + compact left icon
+ * rail) → rounded workspace card (route sidebar + main + detached context rail).
  *
  * Behaviour cannot be measured in jsdom (no layout). This file pins the
  * tokens, utilities and DOM structure as a proxy, the same way
@@ -56,14 +56,29 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('shell keeps the workspace ground while the rail uses the central pane surface in both themes', () => {
-    for (const block of [darkBlock, lightBlock]) {
+  it('shell keeps the workspace ground while the sidebar sits slightly darker than the central pane in both themes', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
       const shell = /--app-shell-bg:\s*([^;]+);/.exec(block);
       const rail = /--app-rail-bg:\s*([^;]+);/.exec(block);
       expect(shell, '--app-shell-bg must be declared').not.toBeNull();
       expect(rail, '--app-rail-bg must be declared').not.toBeNull();
       expect(shell![1]!.trim()).toBe('var(--color-background)');
-      expect(rail![1]!.trim()).toBe('var(--color-card)');
+      expect(rail![1]!.trim()).toBe('transparent');
+
+      const sidebarBg = tokenHex(block, '--app-sidebar-bg');
+      const cardBg = tokenHex(block, '--color-card');
+      const leftEdgeStop = tokenHex(block, '--shell-grad-1');
+      expect(
+        luminance(sidebarBg),
+        `${theme}: sidebar (${sidebarBg}) must be darker than main pane (${cardBg})`,
+      ).toBeLessThan(luminance(cardBg));
+      expect(
+        luminance(sidebarBg),
+        `${theme}: sidebar (${sidebarBg}) must stay above left-edge chassis stop (${leftEdgeStop})`,
+      ).toBeGreaterThan(luminance(leftEdgeStop));
     }
   });
 
@@ -105,31 +120,43 @@ describe('Inset shell tokens', () => {
   // mode this guards is silent: a chassis retune that keeps "below the pane"
   // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and
   // was the reason the frame had to be deepened when the line went away).
-  it('keeps the pane a visible step above the frame in both themes', () => {
-    for (const [theme, block] of [
-      ['graphite', darkBlock],
-      ['paper', lightBlock],
-    ] as const) {
-      expect(
-        contrast(tokenHex(block, '--color-card'), tokenHex(block, '--app-chassis')),
-        `${theme}: the workspace card needs a readable value step above the chassis`,
-      ).toBeGreaterThanOrEqual(1.08);
+  it('orders the 5-stop shell gradient ramp in both themes (darkest toward left/bottom-left, brightest toward top-right)', () => {
+    const lightStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(lightBlock, `--shell-grad-${n}`)));
+    for (let i = 1; i < lightStops.length; i++) {
+      expect(lightStops[i]!, `light stop ${i + 1} must be lighter than stop ${i}`).toBeGreaterThan(lightStops[i - 1]!);
     }
+    expect(tokenHex(lightBlock, '--shell-grad-5')).toBe(tokenHex(lightBlock, '--app-chassis'));
+    expect(lightBlock).toMatch(/--shell-grad-dir:\s*to top right;/);
+
+    const darkStops = [1, 2, 3, 4, 5].map((n) => luminance(tokenHex(darkBlock, `--shell-grad-${n}`)));
+    for (let i = 1; i < darkStops.length; i++) {
+      expect(darkStops[i]!, `dark stop ${i + 1} must lift toward top-right brightest stop ${i}`).toBeGreaterThan(darkStops[i - 1]!);
+    }
+    expect(tokenHex(darkBlock, '--shell-grad-1')).toBe(tokenHex(darkBlock, '--app-chassis'));
+    expect(darkBlock).toMatch(/--shell-grad-dir:\s*to top right;/);
   });
 
-  it('keeps navigation labels and focus indicators readable on the chassis', () => {
+  it('keeps navigation labels and focus indicators readable across every gradient stop', () => {
     for (const block of [darkBlock, lightBlock]) {
-      const ground = tokenHex(block, '--app-chassis');
-      expect(contrast(tokenHex(block, '--color-muted-foreground'), ground)).toBeGreaterThanOrEqual(4.5);
-      expect(contrast(tokenHex(block, '--color-primary'), ground)).toBeGreaterThanOrEqual(3);
+      const shellMuted = tokenHex(block, '--shell-muted');
+      const primary = tokenHex(block, '--color-primary');
+      for (const n of [1, 2, 3, 4, 5]) {
+        const stop = tokenHex(block, `--shell-grad-${n}`);
+        expect(contrast(shellMuted, stop)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(primary, stop)).toBeGreaterThanOrEqual(3);
+      }
     }
   });
 
-  it('paints the chassis one flat colour so the frame matches on every side of the card', () => {
+  it('paints the chassis with the radial shade pool and 5-stop diagonal colour-gradient', () => {
     const block = extractBlock(css, '@utility app-chassis {');
-    expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
-    expect(block).not.toMatch(/background-image/);
-    expect(css).not.toMatch(/--app-chassis-tones/);
+    expect(block).toMatch(/background-color:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/radial-gradient\(64% 58% at var\(--shell-pool-pos\)/);
+    expect(block).toMatch(/var\(--shell-pool\)\s*0%/);
+    expect(block).toMatch(/var\(--shell-pool-soft\)\s*46%/);
+    expect(block).toMatch(/linear-gradient\(var\(--shell-grad-dir\)/);
+    expect(block).toMatch(/var\(--shell-grad-1\)\s*0%/);
+    expect(block).toMatch(/var\(--shell-grad-5\)\s*100%/);
   });
 
   it('the context rail matches the central pane and stays off the chassis', () => {
@@ -157,9 +184,10 @@ describe('Inset shell utilities', () => {
     }
   });
 
-  it('the chassis utility paints the chassis token and applies inset padding', () => {
+  it('the chassis utility paints the gradient chassis tokens and applies inset padding', () => {
     const block = extractBlock(css, '@utility app-chassis {');
-    expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/background-color:\s*var\(--app-chassis\)/);
+    expect(block).toMatch(/background-image:/);
     expect(block).toMatch(/padding-inline-start:\s*0/);
     expect(block).toMatch(/padding-inline-end:\s*var\(--app-inset\)/);
     expect(block).not.toMatch(/padding-inline:\s*var\(--app-inset\)/);
@@ -169,40 +197,53 @@ describe('Inset shell utilities', () => {
 
   it('the header stays a compact band independent of the chassis inset', () => {
     const block = extractBlock(css, '@utility app-header {');
+    const shellBlock = extractBlock(css, '@utility app-shell {');
     expect(block).toMatch(/height:\s*var\(--app-header-height\)/);
     expect(block).toMatch(/max-height:\s*var\(--app-header-height\)/);
     expect(block).toMatch(/overflow:\s*hidden/);
-    expect(css).toMatch(/--app-header-height:\s*2\.75rem/);
+    expect(css).toMatch(/--app-header-height:\s*3\.125rem/);
+    expect(shellBlock).toMatch(/padding-top:\s*0/);
     expect(appLayout).toMatch(/className="app-header[^"]*items-center/);
     expect(appLayout).not.toMatch(/<header[^>]*\bh-12\b/);
     expect(appLayout).not.toMatch(/<header[^>]*\bborder-b\b/);
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('the boot skeleton reserves the left column at the tree’s default width', () => {
+  it('matches the left icon rail width to the header height, centers the logo mark above the rail icons while aligning the wordmark with the workspace left border, and mirrors it in the boot skeleton', () => {
     const skeleton = read('shared/components/feedback/AppLoadingFallback.tsx');
-    expect(css).toMatch(/--app-nav-rail-width:\s*282px/);
+    expect(css).toMatch(/--app-nav-rail-width:\s*var\(--app-header-height\)/);
+    expect(appLayout).toContain('md:w-[var(--app-nav-rail-width)]');
+    expect(appLayout).toContain('LogoMark');
+    expect(appLayout).toContain('LogoWordmark');
     expect(skeleton).toContain('w-[var(--app-nav-rail-width)]');
+    expect(skeleton).toContain('md:w-[var(--app-nav-rail-width)]');
+    expect(skeleton).toContain('LogoMark');
+    expect(skeleton).toContain('LogoWordmark');
+    expect(skeleton).toContain('app-sidebar');
+    expect(skeleton).not.toContain('ml-4');
   });
 
-  it('left navigation has a transparent background, inheriting the app-shell ground', () => {
+  it('the workspace sidebar uses translucent --app-sidebar-translucent with a 1px right divider and transparent toolbars', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
-    expect(sidebar).toMatch(/background:\s*transparent/);
-    expect(pane).toMatch(/background:\s*var\(--color-card\)/);
+    expect(sidebar).toMatch(/background:\s*var\(--app-sidebar-translucent\)/);
+    expect(sidebar).toMatch(/background-clip:\s*padding-box/);
+    expect(sidebar).toMatch(/border-right-width:\s*1px/);
+    expect(sidebar).toMatch(/border-color:\s*var\(--panel-divider\)/);
+    expect(pane).toMatch(/background:\s*transparent/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
     );
   });
 
-  it('the workspace utility is the radiused card with its resting shadow', () => {
+  it('the workspace utility is the frosted radiused card with its translucent panel ground, border token, and resting shadow', () => {
     const block = extractBlock(css, '@utility app-workspace {');
-    expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);
+    expect(block).toMatch(/background:\s*var\(--panel-bg\)/);
+    expect(block).toMatch(/backdrop-filter:\s*blur\(10px\)/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
-    expect(block).not.toMatch(/border:/);
-    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
+    expect(block).toMatch(/border:\s*1px solid var\(--panel-border\)/);
     expect(css).not.toMatch(/--app-shell-border-width/);
-    expect(block).toMatch(/box-shadow:\s*var\(--app-workspace-shadow\)/);
+    expect(block).toMatch(/box-shadow:\s*var\(--panel-shadow\)/);
   });
 
   it('the layout shell wrapper does not add a second card around the rail', () => {
@@ -211,13 +252,36 @@ describe('Inset shell utilities', () => {
     expect(block).not.toMatch(/box-shadow:/);
   });
 
-  it('the context rail utility carries a left border dividing it from the main pane', () => {
+  it('the context rail utility uses --app-rail-bg with a left border dividing it from the main pane', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
     expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
     expect(block).toMatch(/border-left-width:\s*1px/);
-    expect(block).toMatch(/border-color:\s*var\(--color-border\)/);
+    expect(block).toMatch(/border-color:\s*var\(--rail-divider\)/);
     expect(block).not.toMatch(/box-shadow:/);
     expect(block).not.toMatch(/gradient\(/);
+  });
+
+  it('keeps dark mode workspace outer/left borders seamless, right rail softly hairlined, headers aligned on --workspace-card-bg, and sidebar darker than main', () => {
+    expect(darkBlock).toMatch(/--panel-border:\s*transparent;/);
+    expect(darkBlock).toMatch(/--panel-divider:\s*transparent;/);
+    expect(darkBlock).toMatch(/--rail-divider:\s*rgb\(255 255 255 \/ 0\.06\);/);
+    const darkShadow = /--panel-shadow:\s*([^;]+);/.exec(darkBlock);
+    expect(darkShadow).not.toBeNull();
+    expect(darkShadow![1]).not.toMatch(/inset\s+0\s+1px/);
+
+    const railHeader = extractBlock(css, '.app-context-rail .panel-toolbar.nm-popover-glass {');
+    expect(railHeader).toMatch(/background-color:\s*var\(--workspace-card-bg\)/);
+    expect(railHeader).toMatch(/backdrop-filter:\s*none/);
+
+    const sidebarHairline = extractBlock(css, '.app-sidebar:has([data-rail-hairline]) {');
+    const railHairline = extractBlock(css, '.app-context-rail:has([data-rail-hairline]) {');
+    expect(sidebarHairline).toMatch(/border-right-width:\s*0/);
+    expect(railHairline).toMatch(/border-left-width:\s*0/);
+
+    expect(darkBlock).toMatch(/--panel-bg:\s*rgb\(22 25 30 \/ 0\.82\);/);
+    expect(darkBlock).toMatch(/--app-sidebar-translucent:\s*rgb\(20 23 27 \/ 0\.88\);/);
+    expect(lightBlock).toMatch(/--panel-bg:\s*rgb\(255 255 255 \/ 0\.92\);/);
+    expect(lightBlock).toMatch(/--app-sidebar-translucent:\s*rgb\(248 250 252 \/ 0\.88\);/);
   });
 
   it('mobile is edge-to-edge; md and xl step the inset and card radius', () => {
@@ -338,15 +402,22 @@ describe('AppLayout structure', () => {
     expect(skipAt).toBeLessThan(shellAt);
   });
 
-  it('mounts left navigation in the chassis rail outside the workspace card', () => {
+  it('mounts the compact icon rail on the chassis and the route sidebar inside the workspace card left of main', () => {
     const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
     expect(workspaceAt).toBeGreaterThan(-1);
     const chassisNavAt = appLayout.indexOf('<MainNavChassisRail');
-    const sidebarAt = appLayout.indexOf('<SidebarTreeView');
+    const sidebarAt = appLayout.indexOf('<SidebarTreeView', workspaceAt);
+    const aiSidebarAt = appLayout.indexOf('<AiConversationsSidebar', workspaceAt);
+    const settingsSidebarAt = appLayout.indexOf('<SettingsSidebar', workspaceAt);
     const mainAt = appLayout.indexOf('id="main-content"');
     expect(chassisNavAt).toBeGreaterThan(-1);
     expect(chassisNavAt).toBeLessThan(workspaceAt);
-    expect(sidebarAt).toBeLessThan(workspaceAt);
+    expect(sidebarAt).toBeGreaterThan(workspaceAt);
+    expect(sidebarAt).toBeLessThan(mainAt);
+    expect(aiSidebarAt).toBeGreaterThan(workspaceAt);
+    expect(aiSidebarAt).toBeLessThan(mainAt);
+    expect(settingsSidebarAt).toBeGreaterThan(workspaceAt);
+    expect(settingsSidebarAt).toBeLessThan(mainAt);
     expect(mainAt).toBeGreaterThan(workspaceAt);
     const paneAt = appLayout.indexOf('<ArticleRightPane', workspaceAt);
     expect(paneAt).toBeGreaterThan(mainAt);
@@ -371,19 +442,22 @@ describe('AppLayout structure', () => {
     expect(appLayout).not.toMatch(/forceTreeCollapsed/);
   });
 
-  it('does not reintroduce the retired floating-chrome padding on the panel wrapper', () => {
+  it('does not reintroduce the retired floating-chrome padding or extra rail margin on the panel wrapper', () => {
     const match = /data-testid="panel-wrapper"[^>]*className="([^"]+)"/.exec(appLayout)
       ?? /data-testid="panel-wrapper"[^>]*className=\{cn\(([\s\S]*?)\)\}/.exec(appLayout);
     expect(match, 'panel-wrapper className').not.toBeNull();
     const value = match![1]!;
     expect(value).not.toMatch(/\bp-3\b/);
     expect(value).not.toMatch(/\bgap-2\.5\b/);
+    expect(value).not.toMatch(/\bml-2\b/);
   });
 
-  it('keeps desktop trees off the in-tree Pages/AI/Graph strip', () => {
+  it('keeps desktop sidebars off the in-tree Pages/AI/Graph strip and header free of MainNavHeaderTabs', () => {
     expect(appLayout).toMatch(/SettingsSidebar embedMainNav=\{false\}/);
     expect(appLayout).toMatch(/SidebarTreeView embedMainNav=\{false\}/);
+    expect(appLayout).toMatch(/AiConversationsSidebar embedMainNav=\{false\}/);
     expect(appLayout).toMatch(/SidebarTreeView onNavigate=\{closeMobileSidebar\} embedMainNav/);
+    expect(appLayout).not.toMatch(/MainNavHeaderTabs/);
     expect(appLayout).not.toMatch(/AppHeaderMain/);
   });
 
@@ -415,10 +489,19 @@ describe('Context rail vs left navigation', () => {
     expect(expanded).not.toMatch(/app-sidebar/);
   });
 
-  it('left navigation and settings still use the sidebar chassis utility', () => {
+  it('left navigation and settings still use the sidebar utility', () => {
     expect(sidebar).toMatch(/app-sidebar/);
     expect(settingsSidebar).toMatch(/app-sidebar/);
     expect(sidebar).not.toMatch(/app-context-rail/);
     expect(settingsSidebar).not.toMatch(/app-context-rail/);
+  });
+
+  it('uses --rail-divider for the left panel footer rule and makes the 3-dot grip pop on hover', () => {
+    const aiSidebar = read('features/ai/conversations/AiConversationsSidebar.tsx');
+    expect(sidebar).toContain('border-t border-[var(--rail-divider)]');
+    expect(aiSidebar).toContain('border-t border-[var(--rail-divider)]');
+    expect(sidebar).toContain('group-hover:opacity-100');
+    expect(aiSidebar).toContain('group-hover:opacity-100');
+    expect(rightPane).toContain('group-hover:opacity-100');
   });
 });

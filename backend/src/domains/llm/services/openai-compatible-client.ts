@@ -1,3 +1,4 @@
+import { createParser } from 'eventsource-parser';
 import { Agent, fetch as undiciFetch } from 'undici';
 // Named import, not the ambient global: `lib: ["ES2022"]` (no `dom`) means the
 // global `ReadableStream` comes from `@types/node`'s own declaration, which
@@ -11,16 +12,48 @@ import { enqueue } from './llm-queue.js';
 import { filterListedModels, listModelsCandidateUrls, providerResourceUrl } from './provider-url.js';
 import {
   getProviderBreaker,
+  invalidateAllProviderBreakers,
   invalidateProviderBreaker,
 } from '../../../core/services/circuit-breaker.js';
 import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
 import type { ChatMessage } from './prompts.js';
 import { LlmHttpError, ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
+import { ProviderStreamError, StreamIncompleteError } from './provider-stream-error.js';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { authorizeArticleDispatch, type ArticleStageContext } from './article-stage-admission.js';
+
+/** Server-derived article snapshot, retained across queue waits and retries. */
+export interface ArticleTransportStage {
+  provenance: ConversationTurnAiProvenance;
+  userId: string | null;
+  usecase: string;
+  context: ArticleStageContext;
+}
+
+export type TransportContext =
+  | { kind: 'article'; stage: ArticleTransportStage }
+  | { kind: 'non_article'; purpose: 'provider_probe' | 'user_query' | 'synthetic_evaluation' };
+
+async function authorizeTransport(cfg: ProviderConfig, model: string, context: TransportContext): Promise<void> {
+  if (!context || typeof context !== 'object') throw new Error('ai_policy_unavailable');
+  if (context.kind === 'non_article') {
+    if (!['provider_probe', 'user_query', 'synthetic_evaluation'].includes(context.purpose)) throw new Error('ai_policy_unavailable');
+    return;
+  }
+  if (context.kind !== 'article' || !context.stage?.provenance || !context.stage.context
+    || typeof context.stage.usecase !== 'string'
+    || (context.stage.userId !== null && typeof context.stage.userId !== 'string')) throw new Error('ai_policy_unavailable');
+  const stage = context.stage;
+  await authorizeArticleDispatch(cfg, stage.provenance, stage.userId, stage.usecase, stage.context, model);
+}
 export type { ChatMessage, ChatContentPart } from './prompts.js';
 export { LlmHttpError } from './llm-http-error.js';
+export { ProviderStreamError, StreamIncompleteError } from './provider-stream-error.js';
 
 export interface ProviderConfig {
+  /** Revision read in the same SQL row as the resolved transport. */
+  configRevision?: number;
   providerId: string;
   baseUrl: string;           // OpenAI-compatible root (typically …/v1)
   apiKey: string | null;
@@ -95,6 +128,13 @@ export function invalidateDispatcher(providerId: string): void {
  */
 export function invalidateBreaker(providerId: string): void {
   invalidateProviderBreaker(providerId);
+}
+
+/** A reconnect may have missed deletions, including unassigned providers. */
+export function invalidateAllProviderResources(): void {
+  for (const dispatcher of dispatchers.values()) void dispatcher.close();
+  dispatchers.clear();
+  invalidateAllProviderBreakers();
 }
 
 function headers(cfg: ProviderConfig): Record<string, string> {
@@ -264,6 +304,9 @@ export const __test_only__ = {
 };
 
 export interface StreamChatOptions {
+  transportContext: TransportContext;
+  /** Article authority recheck at the receiving stage, after queue waits. */
+  beforeDispatch?: () => Promise<void>;
   thinking?: boolean;
   /**
    * Caps the reply length, mapped straight to the standard `max_tokens`
@@ -487,7 +530,7 @@ export interface ChatCompletionOptions extends StreamChatOptions {
  * one, and the analysis path (D8) must not.
  */
 export async function chatCompletion(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: ChatCompletionOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts: ChatCompletionOptions,
 ): Promise<ChatCompletionResult> {
   // Created BEFORE enqueue so the budget covers queue wait too (see
   // StreamChatOptions.timeoutMs) — a backlogged queue must spend the budget
@@ -499,8 +542,12 @@ export async function chatCompletion(
   // disabled (withSpan passes straight through).
   return withSpan(
     'llm.chat',
-    () => enqueue((signal) =>
-      getProviderBreaker(cfg.providerId).execute(async () => {
+    () => enqueue(async (signal) => {
+      await opts?.beforeDispatch?.();
+      await authorizeTransport(cfg, model, opts?.transportContext);
+      signal.throwIfAborted();
+      deadline?.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
           method: 'POST',
           headers: headers(cfg),
@@ -529,14 +576,14 @@ export async function chatCompletion(
               }
             : null,
         };
-      }),
-    ),
+      });
+    }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
 }
 
 export async function chat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts: StreamChatOptions,
 ): Promise<string> {
   return (await chatCompletion(cfg, model, messages, opts)).text;
 }
@@ -551,14 +598,18 @@ export async function chat(
  * circuit subsequent calls.
  */
 export async function* streamChat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal, opts?: StreamChatOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal: AbortSignal | undefined, opts: StreamChatOptions,
 ): AsyncGenerator<StreamChunk> {
   // The span covers only the dispatch (breaker + initial HTTP request), not
   // the stream consumption — a span held open for the whole stream would
   // outlive minutes-long generations and skew duration percentiles.
   const res = await withSpan(
     'llm.stream_chat.dispatch',
-    () => getProviderBreaker(cfg.providerId).execute(async () => {
+    async () => {
+      await opts?.beforeDispatch?.();
+      await authorizeTransport(cfg, model, opts?.transportContext);
+      signal?.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
       const r = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
         method: 'POST',
         headers: headers(cfg),
@@ -568,18 +619,100 @@ export async function* streamChat(
       });
       if (!r.ok || !r.body) throw new LlmHttpError('streamChat', r.status, await boundedErrorDetail(r));
       return r;
-    }),
+      });
+    },
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
-  let buf = '';
+  const pendingChunks: StreamChunk[] = [];
   // Hosted reasoners stream CoT on `delta.reasoning_content` before any
   // `delta.content`. Think-on wraps that pass in `<think>` so the rest of
   // the app sees the same channel local Qwen already writes into `content`.
   // Think-off drops it. The flag is closed on the first visible token or
   // at [DONE] so a reasoning-only stream still emits a well-formed block.
   let thinkOpen = false;
+  // Visible characters delivered so far — reported on the incomplete-stream
+  // error so an operator can tell a dropped-at-byte-zero stream from one
+  // cut mid-answer, without the error carrying any of the text itself.
+  let received = 0;
+  let receivedDone = false;
+  // #1728: the first provider `error` frame. Every later frame, `[DONE]`
+  // included, is ignored and the read loop stops at it: some hosts follow
+  // the error with `[DONE]`, which would otherwise complete the stream.
+  let providerError: ProviderStreamError | undefined;
+  // An `error` member that is a non-empty string or a non-null object marks
+  // an error frame (`null`, `''`, `false` and absent members do not). The
+  // detail is the provider's own text, bounded like an HTTP error body.
+  const streamErrorDetail = (error: unknown): string | undefined => {
+    if (typeof error === 'string') return error === '' ? undefined : error.slice(0, ERROR_BODY_MAX_CHARS);
+    if (typeof error !== 'object' || error === null) return undefined;
+    const message = 'message' in error ? error.message : undefined;
+    return (typeof message === 'string' ? message : JSON.stringify(error)).slice(0, ERROR_BODY_MAX_CHARS);
+  };
+  const onData = (rawData: string): void => {
+    if (receivedDone || providerError) return;
+    const data = rawData.trim();
+    if (data === '[DONE]') {
+      receivedDone = true;
+      if (thinkOpen) {
+        pendingChunks.push({ content: '</think>', done: false });
+        thinkOpen = false;
+      }
+      pendingChunks.push({ content: '', done: true });
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(data) as {
+        error?: unknown;
+        choices?: Array<{ delta?: CompletionText }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
+      // The error frame's own `choices` and `usage` are not processed.
+      const errorDetail = streamErrorDetail(parsed.error);
+      if (errorDetail !== undefined) {
+        providerError = new ProviderStreamError(received, errorDetail);
+        return;
+      }
+      if (parsed.usage) {
+        const promptTokens = parsed.usage.prompt_tokens;
+        const completionTokens = parsed.usage.completion_tokens;
+        pendingChunks.push({
+          content: '', done: false,
+          usage: {
+            ...(Number.isSafeInteger(promptTokens) && promptTokens! >= 0 ? { promptTokens } : {}),
+            ...(Number.isSafeInteger(completionTokens) && completionTokens! >= 0 ? { completionTokens } : {}),
+          },
+        });
+      }
+      const delta = parsed.choices?.[0]?.delta;
+      const reasoning = opts?.thinking ? reasoningText(delta) : '';
+      const content = visibleText(delta);
+      if (reasoning) {
+        if (!thinkOpen) {
+          pendingChunks.push({ content: `<think>${reasoning}`, done: false });
+          thinkOpen = true;
+        } else {
+          pendingChunks.push({ content: reasoning, done: false });
+        }
+      }
+      if (content) {
+        received += content.length;
+        if (thinkOpen) {
+          pendingChunks.push({ content: `</think>${content}`, done: false });
+          thinkOpen = false;
+        } else {
+          pendingChunks.push({ content, done: false });
+        }
+      }
+    } catch { /* ignore malformed JSON data events */ }
+  };
+  const parser = createParser({ onEvent: ({ data }) => onData(data) });
+  const feed = (text: string): StreamChunk[] => {
+    if (text) parser.feed(text);
+    return pendingChunks.splice(0);
+  };
   // The try/finally guarantees teardown on ANY exit — including the early
   // generator.return() the runtime triggers when a consumer stops iterating
   // (e.g. streamSSE breaks its loop on client disconnect). reader.cancel()
@@ -589,71 +722,42 @@ export async function* streamChat(
   try {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 2);
-        if (!frame.startsWith('data:')) continue;
-        const data = frame.slice(5).trim();
-        if (data === '[DONE]') {
-          if (thinkOpen) { yield { content: '</think>', done: false }; thinkOpen = false; }
-          yield { content: '', done: true }; return;
-        }
-        try {
-          const parsed = JSON.parse(data) as {
-            choices?: Array<{ delta?: CompletionText }>;
-            usage?: { prompt_tokens?: number; completion_tokens?: number };
-          };
-          if (parsed.usage) {
-            const promptTokens = parsed.usage.prompt_tokens;
-            const completionTokens = parsed.usage.completion_tokens;
-            yield {
-              content: '', done: false,
-              usage: {
-                ...(Number.isSafeInteger(promptTokens) && promptTokens! >= 0 ? { promptTokens } : {}),
-                ...(Number.isSafeInteger(completionTokens) && completionTokens! >= 0 ? { completionTokens } : {}),
-              },
-            };
-          }
-          const delta = parsed.choices?.[0]?.delta;
-          const reasoning = opts?.thinking ? reasoningText(delta) : '';
-          const content = visibleText(delta);
-          if (reasoning) {
-            if (!thinkOpen) {
-              yield { content: `<think>${reasoning}`, done: false };
-              thinkOpen = true;
-            } else {
-              yield { content: reasoning, done: false };
-            }
-          }
-          if (content) {
-            if (thinkOpen) {
-              yield { content: `</think>${content}`, done: false };
-              thinkOpen = false;
-            } else {
-              yield { content, done: false };
-            }
-          }
-        } catch { /* ignore parse errors on malformed frames */ }
+      const text = done ? dec.decode() : dec.decode(value, { stream: true });
+      for (const chunk of feed(text)) {
+        yield chunk;
+        if (chunk.done) return;
       }
+      // An error frame ends the stream here; waiting for `[DONE]` or EOF
+      // would keep the provider socket open for nothing.
+      if (providerError || done) break;
     }
   } finally {
     await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
   }
-  if (thinkOpen) yield { content: '</think>', done: false };
-  yield { content: '', done: true };
+  // EOF before `[DONE]`: the provider (or a proxy between us) closed the
+  // socket mid-answer. The text so far is a prefix, not a result — see
+  // StreamIncompleteError. A provider error frame is the same kind of
+  // failure, typed as ProviderStreamError. A consumer that is itself being
+  // torn down by a client disconnect never reaches here (generator.return()
+  // exits the loop above through the finally), so this only fires on a real
+  // EOF or an error frame.
+  if (!receivedDone) {
+    if (thinkOpen) yield { content: '</think>', done: false };
+    if (signal?.aborted) return;
+    throw providerError ?? new StreamIncompleteError(received);
+  }
 }
 
 export async function generateEmbedding(
-  cfg: ProviderConfig, model: string, text: string | string[],
+  cfg: ProviderConfig, model: string, text: string | string[], transportContext: TransportContext,
 ): Promise<number[][]> {
   const input = Array.isArray(text) ? text : [text];
   return withSpan(
     'llm.embeddings',
-    () => enqueue((signal) =>
-      getProviderBreaker(cfg.providerId).execute(async () => {
+    () => enqueue(async (signal) => {
+      await authorizeTransport(cfg, model, transportContext);
+      signal.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'embeddings'), {
           method: 'POST',
           headers: headers(cfg),
@@ -679,8 +783,8 @@ export async function generateEmbedding(
         }
         const body = await res.json() as { data: Array<{ embedding: number[] }> };
         return body.data.map((d) => d.embedding);
-      }),
-    ),
+      });
+    }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model, 'llm.input_count': input.length },
   );
 }

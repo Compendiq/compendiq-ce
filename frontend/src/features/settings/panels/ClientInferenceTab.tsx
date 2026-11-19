@@ -390,6 +390,11 @@ function AssetUpload({ modelId, onDone }: { modelId: string; onDone: () => void 
             setError(null);
             void (async () => {
               try {
+                // One id per upload: the server refuses chunks from another
+                // upload of the same file (#1784). getRandomValues, unlike
+                // randomUUID, also exists on plain-HTTP origins.
+                const uploadId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+                  (byte) => byte.toString(16).padStart(2, '0')).join('');
                 for (let start = 0; start < file.size; start += UPLOAD_CHUNK) {
                   const slice = file.slice(start, Math.min(start + UPLOAD_CHUNK, file.size));
                   const end = start + slice.size - 1;
@@ -398,6 +403,7 @@ function AssetUpload({ modelId, onDone }: { modelId: string; onDone: () => void 
                     headers: {
                       'Content-Type': 'application/octet-stream',
                       'Content-Range': `bytes ${start}-${end}/${file.size}`,
+                      'Upload-Id': uploadId,
                     },
                     body: slice,
                   });

@@ -9,7 +9,7 @@ import type * as StoreModule from '../../stores/auth-store';
  * cookie is reuse and revokes the whole family (logging every tab out).
  */
 
-const USER = { id: 'u1', username: 'alice', role: 'user' as const };
+const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'alice', role: 'user' as const };
 
 function jwt(serial: number): string {
   const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, serial }));

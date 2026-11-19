@@ -7,6 +7,953 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-19
+
+### Added
+
+- **Retention for job history and read notifications (#1760):** the daily
+  retention sweep now deletes `job_history` rows and **read** notifications
+  older than two new admin-configurable windows,
+  `job_history_retention_days` and `notifications_read_retention_days`
+  (default 90, range 7–3650, migration 154, env fallbacks
+  `RETENTION_JOB_HISTORY_DAYS` / `RETENTION_NOTIFICATIONS_READ_DAYS`, exposed
+  as `jobHistoryRetentionDays` / `notificationsReadRetentionDays` in
+  `GET`/`PUT /api/admin/settings` and as two rows under Settings → Governance
+  → Data & Compliance → Retention → *Retention windows*). Each sweep deletes in
+  batches of 10 000 and writes a `RETENTION_PRUNED` audit row per run, zero-row
+  runs included. Unread notifications are never deleted, whatever their age.
+  **Upgrade note:** migration 154 seeds both windows at 90 days, so the first
+  daily sweep after upgrading deletes `job_history` rows and read
+  notifications older than 90 days. To keep more, insert the two
+  `admin_settings` rows before upgrading (`ON CONFLICT DO NOTHING` keeps them)
+  or set the windows with `PUT /api/admin/settings` right after upgrading and
+  before the first sweep; the previous version ignores these fields, and the
+  env variables apply only while the row is absent. The windows also apply to
+  restored data: after a restore, the next sweep deletes restored rows older
+  than the window.
+
+- **Webhook delivery-ledger retention control (#1875):** Settings → Governance →
+  Data & Compliance → Retention gains a *Retention windows* section with a
+  **Webhook delivery attempts retention** field for
+  `webhookDeliveriesRetentionDays`, validated like the contract (whole days,
+  7–3650) and saved alone through `PUT /api/admin/settings`, so it never
+  changes another setting. It renders outside the Enterprise policy matrix and
+  is not tied to the webhook feature, because the sweep keeps pruning existing
+  ledger rows after webhooks are switched off.
+
+### Changed
+
+- **MCP docs cache entries are bounded (#1770):** the `mcp-docs` sidecar now
+  stores at most the first 100,000 characters of a fetched document per cache
+  entry instead of the whole download (up to 5 MiB, more once JSON-escaped),
+  so large documents no longer eat into the Redis memory shared with the job
+  queues. Returned text is unchanged: a first page of up to 100,000 characters
+  is still served from the cache, and a `start_index` read beyond the stored
+  part fetches the document again (`Cached: false`) instead of returning less
+  text. `list_cached` still reports the full length. Existing entries stay
+  readable and expire on their TTL.
+- **Admin access-denied retention control (#1875):** now sits in the shared
+  *Retention windows* section: empty, fractional and out-of-range values are
+  rejected inline instead of being sent, Enter saves, a failed save keeps the
+  typed value and shows the server's reason inline (previously a toast), and
+  an unreadable settings response shows a Retry notice instead of a
+  fabricated 90-day value.
+- **Web-search query limit enforced at the API (#1767):** `searchQuery` on
+  `POST /api/llm/ask|generate|improve|summarize` now accepts at most 200
+  characters and 30 words (trimmed, non-empty) — the limits the mcp-docs
+  `search_web` tool already enforced. Longer, over-worded or blank queries are
+  rejected with `400 ValidationError` naming `searchQuery` instead of being
+  accepted and then silently yielding no web sources. **Breaking for direct
+  API callers** that sent 201–500-character queries (the contract previously
+  allowed 500); the web UI only sends `searchWeb: true` and is unaffected.
+  Derived default queries are unchanged.
+
+### Fixed
+
+- **A killed deployment no longer blocks startup at migration 152 (#2063):**
+  the backend previously could not start when upgrading to a build containing
+  `152_relocation_notion_identity.sql` if the previous process had been killed
+  without a graceful quiesce. The migration's pre-cutover guard refuses any
+  unretired writer epoch or unreleased room admission, and the replacement
+  container can neither obtain the owner's acknowledgment nor prove local
+  termination (a recreated container has a different host, boot and PID
+  namespace), so it failed with
+  `relocation_notion_upgrade_requires_retired_writers` on every start and needed
+  manual SQL. New migration `151b_page_writer_upgrade_retirement.sql` runs
+  immediately before 152 and retires every pre-upgrade epoch itself: epochs with
+  no dispatched effect are fenced with the existing server-verified
+  `durable_no_started_effects` proof (pre-effect intents cancelled, room tokens
+  released as `runtime_fenced`), and epochs that dispatched work are quiesced
+  and marked `upgrade_retired_at` without inventing an owner acknowledgment
+  (started intents stay pending, room tokens released as `upgrade_retired`).
+  Both close the database-enforced write gate, so an old live replica is refused
+  at its next write. Retirement runs only while 152 is still unrecorded, so
+  installs that already applied it get the schema without cutting a live
+  replica. `POST /api/admin/page-write-recovery/runtime/quiesce` now refuses
+  (`409 runtime_upgrade_retired`) before closing its irreversible local gate,
+  the recovery listing exposes `upgradeRetiredAt`, and each retired epoch writes
+  one `PAGE_WRITER_UPGRADE_RETIREMENT` audit row. Scale old replicas to 0 first
+  if their unflushed collaborative edits matter; started unknown remote work
+  still needs a termination-verified fence before reconciliation.
+
+- **Governed sign-off matches the Enterprise workflow (#277):** a final
+  approval that froze the article answered `status: 'finalized'`, which the
+  shared contract did not list, so the panel reported "Refused:
+  request_failed." after a freeze that had happened. `finalized` is now both
+  a proposal status and a page-detail `governanceProposalStatus`: the page
+  detail names the proposal whose approvals froze its current baseline, and
+  the panel says the approvals froze the article and lists the votes as a
+  record with no controls. A frozen article no longer offers **Request
+  approval** (the server refused it with `page_is_frozen`). A final vote
+  whose freeze failed (`approved` with a `finalizeError` reason slug) shows
+  the retry instead of a refusal; older prose errors are shown as written. A
+  lapsed `document_sign_off_governance` licence is reported as
+  `governance_license_required` (new approval denial reason, distinct from
+  `governance_unavailable`) and switches the panel to the licence notice
+  without further governance requests until the licence changes or, for a
+  refused proposal read, a later read succeeds. Governed writes now refresh
+  the page and proposal after a refusal too, and the finalize-path refusals
+  (`finalize_failed`, `duplicate_approval`, `approval_required`,
+  `approver_not_distinct`, `governance_evidence_incomplete`,
+  `governance_policy_changed`, `stale_lifecycle`) have their own wording.
+  After a successful freeze or thaw confirmed from the keyboard, focus now
+  lands on the Document lifecycle heading instead of the page body, and in
+  forced-colors mode that heading no longer shows a permanent outline box.
+  A frozen article no longer offers writes the server refuses: page icon
+  editing, Auto-tag, `Move to Confluence…`, `Move to trash` (and
+  `Alt+Shift+D`), the Danger zone, `Pull latest from Confluence`, the
+  empty-article `Add content` and Version history's Restore. Reading,
+  history, Pin, Export PDF and Verify stay.
+
+- **Popovers and dropdowns had no blur in Chrome and Firefox (#2042):**
+  `nm-popover-glass`, the context-rail toolbar and the Draw.io node buttons
+  declared `backdrop-filter` and `-webkit-backdrop-filter` side by side, and
+  Lightning CSS collapsed the pair to the prefixed declaration only. Safari
+  read it; Chrome and Firefox did not, so popups showed page content straight
+  through. The source now declares the unprefixed property only and the build
+  emits both. `popover-glass-compiled-css.test.ts` compiles the real stylesheet
+  and asserts the shipped CSS.
+
+- **Summarize, quality, and diagram audits record prompt-injection flags (#1726):**
+  the LLM audit entries for the summarize, quality, and diagram routes now set
+  `promptInjectionDetected` and `sanitized` from the sanitizer result, matching
+  generate and improve. Previously these fields were omitted, so the audit trail
+  could not show that injected content reached the model.
+
+- **Vision probe ignores reasoning and no longer caches a cut-off reply (#1727):**
+  the probe now matches colours in the visible reply only, so colours named
+  inside `<think>…</think>` no longer count. A reply that ends inside a
+  reasoning block, or is cut off by the token limit without naming the bands in
+  order, is undetermined (`null`, re-probed after the cooldown) instead of a
+  `false` cached for 30 days.
+
+- **Conversation titles never keep reasoning (#1724):** a generated title now
+  ignores `<think>…</think>` blocks (and a lone closing tag from hosts whose
+  template supplies the opener). A reply that is only reasoning, or was cut
+  inside it, keeps the question-derived title. The shared helper
+  `think-blocks.ts` also replaces three local copies of the closed-block
+  expression, with unchanged behaviour.
+
+- **Provider error frames fail the request (#1728):** an OpenAI-compatible
+  provider that reports an `error` inside a streaming response, even when it
+  then sends `[DONE]`, no longer produces a successful empty or partial
+  answer. Generate, Improve, Summarize, Quality, Diagram and Ask end the
+  stream with `{ error: 'Provider error', done: true }` and write an `error`
+  audit entry; nothing is cached, Ask saves no conversation turn, and the
+  summary and quality workers mark the page failed and retry it. The
+  provider's error text is never sent to the client. A blank assistant turn
+  already saved by this defect no longer counts as grounding, so an
+  ungrounded follow-up in such a thread is refused again. Ask's error text
+  for a stream that ended before `[DONE]` is now
+  `Stream ended before completion`, as on the other routes.
+
+- **Ask stops generating when the client disconnects (#1719):**
+  `POST /api/llm/ask` now notices a closed browser tab or a cancelled request
+  and aborts the provider stream within milliseconds. A disconnected ask no
+  longer finishes in the background: nothing is cached, no conversation turn
+  is saved, no title is generated, the per-user stream slot is released at
+  once, and the LLM audit log records one `error` / `Client disconnected`
+  entry instead of a `success`. A client that has already left when the route
+  is about to call the provider (after retrieval, the cache lookup and the
+  lock wait) causes no provider request and no audit entry.
+
+- **Admin user update: `null` clears the email or display name (#1736):**
+  `PUT /api/admin/users/:id` now passes an explicit JSON `null` for `email`
+  or `displayName` through to the service, which stores `NULL`. Keys left out
+  of the body still leave the field unchanged; previously `null` was treated
+  as omitted, so the value could not be cleared through the API.
+
+- **Invitation password no longer lost when the email is not delivered
+  (#1737):** `POST /api/admin/users` with `sendInvitation: true` now awaits the
+  invitation email (bounded to 15 s) and returns the generated
+  `temporaryPassword` in the `201` response whenever delivery is not confirmed:
+  SMTP disabled or without a host, the transport failing, or the send not
+  settling in time. It is omitted only when the email was sent. The
+  `user_created` audit event is written after the attempt and gains
+  `invitationSent` next to `invited`. Responses for users without an email or
+  with an explicit password are unchanged, and the admin UI needed no change.
+
+- **Liveness stays 200 during a database outage (#1755):** `GET
+  /api/health/live` is no longer rate limited and touches neither the
+  database nor Redis, so it answers 200 while the database is down or hanging;
+  `/api/health/ready`, `/api/health/start` and `/api/health` answer 503 instead
+  of 500. `getRateLimits()` no longer rejects once its 60 s cache expires: when
+  the settings read fails or does not answer within 1 s it serves the last
+  loaded limits (or the defaults, with the auth floor), and it retries the
+  database at most once per 10 s after a failure (30 s for a read that never
+  settles) instead of on every request. With a working database the limits and
+  their 60 s cache are unchanged.
+
+- **SMTP settings now reach every replica without a restart (#1757):** after
+  `PUT /api/admin/smtp` has written the rows, the saving replica re-reads them
+  and publishes a reload signal on the new `smtp:config:changed` cache-bus
+  channel (empty payload; no setting or password travels on Redis). Every
+  replica re-reads the `smtp_*` rows on that signal and after a bus reconnect,
+  through one serialized reloader, so `GET /api/admin/smtp` and the test mail
+  on any replica use the saved configuration. The publish is not awaited, so a
+  save still answers during a Redis outage. A field without a stored row falls
+  back to that replica's `SMTP_*` environment value, except `secure`: once any
+  `smtp_*` row exists it is `false` unless an `smtp_secure` row says `true`,
+  even with `SMTP_SECURE=true` (unchanged).
+
+- **Overlapping cached-setting reloads no longer restore an older value (#1758):**
+  `makeCachedSetting` (IP allowlist, sync-conflict policy, LLM concurrency and
+  queue depth), the collaborative-editing flag and the article AI policy
+  switch now reload through one serialized, coalesced reloader each
+  (`core/services/coalesced-reload.ts`). At most one read runs at a time; any
+  number of bus events, reconnects, polls or writer reloads arriving meanwhile
+  cause exactly one follow-up read, and an awaited reload resolves with a read
+  that started after the request. Previously a slow first read could finish
+  last and leave a process on the older row until the next event. A read that
+  has not answered after 30 s is abandoned and never applied. Failed reads
+  still keep the previous value and log a warning; turning the collab flag
+  off still closes every room before `PUT /api/admin/settings` answers.
+
+- **A failed SMTP save no longer changes the live transport (#1761):**
+  `PUT /api/admin/smtp` now writes the `smtp_*` rows (one statement) before it
+  updates the live configuration, so a rejected save leaves both the database
+  and the transport unchanged and a successful save makes them match.
+
+- **Stale embedding-lock cleanup can no longer hide a live lock (#1759):**
+  `listActiveEmbeddingLocks` now removes stale members of
+  `embedding:locks:active` with one atomic Lua script that re-checks each lock
+  key inside Redis, instead of a separate `SREM`. A lock acquired between the
+  listing's read and the cleanup keeps its set entry and shows up in the next
+  listing, so the other-holder check and the re-embed-all wait loop no longer
+  miss it. Lock keys, TTLs and the snapshot shape are unchanged.
+
+- **Scheduler job records in Redis are bounded (#1756):** the repeatable
+  schedulers (`sync`, `quality`, `summary`, `image-analysis`, `maintenance`,
+  `data-retention`, `backup`) now keep only the last 100 completed and 200
+  failed job records per queue instead of every run, so they no longer fill the
+  `noeviction` Redis. Each run still has its `job_history` row. Records stored
+  before the upgrade are trimmed lazily as new jobs finish; no startup cleanup
+  runs. On-demand jobs are unaffected by the options but, on a scheduled queue,
+  finished ones fall into the same count-trimmed set.
+
+- **Restore refuses an archive older than the target database (#1711):**
+  `restore-backup.ts` (dry-run and restore) now compares the archive's schema
+  migration with the target's newest `_migrations` row and refuses an older
+  archive before any attachment rename or `pg_restore`, naming both levels and
+  the new ADMIN-GUIDE procedure "Restoring an older archive" (restore into an
+  empty database, then let migrations run). An empty target, an equal level and
+  a target behind the archive stay allowed; `--force` does not bypass the
+  check. `POSTGRES_URL` is now required for `--dry-run` too (exit 2 without
+  it), and `restoreBackup` refuses when `POSTGRES_URL` is missing or differs
+  from the restore target URL.
+
+- **Backup source-stream failures no longer crash the API (#1709):** a
+  `pg_dump` that fails to start or exits non-zero, or an attachment that
+  vanishes or becomes unreadable during a backup, used to raise an unhandled
+  stream error that killed the backend, left the run `running`, held the
+  backup lock for up to an hour and left the S3 multipart upload open. The
+  backup now fails cleanly with the real cause: the download is aborted and
+  audited as `BACKUP_EXPORT_FAILED`, an S3 run is marked `failed` with the
+  `pg_dump`/`ENOENT`/`EACCES` message and its multipart upload aborted, and
+  the lock, snapshot and `pg_dump` are released. A client that disconnects
+  mid-download now also closes the dump and attachment streams. The archive
+  format is unchanged.
+
+- **S3 retention-prune failure is a warning, not a failed run (#1710):** a
+  denied or failing `ListObjects`/`DeleteObjects` after a completed upload used
+  to mark the run `failed` without its object key and skip
+  `backup_last_run_at`, so every 15-minute tick uploaded another full backup.
+  The upload is now recorded as `success` (object key, size, schedule gate)
+  before retention runs; a prune failure is stored as a new `backup_runs.warning`
+  (migration 153, first 1000 characters), logged at `warn`, shown in the Backup
+  history as `— warning: <text>`, returned as `warning` by
+  `GET /api/admin/backup` and carried as `pruneWarning` by a `BACKUP_UPLOADED`
+  audit event now written for every completed S3 upload. `BackupRunSchema.warning`
+  defaults to `null` when a backend omits it.
+
+- **Notion re-import after relocation (#1774):** Successful moves in either
+  direction release the Notion import binding without changing the page PK,
+  while exact rollback preserves NULL and original spelling. Cached picker
+  markers and whole-batch restore conflicts now follow live standalone imports.
+  Migration152 repairs stale Confluence bindings and proven retained local
+  cutovers; public import failures no longer expose database constraint names.
+  Before the one-time snapshot-schema upgrade, retire and hold old writers
+  stopped as documented in the immutable-page-baselines runbook.
+
+- **Cancelled baseline previews retry immediately (#1765):** a same-user
+  re-preview safely cleans a settled, never-started preparation before
+  reserving a new baseline, without waiting for maintenance or returning a
+  unique-constraint 500. Existing writer admission and exactly-once retained
+  capacity accounting remain intact.
+- **Page and draft identifier boundaries (#1739):** invalid local page IDs are
+  rejected before integer SQL casts or side effects. Legacy dual-capable routes
+  retain valid local-PK precedence and resolve large Confluence IDs as exact
+  text, preserving their access, ambiguity and missing-page responses.
+- **Deep search pins only identifiers found in the user's own question (#1718):**
+  the paraphrase legs of a deep search now pass `pinIdentifiers: false`, so
+  deep search pins only what the #1107 detector finds in the question itself,
+  as single-query search does. An identifier such as `INC-2203` that appears
+  only in a paraphrase no longer pins its page ahead of the merged ranking.
+  That covers both an identifier the rewrite model added and one kept from a
+  question too long for the detector. Before, such a pinned head also made the
+  answer's retrieval confidence unmeasurable, which bypassed the confidence
+  gate. The original-query leg keeps the caller's pin setting. Identifier
+  queries the detector recognises still skip expansion and pin as before. The
+  identifier page can still appear in the results at its ordinary merged rank.
+- **Content reports exclude trashed articles (#1744):** Trending and
+  content-quality reports now omit trash before applying their limits. Restored
+  pages are eligible again with their existing views and feedback; both reports
+  remain admin-only.
+- **Page date filters fail validation before timestamp SQL (#1738):** list,
+  search and bulk filters share an exact Gregorian date/qualified-timestamp
+  profile and return400 for invalid or unsupported inputs. Previously parseable
+  spellings, including fractions longer than six digits, are now explicitly
+  unsupported rather than normalized. Raw strings and inclusive date-only
+  `dateTo` midnight semantics remain unchanged; see
+  [the API profile and compatibility note](docs/API.md#page-date-filters).
+- **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
+  `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
+  files included) now imports as page labels; previously the list was dropped
+  and the import returned no labels without a warning. Inline `[a, b]` lists
+  and scalar values behave as before. YAML comment rules apply: an unquoted
+  `- #ops` item is a comment and is skipped — quote it as `- '#ops'`.
+- **Shortening an embedded page removes its old text from search and chat
+  (#1714):** when an edit leaves a page with nothing to embed (fewer than 20
+  characters of text, or no chunk left), the next embedding pass now deletes
+  the page's old chunks, clears its average vector (and the copies kept
+  during an embedding-model migration), removes its similarity links to
+  related pages in both directions and resets its embedded time, in the same
+  step that marks it as not embedded. Previously the deleted text stayed a
+  semantic and hybrid search hit, kept reaching chat answers as context, and
+  kept the page linked as related. An edit that lands while the pass is
+  settling the page is never wiped: the pass then changes nothing, and the
+  page is embedded again from its new content.
+- **Markdown import keeps task completion and list numbering (#1752):**
+  importing a `.md` file on New Page now loads GFM task lists (`- [x] done`,
+  `- [ ] todo`) as editor task lists with their checked state, and ordered
+  lists keep a start number other than 1 (`3. a` stays item 3). Previously
+  both were silently dropped. Applying an AI Improve result uses the same
+  conversion, so a page's task list now comes back as a task list —
+  assignee mentions, status lozenges, Jira links and images inside its tasks
+  included — instead of a bullet list with raw checkbox elements in the saved
+  body. A list mixing tasks and plain items becomes separate lists, a
+  numbered task list becomes an unnumbered task list (the editor has no
+  numbered tasks), and a task item that contains a diagram or other block
+  HTML stays a bullet with its `[x]` / `[ ]` as text, so nothing in it is
+  lost.
+- **Confluence code, table-of-contents and status macros keep all their
+  parameters (#1749):** saving a synced page (editor save, collaborative save,
+  draft publish, version restore) dropped every code-macro parameter except
+  the language — and cut `c#` to `c` and `objective-c` to `objective` — plus
+  the table-of-contents macro's `exclude`, `include`, `indent`, … and the
+  status macro's `subtle`. They now write back unchanged. A synced code
+  block's Confluence title shows in the editor and read mode; for a mermaid
+  block, the title and the other code-macro parameters are carried through
+  editor saves but not displayed. AI Improve keeps the table-of-contents and
+  status parameters and the code language; applying an Improve result still
+  drops a code block's title and display options (line numbers, collapse,
+  …). A page synced before this release regains the parameters only when its
+  body is next re-derived from Confluence — an upstream change, or a re-sync:
+  **Re-sync** on selected pages, **Pull from Confluence…** on a page, or
+  Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
+  Now** is incremental and does not refresh unchanged pages). Saving it before
+  then still drops them, and a page already written back without them stays
+  without them.
+- **Answer images follow the final result order (#1716):** on `/llm/ask`, the
+  image citations (`kind: 'image'` sources) and the pictures shown to a
+  vision-capable chat model now follow the answer's final result order —
+  reranking and exact-identifier pins included — instead of the fused search
+  score. Before, a pinned page's picture could be cited last, and a page the
+  reranker moved to the top could lose its picture's only slot to a
+  lower-ranked page's. Image sources still carry `score` and a null
+  `similarity`.
+- **Markdown import keeps draw.io diagram names (#1754):** a ```` ```drawio ````
+  fence in an imported `.md` file now reaches the editor as a diagram
+  placeholder that carries its name, the created page keeps that name, and a
+  page created in a Confluence space names the diagram in its draw.io macro.
+  Previously the import stripped the name: the editor offered an empty
+  "Click to create a draw.io diagram" placeholder, and Confluence got the
+  generic name `diagram`. Once the page has the diagram's attachment, read
+  mode's **Edit Diagram** opens it by that name; the import itself creates no
+  attachment, and it still drops a fence's source location and inline XML. A
+  name that spans several lines or would close a code fence (backticks
+  followed only by backticks or tildes) is not imported, because it would
+  break the page's Markdown, and an empty name still imports as an unnamed
+  diagram.
+- **Force-embed-tree embeds the local copy and skips trashed pages (#1717):**
+  `POST /api/embeddings/force-embed-tree` now uses Confluence only to find
+  the pages of the tree (the root page and its descendant listing) and embeds
+  each one from its live local copy, without fetching any page from
+  Confluence again. A page that was skipped because its Confluence body was
+  empty is now embedded from its local copy. A page whose local copy is in
+  the trash is skipped with `Page is in the trash, skipping`, and a
+  standalone page that still carries the page's former Confluence id is
+  reported as `Page not yet synced to local DB, skipping` instead of being
+  embedded. Every page now reports exactly one progress event, so
+  `completed` reaches `total` (pages with no new embeddings were not
+  counted, and pages without a cached body were reported twice). While the
+  user's embedding run or a global re-embed is in progress, the route
+  answers 409 instead of starting.
+- **Confluence tasks keep their identity on save (#1751):** saving a synced
+  page (editor save, collaborative save, draft publish, version restore,
+  applying an AI Improve result) gave every task a new random `ac:task-id`,
+  so Confluence saw every task deleted and re-created on each save, and two
+  tasks could end up sharing an id (they then check and uncheck together). A
+  task now keeps its id. A new task gets the next free id, never the number
+  of a task deleted in the same save, and a task pasted with an id the page
+  already uses gets a new one while the page's own task keeps it. Applying an
+  AI Improve result keeps the id of a task whose text it left unchanged; a
+  reworded task gets a new id. A page synced before this release gets its ids
+  back from the stored Confluence copy on its next save: by task text, and
+  for the remaining tasks in order when as many remain on both sides (a task
+  typed in place of a deleted one then takes its id; otherwise an edited task
+  gets a new id). Saves no longer write the editor's checkbox markup into
+  each Confluence task body, and a body an earlier save wrote that way is
+  cleaned on its next save. Restoring a version of a Confluence page that has
+  tasks no longer fails with "Historical version … no longer matches the
+  durable restore intent" after Confluence has already accepted the restore.
+- **Confluence emoticons survive saving a synced page (#1750):** saving a page
+  synced from Confluence (editor save, collaborative save, draft publish,
+  version restore, AI Improve apply) deleted every emoticon — status ticks,
+  warnings, smileys and Confluence emoji — from the Confluence page. They now
+  write back unchanged, every attribute included (`ac:name` and the newer
+  `ac:emoji-shortname`, `ac:emoji-id` and `ac:emoji-fallback`). The editor
+  and read mode show each one as its emoji, or as Confluence's text form
+  (`(blue-star)`, `:face_exhaling:`) when there is no emoji; screen readers
+  announce it by name, and it is not a separate tab stop. A page synced
+  before this release shows its emoticons once its body is re-derived from
+  Confluence — an upstream change, or a re-sync: **Re-sync** on selected
+  pages, **Pull from Confluence…** on a page, or Settings → Spaces & Sync →
+  Sync schedule → **Force Re-sync All** (**Sync Now** is incremental and does
+  not refresh unchanged pages). Saving it before then still drops them.
+- **Confluence page, attachment and anchor links survive saving a synced page
+  (#1748):** saving a page synced from Confluence (editor save, collaborative
+  save, draft publish, version restore, AI Improve apply) wrote Confluence
+  page and attachment links back as dead `#confluence-page:…` /
+  `#confluence-attachment:…` anchors without their space, turned a link to
+  another page's attachment into a link to that page, and dropped links to
+  anchors. Links now write back as Confluence links: the page and its space,
+  the attachment and the page that owns it, the anchor, the link text with its
+  formatting, and their other attributes. A page synced before this release
+  keeps its link titles and filenames but not their space or anchor until its
+  body is re-derived from Confluence — an upstream change, or a re-sync:
+  **Re-sync** on selected pages, **Pull from Confluence…** on a page, or
+  Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
+  Now** is incremental and does not refresh unchanged pages); saving it before
+  then writes a cross-space link back as a link in the page's own space.
+  Unchanged: clicking such a link inside Compendiq does not navigate; saving
+  from the editor still loses a link whose text is an image or inline code and
+  splits a link around inline code inside its text, and a collaborative save
+  splits a link around a line break inside it.
+- **Keyword search's typo-tolerant title matches respect the filters (#1740):**
+  with a space, author, date-range or tag filter active, keyword search still
+  returned title matches outside it — a misspelt query filtered to one space
+  listed pages from other spaces, and a tag filter that matched nothing still
+  returned them. These fuzzy title matches now apply every active filter, like
+  the full-text results (the AI-policy filter already applied). Searches without
+  filters return the same results as before, and facet counts are unchanged.
+- **Search text keeps escaped entity examples (#1735):** a page that shows a
+  literal entity such as `&lt;br&gt;`, `&amp;` or `&#60;` (typically in a code
+  block documenting HTML) now stores exactly that in its search text, instead
+  of decoding it a second time to `<br>`, `&` or `<`. Keyword search now
+  indexes what the page displays, so literal tag examples become findable by
+  their tag name, and visible URLs such as `?id=1&reg=eu` stay intact instead
+  of turning into `?id=1®=eu`. Result snippets are still rendered as HTML, so
+  an escaped example can show decoded once more in a snippet. Existing pages
+  pick up the corrected text the next time they are saved, or re-synced after
+  an edit in Confluence (or by a full sync); there is no backfill.
+- **ODT uploads keep the text after footnotes and text boxes (#1734):**
+  extracting an `.odt` lost the rest of any paragraph after an embedded
+  footnote, endnote or text box, glued the footnote number to the previous
+  word (`Before1Footnote`), and dropped the text between two ranged comments.
+  Notes and text boxes now appear where they sit — the paragraph's text before
+  them, their own lines, then the rest of the paragraph — without the footnote
+  number. Only paragraphs a list item holds directly get a bullet: a paragraph
+  after a nested list now does, a footnote's or table cell's paragraph inside a
+  list item no longer does. Character references are decoded once (`&#38;lt;`
+  stays `&lt;`) and references to invalid code points read as U+FFFD instead of
+  failing the extraction; heading levels written in single quotes are honoured.
+  Unclosed tags no longer make extraction time grow quadratically with the
+  document's size.
+- **Keyword search pages typo-tolerant title matches correctly (#1741):** when
+  a keyword search also matched titles with a typo, those title matches were
+  added to every page of results: a page could hold up to twice the page size,
+  the same article showed up on several pages, the result count left the title
+  matches out, and a page past the last still listed them. Results now form one
+  list. Each article appears on exactly one page, no page exceeds the page
+  size, the count includes every match, and a page past the end is empty with
+  the same count. Sorting by relevance still lists full-text matches first,
+  then the title matches by similarity; sorting by date or title now orders
+  both together, and title matches show their author, date and labels.
+- **RTF `\uN` characters and `\ansicpg` bytes decode correctly (#1733):** a
+  `\uN` Unicode character now replaces its fallback instead of appearing
+  beside it (`Пр`, not `ПÏрð`), honouring `\ucN` and its group scope, and
+  `\'hh` bytes decode in the document's `\ansicpgN` code page instead of as
+  Latin-1 — windows-1252 when none is declared, so `\'80` is `€` and the
+  `\'93`/`\'94` quotes survive. Japanese, Chinese and Korean double-byte pages
+  are included, Korean as full Windows cp949; bytes written in a font's own
+  `\fcharsetN` still decode in the document's code page. Font tables,
+  pictures (raw `\binN` data included), headers, footers and footnotes are
+  now dropped however deeply they nest, and an RTF whose font table or another
+  skipped group holds millions of entries no longer fails to extract.
+- **Standalone creation keeps canonical parent keys (#1743):** padded page
+  IDs and Confluence parents now retain the resolved source-aware parent key,
+  so new children stay connected in hierarchy reads and owner-scoped trash
+  cascades. Invalid or ambiguous parents are refused without database cast
+  errors or collision details. Parent ownership policy is unchanged; existing
+  padded parent rows are not repaired.
+- **Bulk re-embed queues standalone pages (#1745):** *Re-embed* in the page
+  list's bulk bar and an article's *Index now* (*Re-embed for search* in the
+  article rail) now queue standalone pages for embedding; previously
+  `POST /api/pages/bulk/embed` marked only pages with a Confluence id, so a
+  selection of standalone pages without a Confluence id was answered with
+  `succeeded: 0, failed: 0` and not queued. Pages are now marked by their
+  internal id and every selected page is counted once: `succeeded` means
+  queued for the embedding worker, not embedded — policy-blocked, folder and
+  bodiless pages are queued and counted, and the worker skips them — while a
+  page that is not found, ambiguous, or moved to the trash before it could be
+  queued is counted under `failed`.
+- **Restore articles after deleting their local space (#1742):** Trash now
+  identifies missing spaces and offers an explicit local-space/no-space target
+  only when the current refusal permits it. Restore rehomes matching trash-batch
+  rows atomically and protects destination/retained spaces against concurrent
+  deletion; a different missing batch space fails closed without a misleading
+  picker. Ordinary restores, ownership, purge and space-deletion rules stay intact.
+- **Long lines stay inside exported article PDFs (#1730):** code blocks no
+  longer cut each line at 120 characters; a line wider than the code box (83
+  characters) continues flush left on the next row, across page breaks, so no
+  character is cut at the box edge. Previously the tail was lost and even the
+  kept part ran past the right margin. A word wider than its line — a long URL
+  or hash — now breaks between characters in paragraphs, headings, lists and
+  table cells instead of running past the margin or into the next column, and
+  wrapped text is measured as drawn, so lines dense in kerned pairs such as
+  `AV` or `To` no longer overrun the margin, and a wrapped cover title is
+  centred by that width.
+- **Exported article PDFs keep every table cell (#1731):** a spanning header
+  such as `<th colspan="3">` no longer shrinks a table to one column and drops
+  every later cell of each row, and a row longer than the first no longer
+  loses its extra cells. Columns come from a span-aware grid as wide as the
+  widest row; a spanning cell wraps across its columns with no border through
+  it and still repeats as a header on continuation pages, and a `colspan` of
+  0, missing or non-numeric counts as 1 (`rowspan` is ignored: cells of the
+  rows below shift left). Footer (`<tfoot>`) rows are printed instead of
+  dropped, and a nested table no longer adds columns that print its text a
+  second time. Tables wider than 14 columns print in bands of at most 14
+  columns (15 columns become 8 + 7), one below the other, instead of
+  squeezing every column until its text runs over the borders; a later band
+  repeats the header where it fits and holds only the rows that have a cell
+  starting in it.
+- **Exported article PDFs keep non-Latin text (#1729):** Cyrillic, Greek,
+  Chinese, Japanese, Korean and extended-Latin text (`ł`, `ğ`, Vietnamese) is
+  no longer deleted from titles, headings, paragraphs, lists, quotes, code,
+  table cells and image labels. Article PDFs now use bundled Noto Sans, Noto
+  Sans Mono, Noto Sans SC and Noto Sans KR fonts (SIL OFL 1.1) instead of
+  Helvetica and Courier, so every export looks slightly different, and arrows,
+  dashes, quotes and similar symbols print as written instead of as `->`, `--`
+  or `'`. A character no bundled font covers (Arabic, Hebrew, Indic and Thai
+  scripts, emoji, symbols such as ✔ ✘ ☑ ➜ ❤) prints as `�` instead of
+  disappearing, and a quote made only of such characters no longer fails the
+  export. Words separated only by a line break in the HTML stay two words, and
+  decomposed accents and Hangul print composed. Fonts are embedded as subsets:
+  a Latin-only article grows by about 14 KB, and the backend image by about
+  12 MB compressed. **Custom images:** `npm run build -w backend` copies the
+  fonts into `dist/`; an image that compiles the backend another way must copy
+  `backend/src/core/services/fonts` to `dist/core/services/fonts`, or every PDF
+  export fails with `PDF export font missing`.
+- **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
+  Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
+  (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
+  documents; **Max Content Length** now caps every `max_length` the backend
+  requests (web search keeps 5,000 per source, Test fetch 2,000 and attached
+  URLs 10,000 unless the ceiling is lower), and its range is the sidecar's
+  1,000–100,000 — a stored larger value is read as 100,000 and logged until
+  re-saved, and `PUT /api/admin/mcp-docs` now rejects values above 100,000.
+  SearXNG **Search Categories** (lowercase names separated by commas without
+  spaces, e.g. `general,it`; anything else is a `400`) are sent on every
+  search, including **Test**, and are part of the search-cache key
+  (`mcp:docs:search:v3:`; older entries expire unread). Previously all three
+  saved successfully and changed nothing. **On upgrade:** `MCP_CACHE_TTL`
+  (the sidecar's `CACHE_TTL_SECONDS`) no longer governs the backend's fetches
+  — the backend always sends the admin Cache TTL, 3600 s until an admin saves
+  one — so a deployment that tuned the env var sets the value under Settings
+  → Integrations → MCP Docs instead; the env var still applies to MCP clients
+  that send no `cache_ttl`. A stored **Search Categories** value in the old
+  free-text form with spaces (e.g. `general, it`) is read as `general` — what
+  was searched before — and logged until it is re-saved. The admin
+  **SearXNG URL** control is removed: the search backend is configured only
+  through `SEARXNG_URL` on the `mcp-docs` service, `GET /api/admin/searxng`
+  no longer returns `url`, and a `url` sent to `PUT /api/admin/searxng` is
+  ignored. **Breaking for direct API callers** that sent a `maxContentLength`
+  above 100,000, free-text `categories`, or relied on the SearXNG `url` field.
+- **Confluence collaborative Save no longer conflicts with its own autosave
+  (#1762):** saving a Confluence page in a collaborative session right after
+  typing could fail with `409 stale_content_revision` when the room's 2 s
+  autosave landed while the Save was reading the page from Confluence;
+  retrying succeeded. The Save now goes through, on the editor's pod or a
+  peer pod. A lifecycle change during the Save still refuses with
+  `409 stale_lifecycle`, and a page changed in Confluence still returns
+  `confluence_modified`.
+- **Collaborative Edit no longer rejects slow joins as unauthorized (#1895):**
+  frames a browser sends before its collaborative join completes are kept in
+  order (up to 64 frames / 1 MiB) and applied once the socket is live, instead
+  of closing the third one with `4403 readonly`. An overflow closes
+  `1013 join_backlog`, which the client retries, and is never reported as a
+  permission loss. Until the first sync the editor now shows one message per
+  close reason, with no read-only draft banner and no **Download draft**:
+  `rate_limited` offers Retry once the server's upgrade window has passed,
+  an interrupted join offers Retry at once, `flag_off` says collaborative
+  editing was turned off and reopening the editor edits locally, and
+  `forbidden` and unknown reasons still refuse. Title, tags, icon and Save stay
+  locked until the first sync (Save was enabled once write admission arrived,
+  so Ctrl+S could post a commit before the document had loaded). After the
+  first sync every 4403 keeps the existing read-only draft treatment.
+- **Typing during a Confluence collaborative Save no longer disconnects
+  editors, and the room releases after the Save (#1763):** while a co-editor's
+  or your own Save waited for Confluence, typing closed the socket
+  (`1001 collab_validation_unavailable`), rejoins failed until the Save
+  finished, and that typing never reached the server. Edits now keep flowing
+  live on every pod during the Save and are saved as soon as it succeeds.
+  When the last editor leaves during a Save, the room's admission is released
+  once the Save settles instead of answering other writers
+  `409 collab_session_active`.
+- **A pasted image is uploaded once, not on every collaborative Save (#1764):**
+  after a Confluence collaborative Save uploaded a pasted image, the session's
+  next autosave dropped the image's attachment markers, so every later Save
+  uploaded the image again (a new attachment version each time) and was
+  recorded as a media commit. The Save now marks the uploaded images in the
+  open editors and in the saved collaborative state, without reloading the
+  editor; a following text-only Save uploads nothing.
+- **Remote-delete recovery closes collaborative rooms (#1780):** when an admin
+  recovers a crashed Confluence or bulk-remote delete, open collaborative
+  editors are now closed with 4404 `committed_delete` on every pod after the
+  recovery settles. An undispatched delete restores the page and keeps its
+  rooms open.
+- **A stale editor draft no longer overwrites a newer version (#1746):** the
+  ordinary (non-collaborative) Save now sends the version the editing session
+  started from instead of whatever the page query last refetched, so after
+  someone else saves, the draft is refused with the actionable *Version
+  conflict* toast — on every repeated Save too — until it is reconciled with
+  **Reload** and then **Restore draft** or **Edit published version**.
+  Restoring a draft or choosing *Edit published version* bases the session —
+  its version and its title — on the page shown at that moment, and the
+  session's own successful Save becomes its new base. A save whose reply does
+  not say which version was written is now reported as unconfirmed.
+  Collaborative editing is unchanged.
+- **New-page drafts are offered back (#1747):** `/pages/new` autosaved the body
+  for the signed-in account but never read it back, and the title, space and
+  parent were not stored at all, so a reload or a stray navigation lost the
+  page. The form now also keeps the title, space key and parent id
+  (`new-page:meta`, same per-account draft storage) and offers **Restore
+  draft?** on return. **Start blank** and Escape delete nothing, and the first
+  edit afterwards replaces the whole kept draft, so a restore never mixes an old
+  title with a new body. A restored space that no longer exists leaves the
+  location for you to pick, and the Confluence preselection no longer overrides
+  a restored location. **Cancel** asks **Discard changes?** when the form has
+  content; creating the page or discarding it deletes both keys, and a failed
+  create keeps them.
+- **SearXNG result count (#1768):** Settings → Integrations → SearXNG accepts
+  1–10 — the range the mcp-docs `search_web` tool enforces — instead of 1–20;
+  a count above 10 previously disabled web search silently (the sidecar
+  rejected every request and the backend fell back to no sources). Stored
+  values above 10 are read as 10 (logged until re-saved), and **Test** now
+  searches with the saved count rather than a fixed 3, so it reports the
+  effective configuration.
+- **MCP docs client recovers from lost sidecar sessions (#1766):** after the
+  `mcp-docs` sidecar evicts an idle session (30 min) or restarts, the backend
+  now drops its cached session and re-initializes exactly once instead of
+  failing every Settings → MCP Docs **Test**, test-fetch and web search until
+  the URL changed or the backend was restarted. The sidecar answers an unknown
+  `mcp-session-id` with `404 Session not found` (`-32001`, the MCP spec / SDK
+  shape) on POST, GET and DELETE instead of 400; the `/mcp` shared-secret guard
+  still runs first. Only transport-level 404/400 is retried — tool errors
+  (SearXNG unavailable, SSRF-blocked fetch) are never re-sent, so outbound
+  search/fetch traffic cannot double. Concurrent callers share one connect, so
+  a reconnect under load cannot leak a transport. The sidecar reads
+  `MCP_DOCS_SESSION_TTL_MS` (default 30 min) for its idle-session TTL.
+- **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
+  and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
+  edits unconditionally. They apply the configured conflict policy like the
+  scheduled sync: `Compendiq wins` keeps the local page, `Manual review` queues
+  the Confluence version for review, and `Confluence wins` first stores the
+  local text in the page's version history, then audits
+  `SYNC_OVERWROTE_LOCAL_EDITS`. The local version number no longer goes
+  backwards, so a page edited while the integration was off stays ahead of
+  Confluence's number until Confluence catches up. A live collaborative session
+  is not overwritten when Confluence has nothing newer, and the collaborative
+  document is refreshed whenever the body is replaced.
+- **Version-jump sync honours the conflict policy (#1772):** when a synced
+  page's Confluence version moved and the page carries a local edit
+  (`local_modified_at > last_synced`; a local rename counts even when the body
+  is unchanged), sync now applies the configured sync-conflict policy before it
+  touches the page. `Compendiq wins` keeps the local row and audits
+  `SYNC_CONFLICT_DETECTED` (`kept_local`). `Manual review` queues the incoming
+  version for the conflicts queue. Neither one cleans the page's cached
+  attachments or downloads anything. `Confluence wins` still overwrites, after
+  saving the local version to the page history when that version number is
+  free there, and now audits `SYNC_OVERWROTE_LOCAL_EDITS`. Previously the
+  version jump bypassed every policy and its audit. A local save that lands
+  while attachments download is no longer overwritten by that run, and a
+  concurrent newer write is never moved back to an older version.
+- **Incremental sync no longer strips access from unmodified restricted pages
+  (#1771):** with `rag_permission_enforcement` on, the end-of-run stale-ACE
+  sweep ages out Confluence access entries only on pages whose restrictions
+  that run re-read. An incremental run walks only modified pages, so it used
+  to delete every other restricted page's entries, hiding the page and its RAG
+  answers from the users Confluence lets read it. A user de-listed upstream is
+  removed on the next run that re-reads the page, even if that run fails
+  partway; no access is granted. Timing change: because the sweep no
+  longer wipes pages a run did not visit, a de-listing on a page nobody edits
+  now waits, like any other restriction-only change, for the next full walk or
+  edit — on a healthy schedule that means until the page is edited.
+- **Confluence writes are sent once when their outcome is unknown (#1776):** a
+  page create, update or delete, or a label change, that Confluence answers
+  with 502, 503 or 504, or whose connection fails (`ECONNRESET`, `ETIMEDOUT`,
+  `UND_ERR_CONNECT_TIMEOUT`), is no longer re-sent. The retry reported writes
+  that had landed as definite failures (`400 A page with this title already
+  exists`, `409 Version must be incremented`) and could repeat their side
+  effect; the caller now gets the original error. A 429 is still retried for every method on requests sent through
+  the client's retrying `fetch`; `updateAttachment` and
+  `downloadAttachmentToFile` do not retry (unchanged).
+- **Confluence retry waits are bounded (#1778):** the wait before a Confluence
+  request is retried now stays between 1 s and 30 s, whatever `Retry-After`
+  the server sends. A 429 with `Retry-After: 3600` parked the request for an
+  hour and `Retry-After: 0` fired all three attempts within milliseconds; an
+  HTTP-date `Retry-After` is bounded the same way. With the default three
+  attempts, one Confluence REST call spends at most 150 s in retry waits and
+  request timeouts.
+- **AI policy UI polish (#1882):** provider locality declarations name the
+  declaring administrator and show a formatted date, with the time of day on
+  hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads
+  "an administrator". Locality, authentication and TLS controls use the Steel
+  accent. Re-index and Re-check quality stay focusable but unavailable while the
+  server reports their stage as policy-blocked, and they point to the policy
+  reason instead of answering "Nothing to re-embed." The tag editor's
+  reserved-label note, the provider editor's help text and the inspector's
+  collapsed-rail menu headings now meet the 13px floor.
+- **Confluence attachment and version lists no longer truncate capped pages
+  (#1777):** `getPageAttachments` and `getPageVersions` now page the way every
+  other Confluence listing has since #903 — they follow `_links.next` and advance
+  `start` by the number of results each response actually returned. A server
+  that answers with fewer than the requested 100 (e.g. 25 per response) used
+  to cut a page's attachment list after the first response, so sync skipped
+  the images and diagrams missing from it, and made the version list jump
+  past the rest of each window, so the Version History import lost versions.
+  Images already given up on (after three consecutive failures on unchanged
+  pages) remain missing until their 7-day failure counter expires or the page
+  is next edited.
+  A full page without a `next` link is now the last one (no extra request);
+  an empty page still ends the loop and the version list keeps its
+  1000-request cap.
+- **Version-jump sync keeps pasted images (#1773):** when a synced page arrives
+  with a newer Confluence version, sync no longer empties the page's attachment
+  cache. It removes the cached files the new version references, so same-name
+  attachments changed upstream are fetched fresh, plus the files nothing
+  references. Images pasted into the page's draft, local body or version history
+  stay and keep loading. A draw.io diagram's preview, source and `.drawio.png`
+  are removed or kept together. A file the cleanup cannot delete is logged, and
+  the sync continues.
+- **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
+  fresh access token per question instead of one before the run, so a run
+  longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the
+  route still authenticates every request and the lifetime is unchanged. The
+  harness also states `inputKind: "independent"`, which the ask route has
+  required since #282 (it answered `400 ask_identity_required` otherwise).
+- **Refresh recovery (#1800):** keep authentication after an unusable successful
+  refresh and prevent query retries, polling, remounts and presence/collaboration
+  reconnects from repeating a possibly committed rotation. Marked busy responses
+  remain retry-safe; replacement tokens or an explicit reload permit recovery.
+  Preserve unsaved work before reloading.
+- **Manual sync takes the worker lock (#1775):** `POST /api/sync` now
+  atomically claims the deployment-global `sync:worker:lock` the scheduler
+  holds, renews it every 200 s and releases it when the background run ends,
+  success or failure. A concurrent request, or any request while a scheduled or
+  another user's sync is running, answers 409 *A Confluence sync is currently
+  running. Wait for it to finish and try again.* with the caller's status
+  unchanged, and **Sync Now** shows that message as an error toast. The
+  scheduler skips its tick during a manual run, and relocate now refuses during
+  a manual sync as it already did during a scheduled one. Without Redis the
+  manual run proceeds unlocked, as the scheduler does.
+- Preserve persisted note replies and their counts in the article inspector,
+  comments sidebar, and anchored popover, including after refreshing a thread.
+- Page title fields now grow and shrink when the available article width changes,
+  keeping wrapped titles visible while resizing the viewport or adjacent panels.
+- Mobile navigation releases its focus trap and closes when the viewport
+  reaches desktop width, and stays closed when returning to mobile (#1813).
+- Nested custom space homepages are detached from their actual parent before
+  their children are promoted in the sidebar, preventing duplicate page rows.
+- **Graph history (#1805):** Back and Forward restore shareable graph filters
+  and their effective requests. Filter edits replace the current history entry;
+  changing the focused article still adds an entry.
+- Command palette results and selection now follow the current query immediately;
+  the debounce and search show a pending state instead of dispatching an earlier page.
+- **Graph article picker (#1804):** distinguish failed searches from empty
+  results and offer a retry, retaining cached results only for the same query.
+- **Incomplete AI streams (#1801):** retain interrupted text with an error
+  instead of treating EOF as completion or offering it for application. Cached
+  completions and metadata following a done event remain supported.
+- **LLM audit prompt identity (#1790):** fingerprint the ordered provider
+  messages and structured content rather than role/length summaries, without
+  passing prompt plaintext to audit hooks or persisting it in CE.
+- Sub-page AI context now follows standalone pages by internal ID even when
+  they retain a historical Confluence ID, including at recursive levels.
+- **Per-page duplicate detection (#1798):** resolve standalone sources by
+  internal ID and Confluence sources by content ID under the same visibility
+  rules as the full scan, including restricted and private pages.
+- **Embedding publication (#1782):** discard vectors whose source title or
+  body changed while the provider request was in flight, preserving the prior
+  chunks and leaving newer content dirty for the next pass. Revision bumps
+  from non-text writes (draft autosave, labels, sort order, icons,
+  attachments) landing mid-flight still publish instead of re-spending the
+  embedding call.
+- **Webhook delivery-ledger retention (#1797):** the daily retention worker now
+  prunes `webhook_deliveries` attempt rows older than the new
+  `webhook_deliveries_retention_days` admin setting (default 90, range 7–3650,
+  migration 130, env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS`, exposed in
+  `GET`/`PUT /api/admin/settings`) in bounded batches with a `RETENTION_PRUNED`
+  heartbeat. Only attempts of finished (`done`/`dead`) deliveries are removed;
+  `webhook_outbox` rows are never touched (terminal-outbox retention remains a
+  separate, unimplemented policy).
+- **Pending sync version retention atomicity (#1796):** the retention sweep
+  now deletes expired `pending_sync_versions` rows and recomputes
+  `pages.conflict_pending` in one transaction. A failed recompute rolls the
+  delete back so the next sweep retries the page, instead of leaving a stale
+  conflict flag that no later sweep could repair. The `RETENTION_PRUNED`
+  heartbeat is written only after the prune commits.
+- **Webhook outbox enqueue recovery (#1795):** the outbox poller now runs a
+  bounded, rate-limited stale-dispatch sweep during normal poll cycles that
+  resets `dispatched` rows whose BullMQ job is missing or terminal (e.g.
+  enqueue failed after the claim committed), so they are re-delivered without
+  a restart. The init-time recovery shares the same check: rows whose job is
+  still live are left alone, so slow in-flight deliveries are not duplicated.
+- Routine missing-attachment repair no longer selects soft-deleted (trashed) pages, so they cost no Confluence attachment-list requests or error logs per sync cycle; a failed attachment-list request now advances the per-attachment retry counter (#1799)
+- **Bulk-progress SSE replay gap (#1785):** `streamBulkProgress` now
+  subscribes to the live channel before replaying the durable history list,
+  and every published event carries a monotonic per-job `seq` (assigned
+  atomically with the list write) that the stream uses to reconcile replayed
+  and live deliveries. A `done`/`cancelled` event published at any point
+  between replay and subscription terminates the client stream instead of
+  leaving it waiting; events are no longer lost, duplicated or reordered
+  across that boundary. Events written by a pre-upgrade pod (no `seq`) during
+  a rolling upgrade are deduplicated by content against the replayed history.
+- **Backup decrypt error wording (#1831):** a truncated or tampered backup
+  envelope now fails with a stable `BackupCryptoError('Backup truncated or
+  authentication failed')` instead of the raw OpenSSL message, which differs
+  between OpenSSL versions ("unable to authenticate data" vs "bad decrypt").
+- **Arm answers certify the live arm (#1823):** `run-arm-answers.ts` re-asserts
+  arm C's state or arm B's completed backfill on the database immediately
+  before the first question, and binds `--report` to the live vision model,
+  output-token ceiling, analysis version pair, embedder and FTS configuration.
+  A wrong, incomplete or reconfigured arm state is refused before any
+  completion request instead of being answered under the `--arm` label.
+- **Analytics PDF export works with a date range (#1732):** the built-in
+  renderer printed the cover's date range with `→`, which its WinAnsi
+  Helvetica font cannot encode, so the PDF export of every analytics dashboard
+  failed before downloading and showed nothing. The cover now reads
+  `<start> to <end>`; characters the font cannot draw in titles, user names,
+  KPIs and table cells print as `?`, with a note on the cover, instead of
+  aborting the export; and a failed export shows an error toast naming the
+  report instead of failing silently.
+
+### Security
+
+- **`@hono/node-server` 2.1.5 → 2.1.8** in the backend (root lockfile) and the
+  `mcp-docs` sidecar (GHSA-jpvv-r467-5p4w: a raw backslash in the request path
+  was parsed as a separator, bypassing path-based access control at a reverse
+  proxy; GHSA-qv5m-9pm6-hqp3: a client reset during an asynchronous WebSocket
+  upgrade crashed the process). Transitive via the MCP SDK's
+  `StreamableHTTPServerTransport`; no first-party code imports the package or
+  uses `upgradeWebSocket`, so the WebSocket advisory is not reachable. In the
+  sidecar a raw-backslash path is answered `404` by Express routing before it
+  reaches the token guard or the adapter; a `%5C` path is also `404` (no
+  route), and only a backslash in the query string is accepted as before.
+- **Hono raised to 4.13.16 in the root and sidecar lockfiles (#1989):** `hono`
+  4.13.13 → 4.13.16 (overrides `^4.13.16` in `package.json` and
+  `mcp-docs/package.json`) fixes GHSA-46wx-v44x-9hh2 (`csrf()` skipped
+  `text/ping` requests), GHSA-4h7h-rv7c-7m2v (`validator('form')` skipped
+  multipart requests with extra parameters), GHSA-4m76-xfj5-7975 (`mount()`
+  path bypass of prefix-scoped middleware), GHSA-h7mg-cq63-vhpq (RegExpRouter
+  skipped wildcard middleware) and GHSA-3gg2-335m-rxc6 (`css` helper HTML
+  injection). Hono is transitive through `@modelcontextprotocol/sdk`; the
+  application has no first-party Hono router, `csrf`, validator or CSS use.
+- **OpenTelemetry HTTP server spans no longer export the health token**
+  (GHSA-3v2p-hm54-8qcq). `@opentelemetry/instrumentation-http` 0.204.0–0.221.0
+  put the raw query string into `url.query` of every inbound
+  request span, so with `OTEL_ENABLED=true` and an OTLP endpoint
+  `GET /api/internal/health?token=<secret>` sent the persistent health token to
+  the collector. `@opentelemetry/auto-instrumentations-node` 0.79.0 → 0.80.0
+  (`instrumentation-http` 0.222.0), `@opentelemetry/sdk-node` 0.221.0 → 0.222.0
+  and `@opentelemetry/sdk-metrics` 2.10.0 → 2.11.0 (the OTel family moves
+  together). The upgrade alone redacts only `sig`, `Signature`,
+  `AWSAccessKeyId`, `X-Goog-Signature` and the `X-Amz-*` signing parameters,
+  not `token`, so `telemetry.ts` now also passes `redactedQueryParamsServer`
+  (experimental upstream; it replaces the defaults, which are re-listed): the
+  span keeps `url.query=token=REDACTED&…`. Only `token` is added — the one
+  query credential CE routes read; Enterprise overlay routes and any other
+  query credential are not covered, so a collector-side `url.query` redaction
+  rule remains advisable (Admin Guide → OpenTelemetry). Operators who ran an
+  earlier release with tracing enabled should rotate the health token
+  (`POST /api/admin/health-api/rotate`). The backend image smoke step now also
+  imports `auto-instrumentations-node` and `instrumentation-http`.
+- **`glob` / `minimatch` past the walk-abort and pattern-amplification
+  advisories** (GHSA-3g3m-2fjr-6pw4: glob >= 9.0.0 <= 14.0.1 keeps reading
+  directories after its `signal` aborts; GHSA-g3hv-75wg-m249: minimatch >=
+  7.0.0 < 11.0.1 amplifies crafted patterns). `@fastify/swagger-ui` 6.1.1 →
+  6.1.3 and `@fastify/static` 10.1.2 → 10.1.11 (the stale root override
+  `^9.1.1` becomes `^10.1.11`) bring glob 13.0.6 → 14.0.6 and minimatch
+  10.2.6 → 11.0.9 under the non-production `/api/docs` Swagger UI, which now
+  answers `GET /api/docs` directly (200) instead of redirecting to
+  `/api/docs/`. Scoped overrides replace OpenTelemetry's GCP-detector
+  `gaxios` → `rimraf` 5.0.10 with 6.1.4 (glob 10.5.0 / minimatch 9.0.9 →
+  14.0.6 / 11.0.9; installed, not called by gaxios) and the dev-only
+  `@typescript-eslint/typescript-estree` minimatch 10.2.5 with 11.0.1. Both
+  cross a major their parent does not admit yet (`//glob-deps-note`); no
+  first-party code takes a glob pattern from a request. glob 7 and
+  minimatch 3 predate both ranges and stay installed.
+- **`vitest` / `@vitest/mocker` 5.0.0 → 5.0.3** (GHSA-qxg6-89mg-rqv8,
+  GHSA-xp26-3454-mjgp), dev-only test tooling that is not shipped in any image.
+  Only `mockerPlugin()` / `interceptorPlugin()` users are exposed and no
+  vite/vitest config here configures either, so the repository was not
+  reachable. The `@vitest/coverage-v8` provider moves from 4.1.11 to 5.0.3
+  in `backend` and `frontend`, aligning it with the runner (it previously
+  sat beside vitest 5 as an invalid peer). The `mcp-docs` sidecar already
+  resolves 5.0.5 and is unchanged.
+- **`basic-ftp` 6.2.6 (#1991, GHSA-5pm8-86m8-9m6r):** a scoped root override
+  moves the copy under `get-uri` (Lighthouse CI's proxy stack, `@lhci/cli` →
+  `proxy-agent` → `pac-proxy-agent`) from 5.3.1 to 6.2.6, since the `get-uri` that
+  chain installs (6.0.5, held by `pac-proxy-agent` 7.2.0) pins `basic-ftp ^5`
+  (`get-uri` 8.0.2 accepts 6.x, but `@lhci/cli` 0.15.1 does not reach it); drop
+  the override once the proxy chain reaches `get-uri` ≥ 8.0.2. Dev-only tooling path, reached only when an
+  operator points `lhci` at a `pac+ftp://` proxy URL; the product has no FTP use.
+  A loopback FTP regression test covers the `get-uri` download path.
+- **`soupsieve` 2.9.2 → 4.0** in the eval-corpus builder
+  (`tools/eval-corpus-images/`; GHSA-mmhr-3c5m-f64f: polynomial-time descendant
+  combinator, GHSA-6655-6qjp-jx7x: selector-compilation ReDoS,
+  GHSA-7g44-g9rc-x53w: unbounded recursion on nested pseudo-classes,
+  GHSA-4j63-6c4x-wfg4: quadratic `:has()` with the general sibling combinator;
+  Dependabot alerts #404–#407). Developer tooling only: it is not part of the
+  application, the images or any runtime path, and the builder only selects
+  with its own constant selectors over Wikipedia HTML. The tool now needs
+  Python 3.11.5 or newer (soupsieve 4.0's minimum). Parsing, selection and
+  Markdown output were compared on identical saved HTML under 2.9.2 and 4.0 and
+  are byte-identical; the vendored corpus is unchanged. The new
+  `test_build.py` cases are local evidence only — no workflow runs the
+  Python tests.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
@@ -26,6 +973,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Provider configuration after Redis reconnect (#1794):** a replica that
+  misses provider updates or deletions invalidates its local configuration
+  and provider client resources when its subscriber reconnects.
 - **Page list visibility filter (#1786):** private and shared list requests
   now filter both items and totals, including substring-search fallback, and
   use distinct cache entries. Matching bulk filters select the same visible set.

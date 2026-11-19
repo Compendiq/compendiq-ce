@@ -877,8 +877,12 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, `${stagedIcon.id}.png.stage`), stagedIconBytes);
     });
-    const partialFirst = Buffer.from('partial first');
-    const partialSecond = Buffer.from('partial second');
+    const partialFirst = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+    const partialSecond = Buffer.from('<mxfile><diagram>recovered</diagram></mxfile>');
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [
+      partialPage.pageId,
+      `<p>Preserve local prose</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/local-attachments/${partialPage.pageId}/flow.drawio"><span class="drawio-preview-unavailable">Draw.io preview unavailable: flow</span></div>`,
+    ]);
     const partialAttachment = await reservePageWriteIntent({
       pageIds: [partialPage.pageId],
       kind: 'attachment.local.put',
@@ -888,15 +892,15 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
         pageId: partialPage.pageId,
         files: [
           {
-            filename: 'first.txt',
-            contentType: 'text/plain',
+            filename: 'flow.png',
+            contentType: 'image/png',
             stageIndex: 0,
             size: partialFirst.length,
             sha256: createHash('sha256').update(partialFirst).digest('hex'),
           },
           {
-            filename: 'second.txt',
-            contentType: 'text/plain',
+            filename: 'flow.drawio',
+            contentType: 'application/xml',
             stageIndex: 1,
             size: partialSecond.length,
             sha256: createHash('sha256').update(partialSecond).digest('hex'),
@@ -907,7 +911,7 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
     await runPageWriteIntentEffect(partialAttachment, { kind: 'local' }, async () => {
       const dir = path.join(tempBase, 'local', String(partialPage.pageId));
       await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(path.join(dir, 'first.txt'), partialFirst);
+      await fs.writeFile(path.join(dir, 'flow.png'), partialFirst);
       await fs.writeFile(
         path.join(dir, `.page-write-${partialAttachment.id}-1.stage`),
         partialSecond,
@@ -1059,8 +1063,15 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       reason: 'Started icon activation deterministically finishes its exact stage',
     })).resolves.toMatchObject({ status: 'reconciled_applied' });
     await expect(
-      fs.readFile(path.join(tempBase, 'local', String(partialPage.pageId), 'second.txt')),
+      fs.readFile(path.join(tempBase, 'local', String(partialPage.pageId), 'flow.drawio')),
     ).resolves.toEqual(partialSecond);
+    const recoveredDiagram = (await query<{ body_html: string; body_text: string }>(
+      'SELECT body_html, body_text FROM pages WHERE id = $1', [partialPage.pageId],
+    )).rows[0]!;
+    expect(recoveredDiagram.body_html).toContain('Preserve local prose');
+    expect(recoveredDiagram.body_html).toContain(`src="/api/local-attachments/${partialPage.pageId}/flow.png"`);
+    expect(recoveredDiagram.body_html).not.toContain('preview unavailable');
+    expect(recoveredDiagram.body_text).not.toContain('preview unavailable');
     await expect(
       fs.readFile(
         path.join(

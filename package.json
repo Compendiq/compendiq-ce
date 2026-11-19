@@ -1,6 +1,6 @@
 {
   "name": "compendiq",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "private": true,
   "description": "Compendiq - AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "workspaces": [
@@ -22,9 +22,9 @@
   "//deps-note": "These mirror backend prod deps (kept in sync with backend/package.json) so npm hoists them to the root node_modules. Without this, conflicting versions from root devDep chains push backend's copy down to backend/node_modules, where the runtime Docker stage — which copies only the root tree and flattens backend/dist to /app/dist — can't reach them. The OpenTelemetry runtime stack lives here for exactly that reason (#1117: the whole observability path silently no-ops in the shipped image when these nest). The smoke step in .github/workflows/docker-build.yml guards against this regressing silently.",
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/auto-instrumentations-node": "^0.79.0",
-    "@opentelemetry/sdk-metrics": "2.10.0",
-    "@opentelemetry/sdk-node": "^0.221.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.80.0",
+    "@opentelemetry/sdk-metrics": "2.11.0",
+    "@opentelemetry/sdk-node": "^0.222.0",
     "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
@@ -33,10 +33,11 @@
     "concurrently": "^9.1.0",
     "husky": "^9.1.7",
     "knip": "^6.3.0",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.3"
   },
-  "//tooling-deps-note": "lighthouse 12.6.1 pulls puppeteer-core 24 → @puppeteer/browsers 2.13.2 → extract-zip 2.0.1 (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv, no patched extract-zip). Browsers 3.2.2 dropped that extractor. @tailwindcss/typography (≤0.5.20) pins postcss-selector-parser 6.0.10 exactly (GHSA-rj75-hqrm-r3gf, fixed only in 7.1.6); mermaid (≤12.1.0) wants katex ^0.16 (GHSA-238p-pmpm-9mq7, fixed in 0.18.2). Drop those two overrides once the parents widen their ranges.",
+  "//tooling-deps-note": "lighthouse 12.6.1 pulls puppeteer-core 24 → @puppeteer/browsers 2.13.2 → extract-zip 2.0.1 (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv, no patched extract-zip). Browsers 3.2.2 dropped that extractor. @tailwindcss/typography (≤0.5.20) pins postcss-selector-parser 6.0.10 exactly (GHSA-rj75-hqrm-r3gf, fixed only in 7.1.6); mermaid (≤12.1.0) wants katex ^0.16 (GHSA-238p-pmpm-9mq7, fixed in 0.18.2). Drop those two overrides once the parents widen their ranges. the get-uri installed through @lhci/cli → proxy-agent 6.5.0 → pac-proxy-agent 7.2.0 is 6.0.5 and pins basic-ftp ^5 (get-uri 8.0.2 accepts ^6.2.4, but pac-proxy-agent 7.2.0 holds get-uri ^6), and GHSA-5pm8-86m8-9m6r is fixed only in basic-ftp 6.2.4+, hence the scoped cross-major get-uri override; drop it once the lhci proxy chain installs get-uri ≥ 8.0.2.",
   "//dom-deps-note": "@tiptap/html 3.30.5 peers on happy-dom ^20.8.9, which otherwise retains vulnerable Happy DOM 20 beside backend's patched 21.x. Keep the override until TipTap accepts the patched major; server HTML/JSON conversion must remain compatible.",
+  "//glob-deps-note": "gaxios 7.1.3 (gcp-metadata 8 ← @opentelemetry/resource-detector-gcp) pins rimraf ^5.0.1, whose glob 10 / minimatch 9 fall in GHSA-3g3m-2fjr-6pw4 (glob ≥9.0.0 ≤14.0.1, fixed 14.0.2) and GHSA-g3hv-75wg-m249 (minimatch ≥7.0.0 <11.0.1, fixed 11.0.1); gaxios 8 drops rimraf, but no OTel GCP detector accepts gcp-metadata 9 yet. The locked @typescript-eslint/typescript-estree (8.59.4; ≤8.72.2) wants minimatch ^10.2.2; 8.73.0 fixes this upstream (minimatch ^11.0.1), so that override goes with the next typescript-eslint bump. Both scoped overrides cross a major (rimraf 6.1.4 → glob 14 / minimatch 11; minimatch 11.0.1) and replace only that parent's copy — glob 7 / minimatch 3 consumers stay as they are. Drop each once its parent admits a patched release (gaxios without rimraf or with rimraf ≥6.1.4; typescript-estree with minimatch ≥11.0.1). The root \"@fastify/static\": \"^10.1.11\" replaces a stale ^9.1.1 that @fastify/swagger-ui 6 (^10.1.0) never admitted (npm ls flagged the installed 10.1.2 invalid); it keeps static on 10.1.11+ with glob 14 (the invariants test guards glob ≥14.0.2). It is a floor, not parent-blocked, so it has no expiry row.",
   "overrides": {
     "@puppeteer/browsers": "3.2.2",
     "vite": "^8.0.16",
@@ -49,16 +50,25 @@
     "@tiptap/extension-floating-menu": "3.30.5",
     "happy-dom": "^21.0.4",
     "protobufjs": "^7.5.5",
-    "@fastify/static": "^9.1.1",
+    "@fastify/static": "^10.1.11",
+    "gaxios": {
+      "rimraf": "6.1.4"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.1"
+    },
     "fast-uri": "^3.1.9",
     "qs@6": "^6.16.0",
     "@xmldom/xmldom@0.8": "^0.8.15",
-    "hono": "^4.12.18",
+    "hono": "^4.13.16",
     "ip-address": "^10.1.1",
     "js-yaml@3": "^3.15.1",
     "js-yaml@4": "^4.3.1",
     "shell-quote": "^1.11.0",
     "tmp": "^0.2.6",
+    "get-uri": {
+      "basic-ftp": "6.2.6"
+    },
     "uuid": "^14.0.0",
     "brace-expansion@5": "^5.0.6",
     "postcss-selector-parser": "^7.1.6",

@@ -23,7 +23,6 @@ import {
   IMAGE_ANALYSIS_IDENTITY_KEY,
   IMAGE_ANALYSIS_PROMPT_VERSION,
   IMAGE_ANALYSIS_SCHEMA_VERSION,
-  type AnalyzeImageInput,
   type AnalyzeImageResult,
   type ImageAnalysisIdentity,
   type ImageAnalysisPayload,
@@ -59,10 +58,10 @@ function eacces(key: string): NodeJS.ErrnoException {
 /**
  * ADR-027 D13 — the worker against real Postgres (and real Redis where one is
  * reachable: the lease is the only thing stopping two pods draining one
- * backlog, and a mocked lock asserts the mock). The ONLY doubles are the
- * boundaries #1615 owns — identity resolution, the vision verdict and the
- * client — injected through `ImageAnalysisWorkerDeps` as deterministic canned
- * answers. The table, the pages, the bytes, the lock and the settings are real.
+ * backlog, and a mocked lock asserts the mock). Identity resolution and the
+ * vision verdict are deterministic settings seams; inference is intercepted
+ * only at outbound HTTP. The real image client, transport admission, queue,
+ * breaker, table, pages, bytes, lock and settings execute in these scenarios.
  */
 const dbAvailable = await isDbAvailable();
 
@@ -97,6 +96,9 @@ function identityFor(baseUrl: string): ImageAnalysisIdentity {
 }
 
 async function retain(identity: ImageAnalysisIdentity | null): Promise<void> {
+  await query(`DELETE FROM llm_usecase_assignments WHERE usecase = 'image_analysis'`);
+  if (identity) await query(`INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+    VALUES ('image_analysis', $1, $2)`, [identity.providerId, identity.model]);
   await query(`DELETE FROM admin_settings WHERE setting_key = $1`, [IMAGE_ANALYSIS_IDENTITY_KEY]);
   if (identity) {
     await query(`INSERT INTO admin_settings (setting_key, setting_value) VALUES ($1, $2)`, [
@@ -119,17 +121,41 @@ const ok = (): AnalyzeImageResult => ({ ok: true, payload: PAYLOAD, finishReason
 const fail = (cls: Extract<AnalyzeImageResult, { ok: false }>['class'], extra: Partial<Extract<AnalyzeImageResult, { ok: false }>> = {}): AnalyzeImageResult =>
   ({ ok: false, class: cls, providerLevel: false, message: cls, ...extra });
 
-/** A deterministic client double: a queue of canned answers, then `ok`. */
-function client(answers: AnalyzeImageResult[] = []): { calls: AnalyzeImageInput[]; analyzeImage: ImageAnalysisWorkerDeps['analyzeImage'] } {
-  const calls: AnalyzeImageInput[] = [];
-  const queue = [...answers];
+const httpBoundary = vi.hoisted(() => ({
+  respond: null as null | ((body: string) => Promise<Response>),
+}));
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
   return {
-    calls,
-    analyzeImage: async (input) => {
-      calls.push(input);
-      return queue.shift() ?? ok();
+    ...actual,
+    fetch: async (url: string, options: { body?: string }) => {
+      if (url !== 'http://vision/v1/chat/completions' || !httpBoundary.respond) {
+        throw new Error(`Unexpected outbound HTTP request: ${url}`);
+      }
+      return httpBoundary.respond(options.body ?? '');
     },
   };
+});
+
+/** Intercept only HTTP: queue, final admission, client parsing and persistence stay real. */
+function client(answers: AnalyzeImageResult[] = [], duringRequest?: () => Promise<void>) {
+  const calls: Record<string, unknown>[] = [];
+  const queue = [...answers];
+  httpBoundary.respond = async (body) => {
+    calls.push(JSON.parse(body) as Record<string, unknown>);
+    await duringRequest?.();
+    const answer = queue.shift() ?? ok();
+    if (!answer.ok && answer.httpStatus) {
+      return new Response('{}', { status: answer.httpStatus });
+    }
+    const content = answer.ok ? JSON.stringify(answer.payload)
+      : answer.class === 'refused' ? 'I cannot analyze this image.' : 'not JSON';
+    return new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 900, completion_tokens: 60 },
+    }), { headers: { 'content-type': 'application/json' } });
+  };
+  return { calls };
 }
 
 function deps(over: Partial<ImageAnalysisWorkerDeps>, identity: ImageAnalysisIdentity | null): Partial<ImageAnalysisWorkerDeps> {
@@ -250,7 +276,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await writeAttachment(pageId, 'a.png', png(4, 4));
     const c = client();
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, null) });
+    const result = await runImageAnalysisBatch({ deps: deps({}, null) });
 
     expect(result).toMatchObject({ processed: 0, failed: 0, terminal: 0, reason: 'unassigned', reconciledPages: 1, skipped: 1 });
     for (const k of SHAPE_KEYS) expect(result).toHaveProperty(k);
@@ -291,13 +317,13 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const c = client();
 
     const capability = await runImageAnalysisBatch({
-      deps: deps({ analyzeImage: c.analyzeImage, getVisionCapability: async () => null }, retained),
+      deps: deps({ getVisionCapability: async () => null }, retained),
     });
     expect(capability).toMatchObject({ processed: 0, reason: 'capability' });
 
     // The provider's base_url moved under the retained identity.
     const drift = await runImageAnalysisBatch({
-      deps: deps({ analyzeImage: c.analyzeImage }, identityFor('http://moved/v1')),
+      deps: deps({}, identityFor('http://moved/v1')),
     });
     expect(drift).toMatchObject({ processed: 0, reason: 'identity_drift' });
     expect(c.calls).toHaveLength(0);
@@ -309,15 +335,18 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const { pageId } = await seedPending(['a.png', 'b.png']);
     const c = client();
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getMaxOutputTokens: async () => 6000 }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({ getMaxOutputTokens: async () => 6000 }, retained) });
 
     expect(result).toMatchObject({ processed: 2, failed: 0, terminal: 0 });
     expect(result.reason).toBeUndefined();
     expect(c.calls).toHaveLength(2);
     expect(c.calls[0]).toMatchObject({
-      mimeType: 'image/png',
-      identity: { providerId, model: 'qwen3-vl', baseUrl: 'http://vision/v1' },
-      maxOutputTokens: 6000,
+      model: 'qwen3-vl',
+      max_tokens: 6000,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: expect.any(String) },
+        { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
+      ] }],
     });
     const rows = await rowsFor(pageId);
     for (const row of rows) {
@@ -346,7 +375,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const { pageId } = await seedPending(['a.png', 'b.png', 'c.png']);
     const c = client();
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getBatchSize: async () => 2 }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({ getBatchSize: async () => 2 }, retained) });
 
     expect(result.processed).toBe(2);
     expect(c.calls).toHaveLength(2);
@@ -358,14 +387,14 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await retain(before);
     const { pageId } = await seedPending(['a.png']);
     const c = client();
-    await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, before) });
+    await runImageAnalysisBatch({ deps: deps({}, before) });
     await query(`UPDATE pages SET embedding_dirty = FALSE WHERE id = $1`, [pageId]);
     const bumped = (await pageState(pageId)).revision;
 
     // The operator re-assigned to another endpoint: the retained identity moved.
     const after = identityFor('http://other/v1');
     await retain(after);
-    const swept = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getVisionCapability: async () => null }, after) });
+    const swept = await runImageAnalysisBatch({ deps: deps({ getVisionCapability: async () => null }, after) });
 
     expect(swept).toMatchObject({ repended: 1, reused: 0, reason: 'capability' });
     let rows = await rowsFor(pageId);
@@ -376,7 +405,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     // analysis_version bump.
     await retain(before);
     await query(`UPDATE pages SET embedding_dirty = FALSE WHERE id = $1`, [pageId]);
-    const returned = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, before) });
+    const returned = await runImageAnalysisBatch({ deps: deps({}, before) });
 
     expect(returned).toMatchObject({ reused: 1, repended: 0, processed: 0 });
     expect(c.calls).toHaveLength(1);
@@ -441,9 +470,9 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const retained = identityFor('http://vision/v1');
     await retain(retained);
     const { pageId, ids } = await seedPending(['det.png', 'unav.png']);
-    const c = client([fail('malformed'), fail('unavailable', { httpStatus: 503 })]);
+    client([fail('malformed'), fail('unavailable', { httpStatus: 503 })]);
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({}, retained) });
 
     expect(result).toMatchObject({ processed: 0, failed: 2, terminal: 0 });
     let rows = await rowsFor(pageId);
@@ -459,8 +488,8 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
       `UPDATE page_image_analyses SET attempts = $2, next_attempt_at = NOW() WHERE id = ANY($1::bigint[])`,
       [ids, IMAGE_ANALYSIS_MAX_ATTEMPTS - 1],
     );
-    const capped = client([fail('malformed'), fail('unavailable', { httpStatus: 503 })]);
-    const atCap = await runImageAnalysisBatch({ deps: deps({ analyzeImage: capped.analyzeImage }, retained) });
+    client([fail('malformed'), fail('unavailable', { httpStatus: 503 })]);
+    const atCap = await runImageAnalysisBatch({ deps: deps({}, retained) });
 
     expect(atCap).toMatchObject({ failed: 2, terminal: 1 });
     rows = await rowsFor(pageId);
@@ -469,7 +498,8 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     expect(rows[1]!.next_attempt_at).not.toBeNull();
     // Success resets the budget.
     await query(`UPDATE page_image_analyses SET next_attempt_at = NOW() WHERE id = $1`, [ids[1]]);
-    await runImageAnalysisBatch({ deps: deps({ analyzeImage: client().analyzeImage }, retained) });
+    client();
+    await runImageAnalysisBatch({ deps: deps({}, retained) });
     expect((await rowsFor(pageId))[1]).toMatchObject({ status: 'analyzed', attempts: 0 });
   });
 
@@ -480,7 +510,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const c = client([fail('unavailable', { httpStatus: 401, providerLevel: true })]);
     const refresh = vi.fn(async () => undefined);
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, refreshVisionCapability: refresh }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({ refreshVisionCapability: refresh }, retained) });
 
     expect(result).toMatchObject({ processed: 0, failed: 1, terminal: 0, reason: 'provider_status', httpStatus: 401 });
     expect(c.calls).toHaveLength(1);
@@ -511,7 +541,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const c = client([rejected(), rejected(), rejected()]);
     const refresh = vi.fn(async () => undefined);
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, refreshVisionCapability: refresh }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({ refreshVisionCapability: refresh }, retained) });
 
     expect(result).toMatchObject({ processed: 0, failed: 3, terminal: 0, reason: 'uniform_rejection', httpStatus: 400 });
     expect(c.calls).toHaveLength(3);
@@ -531,9 +561,9 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const retained = identityFor('http://vision/v1');
     await retain(retained);
     await seedPending(['a.png', 'b.png', 'c.png', 'd.png']);
-    const c = client([fail('rejected', { httpStatus: 400 }), fail('rejected', { httpStatus: 413 }), fail('rejected', { httpStatus: 400 })]);
+    const c = client([fail('rejected', { httpStatus: 400 }), fail('rejected', { httpStatus: 413 }), ok(), fail('rejected', { httpStatus: 400 })]);
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({}, retained) });
 
     expect(result.reason).toBeUndefined();
     expect(c.calls).toHaveLength(4);
@@ -545,17 +575,12 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await retain(retained);
     const { pageId, ids } = await seedPending(['a.png']);
     const replaced = png(9, 9);
-    const c = {
-      calls: 0,
-      analyzeImage: async (): Promise<AnalyzeImageResult> => {
-        c.calls++;
-        // The reconcile lands while the call is in flight: new bytes, new hash, payload nulled.
-        await query(`UPDATE page_image_analyses SET content_hash = $2, payload = NULL WHERE id = $1`, [ids[0], sha(replaced)]);
-        return ok();
-      },
-    };
+    client([], async () => {
+      // The reconcile lands while the HTTP request is in flight.
+      await query(`UPDATE page_image_analyses SET content_hash = $2, payload = NULL WHERE id = $1`, [ids[0], sha(replaced)]);
+    });
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({}, retained) });
 
     expect(result).toMatchObject({ processed: 0, skipped: 1, failed: 0 });
     const rows = await rowsFor(pageId);
@@ -570,7 +595,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await writeAttachment(pageId, 'a.png', png(7, 7));
     const c = client();
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({}, retained) });
 
     expect(c.calls).toHaveLength(0);
     expect(result).toMatchObject({ processed: 0, skipped: 1 });
@@ -589,7 +614,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await query(`UPDATE pages SET image_analysis_revision = 0, embedding_dirty = FALSE WHERE id = $1`, [pageId]);
     const c = client();
 
-    const first = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getBatchSize: async () => 2 }, retained) });
+    const first = await runImageAnalysisBatch({ deps: deps({ getBatchSize: async () => 2 }, retained) });
 
     expect(first).toMatchObject({ processed: 0, skipped: 2, failed: 0 });
     expect(c.calls).toHaveLength(0);
@@ -603,7 +628,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     expect(await pageState(pageId)).toEqual({ revision: 0, embeddingDirty: false, analysisDirty: false });
 
     // The next batch reaches the readable row.
-    const second = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getBatchSize: async () => 2 }, retained) });
+    const second = await runImageAnalysisBatch({ deps: deps({ getBatchSize: async () => 2 }, retained) });
     expect(second).toMatchObject({ processed: 1, skipped: 0 });
     expect(c.calls).toHaveLength(1);
     expect((await rowsFor(pageId)).map((r) => r.status)).toEqual(['skipped', 'skipped', 'analyzed']);
@@ -612,7 +637,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     // the reconcile re-pends the skipped row and the batch analyzes it.
     await writeAttachment(pageId, 'gone-1.png', png(4, 4));
     await query(`UPDATE pages SET image_analysis_dirty = TRUE WHERE id = $1`, [pageId]);
-    const third = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getBatchSize: async () => 2 }, retained) });
+    const third = await runImageAnalysisBatch({ deps: deps({ getBatchSize: async () => 2 }, retained) });
     expect(third).toMatchObject({ reconciledPages: 1, processed: 1 });
     rows = await rowsFor(pageId);
     expect(rows.map((r) => [r.attachment_key, r.status, r.skip_reason])).toEqual([
@@ -631,7 +656,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await writeAttachment(pageId, 'diagram.png', Buffer.from('<mxfile host="Confluence"><diagram/></mxfile>', 'utf8'));
     const c = client();
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({}, retained) });
 
     expect(result).toMatchObject({ processed: 0, skipped: 1 });
     expect(c.calls).toHaveLength(0);
@@ -648,7 +673,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await query(`UPDATE pages SET image_analysis_revision = 0, embedding_dirty = FALSE WHERE id = $1`, [pageId]);
     storeFaults.set('locked.png', eacces('locked.png'));
     const c = client();
-    const run = () => runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const run = () => runImageAnalysisBatch({ deps: deps({}, retained) });
 
     const first = await run();
 
@@ -688,8 +713,8 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await retain(retained);
     const { pageId } = await seedPending(['locked.png']);
     storeFaults.set('locked.png', eacces('locked.png'));
-    const c = client();
-    const run = () => runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    client();
+    const run = () => runImageAnalysisBatch({ deps: deps({}, retained) });
 
     // One real failure first, so the row carries the identity it failed
     // under and step 1's stale-failed return does not reset its budget.
@@ -724,7 +749,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await writeAttachment(pageId, 'ok.png', png(5, 4));
     storeFaults.set('locked.png', eacces('locked.png'));
     const c = client();
-    const run = () => runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const run = () => runImageAnalysisBatch({ deps: deps({}, retained) });
 
     const first = await run();
 
@@ -768,7 +793,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await retain(retained);
     const { pageId } = await seedPending(['a.png', 'b.png', 'c.png']);
     let calls = 0;
-    const c: ImageAnalysisWorkerDeps['analyzeImage'] = async () => {
+    client([], async () => {
       calls++;
       if (calls === 2) {
         // Another holder took the lease mid-call (a force-release, or an
@@ -780,10 +805,9 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
         setTimeout(tick.resolve, 80);
         await tick.promise;
       }
-      return ok();
-    };
+    });
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c }, retained), lockRefreshMs: 20 });
+    const result = await runImageAnalysisBatch({ deps: deps({}, retained), lockRefreshMs: 20 });
 
     expect(result.reason).toBe('lease_lost');
     expect(result.processed).toBe(1);
@@ -804,7 +828,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     await redis!.set(`worker:lock:${IMAGE_ANALYSIS_WORKER_LOCK}`, 'other-pod');
     const c = client();
 
-    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const result = await runImageAnalysisBatch({ deps: deps({}, retained) });
 
     expect(result).toMatchObject({ alreadyRunning: true, processed: 0 });
     expect(c.calls).toHaveLength(0);
@@ -814,7 +838,8 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const retained = identityFor('http://vision/v1');
     await retain(retained);
     const { pageId, ids } = await seedPending(['a.png', 'b.png', 'c.png']);
-    await runImageAnalysisBatch({ deps: deps({ analyzeImage: client([ok(), fail('malformed'), fail('refused')]).analyzeImage }, retained) });
+    client([ok(), fail('malformed'), fail('refused')]);
+    await runImageAnalysisBatch({ deps: deps({}, retained) });
     await query(`UPDATE page_image_analyses SET status = 'failed_terminal', attempts = 5, next_attempt_at = NULL WHERE id = $1`, [ids[2]]);
 
     expect(await retryFailedImageAnalyses()).toBe(2);
@@ -835,7 +860,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     expect(await pageState(pageId)).toMatchObject({ revision: revision + 1, embeddingDirty: true });
     // Nothing to reuse: the next batch must call for every row.
     const c = client();
-    const again = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+    const again = await runImageAnalysisBatch({ deps: deps({}, retained) });
     expect(again).toMatchObject({ reused: 0, processed: 3 });
     expect(c.calls).toHaveLength(3);
   });

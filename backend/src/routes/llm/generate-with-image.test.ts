@@ -26,8 +26,8 @@ vi.mock('../../domains/llm/services/prompts.js', () => ({
 // Mock llm-provider-resolver (resolveUsecase)
 const mockResolveUsecase = vi.fn().mockResolvedValue({
   config: {
-    providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
-    authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+    providerId: '11111111-1111-4111-8111-111111111111', baseUrl: 'http://x/v1', apiKey: null,
+    authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm', configRevision: 1,
   },
   model: 'm',
 });
@@ -46,11 +46,8 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
-vi.mock('../../core/db/postgres.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [] }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
+import { setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
+import { query } from '../../core/db/postgres.js';
 
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn(),
@@ -79,6 +76,7 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
     getCachedResponse = mockGetCachedResponse;
     setCachedResponse = mockSetCachedResponse;
     acquireLock = vi.fn().mockResolvedValue('llm-lock-token');
+    startLockHeartbeat = vi.fn().mockReturnValue(() => {});
     releaseLock = vi.fn().mockResolvedValue(undefined);
     waitForCachedResponse = vi.fn().mockResolvedValue(null);
     clearAll = vi.fn();
@@ -144,6 +142,10 @@ describe('POST /llm/generate with an image (#1154)', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(`INSERT INTO llm_providers (id, name, base_url, auth_type, default_model)
+      VALUES ('11111111-1111-4111-8111-111111111111', 'X', 'http://x/v1', 'none', 'm')`);
     app = Fastify({ logger: false });
     await app.register(sensible);
 
@@ -152,7 +154,7 @@ describe('POST /llm/generate with an image (#1154)', () => {
     app.decorate('redis', {});
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
-      request.userId = 'test-user-123';
+      request.userId = '33333333-3333-4333-8333-333333333333';
       request.userCan = async () => true;
     });
 
@@ -162,6 +164,7 @@ describe('POST /llm/generate with an image (#1154)', () => {
 
   afterAll(async () => {
     await app.close();
+    await teardownTestDb();
   });
 
   function inject(payload: Record<string, unknown>) {
@@ -181,8 +184,8 @@ describe('POST /llm/generate with an image (#1154)', () => {
     mockFormatWebContext.mockReturnValue('');
     mockResolveUsecase.mockResolvedValue({
       config: {
-        providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
-        authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+        providerId: '11111111-1111-4111-8111-111111111111', baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm', configRevision: 1,
       },
       model: 'm',
     });
@@ -266,7 +269,7 @@ describe('POST /llm/generate with an image (#1154)', () => {
   it('folds the image hash into the cache key', async () => {
     await inject({ prompt: 'x', imageHandle: HANDLE });
     expect(mockBuildLlmCacheKey).toHaveBeenCalledWith(
-      'm', expect.any(String), expect.any(String), 'p1',
+      'm', expect.any(String), expect.any(String), '11111111-1111-4111-8111-111111111111',
       expect.objectContaining({ imageHash: HANDLE }),
     );
   });
@@ -274,7 +277,7 @@ describe('POST /llm/generate with an image (#1154)', () => {
   it('leaves the image hash out of the cache key when no image is attached', async () => {
     await inject({ prompt: 'x' });
     expect(mockBuildLlmCacheKey).toHaveBeenCalledWith(
-      'm', expect.any(String), expect.any(String), 'p1',
+      'm', expect.any(String), expect.any(String), '11111111-1111-4111-8111-111111111111',
       expect.objectContaining({ imageHash: undefined }),
     );
   });
@@ -299,5 +302,11 @@ describe('POST /llm/generate with an image (#1154)', () => {
     const { inputMessages } = mockEmitLlmAudit.mock.calls[0]![0];
     const user = inputMessages.find((m: { role: string }) => m.role === 'user');
     expect(user.contentLength).toBeGreaterThan(2);
+    const entry = mockEmitLlmAudit.mock.calls[0]![0];
+    expect(entry.promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(entry)).not.toContain('describe this');
+    const sentMessages = mockStreamChat.mock.calls[0]![2];
+    const imageUrl = sentMessages[1].content.find((part: { type: string }) => part.type === 'image_url').image_url.url;
+    expect(JSON.stringify(entry)).not.toContain(imageUrl);
   });
 });

@@ -37,8 +37,6 @@ import { pagesCrudRoutes } from './pages-crud.js';
 import { pagesExportRoutes } from './pages-export.js';
 import { pagesVersionRoutes } from './pages-versions.js';
 import { buildKnowledgeTestApp } from './pages.test-helpers.js';
-import type * as LlmProviderResolver from '../../domains/llm/services/llm-provider-resolver.js';
-import type * as OpenAiCompatibleClient from '../../domains/llm/services/openai-compatible-client.js';
 import type * as PdfService from '../../core/services/pdf-service.js';
 
 // The attachment cache root is resolved at module load, so it must point at
@@ -67,15 +65,12 @@ vi.mock('../../core/services/pdf-service.js', async (importOriginal) => ({
   },
 }));
 
-// External boundary: the LLM behind the semantic diff.
-vi.mock('../../domains/llm/services/llm-provider-resolver.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof LlmProviderResolver>()),
-  resolveUsecase: async () => ({ config: {}, model: 'diff-model' }),
-}));
-vi.mock('../../domains/llm/services/openai-compatible-client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof OpenAiCompatibleClient>()),
-  chat: async () => 'semantic diff summary',
-}));
+// Only the outbound provider is replaced; resolver/admission use saved rows.
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
+let providerServer: Server;
+let providerUrl: string;
 
 const available = await isDbAvailable() && await isRedisAvailable();
 const PNG = Buffer.from(
@@ -186,6 +181,15 @@ describe.skipIf(!available)('page restrictions on version, export, attachment an
 
   beforeAll(async () => {
     await setupTestDb();
+    providerServer = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ choices: [{ message: { content: 'semantic diff summary' } }] }));
+      });
+    });
+    await new Promise<void>((resolve) => providerServer.listen(0, '127.0.0.1', resolve));
+    providerUrl = `http://127.0.0.1:${(providerServer.address() as AddressInfo).port}/v1`;
     redis = createClient({
       url: process.env.REDIS_URL,
       socket: { reconnectStrategy: false, connectTimeout: 1_000 },
@@ -205,6 +209,7 @@ describe.skipIf(!available)('page restrictions on version, export, attachment an
 
   afterAll(async () => {
     await app?.close();
+    await new Promise<void>((resolve) => { providerServer.close(() => resolve()); providerServer.closeAllConnections(); });
     if (redis?.isOpen) await redis.quit();
     setRedisClient(null);
     await truncateAllTables();
@@ -216,6 +221,10 @@ describe.skipIf(!available)('page restrictions on version, export, attachment an
   beforeEach(async () => {
     await truncateAllTables();
     fx = await seedRestrictionFixture();
+    const provider = await query<{ id: string }>(`INSERT INTO llm_providers (name, base_url, auth_type, default_model, is_default)
+      VALUES ('Diff provider', $1, 'none', 'diff-model', TRUE) RETURNING id`, [providerUrl]);
+    await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('chat', $1, 'diff-model')", [provider.rows[0]!.id]);
+    bumpProviderCacheVersion();
     const version = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [
       fx.pages.hushedLeaf,
     ]);

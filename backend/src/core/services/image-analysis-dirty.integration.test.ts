@@ -46,8 +46,7 @@ let fetchAndCachePageImage: typeof import('../../domains/confluence/services/att
 let putLocalAttachment: typeof import('./local-attachment-service.js')['putLocalAttachment'];
 let syncPage: typeof import('../../domains/confluence/services/sync-service.js')['__internal']['syncPage'];
 
-const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const PNG = Buffer.concat([PNG_SIG, Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.alloc(8)]);
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
 
 const OWNER = '00000000-0000-4000-8000-0000000000aa';
 
@@ -453,10 +452,11 @@ describe.skipIf(!dbAvailable)('image_analysis_dirty writers (#1115 P2, ADR-027 D
     });
 
     it('marks a page RESTORED from Confluence trash — the clause no other writer covers', async () => {
-      // Review r3. The case above is carried by `cleanPageAttachments`, which
-      // `syncPage` calls on every existing-page-with-a-new-version path: strike
-      // the `image_analysis_dirty = TRUE` out of the `DO UPDATE` arm and it
-      // still passes. This one cannot be, and the difference is one predicate:
+      // Review r3. The case above is carried by `pruneVersionJumpAttachmentCache`
+      // (#1773), which `syncPage` calls before it applies a newer upstream
+      // version: strike the `image_analysis_dirty = TRUE` out of the
+      // `DO UPDATE` arm and it still passes. This one cannot be, and the
+      // difference is one predicate:
       // `markPageImagesDirtyByAttachmentKey` filters `deleted_at IS NULL`,
       // while the arm itself is what sets `deleted_at = NULL`. So for a page
       // coming back out of the trash the upsert clause is the ONLY writer —

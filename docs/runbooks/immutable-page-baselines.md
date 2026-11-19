@@ -271,8 +271,16 @@ Inspection starts from both `body_html` and `body_storage`:
 - Media URL attributes cover `audio[src]`, `embed[src]`, SVG `image[href]` and
   `image[xlink:href]`, `img[src|srcset]`, image inputs, `object[data]`,
   `source[src|srcset]`, `track[src]`, and `video[src|poster]`.
-- Legacy `#confluence-attachment:<filename>` references are bound to the
-  persisted source-aware page key.
+- `#confluence-attachment:<filename>` references are bound to the persisted
+  source-aware page key. Since #1748 the filename is percent-encoded and may be
+  followed by `?<attributes>`; one whose attributes name another page or blog
+  post as the attachment's container is that page's attachment and is neither
+  inspected nor rewritten from the HTML. A reference written before #1748 keeps
+  its old decoding, unless it also parses as the #1748 grammar (a filename
+  ending in a valid `?name=value` list): a new freeze reads that one by the
+  grammar, and rendering a baseline frozen before #1748 falls back to the old
+  decoding when the grammar reading is not in its inventory, so it still
+  renders.
 - Storage-format `ri:filename` references are included even when converted HTML
   no longer exposes them.
 - Draw.io captures both the rendered PNG and its `.drawio` XML sibling, from
@@ -690,9 +698,45 @@ establish a terminal outcome.
 
 A writable room admission remains active until a clean disconnect and successful
 flush, or a server-proven runtime fence. Redis liveness, a missing heartbeat,
-elapsed time, and process age do not expire it.
+elapsed time, and process age do not expire it. The one non-fence exit is the
+schema-upgrade retirement described under *One-time152 Notion identity snapshot
+upgrade* (`release_kind = 'upgrade_retired'`), which is justified by the write
+gate it closes in the same transaction. A flush that only waits for
+the page's own pending collaborative Save (`collab.commit.confluence` or
+`.media`) is not a failure: the room keeps the admission and retries the flush
+and release once that Save settles, at once on its `pages_version` control and
+otherwise on a retry that starts at 1 s and doubles to 30 s, so a successful
+Save does not leave the page answering `409 collab_session_active` (#1763).
+While such an intent stays pending the admission stays active, and the page's
+rooms keep accepting edits that they cannot persist. A Save whose Confluence
+write failed after dispatch leaves its intent pending as an unknown outcome
+until it is reconciled. After reconciliation, rooms of the page on other
+runtimes persist on their next edit, last-writer flush or release retry. The
+runtime that ran the Save cannot get there while it hosts a room of that page.
+Reconciliation needs that runtime fenced, and the room admission it holds
+behind the pending intent keeps it from draining, so quiescence never answers
+(#1934). Terminate that process and fence it with independently verified local
+termination (below); where that cannot be verified, the fence fails closed and
+the intent stays pending. Edits that reached only its room since the failed Save
+then survive only in the editors' open tabs; a tab that reconnects does not
+send them again (#1928). Any other flush failure keeps the admission as before
+and schedules no retry.
 
 ## Runtime retirement and fencing
+
+Runtime rows gate two activations. Besides the baseline `enforcement_version`,
+migration 151 (#1881) records `ai_policy_enforcement_version` on every
+`page_writer_runtimes` row; an active (not fenced, not quiesced) row at
+version `0` — every row left by a pre-#1881 build — reports
+`incompatible_ai_policy_runtime` on `GET /api/admin/ai-policy/activation` and
+blocks the article AI policy switch until it is retired by one of the
+procedures below. The choice matters for the legacy-client window: quiescing
+a live old process sets its `quiesced_at`, which restarts the
+`legacy_client_window_open` clock for one access-token lifetime (that process
+may have issued browser sessions the new observer never saw); fencing a
+long-dead row with `durable_no_started_effects` does not. Fence only rows
+whose processes are verifiably gone; the bulk loop for many historical rows
+is in `docs/architecture/article-ai-policy-activation.md`.
 
 ### Preferred: owning-process quiescence
 
@@ -785,6 +829,9 @@ The server locks the runtime epoch, proves there is no pending started effect
 or recovery marker, cancels only pre-effect intents, and releases its room
 admissions. It returns `runtime_effects_started` if either kind of work started.
 The reason is an audit explanation, not proof; callers cannot submit a proof object.
+Migration 151b applies this same fence automatically to every such pre-upgrade
+epoch while migration 152 is still pending (#2063); this endpoint remains the
+manual route for any later crash.
 
 ### Independently verified local termination
 
@@ -810,6 +857,73 @@ kind-specific reconciliation.
 
 Never use a heartbeat, Redis TTL, pod age, operator assertion, or a fabricated
 acknowledgment as a fence. There is no force-clear endpoint.
+
+### One-time152 Notion identity snapshot upgrade (#2063)
+
+The upgrade retires the pre-upgrade writer epochs itself, so a killed or
+restarted container no longer blocks startup with
+`relocation_notion_upgrade_requires_retired_writers`. Migration
+`151b_page_writer_upgrade_retirement.sql` runs immediately before152, in its own
+transaction, and closes every epoch that still blocks152's guard:
+
+- an epoch with **no dispatched effect** (no pending intent with
+  `effect_started_at`/`recovery_started_at`) is fenced with the same
+  `durable_no_started_effects` proof `fencePageWriterRuntime` writes; its
+  pre-effect intents are cancelled and its room tokens released as
+  `runtime_fenced`;
+- an epoch that **did dispatch work** is only quiesced and marked
+  `upgrade_retired_at` (no owner acknowledgment). Its started intents stay
+  `pending`, and its room tokens are released as `upgrade_retired`. Without
+  independently verified termination it must not be fenced — a fence is what
+  authorises outcome recovery.
+
+Both states close the durable write gate (`assertRuntimeActive`), so an old
+process that is somehow still running is refused at its next write; the epoch
+row itself is the barrier, because every writer takes it before any page lock.
+Retirement happens only while152 is still unrecorded: installs whose
+`_migrations` already recorded152 get the column/constraint schema but no
+retirement, so a live replica of the running version is not cut.
+
+Consequences and the remaining manual work:
+
+1. **Scale old replicas to 0 before upgrading** if their unflushed
+   collaborative-room edits matter. A still-live old replica loses its write
+   gate and room admissions at the retirement; its editors' unflushed work stays
+   only in their tabs (a reconnecting tab does not resend it, #1928). Never
+   restart an old image after the cutover: it would register a fresh active
+   epoch the guard cannot distinguish from a live one.
+2. **An epoch with dispatched unknown work still needs a termination-verified
+   fence** before its intents can be reconciled:
+   `POST /api/admin/page-write-recovery/runtimes/<runtimeId>/fence` with
+   `verified_local_termination`. A recreated container has a different host,
+   boot and PID namespace, so that mode is refused there; such pages stay
+   write-blocked exactly as they were before the upgrade (an unversioned remote
+   outcome is never invented). `owner_ack` cannot be used — there is no owner
+   acknowledgment — and the pair CHECK rejects a fabricated one.
+3. Migration152 then runs atomically under the existing migration/hierarchy/
+   table locks: add nullable original token; backfill every retained preparation
+   from its same immutable-token FK row; clear all Confluence metadata and only
+   provenance-matching retained local cutovers; recreate the standalone-only
+   normalized index. Other page fields/status/progress/ACL/receipts/files/
+   capacity remain. An identity near-match is left alone, not a whole-upgrade
+   classifier abort. Known out-of-band token edits invalidate the history
+   proof: stop for investigation, not body/ACL guessing.
+4. Applied152 is recorded and SKIPPED on subsequent normal startup. Do not
+   replay its repair statements manually on every boot: exact compensated
+   Confluence/nonNULL metadata is permitted and ignored by the source policy.
+   Do not roll an old binary/image back into service after this snapshot cutover.
+5. The retirement's DDL waits behind any in-flight transaction that names
+   `page_writer_runtimes` or `page_runtime_admissions` (the runner has
+   `lock_timeout = 0`). A long writer can therefore delay migration startup; it
+   cannot deadlock with a gated writer, and an aborted retirement rolls back
+   whole and is retried on the next boot. An independently started reader that
+   names both tables (collab room owner scan, recovery listing) can form a
+   two-table cycle with it; PostgreSQL does not guarantee which side is the
+   victim, so either that request fails and is retried, or this boot's migration
+   rolls back whole and the next boot retries it.
+6. Each retired epoch writes one `PAGE_WRITER_UPGRADE_RETIREMENT` audit row
+   (`user_id` NULL, `metadata.mode`, `metadata.startedIntents`) and the recovery
+   listing shows `upgradeRetiredAt` beside a NULL `acknowledgmentId`.
 
 ## Reconciling a fenced intent
 
@@ -956,6 +1070,11 @@ kind-specific recovery distinguishes three states:
   bytes cannot identify which side of the lost response committed after later
   remote changes.
 
+A Confluence delete whose remote delete is known complete and observed absent
+finishes the local hard delete, attachment/icon cleanup and cache publication in
+the settlement transaction, then closes open collaborative rooms with 4404 after
+COMMIT. An undispatched one restores the hidden row and leaves its rooms open.
+
 Ordinary page updates and draft publications record a successful PUT
 acknowledgment before any follow-up GET. A compact reply is therefore not
 discarded when readback fails. The receipt keeps command identity/version
@@ -1020,6 +1139,16 @@ binds its count and ordered digest. It does not impose a new attachment-count
 limit. Compact-create readbacks resolve current mode and credentials again.
 With no remaining provider mutation, a failed readback can be retried read-only
 after fencing the owner; an unknown later upload still cannot be replayed.
+
+Original Notion NULL/spelling is captured and restored exactly. Applied
+publication proves current NULL plus ALL existing receipts/content/ACL/child/
+attachment fences. A proven-live rollback restores source/owner/token in ONE
+root UPDATE before any destructive child/ACE/prepared-file cleanup; the
+standalone index excludes its Confluence destination even if the former owner
+has imported meanwhile. No original/no-cutover ACL is reapplied merely because
+migration cleared metadata. Unknown provider outcome still remains pending;
+known successful Confluence publication is never compensated to standalone.
+
 A failure between a provider acknowledgment and that immediate receipt commit
 can still leave the effect unknown. No subsequent work widens that unavoidable
 durability window.

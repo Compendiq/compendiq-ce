@@ -1,7 +1,11 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import type { PoolClient } from 'pg';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
-import { chat } from '../../llm/services/openai-compatible-client.js';
+import { chat, type TransportContext } from '../../llm/services/openai-compatible-client.js';
+import { asRevision, loadProviderMetadata } from '../../llm/services/ai-policy-admission.js';
+import { admitArticleStage, ArticleStageRefusedError, historicalVersionDigest } from '../../llm/services/article-stage-admission.js';
+import { isAiPolicy } from '../../../core/services/ai-policy-service.js';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
 import { htmlToMarkdown, htmlToText } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { getHistoricalBody } from '../../confluence/services/version-backfill.js';
@@ -318,7 +322,9 @@ export async function getSemanticDiff(
   model?: string,
   confluenceId?: string | null,
   client?: ConfluenceClient | null,
+  userId?: string,
 ): Promise<string> {
+  if (!userId) throw new ArticleStageRefusedError();
   const [version1, version2] = await Promise.all([
     getVersion(pageId, v1),
     getVersion(pageId, v2),
@@ -366,8 +372,38 @@ ${sanitized1}
 ${sanitized2}`;
 
   const { config, model: resolvedModel } = await resolveUsecase('chat');
-  return chat(config, model || resolvedModel, [
+  const current = await query('SELECT ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL', [pageId]);
+  const row = current.rows[0];
+  const policyRevision = asRevision(row?.ai_policy_revision);
+  const contentRevision = asRevision(row?.content_revision);
+  const provider = await loadProviderMetadata({ query }, config.providerId);
+  if (!row || !isAiPolicy(row.ai_policy) || policyRevision === null || contentRevision === null
+    || !provider || provider.configRevision !== config.configRevision) throw new ArticleStageRefusedError();
+  // Reload after lazy fill and verify that the exact historical bytes used to
+  // compose the prompt are still the saved snapshot. The dispatch repeats this
+  // check after queue waits; live revisions alone cannot certify old versions.
+  const historical = await Promise.all([getVersion(pageId, v1), getVersion(pageId, v2)]);
+  const inputs = [{ version: version1, body: body1 }, { version: version2, body: body2 }];
+  const historicalVersions = inputs.map(({ version, body }, index) => {
+    const saved = historical[index];
+    if (!saved || saved.id !== version.id || saved.title !== version.title || saved.bodyHtml !== body
+      || (body === null && saved.bodyText !== version.bodyText)
+      || (saved.bodyHtml === null && saved.bodyText === null)) throw new ArticleStageRefusedError();
+    return { pageId, versionId: saved.id, versionNumber: saved.versionNumber,
+      digest: historicalVersionDigest(saved.title, saved.bodyHtml, saved.bodyText) };
+  });
+  const transportContext: TransportContext = { kind: 'article', stage: {
+    provenance: { version: 1, providerId: config.providerId, configRevision: provider.configRevision,
+      locality: provider.effectiveLocality, pages: [{ pageId, policy: row.ai_policy, policyRevision, contentRevision }] },
+    userId, usecase: 'chat', context: { operation: newAiOperation('semantic_diff', { kind: 'user', id: userId }),
+      stage: 'semantic_diff', attempt: 1, historicalVersions,
+      modelSelection: model ? { kind: 'explicit', model } : { kind: 'assigned' } },
+  } };
+  await admitArticleStage(transportContext.stage.provenance, userId, 'chat', undefined, transportContext.stage.context);
+  const result = await chat(config, model || resolvedModel, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
-  ]);
+  ], { transportContext });
+  await admitArticleStage(transportContext.stage.provenance, userId, 'chat', async () => undefined, transportContext.stage.context);
+  return result;
 }

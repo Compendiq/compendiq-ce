@@ -18,6 +18,8 @@ vi.mock('../../stores/auth-store', () => ({
 const { useSessionInit } = await import('./useSessionInit');
 const { refreshAccessTokenOnce } = await import('../lib/api');
 
+const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' };
+
 describe('useSessionInit', () => {
   beforeEach(() => {
     mockSetAuth.mockClear();
@@ -39,7 +41,7 @@ describe('useSessionInit', () => {
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
-        JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+        JSON.stringify({ accessToken: 'new-token', user: USER }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
     );
@@ -54,7 +56,7 @@ describe('useSessionInit', () => {
     });
 
     await waitFor(() => {
-      expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+      expect(mockSetAuth).toHaveBeenCalledWith('new-token', USER);
     });
   });
 
@@ -133,7 +135,7 @@ describe('useSessionInit', () => {
       .mockResolvedValueOnce(refreshBusy())
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'new-token', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
       );
@@ -141,7 +143,7 @@ describe('useSessionInit', () => {
     renderHook(() => useSessionInit());
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', USER);
     expect(mockClearAuth).not.toHaveBeenCalled();
   });
 
@@ -201,7 +203,7 @@ describe('useSessionInit', () => {
           return new Response(
             JSON.stringify({
               accessToken: 'new-token',
-              user: { id: '1', username: 'test', role: 'user' },
+              user: USER,
             }),
             { headers: { 'Content-Type': 'application/json' } },
           );
@@ -218,11 +220,7 @@ describe('useSessionInit', () => {
     renderHook(() => useSessionInit());
 
     await waitFor(() => {
-      expect(mockSetAuth).toHaveBeenCalledWith('new-token', {
-        id: '1',
-        username: 'test',
-        role: 'user',
-      });
+      expect(mockSetAuth).toHaveBeenCalledWith('new-token', USER);
     });
 
     // Both paths shared one refresh — not two racing rotations.

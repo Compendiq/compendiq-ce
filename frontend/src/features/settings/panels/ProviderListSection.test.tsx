@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProviderListSection } from './ProviderListSection';
 import { useAuthStore } from '../../../stores/auth-store';
+import { formatDateStamp } from '../../../shared/lib/format-relative-time';
 
 function createWrapper() {
   const qc = new QueryClient({
@@ -204,5 +205,36 @@ describe('ProviderListSection', () => {
     expect(screen.getAllByRole('button', { name: /^delete$/i }).length).toBeGreaterThan(0);
     const deleted = spy.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'DELETE');
     expect(deleted).toBe(false);
+  });
+
+  // #1882: a declaration names a person and a date, never a UUID or ISO stamp.
+  it('shows the declarer by name with a formatted date, and a neutral fallback when unnamed', async () => {
+    const at = '2026-11-08T09:55:31.862Z';
+    const uuid = '221908ce-5e49-439a-9de7-363b3e677fad';
+    const declared = { ...providerA, locality: 'local', localConfirmed: true, configRevision: 1, localityDeclaredAt: at, localityDeclaredBy: uuid, localityDeclaredByName: 'Dana Admin' };
+    // Declarer account deleted: FK SET NULL leaves the date, no declarer.
+    const orphaned = { ...providerB, locality: 'local', localConfirmed: false, configRevision: 1, localityDeclaredAt: at, localityDeclaredBy: null, localityDeclaredByName: null };
+    // A server that predates the name field.
+    const legacy = { ...providerB, id: '33333333-3333-3333-3333-333333333333', name: 'Legacy', locality: 'external', localConfirmed: false, configRevision: 1, localityDeclaredAt: at, localityDeclaredBy: uuid };
+    const undeclared = { ...providerB, id: '44444444-4444-4444-4444-444444444444', name: 'Undeclared', locality: 'external', localConfirmed: false, configRevision: 1, localityDeclaredAt: null, localityDeclaredBy: null, localityDeclaredByName: null };
+    mockFetchJson([
+      { match: (url, init) => url.endsWith('/admin/llm-providers') && (init.method ?? 'GET') === 'GET', body: [declared, orphaned, legacy, undeclared] },
+    ]);
+    render(<ProviderListSection />, { wrapper: createWrapper() });
+    await screen.findByText('Ollama');
+
+    const lines = screen.getAllByTestId('provider-locality-declaration');
+    expect(lines.map((l) => l.textContent)).toEqual([
+      `Declared by Dana Admin · ${formatDateStamp(at)}`,
+      `Declared by an administrator · ${formatDateStamp(at)}`,
+      `Declared by an administrator · ${formatDateStamp(at)}`,
+    ]);
+    const time = lines[0]!.querySelector('time')!;
+    expect(time.getAttribute('dateTime')).toBe(at);
+    // The exact time of day lives in the title, beyond the visible date.
+    expect(time.getAttribute('title')).toMatch(/\d{1,2}:\d{2}/);
+    expect(time.getAttribute('title')).not.toBe(formatDateStamp(at));
+    expect(document.body.textContent).not.toContain(uuid);
+    expect(document.body.textContent).not.toContain(at);
   });
 });

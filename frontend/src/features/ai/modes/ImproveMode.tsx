@@ -2,7 +2,10 @@
 import { useCallback, useState } from 'react';
 import { AlertTriangle, Send, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { useAiContext } from '../AiContext';
+import {
+  useAiContext, readmitImprovement,
+  IMPROVEMENT_NOT_REPLAYABLE_MESSAGE, IMPROVEMENT_READMIT_UNAVAILABLE_MESSAGE, IMPROVEMENT_TEXT_MISMATCH_MESSAGE,
+} from '../AiContext';
 import { DiffView } from '../../../shared/components/article/DiffView';
 import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
 import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
@@ -23,18 +26,45 @@ export function ImproveDiffView() {
   const {
     page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView,
     improvedContent, originalMarkdown, layoutTokensLost: backendLayoutTokensLost,
+    improvementId,
   } = useAiContext();
   const [isApplying, setIsApplying] = useState(false);
+  /**
+   * #282: a readmit refusal, kept on screen beside the diff. The page is
+   * untouched and the text stays — like the frozen case, a refusal is no
+   * reason to discard the user's answer — but Accept is withdrawn when
+   * pressing it again could not change the verdict (`rerunnable`).
+   */
+  const [refusal, setRefusal] = useState<{ message: string; rerunnable: boolean } | null>(null);
 
   const handleAccept = useCallback(async () => {
     if (!page || !pageId || !improvedContent || isApplying) return;
     setIsApplying(true);
+    setRefusal(null);
     try {
+      // #282: the stored row is handed back by reference and re-admitted
+      // under its recorded provenance BEFORE its text touches the article —
+      // see `readmitImprovement` and `DockDiffCard` for the full argument.
+      let improvedMarkdown = improvedContent;
+      if (improvementId) {
+        const readmit = await readmitImprovement(improvementId);
+        if (readmit.outcome === 'refused') {
+          setRefusal(readmit.retryable
+            ? { message: IMPROVEMENT_READMIT_UNAVAILABLE_MESSAGE, rerunnable: false }
+            : { message: IMPROVEMENT_NOT_REPLAYABLE_MESSAGE, rerunnable: true });
+          return;
+        }
+        if (readmit.improvedMarkdown !== improvedContent) {
+          setRefusal({ message: IMPROVEMENT_TEXT_MISMATCH_MESSAGE, rerunnable: true });
+          return;
+        }
+        improvedMarkdown = readmit.improvedMarkdown;
+      }
       await apiFetch(`/llm/improvements/apply`, {
         method: 'POST',
         body: JSON.stringify({
           pageId,
-          improvedMarkdown: improvedContent,
+          improvedMarkdown,
           version: page.version,
           title: page.title,
         }),
@@ -56,7 +86,7 @@ export function ImproveDiffView() {
     } finally {
       setIsApplying(false);
     }
-  }, [page, pageId, improvedContent, isApplying, queryClient, navigate]);
+  }, [page, pageId, improvedContent, improvementId, isApplying, queryClient, navigate]);
 
   if (!showDiffView || !page || !improvedContent || isStreaming) return null;
 
@@ -74,9 +104,22 @@ export function ImproveDiffView() {
   // The diff stays: the answer is the user's and a freeze is no reason to
   // discard it. Only Accept is withdrawn, and the reason is on screen.
   const applyLocked = page.isFrozen === true || page.canMutateContent === false;
+  // A non-retryable readmit refusal withdraws Accept: the stored improvement
+  // is not reusable under the current policy, so the way forward is a new
+  // Improve run (the composer above), not another press of this button.
+  const acceptWithdrawn = applyLocked || refusal?.rerunnable === true;
 
   return (
     <div className="flex flex-col gap-3">
+      {refusal && (
+        <div
+          data-testid="improve-readmit-refused"
+          role="alert"
+          className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground"
+        >
+          {refusal.message}
+        </div>
+      )}
       {layoutTokensLost && (
         <div
           data-testid="layout-token-loss-warning"
@@ -101,7 +144,7 @@ export function ImproveDiffView() {
         // if the backend didn't supply the baseline (e.g. an aborted stream).
         original={originalMarkdown || page.bodyText || page.bodyHtml}
         improved={improvedContent}
-        onAccept={applyLocked ? undefined : handleAccept}
+        onAccept={acceptWithdrawn ? undefined : handleAccept}
         onReject={() => setShowDiffView(false)}
         isAccepting={isApplying}
       />
@@ -128,6 +171,7 @@ function ImproveModeInputContent() {
     input, setInput, isStreaming, page, isPageLoading, model, pageId, includeSubPages,
     thinkingMode, setThinkingMode, runStream,
     improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
+    setImprovementId,
     chatVision,
     chatVisionModel,
   } = useAiContext();
@@ -179,6 +223,8 @@ function ImproveModeInputContent() {
     setImprovedContent('');
     setOriginalMarkdown('');
     setLayoutTokensLost(undefined);
+    // #282: cleared with the text so a stale row id never sits beside new text.
+    setImprovementId(null);
 
     const instruction = input.trim();
     const referenceText = buildDocumentReferenceText(attachedDocuments);
@@ -230,6 +276,8 @@ function ImproveModeInputContent() {
             setOriginalMarkdown(meta.originalMarkdown);
           }
           setLayoutTokensLost(meta?.layoutTokensLost);
+          // #282: the durable row Accept will re-admit by reference.
+          setImprovementId(meta?.improvementId ?? null);
           setShowDiffView(true);
         },
       },
@@ -237,7 +285,7 @@ function ImproveModeInputContent() {
   }, [
     input, page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode,
     searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown,
-    setLayoutTokensLost,
+    setLayoutTokensLost, setImprovementId,
     isBusy, attachedDocuments, attachedImage, removeImage,
   ]);
 

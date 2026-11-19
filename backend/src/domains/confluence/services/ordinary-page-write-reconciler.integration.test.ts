@@ -6,6 +6,7 @@ import { createClient, type RedisClientType } from 'redis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { request } from 'undici';
 import type * as Undici from 'undici';
+import type { WebSocket } from 'ws';
 import {
   isDbAvailable,
   setupTestDb,
@@ -16,12 +17,21 @@ import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
 import { resolveBulkSelection } from '../../../core/services/bulk-page-selection.js';
 import { getPool, query } from '../../../core/db/postgres.js';
+import { assertNoLiveCollabRoom } from '../../../core/services/collab-guard.js';
+import {
+  type CollabRuntime,
+  createCollabRuntime,
+  getDefaultCollabRuntime,
+  initCollabBus,
+} from '../../../core/services/collab-room-service.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import {
+  type PageRuntimeAdmission,
   type RuntimeQuiescenceAcknowledgment,
   fencePageWriterRuntime,
   quiescePageWriterRuntime,
   reconcilePageWriteIntent,
+  releasePageRuntime,
   withPageWriteTransaction,
 } from '../../../core/services/page-write-admission.js';
 import { encryptPat } from '../../../core/utils/crypto.js';
@@ -35,6 +45,7 @@ vi.mock('undici', async (importOriginal) => ({
 const mockRequest = vi.mocked(request);
 const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 let redis: RedisClientType;
+let closeCollabBus: (() => Promise<void>) | undefined;
 let cacheKey: string | null = null;
 
 function jsonResponse(data: unknown, statusCode = 200) {
@@ -148,7 +159,7 @@ async function seedPendingLabelIntent(input: {
         pageId: pageRow.id,
         confluenceId: 'remote-label-page',
         priorLabels: ['before'],
-        targetLabels: ['after', 'reviewed'],
+        targetLabels: ['after', 'reviewed', 'all-ai'],
       }),
       input.remoteStarted,
       input.remoteCompleted,
@@ -354,6 +365,140 @@ async function seedPendingDeleteIntent(): Promise<{
   return { actorId, recoveryAdminId, intentId, pageId: pageRow.id, confluenceId };
 }
 
+type RecordedClose = { code: number; reason: string };
+
+/** A WebSocket stand-in whose only observable is the server's close call. */
+function recordingSocket(closes: RecordedClose[]): WebSocket {
+  return {
+    readyState: 1,
+    send() {},
+    close(code?: number, reason?: string) {
+      closes.push({ code: code ?? 1005, reason: String(reason ?? '') });
+    },
+  } as unknown as WebSocket;
+}
+
+const REMOTE_DELETE_KINDS = ['pages.delete.confluence', 'pages.bulk.delete.remote'] as const;
+type RemoteDeleteKind = (typeof REMOTE_DELETE_KINDS)[number];
+
+/** Rooms the #1780 cases opened; released before the next case truncates. */
+const seededRooms: Array<{
+  runtime: CollabRuntime;
+  pageId: number;
+  admission: PageRuntimeAdmission | null;
+}> = [];
+
+/**
+ * The durable state a crashed delete writer leaves behind (#1780): an editor
+ * joined the live page, then the delete hid it and, unless `remoteStarted` is
+ * false, completed upstream without committing the local hard delete.
+ */
+async function seedRecoverableRemoteDelete(input: {
+  kind: RemoteDeleteKind;
+  runtime: CollabRuntime;
+  writable: boolean;
+  remoteStarted?: boolean;
+  rowDeleted?: boolean;
+}): Promise<{
+  intentId: string;
+  recoveryAdminId: string;
+  pageId: number;
+  connId: string;
+  closes: RecordedClose[];
+  joinedWritable: boolean;
+}> {
+  const remoteStarted = input.remoteStarted ?? true;
+  const actorId = await seedRecoveryActor('room-delete-recovery');
+  const recoveryAdminId = await seedRecoveryAdmin('room-delete-recovery');
+  const confluenceId = `room-deletion-${randomUUID()}`;
+  const page = await query<{ id: number }>(
+    `INSERT INTO pages
+       (confluence_id, space_key, title, body_html, source, visibility, created_by_user_id)
+     VALUES ($1, 'REC', 'Delete recovery with an open room', '<p>shared draft</p>',
+             'confluence', 'private', $2)
+     RETURNING id`,
+    [confluenceId, actorId],
+  );
+  const pageId = page.rows[0]!.id;
+  // truncateAllTables removed this process's runtime row; a writable join needs it.
+  await withPageWriteTransaction([], async () => undefined);
+  // Join first, as in the incident: a pending intent refuses new writable admissions.
+  const closes: RecordedClose[] = [];
+  const connId = `editor-${randomUUID()}`;
+  const joined = await input.runtime.attachSocket(pageId, {
+    id: connId,
+    ws: recordingSocket(closes),
+    userId: actorId,
+    writable: input.writable,
+  });
+  seededRooms.push({
+    runtime: input.runtime,
+    pageId,
+    admission: input.runtime.getRoom(pageId)?.admission ?? null,
+  });
+  const hidden = await query<{ content_revision: string; lifecycle_revision: string }>(
+    `UPDATE pages SET deleted_at = NOW() WHERE id = $1
+     RETURNING content_revision::text, lifecycle_revision::text`,
+    [pageId],
+  );
+  const runtimeId = await seedFencedRuntime(recoveryAdminId);
+  const intentId = randomUUID();
+  await query(
+    `INSERT INTO page_write_intents
+       (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+        effect_started_at, effect_finished_at, remote_effect_started_at,
+        remote_effects_completed_at, remote_terminal_result)
+     VALUES ($1, $2, $3, $4, ARRAY[$5]::int[], $6::jsonb, 'remote_terminal_only', $7::jsonb,
+             NOW(), CASE WHEN $8 THEN NOW() ELSE NULL END,
+             CASE WHEN $8 THEN NOW() ELSE NULL END, CASE WHEN $8 THEN NOW() ELSE NULL END,
+             CASE WHEN $8 THEN $9::jsonb ELSE NULL END)`,
+    [
+      intentId,
+      runtimeId,
+      input.kind,
+      actorId,
+      pageId,
+      JSON.stringify({
+        [pageId]: {
+          contentRevision: hidden.rows[0]!.content_revision,
+          lifecycleRevision: hidden.rows[0]!.lifecycle_revision,
+        },
+      }),
+      JSON.stringify({
+        effectClass: 'remote',
+        confluenceId,
+        spaceKey: 'REC',
+        upstreamDelete: true,
+        attachmentStore: 'confluence',
+        iconStore: 'page-icons',
+      }),
+      remoteStarted,
+      JSON.stringify({ confluenceId, outcome: 'deleted' }),
+    ],
+  );
+  if (input.rowDeleted) {
+    // The crash came after the writer's local hard delete committed
+    // (pages-crud's DELETE ... RETURNING tombstone) but before its room close.
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM pinned_pages WHERE page_id = $1', [pageId]);
+      await client.query('DELETE FROM pages WHERE id = $1', [pageId]);
+      await client.query(
+        'UPDATE page_write_intents SET deleted_page_ids = ARRAY[$2]::int[] WHERE id = $1',
+        [intentId, pageId],
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  return { intentId, recoveryAdminId, pageId, connId, closes, joinedWritable: joined.writable };
+}
+
 beforeAll(async () => {
   if (!dbAvailable || !redisAvailable) return;
   await setupTestDb();
@@ -361,6 +506,8 @@ beforeAll(async () => {
   redis = createClient({ url: process.env.REDIS_URL, socket: { reconnectStrategy: false } });
   await redis.connect();
   setRedisClient(redis);
+  // The default runtime is the reconciling pod's collaboration runtime.
+  closeCollabBus = await initCollabBus(redis);
 });
 
 beforeEach(async () => {
@@ -378,6 +525,8 @@ afterEach(async () => {
 
 afterAll(async () => {
   if (!dbAvailable || !redisAvailable) return;
+  await closeCollabBus?.();
+  setRedisClient(null);
   await redis.quit();
   await teardownTestDb();
 });
@@ -437,7 +586,7 @@ describeDb('ordinary page-write reconciliation', () => {
   it('publishes terminal labels and invalidates cached reads with only one free database connection', async () => {
     const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
     mockRequest.mockResolvedValueOnce(jsonResponse({
-      results: [{ name: 'reviewed' }, { name: 'after' }],
+      results: [{ name: 'reviewed' }, { name: 'after' }, { name: 'all-ai' }],
     }) as never);
 
     cacheKey = `kb:${seeded.actorId}:pages:recovery`;
@@ -478,7 +627,7 @@ describeDb('ordinary page-write reconciliation', () => {
 
     expect(mockRequest).toHaveBeenCalledTimes(1);
     const page = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [seeded.pageId]);
-    expect(page.rows[0]!.labels).toEqual(['after', 'reviewed']);
+    expect(page.rows[0]!.labels).toEqual(['after', 'reviewed', 'all-ai']);
     const intent = await query<{ status: string; cache_invalidation_pending: boolean }>(
       'SELECT status, cache_invalidation_pending FROM page_write_intents WHERE id = $1',
       [seeded.intentId],
@@ -713,13 +862,13 @@ describeDb('ordinary page-write reconciliation', () => {
 
     await query('UPDATE users SET deactivated_at = NULL WHERE id = $1', [seeded.actorId]);
     mockRequest.mockResolvedValueOnce(jsonResponse({
-      results: [{ name: 'after' }, { name: 'reviewed' }],
+      results: [{ name: 'after' }, { name: 'reviewed' }, { name: 'all-ai' }],
     }) as never);
     await expect(reconcilePageWriteIntent(seeded.intentId, {
       actorId: seeded.recoveryAdminId, reason: 'The previous callback ended and the original actor is authorized again',
     })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
     expect((await query('SELECT labels FROM pages WHERE id = $1', [seeded.pageId])).rows)
-      .toEqual([{ labels: ['after', 'reviewed'] }]);
+      .toEqual([{ labels: ['after', 'reviewed', 'all-ai'] }]);
   });
 
 
@@ -757,6 +906,195 @@ describeDb('ordinary page-write reconciliation', () => {
       }
     },
   );
+
+  describe('recovered remote delete closes collaborative rooms (#1780)', () => {
+    const failingSettlements = 'recovery_room_tombstone_failing_settlements';
+    let peer: CollabRuntime | undefined;
+
+    beforeAll(async () => {
+      peer = await createCollabRuntime(redis, `reconcile-peer-${randomUUID()}`);
+      await query(`CREATE TABLE IF NOT EXISTS ${failingSettlements} (intent_id UUID PRIMARY KEY)`);
+      await query(`
+        CREATE OR REPLACE FUNCTION recovery_room_tombstone_fail_settlement()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF OLD.status = 'pending'
+             AND NEW.status IN ('reconciled_applied', 'reconciled_not_applied')
+             AND EXISTS (SELECT 1 FROM ${failingSettlements} WHERE intent_id = NEW.id)
+          THEN
+            RAISE EXCEPTION 'simulated failure while settling the recovery' USING ERRCODE = '40001';
+          END IF;
+          RETURN NEW;
+        END
+        $$
+      `);
+      await query(
+        'DROP TRIGGER IF EXISTS recovery_room_tombstone_fail_settlement_trigger ON page_write_intents',
+      );
+      await query(`
+        CREATE TRIGGER recovery_room_tombstone_fail_settlement_trigger
+        BEFORE UPDATE OF status ON page_write_intents
+        FOR EACH ROW EXECUTE FUNCTION recovery_room_tombstone_fail_settlement()
+      `);
+    });
+
+    afterEach(async () => {
+      // A writable room's durable admission outlives a committed delete (its
+      // final flush finds no page). Release it while its row still exists so
+      // the quiescence case below can drain this process.
+      for (const room of seededRooms.splice(0)) {
+        await room.runtime.tombstone(room.pageId, 1001, 'test_cleanup');
+        if (room.admission) await releasePageRuntime(room.admission).catch(() => undefined);
+      }
+    });
+
+    afterAll(async () => {
+      await peer?.close();
+      await query(
+        'DROP TRIGGER IF EXISTS recovery_room_tombstone_fail_settlement_trigger ON page_write_intents',
+      );
+      await query('DROP FUNCTION IF EXISTS recovery_room_tombstone_fail_settlement()');
+      await query(`DROP TABLE IF EXISTS ${failingSettlements}`);
+    });
+
+    it.each([
+      { label: 'pages.delete.confluence', kind: 'pages.delete.confluence', rowDeleted: false },
+      { label: 'pages.bulk.delete.remote', kind: 'pages.bulk.delete.remote', rowDeleted: false },
+      {
+        label: 'pages.delete.confluence after its local row deletion committed',
+        kind: 'pages.delete.confluence',
+        rowDeleted: true,
+      },
+    ] as const)(
+      'closes a read-only room on the reconciling runtime with 4404 committed_delete once $label settles',
+      async ({ kind, rowDeleted }) => {
+        const runtime = getDefaultCollabRuntime()!;
+        const seeded = await seedRecoverableRemoteDelete({ kind, runtime, writable: false, rowDeleted });
+        mockRequest.mockResolvedValueOnce(jsonResponse({ message: 'Not found' }, 404) as never);
+
+        await expect(reconcilePageWriteIntent(seeded.intentId, {
+          actorId: seeded.recoveryAdminId,
+          reason: 'Finish the crashed remote delete and close its open collaborative room',
+        })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+        expect(seeded.closes).toEqual([{ code: 4404, reason: 'committed_delete' }]);
+        expect(runtime.getRoom(seeded.pageId)).toBeUndefined();
+        await expect(assertNoLiveCollabRoom(seeded.pageId)).resolves.toBeUndefined();
+        expect((await query('SELECT 1 FROM pages WHERE id = $1', [seeded.pageId])).rowCount).toBe(0);
+      },
+    );
+
+    it.each(REMOTE_DELETE_KINDS)(
+      'settles %s and closes a writable room hosted by the reconciling runtime without waiting on its own lifecycle lock',
+      async (kind) => {
+        const runtime = getDefaultCollabRuntime()!;
+        const seeded = await seedRecoverableRemoteDelete({ kind, runtime, writable: true });
+        expect(seeded.joinedWritable).toBe(true);
+        mockRequest.mockResolvedValueOnce(jsonResponse({ message: 'Not found' }, 404) as never);
+
+        // Closing the room inside the settlement transaction would wait for
+        // this room's final flush, which needs the page lifecycle lock that
+        // transaction holds: this await would never resolve.
+        await expect(reconcilePageWriteIntent(seeded.intentId, {
+          actorId: seeded.recoveryAdminId,
+          reason: 'Finish the crashed remote delete under an open writable room',
+        })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+        expect(seeded.closes).toEqual([{ code: 4404, reason: 'committed_delete' }]);
+        // Read straight after the response: the room was closed before it.
+        expect(runtime.getRoom(seeded.pageId)).toBeUndefined();
+        expect(await redis.sMembers(`collab:active:${seeded.pageId}`)).toEqual([]);
+      },
+      15_000,
+    );
+
+    it('closes a room hosted by a peer runtime through the Redis tombstone after the recovery settles', async () => {
+      const seeded = await seedRecoverableRemoteDelete({
+        kind: 'pages.delete.confluence',
+        runtime: peer!,
+        writable: false,
+      });
+      mockRequest.mockResolvedValueOnce(jsonResponse({ message: 'Not found' }, 404) as never);
+
+      await expect(reconcilePageWriteIntent(seeded.intentId, {
+        actorId: seeded.recoveryAdminId,
+        reason: 'Finish the crashed remote delete while another pod hosts the room',
+      })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+      // The peer pod hears the tombstone over Redis pub/sub, after the response.
+      await vi.waitFor(() => {
+        expect(seeded.closes).toEqual([{ code: 4404, reason: 'committed_delete' }]);
+        expect(peer!.getRoom(seeded.pageId)).toBeUndefined();
+      });
+    });
+
+    it.each(REMOTE_DELETE_KINDS)(
+      'keeps the room open and the page live when %s recovery proves the remote delete never started',
+      async (kind) => {
+        const runtime = getDefaultCollabRuntime()!;
+        const seeded = await seedRecoverableRemoteDelete({
+          kind,
+          runtime,
+          writable: true,
+          remoteStarted: false,
+        });
+        expect(seeded.joinedWritable).toBe(true);
+
+        await expect(reconcilePageWriteIntent(seeded.intentId, {
+          actorId: seeded.recoveryAdminId,
+          reason: 'Settle the undispatched remote delete and keep the page',
+        })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_not_applied' });
+
+        expect(seeded.closes).toEqual([]);
+        expect(runtime.getRoom(seeded.pageId)).toBeDefined();
+        expect(await redis.sMembers(`collab:active:${seeded.pageId}`))
+          .toContain(`${runtime.podId}:${seeded.connId}`);
+        expect((await query<{ deleted_at: Date | null }>(
+          'SELECT deleted_at FROM pages WHERE id = $1',
+          [seeded.pageId],
+        )).rows).toEqual([{ deleted_at: null }]);
+        expect(mockRequest).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not close the room while the recovery settlement rolls back, and closes it on the successful retry', async () => {
+      const runtime = getDefaultCollabRuntime()!;
+      const seeded = await seedRecoverableRemoteDelete({
+        kind: 'pages.bulk.delete.remote',
+        runtime,
+        writable: false,
+      });
+      await query(`INSERT INTO ${failingSettlements} (intent_id) VALUES ($1)`, [seeded.intentId]);
+      mockRequest.mockResolvedValue(jsonResponse({ message: 'Not found' }, 404) as never);
+
+      await expect(reconcilePageWriteIntent(seeded.intentId, {
+        actorId: seeded.recoveryAdminId,
+        reason: 'The settlement of this recovered delete fails and rolls back',
+      })).rejects.toMatchObject({ code: '40001' });
+
+      // 4404 is permanent: nothing may close while the deletion is uncommitted.
+      expect(seeded.closes).toEqual([]);
+      expect(runtime.getRoom(seeded.pageId)).toBeDefined();
+      expect((await query<{ hidden: boolean }>(
+        'SELECT deleted_at IS NOT NULL AS hidden FROM pages WHERE id = $1',
+        [seeded.pageId],
+      )).rows).toEqual([{ hidden: true }]);
+      expect((await query<{ status: string }>(
+        'SELECT status FROM page_write_intents WHERE id = $1',
+        [seeded.intentId],
+      )).rows).toEqual([{ status: 'pending' }]);
+
+      await query(`DELETE FROM ${failingSettlements} WHERE intent_id = $1`, [seeded.intentId]);
+      await expect(reconcilePageWriteIntent(seeded.intentId, {
+        actorId: seeded.recoveryAdminId,
+        reason: 'Retry the recovered delete once its settlement can commit',
+      })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+      expect(seeded.closes).toEqual([{ code: 4404, reason: 'committed_delete' }]);
+      expect(runtime.getRoom(seeded.pageId)).toBeUndefined();
+    });
+  });
+
   it('holds recovery administrator authority through the final publication transaction', async () => {
     const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
     const reading = Promise.withResolvers<void>();
@@ -764,7 +1102,7 @@ describeDb('ordinary page-write reconciliation', () => {
     mockRequest.mockImplementationOnce(async () => {
       reading.resolve();
       await releaseRead.promise;
-      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }] }) as never;
+      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }, { name: 'all-ai' }] }) as never;
     });
     const pending = reconcilePageWriteIntent(seeded.intentId, {
       actorId: seeded.recoveryAdminId,
@@ -798,7 +1136,7 @@ describeDb('ordinary page-write reconciliation', () => {
       await demoting;
       await demoter.query('COMMIT');
       expect((await query('SELECT labels FROM pages WHERE id = $1', [seeded.pageId])).rows)
-        .toEqual([{ labels: ['after', 'reviewed'] }]);
+        .toEqual([{ labels: ['after', 'reviewed', 'all-ai'] }]);
       expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows)
         .toEqual([{ status: 'reconciled_applied' }]);
       expect((await query('SELECT role FROM users WHERE id = $1', [seeded.recoveryAdminId])).rows)
@@ -812,6 +1150,73 @@ describeDb('ordinary page-write reconciliation', () => {
     }
   });
 
+  it.each([
+    ['all', [], 'all-ai'], ['all', ['ai:all'], 'all-ai'],
+    ['local_only', [], 'local-ai-only'], ['local_only', ['ai:local'], 'local-ai-only'],
+    ['none', [], 'no-ai'], ['none', ['ai:none'], 'no-ai'],
+  ] as const)('repairs legacy %s reserved slot %j without rewriting acknowledged evidence', async (policy, slot, canonical) => {
+    const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
+    // A genuine pre-cutover pending command: old target and terminal receipt
+    // remain immutable, including after recovery has aligned the remote mirror.
+    await query('UPDATE pages SET ai_policy = $2, labels = $3, body_html = $4, body_text = $5 WHERE id = $1',
+      [seeded.pageId, policy, ['before', ...slot], '<p>Authored recovery body</p>', 'Authored recovery body']);
+    const oldTarget = ['after', 'reviewed', ...slot];
+    await query(`UPDATE page_write_intents i SET effect = jsonb_set(effect, '{targetLabels}', $2::jsonb),
+      revisions = jsonb_build_object(p.id::text, jsonb_build_object('contentRevision', p.content_revision::text,
+      'lifecycleRevision', p.lifecycle_revision::text)) FROM pages p WHERE i.id = $1 AND p.id = $3`,
+    [seeded.intentId, JSON.stringify(oldTarget), seeded.pageId]);
+    const original = (await query('SELECT effect, remote_terminal_result FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows[0];
+    const content = (await query('SELECT ai_policy, ai_policy_revision, body_html, body_text FROM pages WHERE id = $1', [seeded.pageId])).rows[0];
+    let remote = [...oldTarget];
+    mockRequest.mockImplementation(async (_url, options) => {
+      if (options?.method === 'POST') {
+        const added = JSON.parse(String(options.body)) as Array<{ name: string }>;
+        expect(added).toEqual([{ prefix: 'global', name: canonical }]);
+        remote.push(...added.map((label) => label.name));
+      } else if (options?.method === 'DELETE') {
+        remote = remote.filter((label) => !String(_url).includes(encodeURIComponent(label)));
+      }
+      return jsonResponse({ results: remote.map((name) => ({ name })) }) as never;
+    });
+    const holders: PoolClient[] = [];
+    while (holders.length < getPool().options.max - 1) holders.push(await getPool().connect());
+    try {
+      await expect(reconcilePageWriteIntent(seeded.intentId, {
+        actorId: seeded.recoveryAdminId, reason: 'Repair the canonical reserved slot of the acknowledged legacy label target',
+      })).resolves.toMatchObject({ status: 'reconciled_applied' });
+    } finally { holders.forEach((holder) => holder.release()); }
+    expect(remote.sort()).toEqual(['after', 'reviewed', canonical].sort());
+    expect((await query('SELECT effect, remote_terminal_result FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows[0]).toEqual(original);
+    expect((await query('SELECT ai_policy, ai_policy_revision, body_html, body_text FROM pages WHERE id = $1', [seeded.pageId])).rows[0]).toEqual(content);
+    const journal = (await query('SELECT plan, next_step, in_flight, outcomes, completed_at FROM page_label_canonical_repairs WHERE intent_id = $1', [seeded.intentId])).rows[0]!;
+    expect(journal.plan.before).toEqual([...oldTarget].sort());
+    expect(journal.plan.after).toEqual(remote);
+    expect(journal.in_flight).toBe(false);
+    expect(journal.outcomes).toHaveLength(slot.length + 1);
+    expect(journal.completed_at).toBeInstanceOf(Date);
+    await expect(withPageWriteTransaction([seeded.pageId], async (client) => {
+      await client.query('UPDATE pages SET title = $2 WHERE id = $1', [seeded.pageId, 'Fresh write after recovery']);
+    })).resolves.toBeUndefined();
+  });
+
+  it('refuses independent remote changes and retains unknown canonical request outcomes', async () => {
+    const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
+    await query(`UPDATE page_write_intents SET effect = jsonb_set(effect, '{targetLabels}', '["after","reviewed"]') WHERE id = $1`, [seeded.intentId]);
+    mockRequest.mockResolvedValue(jsonResponse({ results: [{ name: 'independent' }] }) as never);
+    const authorization = { actorId: seeded.recoveryAdminId, reason: 'Repair only a verified exact legacy terminal target' };
+    await expect(reconcilePageWriteIntent(seeded.intentId, authorization)).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' });
+    expect(mockRequest.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    mockRequest.mockImplementation(async (_url, options) => {
+      if (options?.method === 'POST') throw new Error('lost response after remote request');
+      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }] }) as never;
+    });
+    await expect(reconcilePageWriteIntent(seeded.intentId, authorization)).rejects.toThrow('lost response');
+    const calls = mockRequest.mock.calls.length;
+    await expect(reconcilePageWriteIntent(seeded.intentId, authorization)).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' });
+    expect(mockRequest).toHaveBeenCalledTimes(calls);
+    expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows[0].status).toBe('pending');
+  });
+
   it('owns the production recovery callback until publication finishes before acknowledging quiescence', async () => {
     const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
     const quiescenceAdminId = await seedRecoveryAdmin('quiescence');
@@ -822,7 +1227,7 @@ describeDb('ordinary page-write reconciliation', () => {
     mockRequest.mockImplementationOnce(async () => {
       enterRead();
       await readGate;
-      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }] }) as never;
+      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }, { name: 'all-ai' }] }) as never;
     });
     const pending = reconcilePageWriteIntent(seeded.intentId, {
       actorId: seeded.recoveryAdminId, reason: 'Verify terminal labels on the recovering backend before publishing them',
@@ -871,7 +1276,7 @@ describeDb('ordinary page-write reconciliation', () => {
         reason: 'Retry final acknowledgment after restoring administrator authority',
       });
       expect((await query('SELECT labels FROM pages WHERE id = $1', [seeded.pageId])).rows)
-        .toEqual([{ labels: ['after', 'reviewed'] }]);
+        .toEqual([{ labels: ['after', 'reviewed', 'all-ai'] }]);
       await expect(fencePageWriterRuntime({
         mode: 'owner_ack', runtimeId: ack.runtimeId, acknowledgmentId: ack.acknowledgmentId,
         actorId: quiescenceAdminId, reason: 'The recovering owner acknowledged only after its callback and publication settled',

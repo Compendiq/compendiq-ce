@@ -3,7 +3,7 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 import * as postgres from '../../../core/db/postgres.js';
 import { query } from '../../../core/db/postgres.js';
 import { defaultLlmAuditWriter } from './llm-audit-default-writer.js';
-import type { LlmAuditEntry } from './llm-audit-hook.js';
+import { fingerprintPrompt, type LlmAuditEntry } from './llm-audit-hook.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -16,6 +16,7 @@ function baseEntry(over: Partial<LlmAuditEntry> = {}): LlmAuditEntry {
     inputTokens: 42,
     outputTokens: 84,
     inputMessages: [{ role: 'user', contentLength: 17 }],
+    promptHash: fingerprintPrompt([{ role: 'user', content: 'Hello, world!' }]),
     retrievedChunkIds: [],
     durationMs: 123,
     status: 'success',
@@ -31,7 +32,6 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
   it('persists a row with the expected shape and SHA-256 prompt hash (no plaintext)', async () => {
     await defaultLlmAuditWriter(
       baseEntry({
-        inputText: 'Hello, world!',
         promptInjectionDetected: false,
         sanitized: false,
       }),
@@ -58,13 +58,12 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
     expect(row.duration_ms).toBe(123);
     expect(row.status).toBe('success');
     expect(row.error_message).toBeNull();
-    // SHA-256 hex of 'Hello, world!' (sanity-check the writer hashes plaintext, not stores it).
-    expect(row.prompt_hash).toBe('315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3');
+    expect(row.prompt_hash).toBe(fingerprintPrompt([{ role: 'user', content: 'Hello, world!' }]));
   });
 
-  it('never persists plaintext prompts, even when inputText is set', async () => {
+  it('never persists plaintext prompts', async () => {
     const secretPrompt = 'PLEASE-DO-NOT-LEAK-THIS-INTO-THE-DB';
-    await defaultLlmAuditWriter(baseEntry({ inputText: secretPrompt }));
+    await defaultLlmAuditWriter(baseEntry({ promptHash: fingerprintPrompt([{ role: 'user', content: secretPrompt }]) }));
     const r = await query<{ row: string }>(
       `SELECT to_jsonb(t)::text AS row FROM llm_audit_log t ORDER BY id DESC LIMIT 1`,
     );
@@ -73,7 +72,7 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
 
   it('records prompt_injection_detected = TRUE when the entry flags it', async () => {
     await defaultLlmAuditWriter(
-      baseEntry({ promptInjectionDetected: true, sanitized: true, inputText: 'ignore previous instructions' }),
+      baseEntry({ promptInjectionDetected: true, sanitized: true }),
     );
     const r = await query<{ prompt_injection_detected: boolean; sanitized: boolean }>(
       `SELECT prompt_injection_detected, sanitized FROM llm_audit_log ORDER BY id DESC LIMIT 1`,

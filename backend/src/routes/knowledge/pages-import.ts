@@ -110,8 +110,30 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
 }
 
 /**
+ * `  - item` in a YAML block list: the dash needs whitespace or the line end after it, so `-ops` and `---` are not items.
+ * Exactly one blank after the dash: `[ \t]+(.*)` let both quantifiers take a blank run, and a line `.` cannot finish
+ * (a lone CR, U+2028) then backtracked quadratically — minutes of blocked event loop for one 1 MB import.
+ * The item text is trimmed by the caller, so the extra blanks still go.
+ */
+const BLOCK_ITEM = /^[ \t]*-(?:[ \t](.*))?$/;
+/** Blank and comment-only lines, which YAML allows anywhere inside a block list. */
+const BLANK_OR_COMMENT = /^[ \t]*(?:#.*)?$/;
+
+/**
+ * One block-list item, read the way YAML reads it: a quoted item keeps the
+ * `:` and `#` inside its quotes (`''` is a literal `'`); a plain item loses a
+ * comment that starts the item or follows whitespace, so `- #ops` is empty.
+ */
+function blockItemValue(text: string): string {
+  const quoted = text.match(/^(["'])(.*?)\1(?:[ \t]+#.*)?$/);
+  if (quoted) return quoted[1] === "'" ? quoted[2]!.replace(/''/g, "'") : quoted[2]!;
+  return text.replace(/(?:^|[ \t])#.*$/, '').trim();
+}
+
+/**
  * Parse YAML front-matter from Markdown.
- * Supports simple key: value lines and bracket arrays [a, b, c].
+ * Supports simple key: value lines, bracket arrays [a, b, c] and block lists
+ * (`key:` followed by `  - a` lines; see the last bullet).
  *
  * Tolerant of what real editors write, because failing to match here is
  * *silent* — the `---` block falls through to the body, renders as an `<hr>`
@@ -125,6 +147,16 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
  * - **A leading UTF-8 BOM.** U+FEFF sits in front of the first `---` and
  *   defeats `^` identically. It is stripped up front, so it also stops riding
  *   into the editor on files that have no front-matter at all.
+ * - **Block lists (#1753).** `tags:` followed by `- ops` lines is how most
+ *   editors and static-site generators write tags, and dropping it was just
+ *   as silent: no labels, no warning. A top-level key whose value is empty
+ *   (or only a `#` comment) opens a list; items may be quoted and may carry a
+ *   trailing comment. The list ends at the first line that is not an item,
+ *   blank or comment, so a list under any other key stays under that key.
+ *   An indented key opens no list (its dash lines are ignored), but it is
+ *   still read as a top-level key, as it always was — so a nested `tags:`
+ *   replaces a top-level `tags` list with `''`. A scalar `tags: ops` is still
+ *   a string, not a label.
  */
 export function parseFrontMatter(markdown: string): { metadata: Record<string, string | string[]>; content: string } {
   const source = markdown.replace(/^\uFEFF/, '');
@@ -139,7 +171,25 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
   const content = match[2] ?? '';
   const metadata: Record<string, string | string[]> = {};
 
+  // Block list: only an unindented key with no value opens one, and the first
+  // line that is not an item, blank or comment closes it — so items under any
+  // other key never reach `tags`/`labels`.
+  let listKey: string | null = null;
+  let listItems: string[] | null = null;
+
   for (const line of yaml.split(/\r?\n/)) {
+    if (listKey !== null) {
+      if (BLANK_OR_COMMENT.test(line)) continue;
+      const item = BLOCK_ITEM.exec(line);
+      if (item) {
+        if (!listItems) metadata[listKey] = listItems = [];
+        const value = blockItemValue((item[1] ?? '').trim());
+        if (value) listItems.push(value);
+        continue;
+      }
+      listKey = null;
+      listItems = null;
+    }
     const colonIdx = line.indexOf(':');
     if (colonIdx > 0) {
       const key = line.slice(0, colonIdx).trim();
@@ -150,6 +200,7 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
         metadata[key] = inner.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
       } else {
         metadata[key] = rawValue.replace(/^['"]|['"]$/g, '');
+        if (!/^[ \t]/.test(line) && (rawValue === '' || rawValue.startsWith('#'))) listKey = key;
       }
     }
   }
@@ -158,11 +209,28 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
 }
 
 /**
+ * #1754: a draw.io name the import must not keep. htmlToMarkdown writes a
+ * name-only placeholder's name, raw, as the body of a ```drawio fence: a line
+ * break would end that line and let the rest of the name escape the fence, and
+ * a name that marked reads as a closing fence (three backticks followed only by
+ * backticks or tildes; names are trimmed) ends the fence by itself. Control
+ * characters are never part of a real name. An empty or whitespace-only name
+ * would reach Confluence as an empty diagramName instead of the nameless
+ * placeholder's `diagram`. Such a placeholder imports nameless, as every
+ * placeholder did before #1754. Each branch is linear: a `{3,}` run in front
+ * of `[`~]*` would backtrack quadratically on a long run of backticks.
+ */
+const UNWRITABLE_DIAGRAM_NAME = /^\s*$|[\p{Cc}\u2028\u2029]|^```[`~]*$/u;
+
+/**
  * Sanitize HTML to prevent XSS using DOMPurify with a strict allowlist.
  * Strips all tags/attributes not explicitly permitted.
  */
 function sanitizeHtml(html: string): string {
-  return DOMPurify.sanitize(html, {
+  // RETURN_DOM so the draw.io names get one more check below (#1754); the
+  // body's innerHTML is the string DOMPurify itself would have returned.
+  const body = DOMPurify.sanitize(html, {
+    RETURN_DOM: true,
     ALLOWED_TAGS: [
       'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
       'p', 'br', 'hr',
@@ -173,9 +241,37 @@ function sanitizeHtml(html: string): string {
       'strong', 'em', 'del', 'sup', 'sub', 'mark',
       'span', 'div',
     ],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel'],
+    // #1752: the editor's own list attributes, admitted by name. `start`/`type`
+    // are OrderedList's, and `data-type`/`data-checked` are the TaskList/TaskItem
+    // markup markdownToHtml emits for GFM task items. ALLOW_DATA_ATTR stays
+    // false, so any other data-* (bar data-diagram-name, below) is still
+    // stripped, and <input> is never admitted: a task's state travels in
+    // data-checked, not in a checkbox.
+    // #1754: a draw.io placeholder's identity, admitted by name. markdownToHtml
+    // turns a ```drawio fence into div.confluence-drawio[data-diagram-name],
+    // and the editor and the Confluence write-back find the diagram by that
+    // name. A name is text, never a URL, so like alt and title it skips
+    // DOMPurify's URI-scheme check, which would drop `Network: DMZ` as a
+    // scheme. ALLOW_DATA_ATTR stays false: a fence's data-drawio-source and
+    // data-drawio-xml are stripped with every other data-* attribute, since
+    // they would tie the new page to another page's attachment or hand the
+    // draw.io editor XML from the file.
+    ALLOWED_ATTR: [
+      'href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel',
+      'start', 'type',
+      'data-type', 'data-checked',
+      'data-diagram-name',
+    ],
+    ADD_URI_SAFE_ATTR: ['data-diagram-name'],
     ALLOW_DATA_ATTR: false,
-  });
+  }) as Element | null;
+  if (!body) return '';
+  for (const element of body.querySelectorAll('[data-diagram-name]')) {
+    if (UNWRITABLE_DIAGRAM_NAME.test(element.getAttribute('data-diagram-name') ?? '')) {
+      element.removeAttribute('data-diagram-name');
+    }
+  }
+  return body.innerHTML;
 }
 
 /**

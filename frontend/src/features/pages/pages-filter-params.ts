@@ -13,7 +13,7 @@
  * empty strings.
  */
 
-import { PageSourceEnum, type PageSource } from '@compendiq/contracts';
+import { AiPolicyFilterSchema, PageSourceEnum, type AiPolicyFilter, type PageSource } from '@compendiq/contracts';
 
 export type SortKey = 'title' | 'modified' | 'author' | 'quality' | 'relevance';
 export type SearchMode = 'keyword' | 'semantic' | 'hybrid';
@@ -29,6 +29,13 @@ export interface PageFilterState {
   from: string;
   to: string;
   source: PageSource | '';
+  /**
+   * #283 Library AI-policy filter. `''` is "All articles" — NO filter, which
+   * is deliberately not the `all` policy value: `all` lists only articles
+   * whose policy is All AI allowed. Validated against the contract enum so a
+   * hand-edited URL falls back to no filter rather than reaching the API.
+   */
+  aiPolicy: AiPolicyFilter | '';
   sort: SortKey;
   mode: SearchMode;
   page: number;
@@ -45,6 +52,7 @@ export const FILTER_DEFAULTS: PageFilterState = {
   from: '',
   to: '',
   source: '',
+  aiPolicy: '',
   sort: 'modified',
   mode: 'hybrid',
   page: 1,
@@ -64,6 +72,7 @@ export const ADVANCED_FILTER_KEYS = [
   'from',
   'to',
   'source',
+  'aiPolicy',
 ] as const satisfies readonly (keyof PageFilterState)[];
 
 const SORT_KEYS: readonly SortKey[] = ['title', 'modified', 'author', 'quality', 'relevance'];
@@ -126,6 +135,7 @@ export function readFilterState(params: URLSearchParams): PageFilterState {
     from: isoDate(params.get('from')),
     to: isoDate(params.get('to')),
     source: oneOf(params.get('source'), PageSourceEnum.options, '' as PageSource | ''),
+    aiPolicy: oneOf(params.get('aiPolicy'), AiPolicyFilterSchema.options, '' as AiPolicyFilter | ''),
     sort: oneOf(params.get('sort'), SORT_KEYS, FILTER_DEFAULTS.sort),
     mode: oneOf(params.get('mode'), SEARCH_MODES, FILTER_DEFAULTS.mode),
     // Upper bound as well as lower: `page` was the one value that reached the

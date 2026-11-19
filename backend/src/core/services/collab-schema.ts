@@ -26,6 +26,7 @@ import { Color } from '@tiptap/extension-color';
 import { generateHTML, generateJSON } from '@tiptap/html';
 import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
 import * as Y from 'yjs';
+import { isConfluenceTaskId } from './confluence-task-id.js';
 
 const COLLAB_FIELD = 'default';
 
@@ -168,6 +169,7 @@ const DrawioDiagram = Node.create({
           attributes.xml ? { 'data-drawio-xml': attributes.xml } : {},
       },
       src: { default: null },
+      drawioSource: { default: null },
       alt: { default: 'Diagram' },
       editHref: { default: '#' },
     };
@@ -182,6 +184,7 @@ const DrawioDiagram = Node.create({
           const link = el.querySelector('a.drawio-edit-link');
           return {
             diagramName: el.getAttribute('data-diagram-name'),
+            drawioSource: el.getAttribute('data-drawio-source'),
             xml: el.getAttribute('data-drawio-xml'),
             src: img?.getAttribute('src') || null,
             alt: img?.getAttribute('alt') || 'Diagram',
@@ -196,6 +199,8 @@ const DrawioDiagram = Node.create({
     const children: unknown[] = [];
     if (imageSrc) {
       children.push(['img', { src: imageSrc, alt: node.attrs.alt }]);
+    } else if (node.attrs.diagramName) {
+      children.push(['span', { class: 'drawio-preview-unavailable' }, `Draw.io preview unavailable: ${node.attrs.diagramName}`]);
     }
     if (node.attrs.editHref && node.attrs.editHref !== '#') {
       children.push([
@@ -208,6 +213,7 @@ const DrawioDiagram = Node.create({
       class: 'confluence-drawio',
       'data-diagram-name': node.attrs.diagramName as string | null,
     };
+    if (node.attrs.drawioSource) divAttrs['data-drawio-source'] = node.attrs.drawioSource as string;
     if (node.attrs.xml) divAttrs['data-drawio-xml'] = node.attrs.xml as string;
     return ['div', divAttrs, ...children];
   },
@@ -220,17 +226,22 @@ const ConfluenceToc = Node.create({
   group: 'block',
   atom: true,
   addAttributes() {
-    return dataParamAttributes(TOC_PARAMS);
+    return {
+      ...dataParamAttributes(TOC_PARAMS),
+      // #1749: every toc parameter outside TOC_PARAMS (exclude, include, …).
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+      },
+    };
   },
   parseHTML() {
     return [{ tag: 'div.confluence-toc' }];
   },
   renderHTML({ node }) {
-    return [
-      'div',
-      renderDataParams(node.attrs, TOC_PARAMS, { class: 'confluence-toc' }),
-      'Table of Contents is displayed in the sidebar',
-    ];
+    const attrs = renderDataParams(node.attrs, TOC_PARAMS, { class: 'confluence-toc' });
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['div', attrs, 'Table of Contents is displayed in the sidebar'];
   },
 });
 
@@ -249,17 +260,20 @@ const ConfluenceStatus = Node.create({
         default: '',
         parseHTML: (element: HTMLElement) => element.textContent ?? '',
       },
+      // #1749: every status parameter except colour and title (subtle, …).
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+      },
     };
   },
   parseHTML() {
     return [{ tag: 'span.confluence-status' }];
   },
   renderHTML({ node }) {
-    return [
-      'span',
-      { class: 'confluence-status', 'data-color': node.attrs.color },
-      node.attrs.label,
-    ];
+    const attrs: Record<string, string> = { class: 'confluence-status', 'data-color': node.attrs.color };
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['span', attrs, node.attrs.label];
   },
 });
 
@@ -365,6 +379,47 @@ const ConfluenceUserMention = Node.create({
       renderDataParams(node.attrs, MENTION_PARAMS, { class: 'confluence-user-mention' }),
       node.attrs.label,
     ];
+  },
+});
+
+/**
+ * A Confluence emoticon (#1750): `emoticonAttrs` is every attribute of the
+ * `ac:emoticon`, a JSON object in source order (`data-emoticon-attrs`);
+ * `label` (`data-emoticon-label`, drawn by CSS) and `name` (`aria-label`) are
+ * display only. The span holds no text.
+ */
+const ConfluenceEmoticon = Node.create({
+  name: 'confluenceEmoticon',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  addAttributes() {
+    return {
+      emoticonAttrs: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-emoticon-attrs'),
+      },
+      label: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-emoticon-label'),
+      },
+      name: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('aria-label'),
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'span.confluence-emoticon' }];
+  },
+  renderHTML({ node }) {
+    // Empty, like the converter's placeholder: index.css draws the label.
+    const attrs: Record<string, string> = { class: 'confluence-emoticon' };
+    if (node.attrs.emoticonAttrs) attrs['data-emoticon-attrs'] = node.attrs.emoticonAttrs;
+    if (node.attrs.label) attrs['data-emoticon-label'] = node.attrs.label;
+    attrs.role = 'img';
+    attrs['aria-label'] = node.attrs.name || 'emoticon';
+    return ['span', attrs];
   },
 });
 
@@ -671,6 +726,28 @@ const ExtendedTable = Table.extend({
   },
 });
 
+/**
+ * TaskItem plus the task's Confluence identity (#1751): `ac:task-id` rides in
+ * `data-task-id`, which the converter writes and reads back. ProseMirror keeps
+ * declared attributes only, so without it every save minted new ids.
+ * `keepOnSplit: false` like TaskItem's own `checked`: Enter in a task starts a
+ * new task, not a second carrier of this one's id.
+ */
+const ConfluenceTaskItem = TaskItem.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      taskId: {
+        default: null,
+        keepOnSplit: false,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-task-id'),
+        renderHTML: (attributes: { taskId?: string | null }) =>
+          attributes.taskId ? { 'data-task-id': attributes.taskId } : {},
+      },
+    };
+  },
+});
+
 const ConfluenceImage = Image.extend({
   addAttributes() {
     return {
@@ -737,6 +814,13 @@ const TitledCodeBlock = CodeBlock.extend({
         renderHTML: (attributes: { title?: string | null }) =>
           attributes.title ? { 'data-title': attributes.title } : {},
       },
+      // #1749: every code macro parameter except language and title.
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes: { macroParams?: string | null }) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+      },
     };
   },
   parseHTML() {
@@ -747,7 +831,9 @@ const TitledCodeBlock = CodeBlock.extend({
         getAttrs: (node) => {
           const el = node as HTMLElement;
           return {
-            language: el.querySelector('code')?.className.match(/language-(\w+)/)?.[1] ?? null,
+            // #1749: the whole class token, the `\S` class content-converter.ts
+            // and frontend TitledCodeBlock.ts share.
+            language: el.querySelector('code')?.className.match(/language-(\S+)/)?.[1] ?? null,
             title: el.getAttribute('data-title'),
           };
         },
@@ -794,6 +880,16 @@ const MermaidBlock = Node.create({
           return codeEl?.textContent ?? '';
         },
       },
+      // #1749: a code macro whose language is mermaid lands here, not in the
+      // code block, so it keeps the code block's title and parameter carrier.
+      title: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-title'),
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+      },
     };
   },
   parseHTML() {
@@ -810,11 +906,10 @@ const MermaidBlock = Node.create({
     ];
   },
   renderHTML({ node }) {
-    return [
-      'pre',
-      mergeAttributes({}),
-      ['code', { class: 'language-mermaid' }, node.attrs.code],
-    ];
+    const attrs: Record<string, string> = {};
+    if (node.attrs.title) attrs['data-title'] = node.attrs.title;
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['pre', attrs, ['code', { class: 'language-mermaid' }, node.attrs.code]];
   },
 });
 
@@ -893,7 +988,7 @@ export function collabExtensions(): AnyExtension[] {
     TableCell,
     TableHeader,
     TaskList,
-    TaskItem.configure({ nested: true }),
+    ConfluenceTaskItem.configure({ nested: true }),
     MermaidBlock,
     Details,
     DetailsSummary,
@@ -902,6 +997,7 @@ export function collabExtensions(): AnyExtension[] {
     ConfluenceToc,
     ConfluenceJiraIssue,
     ConfluenceUserMention,
+    ConfluenceEmoticon,
     ConfluenceIncludeMacro,
     ConfluenceLabelsMacro,
     UnknownMacro,
@@ -940,11 +1036,147 @@ export function yDocToHtml(doc: Y.Doc): string {
   return generateHTML(json, collabExtensions());
 }
 
+/**
+ * Seed or reset `doc` from HTML. When the HTML's tasks carry Confluence task
+ * ids, the same update records that in the document's metadata (#1751;
+ * {@link collabCarriesTaskIds}).
+ */
 export function applyHtmlToYDoc(doc: Y.Doc, html: string): void {
   const src = htmlToYDoc(html);
   try {
+    if (taskItemElements(src).some((element) => carriesTaskId(element))) {
+      src.getMap(COLLAB_META_MAP).set(COLLAB_META_TASK_IDS, true);
+    }
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(src), 'load');
   } finally {
     src.destroy();
   }
+}
+
+/** An image `src` and the Confluence attachment filename its markers name (#1764). */
+export interface AttachmentImageMarker {
+  src: string;
+  filename: string;
+}
+
+/**
+ * Give each live `image` node whose `src` a Confluence commit uploaded the
+ * markers that commit's plan wrote into the published HTML
+ * (`data-confluence-filename`, `data-confluence-image-source="attachment"`),
+ * so the next plan skips it. A node carrying either marker keeps what it has,
+ * as the plan's own skip rule does. One transaction with `origin`, none when
+ * nothing matches; returns the number of nodes marked (#1764).
+ */
+export function markAttachmentImages(
+  doc: Y.Doc,
+  markers: readonly AttachmentImageMarker[],
+  origin: unknown,
+): number {
+  const filenames = new Map(markers.map((marker) => [marker.src, marker.filename]));
+  const unmarked: Array<{ image: Y.XmlElement; filename: string }> = [];
+  // The walker skips deleted items and descends into tables, figures and layouts.
+  const images = doc.getXmlFragment(COLLAB_FIELD)
+    .createTreeWalker((type) => type instanceof Y.XmlElement && type.nodeName === 'image');
+  for (const node of images) {
+    const image = node as Y.XmlElement;
+    const src = image.getAttribute('src');
+    const filename = typeof src === 'string' ? filenames.get(src) : undefined;
+    if (
+      filename === undefined
+      || image.getAttribute('data-confluence-filename')
+      || image.getAttribute('data-confluence-image-source')
+    ) continue;
+    unmarked.push({ image, filename });
+  }
+  if (unmarked.length === 0) return 0;
+  doc.transact(() => {
+    for (const { image, filename } of unmarked) {
+      image.setAttribute('data-confluence-filename', filename);
+      image.setAttribute('data-confluence-image-source', 'attachment');
+    }
+  }, origin);
+  return unmarked.length;
+}
+
+/** A task item of a collaborative document: its Yjs identity and the Confluence task id it carries (#1751). */
+export interface CollabTaskItem {
+  client: number;
+  clock: number;
+  taskId: string | null;
+}
+
+/** The Confluence task id a settled commit wrote for the task item with this Yjs identity (#1751). */
+export interface TaskIdMarker {
+  client: number;
+  clock: number;
+  taskId: string;
+}
+
+/**
+ * The collaborative document's metadata (#1751): a Y.Map beside the content
+ * fragment, which editors do not bind. Its `confluenceTaskIds` key is `true`
+ * once the document's tasks carry Confluence task ids. It is set only when the
+ * document is seeded or reset from HTML whose tasks carry them
+ * ({@link applyHtmlToYDoc}), and in the transaction that marks the ids a
+ * settled Confluence commit wrote ({@link markTaskIds}).
+ */
+export const COLLAB_META_MAP = 'compendiq.meta';
+export const COLLAB_META_TASK_IDS = 'confluenceTaskIds';
+
+/**
+ * Whether the document's tasks carry Confluence task ids (#1751). Without the
+ * flag, the room was seeded from a body converted before ids were carried, and
+ * a collaborative Save over a storage with task ids treats the page as legacy
+ * (htmlToConfluence's `legacyTasks`).
+ */
+export function collabCarriesTaskIds(doc: Y.Doc): boolean {
+  return doc.getMap(COLLAB_META_MAP).get(COLLAB_META_TASK_IDS) === true;
+}
+
+function taskItemElements(doc: Y.Doc): Y.XmlElement[] {
+  return [...doc.getXmlFragment(COLLAB_FIELD).createTreeWalker(
+    (type) => type instanceof Y.XmlElement && type.nodeName === 'taskItem',
+  )] as Y.XmlElement[];
+}
+
+function carriesTaskId(element: Y.XmlElement): boolean {
+  const taskId: unknown = element.getAttribute('taskId');
+  return typeof taskId === 'string' && isConfluenceTaskId(taskId);
+}
+
+/**
+ * The task items of a collaborative document in the order yDocToHtml writes
+ * them, so the n-th one is the n-th task item of that HTML (#1751).
+ */
+export function collabTaskItems(doc: Y.Doc): CollabTaskItem[] {
+  return taskItemElements(doc).map((element) => {
+    const { client, clock } = element._item!.id;
+    const taskId: unknown = element.getAttribute('taskId');
+    return { client, clock, taskId: typeof taskId === 'string' ? taskId : null };
+  });
+}
+
+/**
+ * Give each task item a marker names the Confluence task id a settled commit
+ * wrote for it (#1751), so the room's next Save keeps it, and record in the
+ * same transaction that the document's tasks carry ids, also when every item
+ * already carries its id. An item is found by its Yjs identity, so edits made
+ * meanwhile elsewhere do not matter; a deleted one is skipped. One transaction
+ * with `origin`, none when nothing changes; returns the number of items marked.
+ */
+export function markTaskIds(doc: Y.Doc, markers: readonly TaskIdMarker[], origin: unknown): number {
+  const wanted = new Map(markers.map((marker) => [`${marker.client}:${marker.clock}`, marker.taskId]));
+  const unmarked: Array<{ element: Y.XmlElement; taskId: string }> = [];
+  for (const element of taskItemElements(doc)) {
+    const { client, clock } = element._item!.id;
+    const taskId = wanted.get(`${client}:${clock}`);
+    if (taskId !== undefined && element.getAttribute('taskId') !== taskId) unmarked.push({ element, taskId });
+  }
+  const recorded = collabCarriesTaskIds(doc);
+  if (unmarked.length === 0 && recorded) return 0;
+  doc.transact(() => {
+    for (const { element, taskId } of unmarked) element.setAttribute('taskId', taskId);
+    if (!recorded) doc.getMap(COLLAB_META_MAP).set(COLLAB_META_TASK_IDS, true);
+  }, origin);
+  return unmarked.length;
 }

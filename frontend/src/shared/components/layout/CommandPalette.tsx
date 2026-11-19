@@ -44,8 +44,7 @@ export function CommandPalette() {
   const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  const [searchResult, setSearchResult] = useState<{ query: string; items: SearchResult[] } | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const searchSequenceRef = useRef(0);
@@ -53,13 +52,26 @@ export function CommandPalette() {
   // AI mode: activated when query starts with "/ai"
   const isAiMode = query.trimStart().toLowerCase().startsWith('/ai');
   const aiQuery = isAiMode ? query.trimStart().slice(3).trim() : '';
+  const results = useMemo(
+    () => searchResult?.query === query ? searchResult.items : [],
+    [query, searchResult],
+  );
+  const isSearching = !!query.trim() && !isAiMode && searchResult?.query !== query;
+
+  const changeQuery = useCallback((value: string) => {
+    if (value === query) return;
+    searchSequenceRef.current += 1;
+    setSearchResult(null);
+    setSelectedIndex(-1);
+    setQuery(value);
+  }, [query]);
 
   // Reset transient state when opened (focus is handled by Radix onOpenAutoFocus)
   useEffect(() => {
     if (isOpen) {
       setRecentSearches(readRecentSearches());
       setQuery('');
-      setResults([]);
+      setSearchResult(null);
       setSelectedIndex(0);
     }
   }, [isOpen]);
@@ -70,31 +82,26 @@ export function CommandPalette() {
     searchSequenceRef.current = searchSequence;
 
     if (!query.trim() || isAiMode) {
-      setResults([]);
+      setSearchResult(null);
       setSelectedIndex(0);
-      setIsSearching(false);
       return;
     }
 
     const controller = new AbortController();
 
     const timeoutId = setTimeout(async () => {
-      setIsSearching(true);
       try {
         const data = await apiFetch<{ items: SearchResult[] }>(
           `/pages?search=${encodeURIComponent(query)}&limit=8`,
           { signal: controller.signal },
         );
         if (searchSequenceRef.current !== searchSequence) return;
-        setResults(data.items);
+        setSearchResult({ query, items: data.items });
         setSelectedIndex(0);
       } catch {
         if (controller.signal.aborted || searchSequenceRef.current !== searchSequence) return;
-        setResults([]);
-      } finally {
-        if (searchSequenceRef.current === searchSequence) {
-          setIsSearching(false);
-        }
+        setSearchResult({ query, items: [] });
+        setSelectedIndex(0);
       }
     }, 250);
 
@@ -166,7 +173,7 @@ export function CommandPalette() {
     if (!item) return;
 
     if (item.type === 'recent') {
-      setQuery(item.label);
+      changeQuery(item.label);
       return;
     }
 
@@ -177,7 +184,7 @@ export function CommandPalette() {
       navigate(item.path);
       close();
     }
-  }, [allItems, close, navigate, query]);
+  }, [allItems, changeQuery, close, navigate, query]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
@@ -196,7 +203,7 @@ export function CommandPalette() {
 
   // aria-activedescendant/option ids share a stable index space with `allItems`
   // (and with the selectedIndex / handleSelect indices used below).
-  const activeOptionId = allItems.length > 0 ? `cmdk-opt-${selectedIndex}` : undefined;
+  const activeOptionId = selectedIndex >= 0 && selectedIndex < allItems.length ? `cmdk-opt-${selectedIndex}` : undefined;
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => { if (!open) close(); }}>
@@ -260,7 +267,7 @@ export function CommandPalette() {
                   ref={inputRef}
                   type="text"
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => changeQuery(e.target.value)}
                   placeholder={isAiMode ? 'Ask AI anything...' : 'Find a page or command...'}
                   className={cn(
                     'flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
@@ -351,11 +358,12 @@ export function CommandPalette() {
                 )}
 
                 {/* Loading indicator */}
-                {isSearching && !isAiMode && (
-                  <div className="flex items-center justify-center py-4 text-sm text-muted-foreground">
-                    Searching...
-                  </div>
-                )}
+                <div role="status" className={cn(
+                  'flex items-center justify-center text-sm text-muted-foreground',
+                  isSearching && 'py-4',
+                )}>
+                  {isSearching ? 'Searching...' : ''}
+                </div>
 
                 {/* Title search missed — offer the corpus search and Ask AI. */}
                 {recoveryItems.length > 0 && (

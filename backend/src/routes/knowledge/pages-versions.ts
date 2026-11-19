@@ -15,7 +15,7 @@ import { isConfluenceEnabled } from '../../core/services/confluence-integration.
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
 import { CONFLUENCE_DISABLED_MESSAGE } from '../../domains/confluence/services/standalone-mode.js';
-import { htmlToConfluence } from '../../core/services/content-converter.js';
+import { hasOnlyUncarriedTasks, htmlToConfluence } from '../../core/services/content-converter.js';
 import {
   describeConfluencePagePut,
   publishConfluencePagePut,
@@ -32,6 +32,7 @@ import {
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
+import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
   cancelPageWriteIntentBeforeEffect,
@@ -185,7 +186,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
    * so an unreadable page is indistinguishable from a missing one.
    */
   async function resolveAndAuthorize(userId: string, id: string): Promise<PageContext | null> {
-    const isNumericId = /^\d+$/.test(id);
+    const primaryKey = toPageIdInt4(id);
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
     const result = await query<{
       id: number;
@@ -201,10 +202,10 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
               cp.content_revision::text AS "contentRevision",
               cp.lifecycle_revision::text AS "lifecycleRevision"
          FROM pages cp
-        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
+        WHERE ${primaryKey !== null ? 'cp.id = $1' : 'cp.confluence_id = $1'}
           AND cp.deleted_at IS NULL
           AND ${visiblePagesPredicate(2, 3)}`,
-      [isNumericId ? parseInt(id, 10) : id, accessibleSpaces, userId],
+      [primaryKey ?? id, accessibleSpaces, userId],
     );
     if (result.rows.length === 0) return null;
     const page = result.rows[0]!;
@@ -438,7 +439,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const diff = await getSemanticDiff(ctx.id, v1, v2, model, ctx.confluenceId, client);
+    const diff = await getSemanticDiff(ctx.id, v1, v2, model, ctx.confluenceId, client, userId);
     return { diff, v1, v2, pageId: id };
   });
 
@@ -540,7 +541,16 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       if (intendedHistorical.body_html === null) {
         throw fastify.httpErrors.conflict('Historical version body is unavailable');
       }
-      const storageBody = htmlToConfluence(intendedHistorical.body_html);
+      // #1751: tasks keep the ids Confluence has, as publication re-derives
+      // the digest from this same stored page (publishConfluencePagePut).
+      const current = await query<{ body_storage: string | null; body_html: string | null }>(
+        'SELECT body_storage, body_html FROM pages WHERE id = $1',
+        [ctx.id],
+      );
+      const storageBody = htmlToConfluence(intendedHistorical.body_html, {
+        previousStorage: current.rows[0]?.body_storage,
+        legacyTasks: hasOnlyUncarriedTasks(current.rows[0]?.body_html),
+      });
       const publication = describeConfluencePagePut({
         kind: 'page.version_restore',
         actorId: userId,

@@ -91,7 +91,7 @@ test.describe('Think toggle wires upstream provider extras', () => {
       // The frontend store keeps `user` in localStorage too; a minimal
       // shape is enough to satisfy the gate.
       localStorage.setItem(
-        'compendiq-auth',
+        'compendiq-auth:p1',
         JSON.stringify({
           state: {
             accessToken: token,

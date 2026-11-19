@@ -222,7 +222,7 @@ describe('Search Routes', () => {
   describe('GET /api/search', () => {
     it('should return search results with facets', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
+        if (typeof sql === 'string' && sql.includes('AS facet')) {
           return {
             rows: [
               { facet: 'space', value: 'DEV', count: '1' },
@@ -355,6 +355,71 @@ describe('Search Routes', () => {
       expect(dataCall![1] as unknown[]).toContain('Alice');
     });
 
+    /**
+     * #283 — the Library AI-policy filter on the lexical path. It is ANDed
+     * into every keyword leg (FTS data, fuzzy title, facets) as an exact
+     * match on `pages.ai_policy`, and it is ABSENT from every leg when the
+     * parameter is absent: "All articles" is no filter, not the `all`
+     * policy, and an unfiltered lexical search still finds a readable
+     * `none` page. An unknown value is a 400, never an ignored parameter.
+     */
+    describe('aiPolicy filter (#283)', () => {
+      const legs = (sql: string) => sql.includes('ts_rank') || sql.includes('similarity(cp.title') || sql.includes('UNION ALL');
+
+      it('ANDs an exact ai_policy match into the FTS, fuzzy-title and facet legs', async () => {
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        const res = await app.inject({ method: 'GET', url: '/api/search?q=test&aiPolicy=none' });
+        expect(res.statusCode).toBe(200);
+        const calls = mockQueryFn.mock.calls.filter((c: unknown[]) => typeof c[0] === 'string' && legs(c[0] as string));
+        // One keyword statement holds both legs (#1741); the facets are the other.
+        expect(calls).toHaveLength(2);
+        for (const [sql, params] of calls) {
+          expect(sql as string).toMatch(/cp\.ai_policy = \$\d+/);
+          expect(params as unknown[]).toContain('none');
+          // The placeholder names a bound value, not a string the SQL spells out.
+          expect(sql as string).not.toContain("'none'");
+        }
+        // Both keyword legs filter: the full-text and the fuzzy-title leg of the
+        // one union statement (#1741) bind the same `$4`.
+        const unionSql = calls.find(([sql]) => (sql as string).includes('ts_rank'))![0] as string;
+        expect(unionSql.match(/cp\.ai_policy = \$4/g)).toHaveLength(2);
+        // The facet UNION filters all three arms, or a count could promise
+        // rows the filtered list does not show.
+        const facetSql = calls.find(([sql]) => (sql as string).includes('AS facet'))![0] as string;
+        expect(facetSql.match(/cp\.ai_policy = \$4/g)).toHaveLength(3);
+      });
+
+      it('applies no policy predicate at all when the parameter is absent — restricted pages remain findable', async () => {
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        await app.inject({ method: 'GET', url: '/api/search?q=test' });
+        const calls = mockQueryFn.mock.calls.filter((c: unknown[]) => typeof c[0] === 'string' && legs(c[0] as string));
+        expect(calls).toHaveLength(2);
+        for (const [sql] of calls) expect(sql as string).not.toContain('ai_policy');
+      });
+
+      it('refuses a value outside the stored policy set with 400', async () => {
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        for (const bad of ['any', 'all articles', 'no_ai', '']) {
+          const res = await app.inject({ method: 'GET', url: `/api/search?q=test&aiPolicy=${encodeURIComponent(bad)}` });
+          expect(res.statusCode).toBe(400);
+        }
+        expect(mockQueryFn).not.toHaveBeenCalled();
+      });
+
+      it('narrows the authorized pool in semantic mode through the metadata read, after retrieval', async () => {
+        mockProviderGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+        mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'A'), makeSearchResult(2, 'B')]);
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        const res = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=semantic&aiPolicy=local_only' });
+        expect(res.statusCode).toBe(200);
+        // Retrieval itself is unchanged: the policy filter is not an access
+        // rule and the human-read purpose stays declared.
+        expect(mockVectorSearch).toHaveBeenCalledWith(
+          'test-user-id', [0.1, 0.2], expect.any(Number), expect.objectContaining({ aiPolicy: { purpose: 'human' } }),
+        );
+      });
+    });
+
     it('should filter by date range', async () => {
       mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -387,6 +452,60 @@ describe('Search Routes', () => {
       expect(dataCall![1] as unknown[]).toContainEqual(['howto', 'architecture']);
     });
 
+    // #1740 — the keyword filters are built once and bound to BOTH keyword
+    // legs: the same predicate text and `$n` in the full-text and the
+    // fuzzy-title leg of the one keyword statement (#1741), over one head of
+    // parameter values. The statement's own tail follows that head: the
+    // similarity threshold, then limit and offset.
+    it('binds every active keyword filter to the fuzzy-title leg with the FTS numbering (#1740)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&spaceKey=DEV&author=Alice&dateFrom=2025-01-01&dateTo=2025-12-31&tags=howto,architecture&aiPolicy=none&limit=7&page=3',
+      });
+      expect(res.statusCode).toBe(200);
+
+      const [sql, params] = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('similarity(cp.title'),
+      ) as [string, unknown[]];
+      const head = ['test', ['TEST'], 'test-user-id', 'DEV', 'Alice', '2025-01-01', '2025-12-31', ['howto', 'architecture'], 'none'];
+      for (const predicate of [
+        'cp.space_key = $4',
+        'cp.author = $5',
+        'cp.last_modified_at >= $6',
+        'cp.last_modified_at <= $7',
+        'cp.labels @> $8::text[]',
+        'cp.ai_policy = $9',
+      ]) {
+        // Once in the full-text leg, once in the fuzzy-title leg.
+        expect(sql.split(predicate)).toHaveLength(3);
+      }
+      expect(params.slice(0, head.length)).toEqual(head);
+      expect(sql).toContain('similarity(cp.title, $1) > $10');
+      expect(sql).toContain('LIMIT $11 OFFSET $12');
+      expect(params.slice(head.length)).toEqual([0.3, 7, 14]);
+      // Narrowing only: the sargable operator, visibility and trash predicates stay.
+      expect(sql).toContain('cp.title % $1');
+      expect(sql).toContain('cp.space_key = ANY($2::text[])');
+      expect(sql).toContain('cp.deleted_at IS NULL');
+    });
+
+    // Regression guard (green before #1740 too): with no filter active the
+    // fuzzy-title statement keeps its original placeholders and values.
+    it('keeps the unfiltered fuzzy-title statement on threshold $4 and limit $5 (#1740)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/search?q=test' });
+
+      const [trgmSql, trgmParams] = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('similarity(cp.title'),
+      ) as [string, unknown[]];
+      expect(trgmParams).toEqual(['test', ['TEST'], 'test-user-id', 0.3, 10, 0]);
+      expect(trgmSql).toContain('similarity(cp.title, $1) > $4');
+      expect(trgmSql).toContain('LIMIT $5 OFFSET $6');
+    });
+
     it('should support sort by modified date', async () => {
       mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -399,7 +518,7 @@ describe('Search Routes', () => {
         (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
       );
       expect(dataCall).toBeDefined();
-      expect(dataCall![0] as string).toContain('cp.last_modified_at DESC');
+      expect(dataCall![0] as string).toContain('ORDER BY hits.last_modified_at DESC NULLS LAST, hits.id');
     });
 
     it('should paginate results correctly', async () => {
@@ -435,65 +554,140 @@ describe('Search Routes', () => {
       expect(params[params.length - 1]).toBe(10); // offset = (2-1)*10
     });
 
-    // ── keyword mode: trgm title merge ──────────────────────────────────────
+    // ── keyword mode: one paged union of both legs (#1741) ──────────────────
+    // The full-text leg and the fuzzy-title leg are ONE statement: unioned and
+    // deduplicated first, then ordered, offset, limited and counted once.
 
-    it('keyword mode runs trgm title query separately from FTS', async () => {
+    const keywordRow = (id: number, totalCount: string) => ({
+      id,
+      confluence_id: `page-${id}`,
+      source: 'confluence',
+      title: `Page ${id}`,
+      space_key: 'DEV',
+      author: 'Alice',
+      last_modified_at: null,
+      labels: [],
+      rank: 0.5,
+      snippet: 'snippet',
+      total_count: totalCount,
+    });
+    // Regression guard: before #1741 a separate, unpaged fuzzy-title statement
+    // returned rows like this one, and the route appended them to every page.
+    const separateFuzzyRow = {
+      id: 99, confluence_id: 'page-99', source: 'confluence', title: 'Pgae', space_key: 'DEV', body_text: 'typo', rank: 0.8,
+    };
+
+    it('runs the full-text and fuzzy-title legs as ONE paged union statement (#1741)', async () => {
+      // Page 3 holds a row, so the count needs no second statement.
+      mockQueryFn.mockImplementation((sql: string) => ({
+        rows: typeof sql === 'string' && sql.includes('ts_rank') ? [keywordRow(15, '15')] : [],
+      }));
+
+      await app.inject({ method: 'GET', url: '/api/search?q=test&limit=7&page=3' });
+
+      const fuzzyCalls = mockQueryFn.mock.calls.filter(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('similarity(cp.title'),
+      ) as Array<[string, unknown[]]>;
+      expect(fuzzyCalls).toHaveLength(1);
+      const [sql, params] = fuzzyCalls[0]!;
+      // Union first: both legs live in this statement and carry only the keys
+      // the order needs, and the fuzzy leg drops every page the full-text leg
+      // already holds.
+      expect(sql).toContain('ts_rank(cp.tsv');
+      expect(sql.match(/SELECT cp\.id, cp\.title, cp\.last_modified_at,\s/g)).toHaveLength(2);
+      expect(sql).toContain('NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = cp.id)');
+      // Then one order, offset, limit and window count over that union…
+      expect(sql).toMatch(
+        /COUNT\(\*\) OVER\(\) AS total_count\s+FROM \(SELECT \* FROM fts UNION ALL SELECT \* FROM trgm\) hits\s+ORDER BY hits\.fuzzy, hits\.rank DESC, hits\.id\s+LIMIT \$5 OFFSET \$6\s/,
+      );
+      // …and only the page's rows read a body: they join back to `pages` for
+      // display columns and the snippet after LIMIT, in the same order.
+      expect(sql).toMatch(/FROM paged hits\s+JOIN pages cp ON cp\.id = hits\.id\s+ORDER BY hits\.fuzzy, hits\.rank DESC, hits\.id$/);
+      expect(sql.split('cp.body_text')).toHaveLength(3);
+      // The fuzzy leg stays sargable (#928): `%` is its first conjunct.
+      expect(sql).toContain('WHERE cp.title % $1\n');
+      expect(sql).toContain('similarity(cp.title, $1) > $4');
+      expect(params).toEqual(['test', ['TEST'], 'test-user-id', 0.3, 7, 14]);
+    });
+
+    it.each([
+      ['relevance', 'hits.fuzzy, hits.rank DESC, hits.id'],
+      ['modified', 'hits.last_modified_at DESC NULLS LAST, hits.id'],
+      ['title', 'hits.title, hits.id'],
+    ])('orders sort=%s over the whole union with the page id last (#1741)', async (sort, keys) => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      await app.inject({ method: 'GET', url: `/api/search?q=test&sort=${sort}` });
+
+      const [sql] = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
+      ) as [string];
+      // The page is cut in this order, and the joined page rows keep it.
+      expect(sql).toContain(`ORDER BY ${keys}\n`);
+      expect(sql.endsWith(`ORDER BY ${keys}`)).toBe(true);
+    });
+
+    it('returns exactly the rows the union statement paged, never extra fuzzy rows (#1741)', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('similarity')) {
-          return {
-            rows: [
-              {
-                id: 99,
-                confluence_id: 'page-99',
-                source: 'confluence',
-                title: 'Redis Tuning',
-                space_key: 'DEV',
-                body_text: 'Tuning advice',
-                rank: 0.8,
-              },
-            ],
-          };
-        }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
-          return {
-            rows: [{
-              id: 1,
-              confluence_id: 'page-1',
-              source: 'confluence',
-              title: 'Redis Guide',
-              space_key: 'DEV',
-              author: 'Alice',
-              last_modified_at: null,
-              labels: [],
-              rank: 0.9,
-              snippet: 'Redis intro',
-              total_count: '1',
-            }],
-          };
+          return { rows: [1, 2, 3, 4, 5].map((id) => keywordRow(id, '13')) };
         }
-        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
-          return { rows: [] };
+        if (typeof sql === 'string' && sql.includes('similarity(cp.title')) {
+          return { rows: [separateFuzzyRow] };
         }
         return { rows: [] };
       });
 
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/search?q=Redis&mode=keyword',
+      const body = (await app.inject({ method: 'GET', url: '/api/search?q=test&limit=5&page=2' })).json();
+
+      expect(body.items.map((item: { id: number }) => item.id)).toEqual([1, 2, 3, 4, 5]);
+      expect(body).toMatchObject({ total: 13, page: 2, limit: 5, totalPages: 3 });
+      // The analytics row describes that page: 5 results, its best rank.
+      expect(mockRecordAnalytics).toHaveBeenCalledWith(
+        'test-user-id', 'test', 5, 0.5, 'keyword', expect.objectContaining({ surface: 'search' }),
+      );
+    });
+
+    it('answers a page past the last with no items and the same total (#1741)', async () => {
+      mockQueryFn.mockImplementation((sql: string, params: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('ts_rank')) {
+          // The union holds 13 rows, so any offset from 13 on returns none.
+          return { rows: (params[params.length - 1] as number) < 13 ? [keywordRow(1, '13')] : [] };
+        }
+        if (typeof sql === 'string' && sql.includes('similarity(cp.title')) {
+          return { rows: [separateFuzzyRow] };
+        }
+        return { rows: [] };
       });
 
-      expect(response.statusCode).toBe(200);
+      const body = (await app.inject({ method: 'GET', url: '/api/search?q=test&limit=5&page=4' })).json();
 
-      // Verify both FTS and trgm queries were called
-      const trgmCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('similarity'),
-      );
-      expect(trgmCall).toBeDefined();
+      expect(body).toMatchObject({ items: [], total: 13, page: 4, limit: 5, totalPages: 3 });
+      // The count is re-read from the same statement's first row: one
+      // definition of `total`, not a second count query that could drift.
+      const keywordCalls = mockQueryFn.mock.calls.filter(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
+      ) as Array<[string, unknown[]]>;
+      expect(keywordCalls).toHaveLength(2);
+      expect(keywordCalls[1]![0]).toBe(keywordCalls[0]![0]);
+      expect(keywordCalls.map(([, params]) => params.slice(-2))).toEqual([[5, 15], [1, 0]]);
+    });
 
-      const ftsCall = mockQueryFn.mock.calls.find(
+    // Regression guard: an empty union answers total 0 on any page. Only a page
+    // past offset 0 spends the second statement, which finds no first row.
+    it.each([
+      [1, 1],
+      [2, 2],
+    ])('answers an empty union on page %i with total 0 from %i keyword statement(s) (#1741)', async (page, statements) => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const body = (await app.inject({ method: 'GET', url: `/api/search?q=test&page=${page}` })).json();
+
+      expect(body).toMatchObject({ items: [], total: 0, totalPages: 0 });
+      const keywordCalls = mockQueryFn.mock.calls.filter(
         (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
       );
-      expect(ftsCall).toBeDefined();
+      expect(keywordCalls).toHaveLength(statements);
     });
 
     // ── semantic mode ────────────────────────────────────────────────────────
@@ -542,7 +736,9 @@ describe('Search Routes', () => {
         'test-user-id',
         expect.any(Array),
         expect.any(Number),
-        { spaceKey: 'DEV' },
+        // #282: a human-read surface declares itself, so the authored-text
+        // predicate is skipped (derived chunks of `none` pages still hidden).
+        { spaceKey: 'DEV', aiPolicy: { purpose: 'human' } },
       );
     });
 
@@ -754,6 +950,7 @@ describe('Search Routes', () => {
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: expect.any(Function),
+          aiPolicy: { purpose: 'human' },
         },
       );
       const body = response.json();
@@ -785,6 +982,7 @@ describe('Search Routes', () => {
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: expect.any(Function),
+          aiPolicy: { purpose: 'human' },
         },
       );
     });
@@ -960,6 +1158,7 @@ describe('Search Routes', () => {
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: expect.any(Function),
+          aiPolicy: { purpose: 'human' },
         },
       );
     });
@@ -1348,14 +1547,14 @@ describe('Search Routes', () => {
 
       // The UNION ALL facet query should NOT have been called
       const facetCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UNION ALL'),
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('AS facet'),
       );
       expect(facetCall).toBeUndefined();
     });
 
     it('should include facets by default (includeFacets omitted)', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
+        if (typeof sql === 'string' && sql.includes('AS facet')) {
           return {
             rows: [
               { facet: 'space', value: 'DEV', count: '3' },
@@ -1400,14 +1599,14 @@ describe('Search Routes', () => {
 
       // The UNION ALL facet query should have been called
       const facetCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UNION ALL'),
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('AS facet'),
       );
       expect(facetCall).toBeDefined();
     });
 
     it('should include facets when includeFacets=true', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
+        if (typeof sql === 'string' && sql.includes('AS facet')) {
           return {
             rows: [
               { facet: 'tag', value: 'howto', count: '5' },

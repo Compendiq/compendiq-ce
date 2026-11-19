@@ -7,6 +7,15 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import type { Editor as EditorType } from '@tiptap/react';
 import { useEffect } from 'react';
+import { EditorAiContext } from '../../lib/editor-ai-context';
+
+beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => new Response(JSON.stringify(
+    String(url).includes('browser-authorization')
+      ? { authorized: true, pageId: 7, aiPolicy: 'all', aiPolicyRevision: 2 }
+      : { active: false, mode: 'allowed' },
+  ), { headers: { 'Content-Type': 'application/json' } }));
+});
 
 // Mock the SSE transport so "Improve" actions don't hit the network.
 const streamSSE = vi.fn();
@@ -37,6 +46,7 @@ import {
 function gen(chunks: Array<Record<string, unknown>>) {
   return (async function* () {
     for (const c of chunks) yield c;
+    yield { done: true };
   })();
 }
 
@@ -90,7 +100,9 @@ function Harness({
   return (
     <>
       <EditorContent editor={editor} />
-      <BubbleMenuContent editor={editor} />
+      <EditorAiContext.Provider value={{ pageId: '7', policy: 'all', revision: 2, permitted: true }}>
+        <BubbleMenuContent editor={editor} />
+      </EditorAiContext.Provider>
     </>
   );
 }
@@ -306,7 +318,7 @@ describe('BubbleMenuContent — inline AI improve replace-range', () => {
     await waitFor(() => expect(streamSSE).toHaveBeenCalled());
     const [, body] = streamSSE.mock.calls[0]!;
     expect((body as { content: string }).content).toBe('Hello');
-    expect(body).not.toHaveProperty('pageId');
+    expect(body).toHaveProperty('pageId', '7');
   });
 
   // #1179 made this a single click: the block menu can delete the very block
@@ -720,6 +732,18 @@ describe('BubbleMenuContent — Floating UI repositioning on panel growth (#782)
 
 describe('BubbleMenuContent — error state', () => {
   beforeEach(() => streamSSE.mockReset());
+  it('keeps truncated output visible but prevents applying it', async () => {
+    streamSSE.mockReturnValue((async function* () { yield { content: 'Partial rewrite' }; })());
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/interrupted before completion/i);
+    expect(screen.queryByTestId('bubble-ai-preview')).toBeNull();
+    expect(screen.queryByRole('button', { name: /replace/i })).toBeNull();
+    expect(editor.getHTML()).toBe('<p>Hello world</p>');
+  });
+
 
   it('surfaces the stream error with retry, inside the merged panel', async () => {
     streamSSE.mockReturnValue(gen([{ error: 'LLM unavailable' }]));
@@ -783,7 +807,7 @@ describe('BubbleMenuContent — inline macros in the selection', () => {
 
     expect(screen.queryByTestId('bubble-ai-trigger')).toBeNull();
     expect(screen.getByTestId('bubble-menu-macro-notice')).toHaveTextContent(
-      /a rewrite would drop the inline macros in this selection/i,
+      /a rewrite would drop the inline macros or emojis in this selection/i,
     );
   });
 
@@ -867,13 +891,13 @@ describe('BubbleMenuContent — inline macros in the selection', () => {
 });
 
 // `containsStructuredInline` matches ANY inline node that is not text and not a
-// hardBreak — it does not name the three Confluence atoms. That is deliberate
-// (an unknown inline atom is exactly as lossy), but it couples the copy to the
-// schema: MACRO_NOTICE says "inline macros", so a fourth inline node added
-// later would silently start withholding Improve under a message that no longer
-// describes why. Today the coupling holds, and this is what says so.
+// hardBreak — it does not name the Confluence atoms. That is deliberate (an
+// unknown inline atom is exactly as lossy), but it couples the copy to the
+// schema: MACRO_NOTICE says "inline macros or emojis", so a fifth inline node
+// added later would silently start withholding Improve under a message that no
+// longer describes why. Today the coupling holds, and this is what says so.
 describe('the predicate matches exactly what the copy claims', () => {
-  it('has no inline node in the article schema beyond the three named macros', async () => {
+  it('has no inline node in the article schema beyond the three macros and the emoji the copy names', async () => {
     const { readFileSync } = await import('node:fs');
     const { resolve } = await import('node:path');
 
@@ -892,7 +916,7 @@ describe('the predicate matches exactly what the copy claims', () => {
       .map((d) => d.name);
 
     expect(new Set(inlineNodes)).toEqual(
-      new Set(['confluenceStatus', 'confluenceJiraIssue', 'confluenceUserMention']),
+      new Set(['confluenceStatus', 'confluenceJiraIssue', 'confluenceUserMention', 'confluenceEmoticon']),
     );
     // The one inline node that would NOT be a macro is configured out of the
     // group on purpose; `Editor.tsx` passes `inline: false`.

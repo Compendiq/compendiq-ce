@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeSearchQuery, QuerySanitizationError } from './query-sanitizer.js';
+import { MAX_QUERY_LENGTH, MAX_WORD_COUNT, sanitizeSearchQuery, QuerySanitizationError } from './query-sanitizer.js';
 
 describe('query-sanitizer', () => {
   it('passes through simple keyword queries', () => {
@@ -47,5 +47,18 @@ describe('query-sanitizer', () => {
   it('accepts queries with exactly 30 words', () => {
     const query = Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ');
     expect(() => sanitizeSearchQuery(query)).not.toThrow();
+  });
+
+  it('pins the limits the public contract mirrors (200 chars / 30 words, #1767)', () => {
+    // @compendiq/contracts cannot be imported here; its WEB_SEARCH_QUERY_MAX_CHARS /
+    // WEB_SEARCH_QUERY_MAX_WORDS are pinned to the same literals in
+    // packages/contracts/src/schemas/llm.test.ts. Never widen one side alone.
+    expect({ chars: MAX_QUERY_LENGTH, words: MAX_WORD_COUNT }).toEqual({ chars: 200, words: 30 });
+  });
+
+  it('truncates a 220-character keyword query to exactly 200', () => {
+    const result = sanitizeSearchQuery('abcdefghij '.repeat(20));
+    expect(result).toHaveLength(200);
+    expect(result.endsWith('ab')).toBe(true);
   });
 });

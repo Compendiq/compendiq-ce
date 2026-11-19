@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import { SEARXNG_MAX_RESULTS_MAX, SEARXNG_MAX_RESULTS_MIN } from '@compendiq/contracts';
+import { isDbAvailable, setupTestDb } from '../../test-db-helper.js';
+import { query } from '../../core/db/postgres.js';
+import type * as Helpers from './_helpers.js';
 
 // --- Mock: mcp-docs-client ---
 const mockIsEnabled = vi.fn();
@@ -14,9 +18,12 @@ vi.mock('../../core/services/mcp-docs-client.js', () => ({
 // NOTE: sanitize-llm-input is deliberately NOT mocked — it is a pure utility
 // and the tests below assert real prompt-injection filtering (#820).
 
-// --- Mock: _helpers (getSearxngMaxResults) ---
+// --- Mock: _helpers (getSearxngSettings) ---
+// Default implementation is set once here; the file-level clearAllMocks only
+// clears calls. The real-DB describe below swaps in the actual reader.
+const mockGetSearxngSettings = vi.fn().mockResolvedValue({ maxResults: 5, categories: 'general' });
 vi.mock('./_helpers.js', () => ({
-  getSearxngMaxResults: vi.fn().mockResolvedValue(5),
+  getSearxngSettings: (...args: unknown[]) => mockGetSearxngSettings(...args),
 }));
 
 // --- Mock: logger ---
@@ -30,6 +37,8 @@ vi.mock('../../core/utils/logger.js', () => ({
 }));
 
 import { fetchWebSources, formatWebContext } from './_web-search-helper.js';
+
+const dbAvailable = await isDbAvailable();
 
 describe('_web-search-helper', () => {
   beforeEach(() => {
@@ -59,12 +68,32 @@ describe('_web-search-helper', () => {
 
       const { sources, injectionWarnings } = await fetchWebSources('test query', 'user-1');
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 5);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 5, 'general');
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 5000);
       expect(sources).toEqual([
         { url: 'https://example.com/doc1', title: 'Doc 1', snippet: 'Full markdown content' },
       ]);
       expect(injectionWarnings).toEqual([]);
+    });
+
+    it('forwards the saved SearXNG width and categories to search_web (#1769)', async () => {
+      mockGetSearxngSettings.mockResolvedValueOnce({ maxResults: 7, categories: 'general,it' });
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('test query', 'user-1');
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 7, 'general,it');
+    });
+
+    it('keeps the saved categories when the caller overrides the width (#1769)', async () => {
+      mockGetSearxngSettings.mockResolvedValueOnce({ maxResults: 7, categories: 'it' });
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('test query', 'user-1', { maxResults: 3 });
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 3, 'it');
     });
 
     it('falls back to snippet on individual fetch failure', async () => {
@@ -217,8 +246,70 @@ describe('_web-search-helper', () => {
 
       await fetchWebSources('query', 'user-1', { maxResults: 10, maxLength: 8000 });
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10, 'general');
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 8000);
+    });
+
+    it('forwards a 200-character query verbatim and maps two sidecar results to two sources (#1767)', async () => {
+      // The contract bounds searchQuery to the sidecar's 200 chars; the
+      // backend must never shorten what passed it.
+      const query200 = 'kubernetes scaling '.repeat(10) + 'autoscaler';
+      expect(query200).toHaveLength(200);
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([
+        { url: 'https://example.test/1', title: 'R1', snippet: 'S1' },
+        { url: 'https://example.test/2', title: 'R2', snippet: 'S2' },
+      ]);
+      mockFetchDocumentation.mockResolvedValue({ url: '', title: '', markdown: 'content' });
+
+      const { sources } = await fetchWebSources(query200, 'user-1');
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith(query200, 'user-1', 5, 'general');
+      expect(sources.map((s) => s.url)).toEqual(['https://example.test/1', 'https://example.test/2']);
+    });
+  });
+
+  describe.skipIf(!dbAvailable)('fetchWebSources forwards the saved SearXNG count (real admin_settings, #1768)', () => {
+    beforeAll(async () => {
+      await setupTestDb();
+    });
+
+    beforeEach(async () => {
+      // Runs after the outer clearAllMocks: route the mocked export to the REAL
+      // reader so the stored row, not a stub, decides what reaches search_web.
+      const actual = await vi.importActual<typeof Helpers>('./_helpers.js');
+      mockGetSearxngSettings.mockImplementation(actual.getSearxngSettings);
+      await query(`DELETE FROM admin_settings WHERE setting_key LIKE 'searxng_%'`);
+    });
+
+    // The worker DB is shared with every other suite: leave no SearXNG row behind.
+    afterEach(async () => {
+      await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
+    });
+
+    afterAll(() => {
+      mockGetSearxngSettings.mockReset().mockResolvedValue({ maxResults: 5, categories: 'general' });
+    });
+
+    it.each([
+      ['15', 10],
+      ['not-a-number', 5],
+      ['7', 7],
+    ])('stored %j reaches search_web as %i, inside the sidecar range', async (stored, expected) => {
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ('searxng_max_results', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+        [stored],
+      );
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('saved width', 'user-1');
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('saved width', 'user-1', expected, 'general');
+      const forwarded = mockSearchDocumentation.mock.calls[0]?.[2] as number;
+      expect(forwarded).toBeGreaterThanOrEqual(SEARXNG_MAX_RESULTS_MIN);
+      expect(forwarded).toBeLessThanOrEqual(SEARXNG_MAX_RESULTS_MAX);
     });
   });
 

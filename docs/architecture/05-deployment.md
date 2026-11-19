@@ -98,6 +98,12 @@ limiter consequently trusts loopback only by default and treats the mcp-docs
 socket address as the client; it must not trust the whole Docker subnet and
 then demand a forwarded-IP header from that direct caller.
 
+The endpoint `mcp-docs` calls is its own `SEARXNG_URL` environment variable
+(compose default `http://searxng:8080`) and is operator configuration only:
+the admin UI and API expose no SearXNG URL, and the backend never sends a
+search host to the sidecar — the admin SearXNG settings that do reach it
+(result count, categories) travel as `search_web` tool arguments (#1769).
+
 An operator who puts SearXNG behind a reverse proxy may set
 `SEARXNG_TRUSTED_PROXIES` to comma-separated IP addresses or CIDRs. Container
 startup validates and normalizes every entry before generating
@@ -215,6 +221,15 @@ same value; the installer auto-generates it into `.env` on first install and
 |-----------------|----------------------------------------|----------|
 | `postgres-data` | `/var/lib/postgresql/data` (postgres)  | Primary data + embeddings |
 | `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR`. Operator-supplied client inference weights live at `/app/data/client-models` (`CLIENT_MODEL_ASSETS_DIR`). |
+
+## PDF export fonts
+
+The backend runtime image carries the PDF export fonts (Noto Sans, Noto Sans
+Mono, Noto Sans SC and KR; about 17 MiB, SIL OFL 1.1) in
+`dist/core/services/fonts`. tsc emits no assets: `npm run build -w backend`
+copies them from `backend/src/core/services/fonts`, so both Dockerfiles, which
+copy the built `dist`, ship them without a step of their own. Without them every
+PDF export fails with `PDF export font missing`.
 
 ## Backup process boundaries
 
@@ -374,7 +389,10 @@ normal mode neither provisions nor relaxes instance rate limits.
 ## Enterprise image
 
 `docker/Dockerfile.enterprise` is a multi-stage template that overlays the
-`@compendiq/enterprise` package onto the backend image. It does **not**
+`@compendiq/enterprise` package onto the backend image. It builds the backend
+with the same `npm run build -w backend`, so the PDF export fonts arrive with
+`dist`; an overlay that compiles another way must copy
+`backend/src/core/services/fonts` to `dist/core/services/fonts`. It does **not**
 modify the frontend image — the frontend is identical in CE and EE
 deployments and gates Enterprise UI at runtime (see
 [`04-frontend-structure.md`](./04-frontend-structure.md)).
@@ -429,8 +447,9 @@ flowchart LR
 | IP allowlist hot-reload | Pub/sub | `ip_allowlist:changed` |
 | Confluence SSRF allowlist | Dedicated `ssrf-allowlist-bus` | `ssrf:allowlist:changed` |
 | Sync conflict / PII / license / per-page-restriction policy | Pub/sub | `sync:conflict:policy:changed`, `pii:policy:changed`, `license:changed` |
+| SMTP configuration (`PUT /api/admin/smtp`) | Pub/sub reload signal (empty payload, never a setting); each replica re-reads the `smtp_*` rows, also on bus reconnect | `smtp:config:changed` |
 | Recurring jobs (sync tick, retention prune, embedding tick, webhook outbox poll) | BullMQ `upsertJobScheduler` with stable IDs | Redis queue keys |
-| Sync worker leadership | Redis SET-NX lock | `sync:worker:lock` |
+| Sync run mutual exclusion (scheduler and manual `POST /api/sync`) | Redis SET-NX lock | `sync:worker:lock` |
 | Embedding locks | Redis SET-NX | `embedding:lock:{userId}` (per-user fairness) and `embedding:lock:__reembed_all__` (global re-embed) |
 
 ### Operator requirements
@@ -460,6 +479,9 @@ flowchart LR
    `redis-cache-bus` `onReconnect` hook cold-reloads cached settings
    after any disconnect, so a brief Redis blip costs a fan of
    uncached reads, not desync.
+   Provider reconnects also invalidate local provider configuration and all
+   per-provider dispatchers and breakers, including resources for providers
+   tested without a use-case assignment; the next resolution reads Postgres.
 
 4. **Postgres connection sizing.** Each replica opens its own pool;
    default size × replicas should stay below `max_connections` at the

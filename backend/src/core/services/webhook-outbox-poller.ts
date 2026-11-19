@@ -23,11 +23,12 @@
  *      via the `status='pending'` WHERE clause.
  *
  * A separate **stale-dispatch recovery sweep** (see `recoverStuckDispatches`)
- * runs once at poller init. It resets rows that have been stuck in
- * `dispatched` for longer than the configured threshold (default 5 min)
- * back to `pending` so they get re-delivered. This covers the case where
- * a previous pod crashed between claiming the row and the delivery worker
- * writing to `webhook_deliveries`.
+ * runs once at poller init and then at most once per stale threshold at the
+ * start of a poll cycle. It resets rows stuck in `dispatched` for longer
+ * than the threshold (default 5 min) back to `pending` ONLY when their
+ * BullMQ job is missing or terminal; a live (non-terminal) job is left
+ * alone. This covers a pod crash between claim and delivery, and a failed
+ * post-commit enqueue, without duplicating slow in-flight deliveries.
  *
  * ─── Overlap prevention ─────────────────────────────────────────────────
  *
@@ -58,6 +59,8 @@ import { getRedisConnectionOpts } from '../utils/redis-connection.js';
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_BATCH_SIZE = 50;
 const DEFAULT_STALE_DISPATCH_THRESHOLD_MS = 5 * 60 * 1_000; // 5 min
+/** Max rows examined per periodic reconciliation sweep. */
+const RECONCILE_BATCH_LIMIT = 100;
 
 /** Queue name shared with the Phase D delivery worker. */
 export const WEBHOOK_DELIVERY_QUEUE = 'webhook-delivery';
@@ -115,6 +118,10 @@ let pollingInProgress = false;
 let activePollPromise: Promise<number> | null = null;
 let runtimeBatchSize = DEFAULT_BATCH_SIZE;
 let cachedTeardown: (() => Promise<void>) | null = null;
+/** Threshold in force for the periodic reconciliation sweep (set by init). */
+let runtimeStaleThresholdMs = DEFAULT_STALE_DISPATCH_THRESHOLD_MS;
+/** Wall-clock ms of the last reconciliation sweep; 0 = never. */
+let lastReconcileAtMs = 0;
 
 // ─── Public API ─────────────────────────────────────────────────────────
 
@@ -143,14 +150,15 @@ export async function initWebhookOutboxPoller(
     opts.staleDispatchThresholdMs ?? DEFAULT_STALE_DISPATCH_THRESHOLD_MS;
 
   runtimeBatchSize = batchSize;
+  runtimeStaleThresholdMs = staleThresholdMs;
 
   // Ensure queue is eagerly constructed so the first cycle doesn't pay
   // the ioredis-connect cost under the `pollingInProgress` guard.
   getWebhookDeliveryQueue();
 
-  // Recovery sweep runs ONCE at init. If it fails we log and continue —
-  // the stale rows will just wait for the next pod restart or a manual
-  // operator-run `recoverStuckDispatches(...)`.
+  // Recovery sweep runs once at init (periodic cycles repeat it later). It
+  // skips rows whose job is still live. If it fails (DB or Redis down) we
+  // log and continue; the periodic sweep retries.
   try {
     const recovered = await recoverStuckDispatches(staleThresholdMs);
     if (recovered > 0) {
@@ -211,35 +219,81 @@ export async function initWebhookOutboxPoller(
 }
 
 /**
- * Run the stale-dispatch recovery sweep once. Rows stuck in
- * `status='dispatched'` with `dispatched_at` older than `thresholdMs`
- * are reset back to `pending` so the next poll cycle re-dispatches them.
+ * Stale-dispatch recovery sweep, shared by init and the periodic cycle.
+ * Looks at up to `RECONCILE_BATCH_LIMIT` rows stuck in `dispatched` beyond
+ * `thresholdMs` (oldest first) and resets to `pending` ONLY those whose
+ * BullMQ job is missing (e.g. `queue.add` failed after the claim commit) or
+ * terminal (has `finishedOn`). A row whose job still exists non-terminal
+ * (waiting/active/delayed) is owned by the delivery worker and is left
+ * alone, so slow deliveries are never duplicated. The reset is guarded on
+ * `(status, bullmq_job_id)` so a row that moved on concurrently is not
+ * touched. Rows beyond the limit are picked up by later periodic sweeps.
  *
- * Returns the number of rows recovered.
- *
- * Exposed both for the boot sequence (called by `initWebhookOutboxPoller`
- * once before the first tick) and for tests.
+ * Returns the number of rows reset. Throws if the DB query or Redis lookup
+ * fails; callers log and retry at the next sweep.
  */
 export async function recoverStuckDispatches(
   thresholdMs: number = DEFAULT_STALE_DISPATCH_THRESHOLD_MS,
 ): Promise<number> {
-  // Use milliseconds via `interval` cast so we don't lose precision for
-  // sub-minute thresholds (common in tests). Using a parameter-bound
-  // number for interval math requires the `NUMERIC * INTERVAL '1 ms'`
-  // pattern; we convert to seconds to keep the query plain SQL.
   const seconds = Math.max(1, Math.floor(thresholdMs / 1_000));
-  const result = await getPool().query<{ id: string }>(
-    `UPDATE webhook_outbox
-        SET status = 'pending',
-            dispatched_at = NULL,
-            bullmq_job_id = NULL
+  const stale = await getPool().query<{ id: string; bullmq_job_id: string | null }>(
+    `SELECT id, bullmq_job_id
+       FROM webhook_outbox
       WHERE status = 'dispatched'
         AND dispatched_at IS NOT NULL
         AND dispatched_at < (NOW() - ($1::text || ' seconds')::interval)
-      RETURNING id`,
-    [String(seconds)],
+      ORDER BY dispatched_at ASC
+      LIMIT $2`,
+    [String(seconds), RECONCILE_BATCH_LIMIT],
   );
-  return result.rowCount ?? 0;
+  if (stale.rows.length === 0) return 0;
+
+  const queue = getWebhookDeliveryQueue();
+  let reset = 0;
+  for (const row of stale.rows) {
+    if (row.bullmq_job_id) {
+      const job = await queue.getJob(row.bullmq_job_id);
+      if (job && !job.finishedOn) continue; // non-terminal: owned by the delivery worker — leave alone
+    }
+    const res = await getPool().query(
+      `UPDATE webhook_outbox
+          SET status = 'pending',
+              dispatched_at = NULL,
+              bullmq_job_id = NULL
+        WHERE id = $1
+          AND status = 'dispatched'
+          AND bullmq_job_id IS NOT DISTINCT FROM $2`,
+      [row.id, row.bullmq_job_id],
+    );
+    reset += res.rowCount ?? 0;
+  }
+  return reset;
+}
+
+/**
+ * Run `reconcileStaleDispatches` at most once per stale-threshold interval.
+ * Never throws: a failure is logged and retried at the next interval.
+ */
+async function maybeReconcileStaleDispatches(): Promise<void> {
+  const now = Date.now();
+  if (now - lastReconcileAtMs < runtimeStaleThresholdMs) return;
+  lastReconcileAtMs = now;
+  try {
+    const reset = await recoverStuckDispatches(runtimeStaleThresholdMs);
+    if (reset > 0) {
+      logger.info({ reset }, 'webhook-outbox-poller: reconciled orphaned dispatched rows to pending');
+    }
+  } catch (err) {
+    logger.error({ err }, 'webhook-outbox-poller: stale-dispatch reconciliation failed');
+  }
+}
+
+/**
+ * Test-only: make the next poll cycle run the reconciliation sweep, as if
+ * the rate-limit interval had elapsed.
+ */
+export function __expireReconcileIntervalForTests(): void {
+  lastReconcileAtMs = 0;
 }
 
 /**
@@ -280,12 +334,16 @@ async function runGuardedPoll(batchSize: number): Promise<number> {
  * with a fresh BullMQ jobId, then enqueues one delivery job per row.
  *
  * Enqueue failures post-commit are logged but DO NOT roll the row back
- * to `pending`. Instead the stale-dispatch recovery sweep will eventually
- * reset it. This is deliberate: after COMMIT the row is the delivery
+ * to `pending`. Instead the periodic reconciliation sweep (run at most
+ * once per stale-threshold interval at the start of a cycle) resets rows
+ * whose BullMQ job no longer exists, so they are re-claimed and
+ * re-enqueued without a restart. This is deliberate: after COMMIT the row is the delivery
  * worker's responsibility, and bundling BullMQ writes into the DB
  * transaction would mean a half-committed state if Redis flaked.
  */
 async function pollOnceInternal(batchSize: number): Promise<number> {
+  await maybeReconcileStaleDispatches();
+
   const pool = getPool();
   const client: PoolClient = await pool.connect();
 
@@ -356,8 +414,8 @@ async function pollOnceInternal(batchSize: number): Promise<number> {
   if (rows.length === 0) return 0;
 
   // Enqueue phase — post-commit. Per row, a failure here leaves the row
-  // in `dispatched` with a jobId that will never be picked up. The stale
-  // sweep recovers them on the next pod restart or next manual call.
+  // in `dispatched` with a jobId that will never be picked up. The
+  // periodic reconciliation sweep at the top of a later cycle resets it.
   const queue = getWebhookDeliveryQueue();
   let enqueued = 0;
   for (const row of rows) {
@@ -377,7 +435,7 @@ async function pollOnceInternal(batchSize: number): Promise<number> {
     } catch (err) {
       logger.error(
         { err, outboxId: row.id, jobId: row.bullmq_job_id },
-        'webhook-outbox-poller: failed to enqueue BullMQ delivery job — row will be recovered by stale-dispatch sweep',
+        'webhook-outbox-poller: failed to enqueue BullMQ delivery job — row will be reconciled by the periodic stale-dispatch sweep',
       );
     }
   }
@@ -404,6 +462,8 @@ export function __resetWebhookOutboxPollerForTests(): void {
   activePollPromise = null;
   cachedTeardown = null;
   runtimeBatchSize = DEFAULT_BATCH_SIZE;
+  runtimeStaleThresholdMs = DEFAULT_STALE_DISPATCH_THRESHOLD_MS;
+  lastReconcileAtMs = 0;
   // Do NOT null out deliveryQueue — tests that still hold a reference
   // would otherwise talk to a closed queue. The teardown path owns
   // closing + nulling it.

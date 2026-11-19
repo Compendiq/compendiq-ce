@@ -10,8 +10,8 @@ import {
   getSemanticDiff,
 } from './version-tracker.js';
 import * as versionBackfill from '../../confluence/services/version-backfill.js';
-import * as openaiClient from '../../llm/services/openai-compatible-client.js';
-import * as providerResolver from '../../llm/services/llm-provider-resolver.js';
+import { MockAgent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
+import { createProvider } from '../../llm/services/llm-provider-service.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -336,17 +336,27 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
 
       // Capture what is actually sent to the LLM.
       let userPromptSent = '';
-      vi.spyOn(providerResolver, 'resolveUsecase').mockResolvedValue({
-        config: {} as never,
-        model: 'test-model',
-      } as never);
-      const chatSpy = vi.spyOn(openaiClient, 'chat').mockImplementation(async (_config, _model, messages) => {
-        userPromptSent = messages.find((m) => m.role === 'user')?.content ?? '';
-        return 'diff result';
+      const actor = await query<{ id: string }>("INSERT INTO users (username, password_hash, role) VALUES ('version-admin', 'hash', 'admin') RETURNING id");
+      const userId = actor.rows[0]!.id;
+      const provider = await createProvider({ name: 'versions', baseUrl: 'http://versions.test/v1', authType: 'none', verifySsl: true, defaultModel: 'test-model' });
+      await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('chat', $1, 'test-model') ON CONFLICT (usecase) DO UPDATE SET provider_id = $1, model = 'test-model'", [provider.id]);
+      const previous = getGlobalDispatcher();
+      const agent = new MockAgent();
+      agent.disableNetConnect();
+      setGlobalDispatcher(agent);
+      agent.get('http://versions.test').intercept({ path: '/v1/chat/completions', method: 'POST' }).reply(200, (options) => {
+        userPromptSent = String(options.body);
+        return { choices: [{ message: { content: 'diff result' } }] };
       });
 
       const fakeClient = {} as never;
-      const diff = await getSemanticDiff(pageId, 1, 2, 'test-model', 'vt-page-1', fakeClient);
+      let diff: string;
+      try {
+        diff = await getSemanticDiff(pageId, 1, 2, 'test-model', 'vt-page-1', fakeClient, userId);
+      } finally {
+        setGlobalDispatcher(previous);
+        await agent.close();
+      }
 
       expect(diff).toBe('diff result');
       // Both versions were lazy-resolved at the HTTP boundary.
@@ -361,7 +371,6 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       );
       expect(persisted.rows.map((r) => r.body_text)).toEqual(['resolved v1', 'resolved v2']);
 
-      chatSpy.mockRestore();
       getHistoricalBodySpy.mockRestore();
     });
   });

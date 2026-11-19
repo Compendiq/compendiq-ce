@@ -1,8 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
-import { syncUser, getSyncStatus, setSyncStatus } from '../../domains/confluence/services/sync-service.js';
+import { startManualSync, getSyncStatus } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { logger } from '../../core/utils/logger.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function syncRoutes(fastify: FastifyInstance) {
@@ -25,18 +24,21 @@ export async function syncRoutes(fastify: FastifyInstance) {
       return { message: 'Confluence integration is disabled', status };
     }
 
-    // Set status to syncing immediately so the response reflects it
-    // and the frontend can start polling right away
-    await setSyncStatus(userId, { userId, status: 'syncing' });
-
-    await logAuditEvent(userId, 'SYNC_STARTED', 'sync', undefined, {}, request);
-
-    // Run sync in background, return immediately
-    syncUser(userId).then(async () => {
-      await logAuditEvent(userId, 'SYNC_COMPLETED', 'sync', undefined, {});
-    }).catch((err) => {
-      logger.error({ err, userId }, 'Manual sync failed');
+    // Claims the deployment-global sync lock the scheduler also holds (#1775),
+    // then flips the status to `syncing` and detaches the run. While any other
+    // run holds the lock — a concurrent request, another user's run or a
+    // scheduled cycle — the request is refused and the status stays as read;
+    // the message is the one relocate's sync guard gives for the same cause.
+    const started = await startManualSync(userId, {
+      onStarted: () => logAuditEvent(userId, 'SYNC_STARTED', 'sync', undefined, {}, request),
+      onCompleted: () => logAuditEvent(userId, 'SYNC_COMPLETED', 'sync', undefined, {}),
     });
+    if (!started) {
+      return reply.status(409).send({
+        message: 'A Confluence sync is currently running. Wait for it to finish and try again.',
+        status,
+      });
+    }
 
     return { message: 'Sync started', status: await getSyncStatus(userId) };
   });

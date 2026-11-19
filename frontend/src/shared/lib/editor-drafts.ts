@@ -30,7 +30,9 @@ const DRAFT_PREFIX = 'draft:';
 const SCOPED_PREFIX = 'draft:u:';
 // Shared by every tab of the origin, so a sign-out in one tab fences the
 // pending autosaves of the others before their logout broadcast arrives.
-const SIGN_OUT_EPOCH_KEY = 'compendiq-draft-signout-epoch';
+// Written ONLY by an explicit sign-out (`discardDraftsOnSignOut`); the auth
+// store also treats a change to it as the cross-build sign-out signal (#1881).
+export const SIGN_OUT_EPOCH_KEY = 'compendiq-draft-signout-epoch';
 // Per-user marker, also shared by every tab: a tab that has not yet processed
 // the logout still believes the user is signed in, and an edit it starts in
 // that window captures the NEW epoch — the marker is what refuses it.

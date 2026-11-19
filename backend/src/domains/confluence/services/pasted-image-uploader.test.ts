@@ -279,4 +279,16 @@ describe('uploadLocalImagesToConfluence', () => {
 
     expect(log.error).toHaveBeenCalled();
   });
+
+  it('lists one marker per planned src with the decoded attachment filename (#1764)', async () => {
+    await seedAttachment('local-1', 'a b.png');
+    const plan = await planLocalImagesForConfluence(
+      '<p><img src="/api/attachments/local-1/a%20b.png"><img src="/api/attachments/local-1/a%20b.png">'
+      + '<img src="/api/attachments/local-1/synced.png" data-confluence-filename="synced.png"></p>',
+    );
+
+    // The collaborative commit copies exactly these markers into its room.
+    expect(plan.markers).toEqual([{ src: '/api/attachments/local-1/a%20b.png', filename: 'a b.png' }]);
+    expect(plan.images.map((image) => image.filename)).toEqual(['a b.png']);
+  });
 });

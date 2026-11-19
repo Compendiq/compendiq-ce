@@ -177,8 +177,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('durable page lifecycle deliver
     const intentId = randomUUID();
     const runtimeId = `outbox-runtime-${randomUUID()}`;
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-       VALUES ($1, $2::jsonb)`,
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
+       VALUES ($1, $2::jsonb, 1)`,
       [runtimeId, JSON.stringify({ host: 'outbox-integration-test' })],
     );
     await query(
@@ -304,8 +304,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('durable page lifecycle deliver
     expect(beforePublication.rows[0]?.title).toBe('Outbox article');
 
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-       VALUES ($1, $2::jsonb)`,
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
+       VALUES ($1, $2::jsonb, 1)`,
       [runtimeId, JSON.stringify({ host: 'stale-fill-integration-test' })],
     );
     await query(

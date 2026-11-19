@@ -2,13 +2,22 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
-  chat,
-  streamChat,
-  generateEmbedding,
+  chat as transportChat,
+  streamChat as transportStreamChat,
+  generateEmbedding as transportEmbedding,
   listModels,
   invalidateBreaker,
   type ProviderConfig,
 } from './openai-compatible-client.js';
+
+// All payloads here are synthetic literals, never saved article contributions.
+const transportContext = { kind: 'non_article', purpose: 'synthetic_evaluation' } as const;
+const chat = (...args: Parameters<typeof transportChat> extends [infer C, infer M, infer P, unknown] ? [C, M, P] : never) =>
+  transportChat(...args, { transportContext });
+const streamChat = (config: ProviderConfig, model: string, messages: Parameters<typeof transportStreamChat>[2]) =>
+  transportStreamChat(config, model, messages, undefined, { transportContext });
+const generateEmbedding = (config: ProviderConfig, model: string, text: string | string[]) =>
+  transportEmbedding(config, model, text, transportContext);
 
 // ---------------------------------------------------------------------------
 // OTel span instrumentation for the LLM client.

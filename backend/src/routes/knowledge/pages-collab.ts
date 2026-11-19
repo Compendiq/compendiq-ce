@@ -9,10 +9,12 @@ import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
 import {
+  COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabCommitResponseSchema,
   CollabCommitSchema,
   CollabConfigSchema,
+  PagePrimaryKeySchema,
   type CollabCommit,
 } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
@@ -28,7 +30,8 @@ import {
   refreshCollabActiveTtl,
   type CollabRuntime,
 } from '../../core/services/collab-room-service.js';
-import { htmlToConfluence, htmlToText } from '../../core/services/content-converter.js';
+import { assignTaskIds, htmlToConfluence, htmlToText } from '../../core/services/content-converter.js';
+import type { CollabTaskItem } from '../../core/services/collab-schema.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -65,6 +68,12 @@ import {
 } from '../../domains/confluence/services/collab-commit-intent-reconciler.js';
 
 const UPGRADE_LIMIT_PER_MIN = 20;
+// Frames that arrive before the join completes wait in arrival order and are
+// handled before any later frame. y-websocket sends SyncStep1 and awareness on
+// open and renews awareness every 15 s, so a slow join must not refuse them;
+// the bound only caps memory for a socket that is not live yet (#1895).
+const PRELIVE_FRAME_LIMIT = 64;
+const PRELIVE_BYTE_LIMIT = 1024 * 1024;
 
 function throwConfluenceModified(
   fastify: FastifyInstance,
@@ -86,9 +95,9 @@ type CollabCommitPage = {
   visibility: string;
   confluence_id: string | null;
   space_key: string | null;
-  content_revision: string;
   lifecycle_revision: string;
   baseline_id: string | null;
+  body_storage: string | null;
 };
 
 async function assertCurrentCollabMutationAuthority(
@@ -170,16 +179,33 @@ async function commitConfluencePage(args: {
   existing: CollabCommitPage;
   body: CollabCommit;
   html: string;
+  taskItems: CollabTaskItem[];
+  taskIdsCarried: boolean;
   runtime: CollabRuntime;
   admission: PageRuntimeAdmission;
 }) {
-  const { fastify, request, pageId, userId, existing, body, html, runtime, admission } = args;
+  const { fastify, request, pageId, userId, existing, body, html, taskItems, taskIdsCarried, runtime, admission } = args;
   if (!existing.confluence_id) {
     throw fastify.httpErrors.badRequest('Confluence page is missing a remote id');
   }
 
   const imagePlan = await planLocalImagesForConfluence(html);
-  const storageBody = htmlToConfluence(imagePlan.bodyHtml);
+  // #1751: the room keeps its HTML, so the Save stores the task ids it writes
+  // in the room once it settles (markWrittenTaskIds below); the n-th task item
+  // of the snapshot is the n-th task of `html`. The room persists its own HTML
+  // into body_html every 2 s, so whether the page predates carried ids comes
+  // from the room's flag (collabCarriesTaskIds), not from that column.
+  const assigned = assignTaskIds(imagePlan.bodyHtml, {
+    previousStorage: existing.body_storage,
+    legacyTasks: !taskIdsCarried,
+  });
+  const storageBody = htmlToConfluence(assigned.html);
+  const taskIdMarkers = assigned.taskIds.length === taskItems.length
+    ? taskItems.flatMap((item, index) => {
+      const taskId = assigned.taskIds[index]!;
+      return item.taskId === taskId ? [] : [{ client: item.client, clock: item.clock, taskId }];
+    })
+    : [];
 
   // The room admission and a fresh authority/client read immediately precede
   // the provider read. A revoked actor must not carry initial-route authority
@@ -221,6 +247,12 @@ async function commitConfluencePage(args: {
       contentSha256: image.contentSha256,
     })),
   });
+  // No `expectedRevisions` (#1762): the published body is the room snapshot,
+  // not the row read before it, so a content pin only refused the Save when a
+  // non-conflicting write (typically this room's own 2 s persist) landed
+  // meanwhile. `{ admission }` still pins the lifecycle on this transaction
+  // (409 `stale_lifecycle`), the authority check pins identity and local
+  // version, and the intent stores the revisions of the row locked here.
   const intent = await withPageWriteTransaction([pageId], async (dbClient) => {
     await assertCurrentCollabMutationAuthority(dbClient, existing, userId);
     return reservePageWriteIntentInTransaction(dbClient, {
@@ -229,12 +261,6 @@ async function commitConfluencePage(args: {
         ? 'collab.commit.confluence.media'
         : 'collab.commit.confluence',
       actorId: userId,
-      expectedRevisions: {
-        [pageId]: {
-          contentRevision: existing.content_revision,
-          lifecycleRevision: existing.lifecycle_revision,
-        },
-      },
       effect: publication.effect,
     });
   }, { admission });
@@ -342,7 +368,17 @@ async function commitConfluencePage(args: {
       title: confPage.title,
       bodyStorage: confPage.body.storage.value,
       remoteVersion: confPage.version.number,
-    }, intent.id, imagePlan.bodyHtml));
+    }, intent.id, assigned.html));
+  // The published body carries the markers of the images this commit
+  // uploaded; the room must carry them too, or its next persist drops them and
+  // the next Save uploads every image again. After settlement and before the
+  // `pages_version` control, so the flush that control starts keeps them (#1764).
+  await runtime.markUploadedImages(pageId, admission, imagePlan.markers);
+  // The room also records that its tasks carry ids, when it has not yet: also
+  // after a Save in which every task already carried its id (#1751).
+  if (taskIdMarkers.length > 0 || (!taskIdsCarried && assigned.taskIds.length > 0)) {
+    await runtime.markWrittenTaskIds(pageId, admission, taskIdMarkers);
+  }
   runtime.broadcastControl(pageId, { type: 'pages_version', version: result.newVersion });
   logger.info({ pageId, version: result.newVersion, confluence: true }, 'collab.commit');
 
@@ -431,7 +467,7 @@ async function rateLimitUpgrade(userId: string): Promise<boolean> {
   try {
     const key = `collab:upgrade:${userId}`;
     const n = await redis.incr(key);
-    if (n === 1) await redis.expire(key, 60);
+    if (n === 1) await redis.expire(key, COLLAB_UPGRADE_WINDOW_SEC);
     return n <= UPGRADE_LIMIT_PER_MIN;
   } catch {
     return true;
@@ -477,15 +513,15 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     return CollabConfigSchema.parse({ enabled: isCollabEditingEnabled() });
   });
 
-  fastify.post('/pages/:id/collab/commit', {
+  fastify.post<{ Params: { id: string } }>('/pages/:id/collab/commit', {
     onRequest: [fastify.authenticate],
     bodyLimit: 2 * 1024 * 1024,
   }, async (request) => {
-    const rawId = (request.params as { id: string }).id;
-    const pageId = Number(rawId);
-    if (!Number.isInteger(pageId) || pageId <= 0) {
+    const parsedId = PagePrimaryKeySchema.safeParse(request.params.id);
+    if (!parsedId.success) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    const pageId = parsedId.data;
     const body = CollabCommitSchema.parse(request.body);
     const requestedDocumentState = decodeCommitDocumentState(body.expectedDocumentState);
     const userId = request.userId;
@@ -504,13 +540,13 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       page_type: string | null;
       confluence_id: string | null;
       space_key: string | null;
-      content_revision: string;
       lifecycle_revision: string;
       baseline_id: string | null;
+      body_storage: string | null;
     }>(
       `SELECT id, version, source, visibility, deleted_at, page_type,
-              confluence_id, space_key, content_revision::text,
-              lifecycle_revision::text, baseline_id
+              confluence_id, space_key,
+              lifecycle_revision::text, baseline_id, body_storage
          FROM pages
         WHERE id = $1`,
       [pageId],
@@ -568,6 +604,8 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           existing,
           body,
           html,
+          taskItems: snapshot.taskItems,
+          taskIdsCarried: snapshot.taskIdsCarried,
           runtime,
           admission,
         });
@@ -653,7 +691,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     }
   });
 
-  fastify.get('/collab/:pageId', {
+  fastify.get<{ Params: { pageId: string } }>('/collab/:pageId', {
     websocket: true,
     // @fastify/compress must not wrap the upgrade.
     compress: false,
@@ -662,6 +700,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     mapWsProtocolToAuthorization(request);
 
     const pending: Uint8Array[] = [];
+    let pendingBytes = 0;
     let live = false;
     let closed = false;
     let pageId: number | null = null;
@@ -692,11 +731,17 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       const buf = toUint8(data);
       if (closed) return;
       if (!live || pageId === null || connId === null || !runtime) {
-        if (pending.length >= 2) {
-          finish(4403, 'readonly');
+        // An over-full buffer is a transient backlog, never a refusal: 1013
+        // lets y-websocket reconnect instead of reporting a permission loss.
+        if (pending.length >= PRELIVE_FRAME_LIMIT || pendingBytes + buf.byteLength > PRELIVE_BYTE_LIMIT) {
+          // Debug, not info: this runs before the JWT check and the per-user
+          // upgrade limiter, so any client could emit it once per connection.
+          logger.debug({ pageId, frames: pending.length, bytes: pendingBytes }, 'collab.prelive_backlog');
+          finish(1013, 'join_backlog');
           return;
         }
         pending.push(buf);
+        pendingBytes += buf.byteLength;
         return;
       }
       const joinedPageId = pageId;
@@ -726,13 +771,12 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     });
 
     void (async () => {
-      const raw = (request.params as { pageId: string }).pageId;
-      const parsed = Number(raw);
-      if (!Number.isInteger(parsed) || parsed <= 0) {
+      const parsedId = PagePrimaryKeySchema.safeParse(request.params.pageId);
+      if (!parsedId.success) {
         finish(4404, 'not_found');
         return;
       }
-      pageId = parsed;
+      pageId = parsedId.data;
 
       const auth = await authenticateSocket(request);
       if (auth === '4401') {

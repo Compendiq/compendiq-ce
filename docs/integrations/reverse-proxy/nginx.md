@@ -251,7 +251,7 @@ curl -I https://compendiq.corp.example.com/api/health
 ```
 
 If you also want to confirm SSE isn't being buffered end-to-end, exercise the LLM ask endpoint.
-`POST /api/llm/ask` requires `question` and `model` (see `AskRequestSchema` in `packages/contracts/src/schemas/llm.ts`) — pick a model from `GET /api/llm/models` or the Settings → AI → AI Models page. Replace `<TOKEN>` with a valid JWT (grab one from your browser's DevTools → Application → Local Storage → `compendiq-auth` → `state.accessToken` after logging in):
+`POST /api/llm/ask` requires `question` and `model` (see `AskRequestSchema` in `packages/contracts/src/schemas/llm.ts`) — pick a model from `GET /api/llm/models` or the Settings → AI → AI Models page. Replace `<TOKEN>` with a valid JWT (after logging in, copy it from your browser's DevTools → Network → any `/api` request → the `Authorization: Bearer …` request header; the token is kept in memory, never in Local Storage):
 
 ```bash
 curl -N -H "Authorization: Bearer <TOKEN>" \

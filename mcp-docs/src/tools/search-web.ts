@@ -12,6 +12,8 @@ import { logger } from '../logger.js';
 const SEARCH_TIMEOUT_MS = 15_000;
 const DEFAULT_NUM_RESULTS = 5;
 const MAX_NUM_RESULTS = 10;
+/** SearXNG category searched when the caller names none. */
+const DEFAULT_CATEGORIES = 'general';
 
 export interface SearchResult {
   title: string;
@@ -22,16 +24,20 @@ export interface SearchResult {
 export async function searchWeb(
   query: string,
   redis: RedisClientType | null,
-  options: { numResults?: number; userId?: string; searxngUrl?: string } = {},
+  options: { numResults?: number; userId?: string; searxngUrl?: string; categories?: string } = {},
 ): Promise<SearchResult[]> {
   // 1. Sanitize query (data leakage prevention layer 4)
   const sanitized = sanitizeSearchQuery(query);
   const numResults = Math.min(options.numResults ?? DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
+  // The SearXNG host is deployment configuration (SEARXNG_URL), never a tool
+  // argument; the `searxngUrl` option exists for loopback tests only.
   const searxngUrl = options.searxngUrl ?? process.env.SEARXNG_URL ?? 'http://searxng:8080';
+  const categories = options.categories ?? DEFAULT_CATEGORIES;
 
-  // 2. Check cache
+  // 2. Check cache — SearXNG answers a different result set per category list,
+  // so the categories are part of the cache identity.
   const cache = new DocsCache(redis);
-  const cached = await cache.getCachedSearch(sanitized, numResults);
+  const cached = await cache.getCachedSearch(sanitized, numResults, categories);
   if (cached) {
     logOutboundRequest({
       tool: 'search_web', query: sanitized, userId: options.userId,
@@ -44,7 +50,7 @@ export async function searchWeb(
   const searchUrl = new URL('/search', searxngUrl);
   searchUrl.searchParams.set('q', sanitized);
   searchUrl.searchParams.set('format', 'json');
-  searchUrl.searchParams.set('categories', 'general');
+  searchUrl.searchParams.set('categories', categories);
 
   let results: SearchResult[];
 
@@ -81,7 +87,7 @@ export async function searchWeb(
   }
 
   // 4. Cache successful responses only — a genuinely-empty result set is cacheable.
-  await cache.setCachedSearch(sanitized, numResults, {
+  await cache.setCachedSearch(sanitized, numResults, categories, {
     results, query: sanitized, fetchedAt: new Date().toISOString(),
   });
 

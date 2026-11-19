@@ -1,13 +1,86 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { AI_POLICY_CLIENT_PROTOCOL_VERSION } from '@compendiq/contracts';
 import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
-// Used only inside setAuth, so the import cycle (editor-drafts reads this
-// store) never touches an uninitialised binding.
-import { forgetDraftSignOut } from '../shared/lib/editor-drafts';
+// Used only at runtime (setAuth, the storage listener), so the import cycle
+// (editor-drafts reads this store) never touches an uninitialised binding.
+import { forgetDraftSignOut, SIGN_OUT_EPOCH_KEY } from '../shared/lib/editor-drafts';
+
+/**
+ * The persisted auth key and the cross-tab channel carry the client protocol
+ * version (#1881). A pre-handshake bundle still open in another tab keeps
+ * using the unversioned `compendiq-auth` names, so it can neither adopt this
+ * bundle's access tokens (which would outlive its own one-token-lifetime
+ * residual) nor sign this bundle's tabs out when the server refuses its
+ * session with `client_reload_required`. Bump only together with
+ * `AI_POLICY_CLIENT_PROTOCOL_VERSION`.
+ */
+export const AUTH_STORAGE_KEY = `compendiq-auth:p${AI_POLICY_CLIENT_PROTOCOL_VERSION}`;
+const UNVERSIONED_AUTH_STORAGE_KEY = 'compendiq-auth';
 
 // One-time migrations for localStorage key renames
-migrateStorageKey('kb-auth', 'compendiq-auth');
-migrateStorageKey('atlasmind-auth', 'compendiq-auth');
+migrateStorageKey('kb-auth', UNVERSIONED_AUTH_STORAGE_KEY);
+migrateStorageKey('atlasmind-auth', UNVERSIONED_AUTH_STORAGE_KEY);
+adoptUnversionedAuthState();
+
+/**
+ * Upgrade path: keep a signed-in user signed in by COPYING the unversioned
+ * blob (user + isAuthenticated) to the versioned key once. The unversioned
+ * key is left in place on purpose: removing it would fire a `storage` event
+ * that signs out every pre-upgrade tab. A blob from before the token stopped
+ * being persisted is scrubbed in place too (still signed in, so no legacy
+ * tab sees a logout), so no access token stays at rest under either key.
+ */
+function adoptUnversionedAuthState(): void {
+  try {
+    if (localStorage.getItem(AUTH_STORAGE_KEY) !== null) return;
+    let unversioned = localStorage.getItem(UNVERSIONED_AUTH_STORAGE_KEY);
+    if (unversioned === null) return;
+    try {
+      const parsed = JSON.parse(unversioned) as { state?: Record<string, unknown> };
+      if (parsed.state && 'accessToken' in parsed.state) {
+        delete parsed.state.accessToken;
+        unversioned = JSON.stringify(parsed);
+        localStorage.setItem(UNVERSIONED_AUTH_STORAGE_KEY, unversioned);
+      }
+    } catch {
+      // Unparseable: copy as-is; the persist rehydrate treats it as empty.
+    }
+    localStorage.setItem(AUTH_STORAGE_KEY, unversioned);
+  } catch {
+    // localStorage unavailable — nothing to adopt
+  }
+}
+
+// Send-only: this bundle never listens on the unversioned channel, so a
+// legacy tab's tokens and (refused-refresh) logouts never reach it.
+const unversionedAuthChannel: BroadcastChannel | null =
+  typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel(UNVERSIONED_AUTH_STORAGE_KEY)
+    : null;
+
+/**
+ * Tell tabs of a pre-handshake build that this browser's session ended,
+ * through both names they listen on. Neither message carries a token. Sent
+ * from `clearAuth` on a local authenticated→unauthenticated transition: in
+ * this build that only happens on an explicit sign-out or once a refresh
+ * resolved null — the shared cookie session is gone either way (a refused
+ * refresh, 409, rejects and keeps the session, so it never reaches
+ * `clearAuth`). Without it a
+ * legacy tab keeps the ended account's session and cached data, and later
+ * refreshes into whoever signs in next with no cache wipe (#885).
+ */
+function announceSignOutToUnversionedTabs(): void {
+  try {
+    unversionedAuthChannel?.postMessage({ type: 'logout' });
+  } catch { /* channel closed — the storage write below still reaches them */ }
+  try {
+    localStorage.setItem(
+      UNVERSIONED_AUTH_STORAGE_KEY,
+      JSON.stringify({ state: { user: null, isAuthenticated: false }, version: 1 }),
+    );
+  } catch { /* storage unavailable */ }
+}
 
 /**
  * Zustand persist rehydrates asynchronously. ProtectedRoute's boot skeleton
@@ -17,7 +90,7 @@ migrateStorageKey('atlasmind-auth', 'compendiq-auth');
  */
 export function peekPersistedSession(): boolean {
   try {
-    const raw = localStorage.getItem('compendiq-auth');
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
     if (!raw) return false;
     const parsed = JSON.parse(raw) as { state?: { isAuthenticated?: boolean } };
     return parsed.state?.isAuthenticated === true;
@@ -56,7 +129,7 @@ type AuthBroadcast =
 // persists) — each tab then re-mints its own token from the refresh cookie.
 const authChannel: BroadcastChannel | null =
   typeof BroadcastChannel !== 'undefined'
-    ? new BroadcastChannel('compendiq-auth')
+    ? new BroadcastChannel(AUTH_STORAGE_KEY)
     : null;
 
 // Re-entrancy guard: while applying a message received from another tab we must
@@ -101,12 +174,16 @@ export const useAuthStore = create<AuthState>()(
         const wasAuthenticated = get().isAuthenticated;
         set({ accessToken: null, user: null, isAuthenticated: false });
         // Only broadcast on a genuine authenticated→unauthenticated transition
-        // to avoid a logout-broadcast storm across tabs.
-        if (wasAuthenticated) postAuthMessage({ type: 'logout' });
+        // to avoid a logout-broadcast storm across tabs; a clear applied from
+        // another tab (or a legacy tab's explicit sign-out) is not re-sent.
+        if (wasAuthenticated && !applyingRemote) {
+          postAuthMessage({ type: 'logout' });
+          announceSignOutToUnversionedTabs();
+        }
       },
     }),
     {
-      name: 'compendiq-auth',
+      name: AUTH_STORAGE_KEY,
       // Bumped 0→1 to strip a legacy on-disk access token on first load after
       // upgrade (see `migrate`).
       version: 1,
@@ -133,7 +210,7 @@ export const useAuthStore = create<AuthState>()(
 /**
  * Cross-tab coordination:
  *
- * 1. BroadcastChannel('compendiq-auth') — in-memory, same-origin. Carries the
+ * 1. BroadcastChannel(AUTH_STORAGE_KEY) — in-memory, same-origin. Carries the
  *    access token (token adoption) and logout between tabs WITHOUT persisting
  *    the token. Received messages are applied with the re-entrancy guard so we
  *    don't echo them back.
@@ -166,7 +243,15 @@ if (authChannel) {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
-    if (event.key !== 'compendiq-auth') return;
+    // Explicit sign-out in ANY build's tab advances the shared draft
+    // sign-out epoch (GHSA-r652; unversioned on purpose). Only `logoutApi`
+    // writes it — never a refused refresh — so this is the cross-build
+    // sign-out signal a pre-handshake tab can still deliver.
+    if (event.key === SIGN_OUT_EPOCH_KEY && event.newValue !== null) {
+      applyRemote(() => useAuthStore.getState().clearAuth());
+      return;
+    }
+    if (event.key !== AUTH_STORAGE_KEY) return;
 
     if (event.newValue === null) {
       // localStorage was cleared (logout in another tab). Apply under the

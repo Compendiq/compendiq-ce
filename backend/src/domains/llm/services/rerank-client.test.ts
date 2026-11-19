@@ -7,6 +7,7 @@ import {
   RERANK_DOC_MAX_CHARS,
 } from './rerank-client.js';
 import { LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
+import { ArticleStageRefusedError } from './article-stage-admission.js';
 
 // Boundary-mocked like its sibling client tests: a real local HTTP server
 // (CLAUDE.md — mock at the HTTP boundary, never at the service layer).
@@ -56,7 +57,36 @@ function respondWith(results: Array<{ index: number; relevance_score: number }>)
   };
 }
 
+const ARTICLE_PROVENANCE = {
+  version: 1 as const, providerId: 'recorded-provider', configRevision: 3, locality: 'external' as const,
+  pages: [{ pageId: 42, policy: 'all' as const, policyRevision: 1, contentRevision: 1 }],
+};
+
 describe('rerank-client (#1104)', () => {
+  // #282: the article binding is proved INSIDE the client, against the
+  // `cfg`/`model` its own fetch reads, after the queue wait. The two
+  // refusals below need no authority read — they are decided from the
+  // transport the caller handed in — so the HTTP boundary suite can pin
+  // that no document byte leaves on either; the full admission (page
+  // policy, provider row) is covered by `article-stage-admission.db.test.ts`.
+  it('does not send document bytes when the transport carries no config revision', async () => {
+    lastBody = {};
+    respondWith([{ index: 0, relevance_score: 0.9 }]);
+    await expect(rerank(cfg(), 'm', 'q', ['restricted bytes'], {
+      article: { provenance: ARTICLE_PROVENANCE, userId: null },
+    })).rejects.toBeInstanceOf(ArticleStageRefusedError);
+    expect(lastBody).toEqual({});
+  });
+
+  it('does not send document bytes when the transport is not the recorded provider', async () => {
+    lastBody = {};
+    respondWith([{ index: 0, relevance_score: 0.9 }]);
+    await expect(rerank({ ...cfg(), configRevision: 3 }, 'm', 'q', ['restricted bytes'], {
+      article: { provenance: ARTICLE_PROVENANCE, userId: null },
+    })).rejects.toMatchObject({ name: 'ArticleStageRefusedError', reason: 'grounding_changed' });
+    expect(lastBody).toEqual({});
+  });
+
   it('POSTs the Cohere/Jina shape and maps results ordered by relevance', async () => {
     respondWith([
       { index: 0, relevance_score: 0.2 },

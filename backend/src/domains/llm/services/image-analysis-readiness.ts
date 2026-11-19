@@ -61,6 +61,10 @@ export function computeImageAnalysisReadiness(
     else if (row.status === 'skipped') {
       if (row.skip_reason === 'missing') missing++;
     } else if (row.status === 'failed' || row.status === 'failed_terminal') failed++;
+    // `policy_blocked` (SPEC-WORK-001) is a verdict like a policy skip: the
+    // article's AI policy keeps the row out of the work window, so beside a
+    // valid row it leaves `complete` alone and alone it reads `skipped`.
+    else if (row.status === 'policy_blocked') { /* verdict: neither gap nor work */ }
     // `pending`, and an `analyzed` row that fails the predicate (stale until
     // the sweep re-pends it), both read as pending.
     else pending++;
@@ -108,6 +112,8 @@ export interface ImageAnalysisCorpusCounts {
     failed: number;
     terminal: number;
     skipped: number;
+    /** Parked by the article AI policy (SPEC-WORK-001) — apart from pending and failed. */
+    policyBlocked: number;
   };
   skipReasons: Record<'missing' | 'unsupported' | 'oversized' | 'too_large' | 'external' | 'capped', number>;
   /** Live, non-folder pages still carrying `image_analysis_dirty`. */
@@ -144,7 +150,7 @@ export async function readImageAnalysisCorpusCounts(): Promise<ImageAnalysisCorp
     ),
   ]);
 
-  const rows = { analyzed: 0, stale: 0, pending: 0, failed: 0, terminal: 0, skipped: 0 };
+  const rows = { analyzed: 0, stale: 0, pending: 0, failed: 0, terminal: 0, skipped: 0, policyBlocked: 0 };
   for (const r of statusRes.rows) {
     const n = Number(r.n);
     if (r.status === 'analyzed') {
@@ -154,6 +160,7 @@ export async function readImageAnalysisCorpusCounts(): Promise<ImageAnalysisCorp
     else if (r.status === 'failed') rows.failed += n;
     else if (r.status === 'failed_terminal') rows.terminal += n;
     else if (r.status === 'skipped') rows.skipped += n;
+    else if (r.status === 'policy_blocked') rows.policyBlocked += n;
   }
   const skipReasons = { missing: 0, unsupported: 0, oversized: 0, too_large: 0, external: 0, capped: 0 };
   for (const r of skipRes.rows) {

@@ -85,7 +85,7 @@ describe('ArticleSummary', () => {
       { wrapper: createWrapper() },
     );
     expect(screen.getByTestId('article-summary-pending')).toBeInTheDocument();
-    expect(screen.getByText('AI summary will be generated shortly')).toBeInTheDocument();
+    expect(screen.getByText('AI summary pending — eligible work is queued, not completed')).toBeInTheDocument();
   });
 
   it('renders summarizing indicator with pulse', () => {
@@ -142,7 +142,7 @@ describe('ArticleSummary', () => {
 
       expect(await screen.findByTestId('article-summary-offline')).toBeInTheDocument();
       expect(screen.getByText('AI summary unavailable — LLM provider offline')).toBeInTheDocument();
-      expect(screen.queryByText('AI summary will be generated shortly')).not.toBeInTheDocument();
+      expect(screen.queryByText('AI summary pending — eligible work is queued, not completed')).not.toBeInTheDocument();
       // #1052: the request carries the admin token so the backend returns the
       // per-service `services` payload.
       expect(fetchMock).toHaveBeenCalledWith(
@@ -164,7 +164,7 @@ describe('ArticleSummary', () => {
           expect.objectContaining({ headers: expect.anything() }),
         );
       });
-      expect(screen.getByText('AI summary will be generated shortly')).toBeInTheDocument();
+      expect(screen.getByText('AI summary pending — eligible work is queued, not completed')).toBeInTheDocument();
       expect(screen.queryByTestId('article-summary-offline')).not.toBeInTheDocument();
     });
 
@@ -179,7 +179,7 @@ describe('ArticleSummary', () => {
           expect.objectContaining({ headers: expect.anything() }),
         );
       });
-      expect(screen.getByText('AI summary will be generated shortly')).toBeInTheDocument();
+      expect(screen.getByText('AI summary pending — eligible work is queued, not completed')).toBeInTheDocument();
       expect(screen.queryByTestId('article-summary-offline')).not.toBeInTheDocument();
     });
 

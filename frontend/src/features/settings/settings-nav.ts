@@ -112,6 +112,9 @@ export const SETTINGS_NAV = [
       // this panel is admin-visible in CE; its approval-role sections reveal
       // under an Enterprise licence (#277).
       navItem('baselines', 'Article baselines', { adminOnly: true }),
+      // The CE-owned article AI policy enforcement switch and its observable
+      // preconditions (#1881). Licence-independent, so admin-visible in CE.
+      navItem('ai-policy', 'Article AI policy', { adminOnly: true }),
     ],
   },
   {

@@ -1,10 +1,11 @@
+import { loadDrawioSource } from '../../shared/lib/drawio-source';
 import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { UNSAFE_NavigationContext, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
 import * as Y from 'yjs';
 import { toBase64 } from 'lib0/buffer';
-import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw, Pencil } from 'lucide-react';
+import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -17,9 +18,31 @@ import {
   useDeletePage,
   useUpdatePageIcon,
   useUploadPageIcon,
+  describeAiPolicyRefusal,
+  type AiPolicyRefusal,
 } from '../../shared/hooks/use-pages';
+
+/**
+ * #283 — the visible reason a label write was refused for article-AI-policy
+ * reasons. Says what the server decided; never that a policy changed.
+ */
+function labelRefusalMessage(refusal: AiPolicyRefusal): string {
+  switch (refusal.kind) {
+    case 'label_conflict':
+      return `The labels name more than one AI policy (${refusal.policies.map((p) => AI_POLICY_CHIP_LABEL[p]).join(' and ')}). Keep one reserved policy label, or change the policy explicitly in Details → AI policy. Your other tag edits are kept.`;
+    case 'denied':
+      return 'You are not authorized to change this article\u2019s AI policy through its labels. The reserved label was not applied; your other tag edits are kept.';
+    case 'conflict':
+      return 'The article\u2019s AI policy changed since this page was read. Refresh and review before applying reserved labels again; your tag edits are kept.';
+    case 'enforcement_unavailable':
+      return 'AI-policy labels cannot be applied until policy enforcement is activated on this deployment. Your other tag edits are kept.';
+    case 'unavailable':
+      return 'The article\u2019s AI policy could not be read, so the reserved label was not applied. Try again; your tag edits are kept.';
+  }
+}
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
-import { FrozenBadge } from '../../shared/components/badges/FrozenBadge';
+import { ArticleReadToolbar } from '../../shared/components/article/ArticleReadToolbar';
+import { AiPolicyChip } from '../../shared/components/badges/AiPolicyChips';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
 import { CollabCommitResponseSchema, type CollabConfig, type SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
@@ -30,6 +53,7 @@ import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
+import { inlineArticlePolicy, AI_POLICY_CHIP_LABEL } from '../../shared/lib/article-ai-policy';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { Editor, EditorToolbar, EditorContextToolbars } from '../../shared/components/article/Editor';
 import { clearDraft, pageDraftKey, readDraft } from '../../shared/lib/editor-drafts';
@@ -46,14 +70,13 @@ import type { TocHeading } from '../../shared/components/article/TableOfContents
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagPopover } from '../../shared/components/TagPopover';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
-import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
 import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../shared/lib/trash-copy';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
-import { useCollabProvider } from './use-collab-provider';
+import { useCollabProvider, type UseCollabProviderResult } from './use-collab-provider';
 import { mergePresence } from './merge-presence';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
@@ -89,6 +112,53 @@ function stateHistoryIndex(value: unknown): number | null {
 
 function historyIndex(): number | null {
   return stateHistoryIndex(window.history.state);
+}
+
+/**
+ * The one sentence the editor slot shows until the collaborative document
+ * first syncs (#1895). A refusal wins over a read-only reason, which wins over
+ * a transient reconnect. No draft exists yet, so nothing mentions one.
+ */
+function collabPreSyncMessage(
+  collab: Pick<UseCollabProviderResult, 'error' | 'readOnlyReason' | 'reconnecting' | 'canRetry'>,
+): string {
+  switch (collab.error) {
+    case 'unauthorized':
+      return 'Your session expired. Sign in again to keep editing together.';
+    case 'forbidden':
+      return 'You cannot join this collaborative session.';
+    case 'not_found':
+      return 'This page is no longer available for collaborative editing.';
+    case 'rate_limited':
+      return collab.canRetry
+        ? 'Too many connection attempts. You can retry now.'
+        : 'Too many connection attempts. Retry becomes available after a minute.';
+    case 'flag_off':
+      return 'Collaborative editing has been turned off. Close the editor and open it again to edit this page.';
+    case 'join_interrupted':
+      return 'The collaborative session closed before it finished loading.';
+    case null:
+      break;
+  }
+  switch (collab.readOnlyReason) {
+    case 'frozen':
+      return 'This page is frozen, so it cannot be edited.';
+    case 'lifecycle_changed':
+      return 'This page changed while the editor was opening. Close the editor and open it again to edit the current version.';
+    case 'document_changed':
+      return 'This page was replaced while the editor was opening. Close the editor and open it again to edit the current version.';
+    case 'permission_loss':
+      return 'You can view this page but cannot edit it.';
+    case 'not_found':
+      return 'This page is no longer available for collaborative editing.';
+    case 'unauthorized':
+      return 'Your session expired. Sign in again to keep editing together.';
+    case null:
+      break;
+  }
+  return collab.reconnecting
+    ? 'Could not connect to the collaborative session. Retrying…'
+    : 'Connecting to the collaborative session…';
 }
 
 export function PageViewPage() {
@@ -147,8 +217,19 @@ export function PageViewPage() {
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
+  // #283: the server's reserved-label verdict on the last refused label
+  // write, shown inside the tag control; null once a write commits.
+  const [labelPolicyNotice, setLabelPolicyNotice] = useState<string | null>(null);
   const metadataRevisionRef = useRef(0);
   const editSessionRef = useRef(0);
+  // #1746: the page version this editing session's content is based on, sent
+  // as the ordinary PUT's `version`. Set where a session seeds the editor
+  // (Edit, Restore draft, Edit published version) and replaced only by this
+  // session's own successful PUT. Never send the live `page.version`: focus,
+  // remount and invalidation refetches move it mid-edit and would rebase a
+  // stale draft onto someone else's version. 0 = no session; no page has
+  // version 0 and UpdatePageSchema refuses it, so an unset base fails closed.
+  const editBaseVersionRef = useRef(0);
   // State-backed pending flags update on the next render, which leaves a
   // same-tick Ctrl/Cmd+S window. Claim the ref synchronously so every entry
   // path shares one flight, including draw.io draining and collab commit; keep
@@ -213,6 +294,11 @@ export function PageViewPage() {
   });
   const [collabSession, setCollabSession] = useState(false);
   const [collabHasSynced, setCollabHasSynced] = useState(false);
+  // The join Retry stays mounted as "Retrying…" until its attempt settles.
+  const [joinRetryInFlight, setJoinRetryInFlight] = useState(false);
+  const joinRetryButtonRef = useRef<HTMLButtonElement>(null);
+  const joinRetryHadFocusRef = useRef(false);
+  const editorColumnRef = useRef<HTMLDivElement>(null);
   const collab = useCollabProvider({
     pageId: id,
     enabled: collabSession,
@@ -249,9 +335,45 @@ export function PageViewPage() {
   }, [editing, lifecycle, page, sessionLifecycleRevision]);
   const writeLocked = page?.isFrozen === true ||
     (editing && (editingBlocked || collab.readOnlyReason != null));
-  const editorWritable = !writeLocked && (!collabLive || collab.writable ||
-    (collabHasSynced && !collab.connected));
-  const saveBlocked = writeLocked || (collabLive && (!collab.writable || !collab.connected));
+  // Until the first sync there is no collaborative draft: the editor slot owns
+  // the screen, nothing is editable and Save stays blocked (#1895).
+  const collabPreSync = collabLive && !collabHasSynced;
+  const editorWritable = !writeLocked && (!collabLive ||
+    (collabHasSynced && (collab.writable || !collab.connected)));
+  const saveBlocked = writeLocked ||
+    (collabLive && (!collabHasSynced || !collab.writable || !collab.connected));
+  // The refusal copy says to close and reopen the editor; make that reopen use
+  // the current config and page instead of the cached ones.
+  useEffect(() => {
+    if (!collabPreSync) return;
+    if (collab.error === 'flag_off') void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
+    if (collab.readOnlyReason === 'lifecycle_changed' || collab.readOnlyReason === 'document_changed' ||
+        collab.readOnlyReason === 'frozen') {
+      void queryClient.invalidateQueries({ queryKey: ['pages', id] });
+    }
+  }, [collabPreSync, collab.error, collab.readOnlyReason, id, queryClient]);
+  const { canRetry: collabCanRetry, retry: retryCollabJoin } = collab;
+  const handleJoinRetry = useCallback(() => {
+    // `aria-disabled`, never `disabled`: the control keeps focus, so refuse here.
+    if (joinRetryInFlight || !collabCanRetry) return;
+    joinRetryHadFocusRef.current = document.activeElement === joinRetryButtonRef.current;
+    setJoinRetryInFlight(true);
+    retryCollabJoin();
+  }, [collabCanRetry, joinRetryInFlight, retryCollabJoin]);
+  // The attempt settles on the first sync, any new refusal (a close reason in
+  // `error` or a lifecycle/permission/reset refusal in `readOnlyReason`) or the
+  // end of the session. A Retry that vanished with focus on it hands focus to
+  // the named editor column instead of dropping it to <body>.
+  useEffect(() => {
+    if (!joinRetryInFlight ||
+        (collabPreSync && collab.error === null && collab.readOnlyReason === null)) return;
+    setJoinRetryInFlight(false);
+    if (!joinRetryHadFocusRef.current) return;
+    joinRetryHadFocusRef.current = false;
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.body) editorColumnRef.current?.focus();
+    });
+  }, [joinRetryInFlight, collabPreSync, collab.error, collab.readOnlyReason]);
   const mergedViewers = useMemo(
     () => (collabLive
       ? mergePresence(presenceViewers, collab.awarenessUsers)
@@ -458,6 +580,7 @@ export function PageViewPage() {
       return;
     }
     editSessionRef.current += 1;
+    editBaseVersionRef.current = page.version;
     setEditingBlocked(false);
     setSessionLifecycleRevision(page.lifecycleRevision);
     captureScrollOffset();
@@ -488,6 +611,13 @@ export function PageViewPage() {
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
     captureScrollOffset();
+    // A localStorage draft records no base version and no title: the page on
+    // screen when the user chooses to restore it is the best available base,
+    // and the title must describe that same version (#1746).
+    if (page) {
+      editBaseVersionRef.current = page.version;
+      setEditTitle(page.title);
+    }
     setEditHtml(pendingDraft);
     if (page?.labels) setDraftLabels(page.labels);
     // A restored draft diverges from the published page, so the editor is
@@ -501,6 +631,8 @@ export function PageViewPage() {
     setPendingDraft(null);
     captureScrollOffset();
     if (!page) return;
+    editBaseVersionRef.current = page.version;
+    setEditTitle(page.title);
     setEditHtml(page.bodyHtml);
     setDraftLabels(page.labels ?? []);
     setIsDirty(false);
@@ -783,12 +915,15 @@ export function PageViewPage() {
           return;
         }
         const bodyToSave = editorInstance.getHTML();
-        await updateMutation.mutateAsync({
+        const saved = await updateMutation.mutateAsync({
           id,
           title: editTitle,
           bodyHtml: bodyToSave,
-          version: page.version,
+          version: editBaseVersionRef.current,
         });
+        // This session's own write is its new base: a Save that stays open
+        // (a refused label write below) must not 409 against it (#1746).
+        if (editSessionRef.current === session) editBaseVersionRef.current = saved.version;
       }
       if (editSessionRef.current !== session) return;
       if (editing) {
@@ -796,7 +931,23 @@ export function PageViewPage() {
         const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
         const removeLabels = currentLabels.filter((l) => !draftLabels.includes(l));
         if (addLabels.length > 0 || removeLabels.length > 0) {
-          await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+          try {
+            await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+            setLabelPolicyNotice(null);
+          } catch (labelError) {
+            // #283: a reserved-label verdict from the server (contradictory
+            // policy labels, a relaxation without policy authority,
+            // enforcement not activated) is not a save failure — the content
+            // save above already committed. Keep the edit session and the
+            // draft labels so the user can resolve the conflict, and say
+            // exactly what the server refused and why, inside the tag
+            // control. Anything else is an ordinary label-write error.
+            const refusal = describeAiPolicyRefusal(labelError);
+            if (!refusal || editSessionRef.current !== session) throw labelError;
+            setLabelPolicyNotice(labelRefusalMessage(refusal));
+            toast.warning('Content saved; the label change was not applied. See the tag control for the reason.');
+            return;
+          }
         }
       }
       if (editSessionRef.current !== session) return;
@@ -868,33 +1019,22 @@ export function PageViewPage() {
       toast.info(`${refusal} The diagram is shown as it was frozen.`);
       return;
     }
-    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs.
-    // Confluence pages key attachments by confluence_id against /api/attachments; standalone
-    // pages key by the numeric DB id against /api/local-attachments (#302 Gap 4). Without
-    // this branch, standalone pages would 404 against the Confluence route.
+    // Prefer the editable XML sibling; older diagrams may only have a
+    // PNG with embedded XML. Never substitute an empty diagram on failure.
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId) return;
     const basePath = page?.confluenceId ? '/api/attachments' : '/api/local-attachments';
-    let dataUri: string;
+    let xml: string;
     try {
-      const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
-      const res = await fetch(`${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to load diagram: ${res.status}`);
-      }
-      const blob = await res.blob();
-      dataUri = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(blob);
-      });
+      // Shared with the TipTap node view: import parsed diagram XML, not an
+      // arbitrary successful response or an unvalidated image data URI.
+      const baseUrl = `${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}`;
+      xml = await loadDrawioSource({ sourceUrl: `${baseUrl}.drawio`, previewUrl: `${baseUrl}.png` });
     } catch (error) {
       toast.error(`Failed to open draw.io editor: ${error instanceof Error ? error.message : 'Unknown error'}`, { duration: 8000 });
       return;
     }
-    setDrawioXml(dataUri);
+    setDrawioXml(xml);
     setDrawioEditingDiagram(diagramName);
   }, [id, page?.confluenceId, contentWriteRefusal]);
 
@@ -966,7 +1106,15 @@ export function PageViewPage() {
     }
     labelsMutation.mutate(
       { id, addLabels: [tag] },
-      { onError: () => toast.error('Failed to add tag.') },
+      {
+        onSuccess: () => setLabelPolicyNotice(null),
+        // #283: a policy verdict is named in the tag control, not toasted away.
+        onError: (error) => {
+          const refusal = describeAiPolicyRefusal(error);
+          if (refusal) setLabelPolicyNotice(labelRefusalMessage(refusal));
+          else toast.error('Failed to add tag.');
+        },
+      },
     );
   }, [editing, draftLabels, id, labelsMutation]);
 
@@ -980,7 +1128,14 @@ export function PageViewPage() {
     }
     labelsMutation.mutate(
       { id, removeLabels: [tag] },
-      { onError: () => toast.error('Failed to remove tag.') },
+      {
+        onSuccess: () => setLabelPolicyNotice(null),
+        onError: (error) => {
+          const refusal = describeAiPolicyRefusal(error);
+          if (refusal) setLabelPolicyNotice(labelRefusalMessage(refusal));
+          else toast.error('Failed to remove tag.');
+        },
+      },
     );
   }, [editing, id, labelsMutation]);
 
@@ -1016,8 +1171,14 @@ export function PageViewPage() {
 
   const handleDeletePage = useCallback(() => {
     if (!id) return;
+    // The inspector offers no trash row on a frozen article; the shortcut
+    // must not reach the confirm the server would refuse (`page_is_frozen`).
+    if (page?.isFrozen === true) {
+      toast.info('This article is frozen. It cannot be moved to trash until it is thawed.');
+      return;
+    }
     setConfirmTrashOpen(true);
-  }, [id]);
+  }, [id, page?.isFrozen]);
 
   const handleConfirmMoveToTrash = useCallback(async () => {
     if (!id) return;
@@ -1040,7 +1201,12 @@ export function PageViewPage() {
       description: 'Save current page',
       category: 'editor',
       action: () => {
-        if (editing) handleSave();
+        if (!editing) return;
+        if (collabPreSync) {
+          toast.info('There is nothing to save yet: the collaborative session has not loaded.');
+          return;
+        }
+        handleSave();
       },
     },
     {
@@ -1104,7 +1270,7 @@ export function PageViewPage() {
       // the user did not ask for, which is why it is no longer called Improve.
       action: openDock,
     },
-  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, openDock]);
+  ], [editing, collabPreSync, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, openDock]);
 
   useKeyboardShortcuts(pageShortcuts);
 
@@ -1171,7 +1337,7 @@ export function PageViewPage() {
     );
   }
 
-  const tagChip = writeLocked ? (
+  const tagChip = writeLocked || collabPreSync ? (
     <span className="text-xs text-muted-foreground">{draftLabels.length ? draftLabels.join(', ') : 'Tags are read-only'}</span>
   ) : (
     <TagPopover
@@ -1181,6 +1347,7 @@ export function PageViewPage() {
       suggestions={filterOptions?.labels}
       isLoading={labelsMutation.isPending}
       iconOnly={editing}
+      policyNotice={labelPolicyNotice}
     />
   );
   const saving = saveInFlight || updateMutation.isPending;
@@ -1248,6 +1415,9 @@ export function PageViewPage() {
           below it. The height stays 48 — the sidebar's chrome row and the
           inspector's tab row still start their content on that same y. */}
       <div className="relative z-30 shrink-0">
+        {!isError && (inlineArticlePolicy(page).articlePolicy === 'none' || inlineArticlePolicy(page).articlePolicy === 'local_only') && (
+          <div className="px-3 py-1"><AiPolicyChip compact policy={inlineArticlePolicy(page).articlePolicy!} /></div>
+        )}
         {confluenceModified && (
           <ConfluenceModifiedAlert
             remoteVersion={confluenceModified.remoteVersion}
@@ -1287,57 +1457,16 @@ export function PageViewPage() {
                   {sessionActions}
                 </>
               ) : (
-                <>
-                  {(page.labels ?? []).length > 0 && (
-                    <div
-                      className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden"
-                      data-testid="article-tags-readonly"
-                    >
-                      {(page.labels ?? []).map((label) => (
-                        <span
-                          key={label}
-                          className="inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-background/45 px-2.5 text-xs font-medium text-muted-foreground"
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <PresenceAvatarStack viewers={mergedViewers} />
-                    {page.isFrozen === true ? (
-                      // Not a disabled Edit button: a native-disabled control
-                      // takes no focus and no touch, so its `title` is the one
-                      // place the explanation could live and neither keyboard
-                      // nor touch users can reach it. A frozen article states
-                      // its state as text, and Details carries the rest.
-                      <span
-                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--radius-md)]
-                          border border-border px-2.5 text-xs font-medium text-muted-foreground"
-                        data-testid="article-frozen-status"
-                      >
-                        <FrozenBadge frozenVersion={page.frozenVersion} compact />
-                        <span>Frozen — open Details for the baseline</span>
-                      </span>
-                    ) : (
-                      <Button
-                        type="button"
-                        onClick={handleStartEditing}
-                        disabled={saveInFlight}
-                        isLoading={saveInFlight}
-                        title={saveInFlight ? 'Wait for the current save to finish' : 'Edit page'}
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
-                        data-testid="edit-page-btn"
-                        leftIcon={!saveInFlight ? <Pencil size={13} aria-hidden /> : undefined}
-                        rightIcon={!saveInFlight ? <ShortcutHint shortcutId="toggle-edit" /> : undefined}
-                      >
-                        <span>{saveInFlight ? 'Finishing save…' : 'Edit'}</span>
-                      </Button>
-                    )}
-                  </div>
-                </>
+                <ArticleReadToolbar
+                  page={page}
+                  confluenceUrl={settings?.confluenceUrl}
+                  mergedViewers={mergedViewers}
+                  saveInFlight={saveInFlight}
+                  onStartEditing={handleStartEditing}
+                  isPinned={isPinned}
+                  onPinToggle={handlePinToggle}
+                  onDelete={handleDeletePage}
+                />
               )}
             </div>
           )}
@@ -1356,7 +1485,7 @@ export function PageViewPage() {
         {editing ? (
           <Fragment key="article-edit">
             <div role="status" aria-live="polite" className="mx-auto w-full max-w-[1200px] px-5 sm:px-10">
-              {(writeLocked || (collabLive && collabHasSynced && !collab.connected)) && (
+              {!collabPreSync && (writeLocked || (collabLive && collabHasSynced && !collab.connected)) && (
                 <div className="my-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm">
                   <p className="font-medium text-foreground">
                     {writeLocked ? 'This editing session is now read-only' : 'Working offline'}
@@ -1404,30 +1533,33 @@ export function PageViewPage() {
 
             {/* Editor body — same 1200px reading column so the editing
                 experience matches the reader's line length exactly. */}
-            <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
+            <div
+              ref={editorColumnRef}
+              tabIndex={-1}
+              role="region"
+              aria-label="Page body"
+              data-testid="article-editor-column"
+              className={cn('nm-focus-ring mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}
+            >
               <FeatureErrorBoundary featureName="Editor">
-                {collabLive && collab.error && !collabHasSynced ? (
-                  <p
-                    role="status"
-                    className="py-8 text-sm leading-6 text-muted-foreground"
-                    data-testid="collab-join-error"
-                  >
-                    {collab.error === 'forbidden'
-                      ? 'You cannot join this collaborative session.'
-                      : collab.error === 'not_found'
-                        ? 'This page is no longer available for collaborative editing.'
-                        : 'Your session expired. Sign in again to keep editing together.'}
-                  </p>
-                ) : collabLive && !collabHasSynced ? (
-                  <p
-                    role="status"
-                    className="py-8 text-sm leading-6 text-muted-foreground"
-                    data-testid="collab-connecting"
-                  >
-                    {collab.readOnlyReason
-                      ? 'This tab did not join a writable session. Open the current version to continue.'
-                      : 'Connecting to the collaborative session…'}
-                  </p>
+                {collabPreSync ? (
+                  <div role="status" className="py-8 text-sm leading-6 text-muted-foreground">
+                    <p data-testid={collab.error || collab.readOnlyReason ? 'collab-join-error' : 'collab-connecting'}>
+                      {collabPreSyncMessage(collab)}
+                    </p>
+                    {(joinRetryInFlight || collab.error === 'rate_limited' || collab.error === 'join_interrupted') && (
+                      <button
+                        ref={joinRetryButtonRef}
+                        type="button"
+                        className="nm-button-ghost mt-3 h-8 aria-disabled:cursor-default aria-disabled:opacity-70"
+                        aria-disabled={joinRetryInFlight || !collab.canRetry || undefined}
+                        onClick={handleJoinRetry}
+                        data-testid="collab-join-retry"
+                      >
+                        {joinRetryInFlight ? 'Retrying…' : 'Retry'}
+                      </button>
+                    )}
+                  </div>
                 ) : (
                   <Editor
                     content={collabLive ? undefined : editHtml}
@@ -1443,6 +1575,8 @@ export function PageViewPage() {
                     collabProvider={collabLive ? collab.provider : undefined}
                     caretUser={collabLive ? caretUser : undefined}
                     inlineCompletion={{
+                      ...inlineArticlePolicy(isError ? undefined : page),
+                      articlePermission: !isError && page.canMutateContent === true && editorWritable,
                       available: inlineCompletionAvailable,
                       enabled: settings?.inlineCompletionEnabled ?? true,
                       delay: settings?.inlineCompletionDelay ?? 'balanced',
@@ -1475,7 +1609,7 @@ export function PageViewPage() {
               <PageTitleIcon
                 icon={page.icon}
                 pageId={page.id}
-                editable
+                editable={page.isFrozen !== true}
                 onSelect={handleSelectIcon}
                 onUpload={handleUploadIcon}
                 onRemove={handleRemoveIcon}
@@ -1493,13 +1627,15 @@ export function PageViewPage() {
             <div className="flex flex-col items-center gap-4 py-12 text-center">
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
-              <Button
-                onClick={handleStartEditing}
-                variant="primary"
-                data-testid="add-content-btn"
-              >
-                Add content
-              </Button>
+              {page.isFrozen !== true && (
+                <Button
+                  onClick={handleStartEditing}
+                  variant="primary"
+                  data-testid="add-content-btn"
+                >
+                  Add content
+                </Button>
+              )}
             </div>
             <ArticleConnections key={`connections-${page.id}`} pageId={page.id} />
           </div>
@@ -1515,7 +1651,7 @@ export function PageViewPage() {
               <PageTitleIcon
                 icon={page.icon}
                 pageId={page.id}
-                editable
+                editable={page.isFrozen !== true}
                 onSelect={handleSelectIcon}
                 onUpload={handleUploadIcon}
                 onRemove={handleRemoveIcon}

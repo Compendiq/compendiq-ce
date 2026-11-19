@@ -43,10 +43,6 @@ vi.mock('../../domains/knowledge/services/notion-client.js', () => ({
   },
 }));
 
-vi.mock('../../domains/knowledge/services/notion-tree.js', () => ({
-  fetchNotionWorkspaceTree: vi.fn(),
-}));
-
 vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));

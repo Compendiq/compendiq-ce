@@ -213,6 +213,18 @@ interface EmbeddingLockSnapshot {
 }
 
 /**
+ * Scrub Lua — remove stale members from the active-locks set, but only those
+ * whose lock key still does not exist when the script runs. Redis executes the
+ * script atomically, so an acquire (SET NX + SADD) cannot land between the
+ * check and the SREM. Returns the number of members removed.
+ *
+ *   KEYS[1]   = embedding:locks:active
+ *   KEYS[2..] = embedding:lock:<userId> for each stale userId
+ *   ARGV[i]   = the userId matching KEYS[i + 1]
+ */
+const SCRUB_STALE_LOCKS_SCRIPT = `local removed = 0 for i = 2, #KEYS do if redis.call("exists", KEYS[i]) == 0 then removed = removed + redis.call("srem", KEYS[1], ARGV[i - 1]) end end return removed`;
+
+/**
  * List all per-user embedding locks currently held.
  *
  * Resolves the active-holder set via one `SMEMBERS embedding:locks:active`
@@ -228,7 +240,11 @@ interface EmbeddingLockSnapshot {
  *
  * Self-healing. If a set member points to a lock key that no longer exists
  * (crash in between DEL and SREM, or external flush), the reader treats the
- * null GET reply as stale and fires a fire-and-forget SREM to drop the drift.
+ * null GET reply as stale and fires one fire-and-forget `SCRUB_STALE_LOCKS_SCRIPT`
+ * for all stale members of the listing. The script re-checks `EXISTS` for each
+ * lock key inside Redis and removes only members whose key is still absent, so
+ * an `acquireEmbeddingLock` that lands between the GET and the scrub keeps its
+ * set entry (a plain SREM of the stale list would hide that live lock; #1759).
  * The stale entry is still returned in the snapshot (with `holderEpoch: ''`
  * and `ttlRemainingMs: -2`, matching the parity semantics of the old SCAN
  * implementation) so callers always see a deterministic reply-for-reply view
@@ -278,11 +294,14 @@ export async function listActiveEmbeddingLocks(): Promise<EmbeddingLockSnapshot[
       // Fire-and-forget lazy self-heal — don't block the admin poll or the
       // reembed-all wait-loop on a scrubbing round-trip.
       _redisClient
-        .sRem(LOCKS_ACTIVE_SET, staleMembers)
+        .eval(SCRUB_STALE_LOCKS_SCRIPT, {
+          keys: [LOCKS_ACTIVE_SET, ...staleMembers.map(embeddingLockKey)],
+          arguments: staleMembers,
+        })
         .catch((err) =>
           logger.warn(
             { err, staleMembers },
-            'Lazy SREM of stale embedding-lock set members failed',
+            'Atomic scrub of stale embedding-lock set members failed',
           ),
         );
     }

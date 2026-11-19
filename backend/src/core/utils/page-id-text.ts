@@ -1,3 +1,5 @@
+import { PagePrimaryKeySchema } from '@compendiq/contracts';
+
 /**
  * Normalise an all-digits page identifier for comparison against `id::text`.
  *
@@ -18,4 +20,10 @@
  */
 export function toPageIdText(id: string): string {
   return String(BigInt(id));
+}
+
+/** Return the usable PK arm without changing the original legacy text ID. */
+export function toPageIdInt4(id: string): number | null {
+  const parsed = PagePrimaryKeySchema.safeParse(id);
+  return parsed.success ? parsed.data : null;
 }

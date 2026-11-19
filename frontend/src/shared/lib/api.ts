@@ -1,12 +1,25 @@
-import { LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
+import { AuthResponseSchema, LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { withAuthCookieLock } from './auth-cookie-lock';
+import {
+  CLIENT_RELOAD_REQUIRED_MESSAGE,
+  isClientReloadRequired,
+  withClientProtocol,
+} from './client-protocol';
 import { discardDraftsOnSignOut } from './editor-drafts';
 import { discardRecentSearchesOnSignOut } from './recent-searches';
 
 const API_BASE = '/api';
 
 export class ApiError extends Error {
+  /**
+   * The decoded JSON error body, when the response carried one (#283).
+   * Callers that need a typed refusal (article AI policy denial/conflict/
+   * label-conflict bodies) parse THIS with the contract schema rather than
+   * reconstructing the body from `code`/`reason`. `null` for non-JSON bodies.
+   */
+  public body: unknown = null;
+
   /**
    * `reason` (#1615) — the category slug some admin routes send beside
    * `error` (the probe-gated assignment PUTs answer 422 `{ error, reason }`,
@@ -27,14 +40,17 @@ export class ApiError extends Error {
 }
 
 /**
- * The refresh did not complete, but the session may still be valid: a network
- * error, a server or proxy error, 408/429, or the backend's retry-safe busy
- * 503 on every attempt. Callers keep the session and surface this error
- * instead of logging out.
+ * Refresh is unavailable. Only an exhausted marked-busy response is retry-safe;
+ * every other outcome may have consumed the cookie. Callers keep the session.
  */
 export class RefreshUnavailableError extends ApiError {
-  constructor() {
-    super(503, 'Your session could not be refreshed right now. Please try again.');
+  constructor(
+    public readonly retrySafe = false,
+    message = retrySafe
+      ? 'Your session could not be refreshed right now. Please try again.'
+      : 'Your session could not be refreshed safely. Save your work, then reload to try again.',
+  ) {
+    super(503, message);
     this.name = 'RefreshUnavailableError';
   }
 }
@@ -55,30 +71,47 @@ const REFRESH_BUSY = Symbol('refresh busy');
  * One `POST /auth/refresh`. Resolves the new access token, `null` when the
  * session is gone (401/403 and other non-transient 4xx), or REFRESH_BUSY for
  * the backend's retry-safe busy 503. Rejects with RefreshUnavailableError for
- * every other transient failure without retrying: after a network error or a
- * proxy 5xx the rotation may already have committed, and presenting the
- * consumed cookie again would be treated as token reuse.
+ * every other indeterminate failure without retrying: after a network error,
+ * proxy 5xx or unusable success body the rotation may already have committed,
+ * and presenting the consumed cookie again would be treated as token reuse.
+ *
+ * A 409 `client_reload_required` (#1881) is the one determinate refusal that
+ * is NOT "session gone": the backend answers it in `onRequest`, before any
+ * rotation, because this bundle did not identify itself as policy-aware (a
+ * header-stripping proxy, or a tab that outlived a deployment). The cookie is
+ * intact and a reloaded page refreshes fine, so this rejects like an
+ * unavailable refresh — auth state and drafts kept, no replay until a new
+ * auth state or an explicit reload — with the distinct reload message rather
+ * than clearing the session into a generic login failure.
  */
 async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/auth/refresh`, {
       method: 'POST',
+      headers: withClientProtocol(),
       credentials: 'include',
     });
   } catch {
     throw new RefreshUnavailableError();
   }
   if (res.ok) {
-    try {
-      const data = await res.json();
-      useAuthStore.getState().setAuth(data.accessToken, data.user);
-      return data.accessToken;
-    } catch {
-      return null;
+    const body: unknown = await res.json().catch(() => {
+      throw new RefreshUnavailableError();
+    });
+    const parsed = AuthResponseSchema.safeParse(body);
+    if (!parsed.success || !parsed.data.accessToken.trim()) {
+      throw new RefreshUnavailableError();
     }
+    // Validate everything before setAuth persists or broadcasts the session.
+    const { accessToken, user } = parsed.data;
+    useAuthStore.getState().setAuth(accessToken, user);
+    return accessToken;
   }
   if (await isMarkedBusy(res, REFRESH_BUSY_CODE)) return REFRESH_BUSY;
+  if (res.status === 409 && isClientReloadRequired(await res.json().catch(() => null))) {
+    throw new RefreshUnavailableError(false, CLIENT_RELOAD_REQUIRED_MESSAGE);
+  }
   if (res.status >= 500 || res.status === 408 || res.status === 429) throw new RefreshUnavailableError();
   return null;
 }
@@ -103,6 +136,10 @@ async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
  * which case callers must keep the session.
  */
 let pendingRefresh: Promise<string | null> | null = null;
+let unavailableRefresh: {
+  state: object;
+  error: RefreshUnavailableError;
+} | null = null;
 
 async function refreshWithBackoff(observedToken: string | null): Promise<string | null> {
   for (let attempt = 0; ; attempt += 1) {
@@ -113,7 +150,7 @@ async function refreshWithBackoff(observedToken: string | null): Promise<string 
     });
     if (outcome !== REFRESH_BUSY) return outcome;
     const delay = REFRESH_RETRY_DELAYS_MS[attempt];
-    if (delay === undefined) throw new RefreshUnavailableError();
+    if (delay === undefined) throw new RefreshUnavailableError(true);
     const pause = Promise.withResolvers<void>();
     setTimeout(pause.resolve, delay);
     await pause.promise;
@@ -121,8 +158,21 @@ async function refreshWithBackoff(observedToken: string | null): Promise<string 
 }
 
 export function refreshAccessTokenOnce(): Promise<string | null> {
+  const state = useAuthStore.getState();
+  // Retries, polling, focus refetches and reconnects all share this fence.
+  // A new auth state (login, logout or sibling token adoption) releases it;
+  // elapsed time and a new caller do not prove the cookie is safe to replay.
+  if (unavailableRefresh?.state === state) return Promise.reject(unavailableRefresh.error);
+  unavailableRefresh = null;
   if (!pendingRefresh) {
-    pendingRefresh = refreshWithBackoff(useAuthStore.getState().accessToken).finally(() => {
+    pendingRefresh = refreshWithBackoff(state.accessToken).catch((error: unknown) => {
+      // An old flight must not fence a newer session/token adopted meanwhile.
+      if (error instanceof RefreshUnavailableError && !error.retrySafe &&
+          useAuthStore.getState() === state) {
+        unavailableRefresh = { state, error };
+      }
+      throw error;
+    }).finally(() => {
       pendingRefresh = null;
     });
   }
@@ -169,7 +219,10 @@ export async function apiFetch<T = unknown>(
     }
   }
 
-  const headers = new Headers(options.headers);
+  // Every SPA request identifies itself as policy-aware (#1881); the backend
+  // reads the marker only on the session-issuing routes, which includes the
+  // `/auth/login` and `/auth/register` calls that come through here.
+  const headers = withClientProtocol(options.headers);
   if (accessToken) {
     headers.set('Authorization', `Bearer ${accessToken}`);
   }
@@ -211,7 +264,7 @@ export async function apiFetch<T = unknown>(
       localVersion?: unknown;
       reason?: unknown;
     } | null;
-    throw new ApiError(
+    const error = new ApiError(
       res.status,
       messageFromErrorBody(raw, res),
       typeof raw?.code === 'string' ? raw.code : undefined,
@@ -219,6 +272,13 @@ export async function apiFetch<T = unknown>(
       typeof raw?.localVersion === 'number' ? raw.localVersion : undefined,
       typeof raw?.reason === 'string' ? raw.reason : undefined,
     );
+    // #283: the article-AI-policy refusals are typed bodies (`{error:
+    // 'ai_policy_denied', pageIds}`, `{error: 'ai_policy_conflict', reason,
+    // pageIds}`, `{error: 'ai_policy_label_conflict', policies}`) that a
+    // caller parses with the contract schemas. Carried verbatim; never
+    // interpreted here.
+    error.body = raw;
+    throw error;
   }
 
   const contentType = res.headers.get('content-type') ?? '';
@@ -303,15 +363,11 @@ export async function logoutApi(): Promise<void> {
   const { accessToken, user } = useAuthStore.getState();
   let res: Response | null = null;
   try {
-    const headers: HeadersInit = {};
-    if (accessToken) {
-      headers['Authorization'] = `Bearer ${accessToken}`;
-    }
     // Logout clears the refresh cookie; keep it from overlapping another
     // tab's refresh of the same cookie.
     res = await withAuthCookieLock(() => fetch(`${API_BASE}/auth/logout`, {
       method: 'POST',
-      headers,
+      headers: withClientProtocol(accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined),
       credentials: 'include',
     }));
   } catch {

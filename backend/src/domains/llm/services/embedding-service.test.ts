@@ -44,8 +44,30 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mocks.query(...args),
-  getPool: () => mocks.getPool(),
+  query: (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].startsWith('SELECT content_revision::text')) {
+      return Promise.resolve({ rows: [{ content_revision: '1' }] });
+    }
+    return mocks.query(...args);
+  },
+  getPool: () => {
+    const pool = mocks.getPool();
+    return {
+      ...pool,
+      connect: async () => {
+        const client = await pool.connect();
+        return {
+          ...client,
+          query: (...args: unknown[]) => {
+            if (typeof args[0] === 'string' && args[0].startsWith('SELECT content_revision::text')) {
+              return Promise.resolve({ rows: [{ content_revision: '1' }] });
+            }
+            return client.query(...args);
+          },
+        };
+      },
+    };
+  },
 }));
 
 vi.mock('./llm-provider-resolver.js', () => ({
@@ -88,6 +110,53 @@ vi.mock('./shadow-migration-service.js', () => ({
   getShadowMigrationState: vi.fn().mockResolvedValue(null),
   shadowStateFingerprint: vi.fn().mockReturnValue('none'),
   shadowEpochFromClient: vi.fn().mockResolvedValue('none'),
+}));
+
+// Article AI policy admission (SPEC-WORK-001) is inert here: every page is
+// `all`. The block path runs against real Postgres in
+// `ai-policy-worker-admission.integration.test.ts`. Plain functions, for the
+// same `vi.resetAllMocks()` reason as the compose seam above. The recheck
+// predicate is a literal so the scripted SELECT/COUNT text keeps parsing.
+vi.mock('./ai-policy-admission.js', () => {
+  const admit = async (pageId: number, _usecase: string, providerId = 'p1', model = 'bge-m3') => ({
+    admitted: true, pageId, policy: 'all', policyRevision: 0, providerId, configRevision: 1, locality: 'local', model,
+  });
+  return { admitPageForUsecase: admit, admitPageForProvider: admit, RECHECKABLE_BLOCK_SQL: 'FALSE' };
+});
+
+// Scheduling evidence has real PostgreSQL coverage in embedding-operation.db.test.ts.
+vi.mock('./embedding-operation.js', () => ({
+  embeddingOperation: async () => ({ operationId: '00000000-0000-0000-0000-000000000001',
+    actor: { kind: 'worker', id: 'embedding' }, source: 'embedding', cascadeId: null }),
+  nextEmbeddingAttempt: async () => 1,
+}));
+
+// Legacy scripted orchestration suite. The authoritative article snapshot and
+// held-client validation are exercised without persistence mocks in
+// embedding-policy-publication.db.test.ts.
+vi.mock('./embedding-article-stage.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./embedding-article-stage.js')>(),
+  captureEmbeddingArticle: async (pageId: number) => ({ pageId, policy: 'all', policyRevision: 0, contentRevision: 0, rowVersion: '1', imageRevision: '0' }),
+  claimEmbeddingArticle: async (page: unknown) => page,
+  validateEmbeddingSourceOnClient: async () => {},
+  validateEmbeddingPublicationOnClient: async () => {},
+  settleEmbeddingArticle: async (_page: unknown, publish: (client: unknown) => Promise<void>) => {
+    // The settle's content_revision fence reads the same revision the
+    // postgres mock above binds; every other statement stays scripted.
+    await publish({
+      query: (...args: unknown[]) => (typeof args[0] === 'string' && args[0].startsWith('SELECT content_revision::text')
+        ? Promise.resolve({ rows: [{ content_revision: '1' }] })
+        : mocks.query(...args)),
+    });
+    return true;
+  },
+}));
+vi.mock('./article-stage-admission.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./article-stage-admission.js')>(),
+  validateArticleStageOnClient: async () => {},
+  admitArticleStage: async (_p: unknown, _u: unknown, _s: unknown, publish: (client: unknown) => Promise<void>) => {
+    await publish({ query: mocks.query });
+  },
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({
@@ -208,6 +277,7 @@ function makePage(id: string, numId = 1) {
     title: `Page ${id}`,
     space_key: 'DEV',
     body_html: `<p>Content for ${id}</p>`,
+    content_revision: '1',
   };
 }
 
@@ -280,6 +350,8 @@ describe('embedding-service', () => {
       const status = await getEmbeddingStatus('user-1');
 
       expect(status).toEqual({
+        policyBlockedPages: 0,
+        policyBlockedReasons: { policy_none: 0, provider_not_local: 0, unknown: 0 },
         totalPages: 50,
         embeddedPages: 47,
         dirtyPages: 3,
@@ -1269,7 +1341,8 @@ describe('embedding-service', () => {
     const updateCalls = mocks.query.mock.calls.filter(
       (call: unknown[]) => typeof call[0] === 'string' && call[0].includes("embedding_status = 'not_embedded'"),
     );
-    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls.filter((call) => String(call[0]).includes('embedding_dirty = FALSE'))).toHaveLength(2);
+    expect(updateCalls.filter((call) => String(call[0]).includes("AND embedding_status = 'embedding'"))).toHaveLength(2);
   });
 });
 
@@ -1317,11 +1390,16 @@ describe('embedPage', () => {
     // 'not_embedded' status (clearing any error) so short pages don't stay stuck
     // showing the transient 'embedding' status (using pages.id, not confluence_id).
     // The clear is guarded on `image_analysis_revision` like the embed write
-    // (ADR-027 D6.3); with the analysis store absent the snapshot is 0.
-    expect(mocks.query).toHaveBeenCalledTimes(1);
+    // (ADR-027 D6.3); with the analysis store absent the snapshot is 0. The
+    // same transaction clears the page's derived vector state (#1714).
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded', embedding_error = NULL\s+WHERE id = \$1/),
+      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded', embedding_error = NULL,\s+embedded_at = NULL, page_avg_embedding = NULL\s+WHERE id = \$1 AND image_analysis_revision = \$2/),
       [101, 0],
+    );
+    expect(mocks.query).toHaveBeenCalledWith('DELETE FROM page_embeddings WHERE page_id = $1', [101]);
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringMatching(/DELETE FROM page_relationships\s+WHERE relationship_type = 'embedding_similarity' AND \(page_id_1 = \$1 OR page_id_2 = \$1\)/),
+      [101],
     );
   });
 
@@ -1332,12 +1410,12 @@ describe('embedPage', () => {
     const result = await embedPage('user-1', 102, 'Empty Page', 'DEV', '<p></p>');
 
     expect(result).toBe(0);
-    // Same terminal-status write as the too-short case for empty text.
-    expect(mocks.query).toHaveBeenCalledTimes(1);
+    // Same settle as the too-short case for empty text.
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded'/),
+      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded', embedding_error = NULL,\s+embedded_at = NULL, page_avg_embedding = NULL\s+WHERE id = \$1 AND image_analysis_revision = \$2/),
       [102, 0],
     );
+    expect(mocks.query).toHaveBeenCalledWith('DELETE FROM page_embeddings WHERE page_id = $1', [102]);
   });
 
   // ── Atomicity tests ──────────────────────────────────────────────────────────

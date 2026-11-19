@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, type MutableRefObject, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Check, X, Loader2, Tag } from 'lucide-react';
@@ -17,6 +17,10 @@ interface AutoTaggerProps {
   model?: string;
   className?: string;
   'aria-label'?: string;
+  /** Optional custom trigger renderer; pass `() => null` when triggered externally via `triggerRef`. */
+  renderTrigger?: (props: { onClick: () => void; isPending: boolean }) => ReactNode;
+  /** Populated with the trigger callback so a menu item outside this mount can launch auto-tag. */
+  triggerRef?: MutableRefObject<(() => void) | null>;
 }
 
 export function AutoTagger({
@@ -25,6 +29,8 @@ export function AutoTagger({
   model,
   className,
   'aria-label': ariaLabel,
+  renderTrigger,
+  triggerRef,
 }: AutoTaggerProps) {
   const queryClient = useQueryClient();
   const [showDialog, setShowDialog] = useState(false);
@@ -91,22 +97,40 @@ export function AutoTagger({
     applyTagsMutation.mutate(tags);
   };
 
+  const handleStartAutoTag = useCallback(() => {
+    if (!autoTagMutation.isPending) {
+      autoTagMutation.mutate();
+    }
+  }, [autoTagMutation]);
+
+  useEffect(() => {
+    if (!triggerRef) return;
+    triggerRef.current = handleStartAutoTag;
+    return () => {
+      triggerRef.current = null;
+    };
+  }, [triggerRef, handleStartAutoTag]);
+
   return (
     <>
-      <button
-        onClick={() => autoTagMutation.mutate()}
-        disabled={autoTagMutation.isPending}
-        className={className ?? "nm-card nm-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm disabled:opacity-50"}
-        title="Suggest tags using AI"
-        aria-label={ariaLabel}
-      >
-        {autoTagMutation.isPending ? (
-          <Loader2 size={14} className="animate-spin" />
-        ) : (
-          <Tag size={15} className="shrink-0 opacity-70" />
-        )}
-        <span className="truncate">Auto-tag</span>
-      </button>
+      {renderTrigger ? (
+        renderTrigger({ onClick: handleStartAutoTag, isPending: autoTagMutation.isPending })
+      ) : (
+        <button
+          onClick={handleStartAutoTag}
+          disabled={autoTagMutation.isPending}
+          className={className ?? "nm-card nm-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm disabled:opacity-50"}
+          title="Suggest tags using AI"
+          aria-label={ariaLabel}
+        >
+          {autoTagMutation.isPending ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <Tag size={15} className="shrink-0 opacity-70" />
+          )}
+          <span className="truncate">Auto-tag</span>
+        </button>
+      )}
 
       {/* Tag suggestion dialog — Radix Dialog gives role=dialog, aria-modal,
           focus trap + restore and Escape-to-close for free, which the previous

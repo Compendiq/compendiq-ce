@@ -1,3 +1,9 @@
+import { assembleDirectArticleContext } from './_article-transport.js';
+import { randomUUID } from 'node:crypto';
+import { newAiOperation, emitAiDecision } from '../../core/enterprise/ai-policy-hooks.js';
+import { emitUnresolvedDecision } from '../../domains/llm/services/ai-policy-admission.js';
+import { resolveReadablePageRef } from './_helpers.js';
+import { directRefusalResponse, replayDirectOutput } from './_article-cache.js';
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
@@ -6,9 +12,8 @@ import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache
 import { AnalyzeQualityRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import {
-  assembleContextIfNeeded,
   checkCacheWithLock,
   sendCachedSSE,
   streamSSE,
@@ -45,19 +50,33 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
+    const operation = newAiOperation('direct_article', { kind: 'user', id: userId });
+    const { config: qualityConfig, model: resolvedModel } = await resolveUsecase('quality').catch(async (error: unknown) => {
+      const page = body.pageId ? await resolveReadablePageRef(userId, body.pageId).catch(() => null) : null;
+      if (page) {
+        await emitUnresolvedDecision(page.id, 'quality', { operation, stage: 'quality', attempt: 1 }, 'policy_unavailable');
+      } else {
+        emitAiDecision({ ...operation, eventId: randomUUID(), occurredAt: new Date().toISOString(),
+          type: 'decision', usecase: 'quality', stage: 'quality', attempt: 1,
+          articles: [], provider: null, decision: 'blocked', reason: 'policy_unavailable' });
+      }
+      throw error;
+    });
+    const { markdown, multiPageSuffix, transportContext } = await assembleDirectArticleContext(
+      userId, body.pageId, content, includeSubPages, qualityConfig, 'quality', resolvedModel, { operation },
+    );
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    const promptInjectionDetected = warnings.length > 0;
+    const wasSanitized = sanitized !== markdown;
     if (warnings.length > 0) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/analyze-quality' }, request);
     }
 
     const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
 
-    // Resolve the `quality` use-case up-front so the cache key can include the
-    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
-    const { config: qualityConfig, model: resolvedModel } = await resolveUsecase('quality');
+    // Cache and transport use the same destination as the composition.
     logger.debug(
       { userId, bodyModel: model, providerId: qualityConfig.providerId, resolvedModel },
       'Resolved quality usecase assignment',
@@ -67,7 +86,12 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, sanitized, qualityConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      sendCachedSSE(reply, cached.content);
+      // #282: re-admitted under the RECORDED provenance (replayDirectOutput);
+      // a refusal is a status code before any SSE header.
+      const replayed = await replayDirectOutput(cached, {
+        transport: qualityConfig, transportContext, userId, usecase: 'quality', model: resolvedModel,
+      });
+      sendCachedSSE(reply, replayed);
       return;
     }
 
@@ -77,19 +101,28 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
         { role: 'user' as const, content: sanitized },
       ];
       await streamSSE(request, reply,
-        (signal) => streamChat(qualityConfig, resolvedModel, qualityMessages, signal, { thinking: body.thinking }),
+        (signal) => streamChat(qualityConfig, resolvedModel, qualityMessages, signal, { thinking: body.thinking, transportContext }),
         undefined, {
           llmCache, cacheKey,
           audit: {
             userId, action: 'quality', model: resolvedModel, provider: qualityConfig.providerId,
             inputTokens: estimateTokens(qualityMessages.map((m) => m.content).join('')),
             inputMessages: qualityMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            promptHash: fingerprintPrompt(qualityMessages),
             retrievedChunkIds: [],
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           },
+          cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
+    } catch (err) {
+      // #282: a pre-hijack refusal is a 409/503 with the contract body, never a 500.
+      const refusal = reply.sent ? null : directRefusalResponse(err, 'quality');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     } finally {
       await slot.release();
     }

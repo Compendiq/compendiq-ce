@@ -18,6 +18,8 @@ erDiagram
     users ||--o{ comments : "authors"
     users ||--o{ templates : "authors"
     users o|--o{ page_writer_runtimes : "fences; SET NULL"
+    users o|--o| ai_policy_activation_state : "last changed by; SET NULL"
+    users ||--o| ai_policy_legacy_client_observations : "legacy session seen; CASCADE"
     users o|--o{ page_runtime_admissions : "acts; SET NULL"
     users o|--o{ page_write_intents : "acts/settles; SET NULL"
     users o|--o{ page_baselines : "prepares/publishes; SET NULL"
@@ -108,7 +110,7 @@ erDiagram
         int version
         text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
-        text notion_page_id "idempotency for one-shot Notion import (#1465); NULL unless imported. source stays standalone"
+        text notion_page_id "live standalone import binding; successful relocation clears; legacy CF compensation metadata is ignored"
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
@@ -131,6 +133,9 @@ erDiagram
         text freeze_provenance "manual_assertion | authenticated_approval"
         jsonb freeze_reported_signatories "caller assertions, not authenticated approvals"
         text freeze_reported_reference
+        text ai_policy "migration 135 (#280): all | local_only | none; DEFAULT all; the stored authority, labels never consulted after creation"
+        bigint ai_policy_revision "migration 135: monotonic; bumped by trigger on every ai_policy change; PUT expectedRevision fences on it"
+        text ai_policy_block_reason "migration 135: policy_none | provider_not_local | policy_changed; persisted only for article-level blocks"
     }
 
     page_collaborative_docs {
@@ -159,13 +164,32 @@ erDiagram
         text runtime_id PK "one backend process epoch"
         jsonb deployment_identity "immutable host/pid/start identity"
         int enforcement_version "migration 124; DEFAULT 0, current protocol = 1"
+        int ai_policy_enforcement_version "migration 151; DEFAULT 0 CHECK >= 0, current = 1"
         timestamptz started_at "DEFAULT NOW"
         timestamptz quiesced_at
         uuid quiescence_ack
+        timestamptz upgrade_retired_at "migration 151b; = quiesced_at, no owner ack"
         timestamptz fenced_at
         uuid fenced_by FK "users; ON DELETE SET NULL"
         text fence_reason
         jsonb fence_proof "closed server-verified proof kinds"
+    }
+
+    ai_policy_activation_state {
+        boolean singleton PK "DEFAULT TRUE CHECK (singleton); one seeded row"
+        boolean enabled "DEFAULT FALSE; the enforcement switch"
+        timestamptz changed_at "nullable until the first transition"
+        uuid changed_by_user_id FK "users; ON DELETE SET NULL"
+        text changed_by_name "actor snapshot"
+        boolean legacy_clients_acknowledged "set by enable, reset by disable"
+        timestamptz observing_since "DEFAULT NOW; legacy-client observer installed"
+    }
+
+    ai_policy_legacy_client_observations {
+        uuid user_id PK,FK "users; ON DELETE CASCADE"
+        timestamptz last_seen_at
+        timestamptz token_expires_at "issuance + access-token lifetime"
+        int observations "DEFAULT 1"
     }
 
     page_runtime_admissions {
@@ -177,7 +201,7 @@ erDiagram
         text purpose "legacy | collab_room | collab_request (migration 127)"
         timestamptz admitted_at "DEFAULT NOW"
         timestamptz released_at
-        text release_kind "clean_disconnect | runtime_fenced"
+        text release_kind "clean_disconnect | runtime_fenced | upgrade_retired"
     }
 
     page_write_intents {
@@ -226,6 +250,7 @@ erDiagram
         text target_visibility
         text original_source
         text original_confluence_id
+        text original_notion_page_id "nullable; exact rollback token, never normalized"
         text original_space_key
         text original_title
         text original_body_html
@@ -498,6 +523,7 @@ erDiagram
         text error
         text triggered_by "nullable user id text; null for schedule"
         text job_id "nullable BullMQ job id"
+        text warning "nullable; S3 prune error on a success run, max 1000 chars"
     }
 
     roles {
@@ -550,6 +576,11 @@ erDiagram
         bool is_default
         timestamptz created_at
         timestamptz updated_at
+        text locality "migration 135 (#280): local | external; DEFAULT external; never inferred"
+        bigint config_revision "migration 135: DEFAULT 1; trigger bumps on base_url/api_key/auth_type/verify_ssl edits"
+        bigint locality_config_revision "revision a local declaration was made against; local admits ONLY when = config_revision"
+        uuid locality_declared_by FK "users; ON DELETE SET NULL"
+        timestamptz locality_declared_at "fresh value in the same UPDATE keeps a declaration across an endpoint edit; otherwise the trigger resets to external"
     }
 
     llm_usecase_assignments {
@@ -587,6 +618,58 @@ erDiagram
     }
 ```
 
+**Article AI policy foundation (migrations 135–137; #280).** Migration 135
+adds `pages.ai_policy` (`all | local_only | none`, default `all`), the
+monotonic `ai_policy_revision` (a trigger advances it on every policy change
+and refuses a decrease) and `ai_policy_block_reason`, plus the provider
+locality columns above. No backfill ever infers `local`: unknown locality
+never satisfies `local_only`. Migration 136 freezes the label table —
+`all-ai | ai:all → all`, `local-ai-only | local_only | ai:local → local_only`,
+`no-ai | no_ai | ai:none → none`, lowercase + trim only, no regex — in
+`ai_policy_label_value` / `ai_policy_from_labels` / `ai_policy_apply_label`.
+"Trim" is `ai_policy_label_key`, a twin of JavaScript's
+`String.prototype.trim()` (TAB, VT, FF, NBSP, BOM, the Zs category and the
+line terminators — not `btrim`'s ASCII space alone), and "lowercase" is an
+ASCII-only `translate(... 'A'..'Z', 'a'..'z')`, never `lower()`: a locale
+fold such as `İ → i̇` (dotted capital I) would otherwise let SQL recognise a
+string JavaScript's `toLowerCase()` does not — or the reverse — so SQL and
+`normalizeAiPolicyLabel` recognise exactly the same strings. The migration
+also rewrites pre-freeze spellings in `pages.labels` to the canonical
+restrictive labels (`local-ai-only`, `no-ai`) without touching the stored
+policy, which remains the authority (labels are consulted at creation only;
+removing a tag never relaxes a page). The legacy keys are **exactly the four
+migration 135's regex reader accepted** after folding `[\s_:-]+` to `-`:
+`ai-none` and `no-ai` → `no-ai`, `ai-local-only` and `ai-local` →
+`local-ai-only`. So `no ai`, `no:ai`, `no__ai` and `ai_local` are repaired;
+`ai-all` / `ai all` were never 135 keys (135 only ever tightened) and are
+ordinary labels the migration does not select or rewrite. The repair touches
+**only unrecognised spellings**: a label the frozen table already reads
+(`ai:none`, `NO_AI`, `AI:Local`, …) is kept verbatim, because the stored
+spelling is the user's and the frozen reader already agrees with it. That repair collapses a rewrite onto a label
+the row already carries (first position wins, never a duplicate) and **skips
+frozen rows** (`baseline_id IS NOT NULL`): `labels` is a protected column
+under migration 121's trigger and the migration must not abort on a frozen
+page; such a row keeps its legacy spelling — cosmetic only — until it is
+thawed. Test databases that replay 135 by hand must also replay 136 (the
+`054_llm_providers` `repairSharedSchema` helper deletes the `_migrations`
+rows for 087, 135 and 136 so the loader re-applies the frozen table).
+The same table lives in `@compendiq/contracts` (`AI_POLICY_LABEL_SYNONYMS`)
+and in `core/services/ai-policy-service.ts`. The canonical stored and wire
+value for "no AI" is `none`; `no_ai` is accepted as request input only.
+Migration 137 lets a `pages.create.confluence` intent carry an EMPTY
+`page_ids` when its effect has `parentPageId: null` (a space-root create), so
+root creation goes through the same write-intent ledger as parented creation;
+the existing `page_write_intents_effect_policy_check` is re-read from the
+catalog and extended rather than restated. The root branch validates every
+`initialLabels` element (non-empty string ≤ 100 chars, ≤ 50 entries) through
+the IMMUTABLE `page_write_intent_initial_labels_valid(jsonb)` — a CHECK may
+not hold a subquery — and its presence in the catalog definition is the
+single idempotency marker: a database whose constraint does not yet name the
+function has the constraint dropped and rebuilt with the root branch; one
+that does is left untouched. There is no in-place "upgrade" of an earlier
+root branch — 137 shipped once, with the element rule, so the only two
+catalog states are "no root branch" and "this root branch".
+
 **Immutable baseline foundation and enforcement (migrations 120–122,
 124–125 and 127–128; #275/#276).** Migration 120 is additive: existing and
 new `pages` rows receive `content_revision = 0` and
@@ -607,6 +690,53 @@ register version 1, and the database rejects an incompatible registration once
 creation is enabled or any published baseline exists. The activation
 transaction locks the feature row before checking active, non-quiesced
 runtimes, closing the registration/readiness race.
+
+**Upgrade retirement (migration 151b; #2063).** The row has exactly three
+retirement shapes, enforced by `page_writer_runtimes_retirement_state_check`:
+untouched (`quiesced_at`, `quiescence_ack`, `upgrade_retired_at` all NULL);
+owner-acknowledged quiescence (`quiesced_at` + `quiescence_ack`, no marker);
+or closed by the version upgrade (`quiesced_at` + `upgrade_retired_at` equal,
+`quiescence_ack` NULL). Migration 151b runs between 151 and 152 so the one-time
+152 cutover never deadlocks on epochs left by a killed deployment: epochs with
+no dispatched effect get the `durable_no_started_effects` fence, the rest are
+only quiesced and marked, keeping their started intents pending. Because no
+acknowledgment exists for the third shape, the fence CHECK still refuses an
+`owner_quiescence_ack` proof for it. `page_runtime_admissions.release_kind`
+gains `upgrade_retired` beside `clean_disconnect` and `runtime_fenced`. The
+retirement DML runs only while 152 is unrecorded, so installs that already
+applied 152 receive the schema without cutting a live replica.
+
+**Article AI policy activation (migration 151; #1881).** The enforcement
+switch is the `ai_policy_activation_state` singleton (`singleton BOOLEAN PK
+DEFAULT TRUE CHECK (singleton)`), seeded `enabled = false` with NULL actor and
+time; `observing_since` records when the legacy-client observer was
+installed, and `legacy_clients_acknowledged` is set only by an enabling
+transition and reset by every disable. `ai_policy_legacy_client_observations`
+keeps one attributed row per user who obtained a session from a pre-marker
+browser bundle (`token_expires_at` is fixed at issuance, so a later
+`ACCESS_TOKEN_EXPIRY` change cannot mis-measure the window); expired rows are
+swept by the token-cleanup job. `page_writer_runtimes` gains
+`ai_policy_enforcement_version INTEGER NOT NULL DEFAULT 0 CHECK (>= 0)`;
+this build registers `1` beside `enforcement_version`, older binaries omit
+the column and stay `0`. Two triggers form the one-way door on binaries and
+serialise in both orders through the state row:
+`guard_ai_policy_runtime_registration` (BEFORE INSERT OR UPDATE OF
+`ai_policy_enforcement_version`) lets version 1, re-registrations and already
+fenced/quiesced rows through without a lock, and for a genuinely new active
+version-0 row takes `FOR UPDATE` on the state row and raises SQLSTATE `55000`
+when the switch is on or any page — soft-deleted included — has `ai_policy <>
+'all'`; `guard_ai_policy_tightening` (AFTER INSERT … WHEN `ai_policy <>
+'all'`, AFTER UPDATE … WHEN `ai_policy IS DISTINCT FROM OLD`) takes `FOR
+SHARE` on the state row for a stricter value and raises `55000` with
+constraint `ai_policy_incompatible_runtime_active` while any active runtime
+has a version other than 1. Both take the lock and run the existence check as
+separate statements; a missing state row raises. Partial indexes `pages (id)
+WHERE ai_policy <> 'all'` and `page_writer_runtimes (runtime_id) WHERE
+fenced_at IS NULL AND quiesced_at IS NULL AND ai_policy_enforcement_version
+<> 1` keep both probes indexed. `truncateAllTables` reseeds the singleton with
+`observing_since = NOW() - interval '2 days'`. See
+`article-ai-policy-activation.md`.
+
 `page_runtime_admissions` retains writable-room and request tokens until clean
 release or proven runtime fencing. Migration 127 distinguishes durable
 `collab_room` owners from short-lived `collab_request` Save admissions; unknown
@@ -677,6 +807,25 @@ The create identity is recorded before readback or uploads, and every successful
 upload appends its own bounded receipt before the next provider call. Receipt
 capacity scales with the admitted inventory; the generic terminal result holds
 only its count and canonical ordered SHA-256, never a second full receipt array.
+
+Migration152 adds the eighteenth authored page snapshot value,
+`original_notion_page_id`. The universal-PK FK keeps that exact source row
+alive. Old writers only inserted the token, so every retained preparation is
+backfilled from its same FK row BEFORE any repair, independently of phase,
+ACLs, body or receipt classification. NULL is an exact known value, not an
+unknown-history default.
+
+The existing `pages_notion_page_id_owner_live_uidx` name and normalized owner
+key remain; its predicate is now source=standalone, nonNULL token, live row.
+Nullable-owner semantics are unchanged. Metadata on a Confluence row cannot
+block another standalone import, including after exact legacy compensation.
+The migration clears all Confluence tokens and only provenance-matching
+retained Confluence-to-local roots; other standalone near-matches remain
+untouched without aborting safe Confluence repair. No FK, status/progress,
+ACL, attachment, history, derived-state, capacity or lifecycle protocol is
+rewritten. Retirement is the bounded snapshot-schema precondition documented
+in the immutable-page-baselines runbook.
+
 
 Migration 121 seeds exactly one feature-state row with
 `creation_enabled = false` and one zeroed capacity row. #276 registers the
@@ -809,7 +958,11 @@ a user foreign key so scheduled runs and historical actor identifiers remain
 representable. Because an in-flight S3 archive necessarily snapshots
 its own row as `running`, offline restore reconciles every restored `running`
 row to `failed` with a finish time and the error `Backup interrupted by restore`
-after migrations and before reporting restore success.
+after migrations and before reporting restore success. Migration 153 adds the
+nullable `warning` column (#1710): when the S3 retention prune fails after the
+upload completed, the run stays `success` with `error` NULL and the prune error
+message (at most 1000 characters) is stored in `warning` by a dedicated
+`UPDATE` that never touches status, size, object key, finish time or error.
 
 Enterprise migration 900 adds `backup_destinations` and
 `backup_destination_results`. The primary is a runtime mirror of the CE S3
@@ -1031,7 +1184,9 @@ together, which matters most for #1114's query-side prefix.
   `pages.page_avg_embedding_next` exist as **runtime-created** nullable columns
   typed at the server-probed dimension of the NEW model (same tier table as
   above; there is deliberately no numbered migration — the type is only known
-  at probe time). `embedPage` dual-writes both columns while the backfill runs;
+  at probe time). `embedPage` dual-writes both columns while the backfill runs,
+  and NULLs `page_avg_embedding_next`/`_prev` with the live average when it
+  settles a page with nothing to embed (#1714);
   the swap is one transaction of column/index RENAMEs under an explicit
   `lock_timeout` with bounded retries (live→`_prev`, `_next`→live, the prev
   column's NOT NULL dropped because post-swap inserts never provide it), which
@@ -1205,7 +1360,9 @@ together, which matters most for #1114's query-side prefix.
   `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
-  transaction as the chunk inserts, with its own HNSW index
+  transaction as the chunk inserts, and cleared, with the chunks, the runtime
+  shadow averages and the page's similarity edges, in the transaction that
+  settles a page with nothing to embed (#1714), with its own HNSW index
   (`idx_pages_page_avg_embedding_hnsw`, same type/opclass/params as
   `page_embeddings.embedding`; kept in lockstep by `enqueueReembedAll`). The
   knowledge-graph relationship builder (`computePageRelationships`) serves
@@ -1327,3 +1484,44 @@ together, which matters most for #1114's query-side prefix.
   and persists them, so steady-state reads do zero XHTML parsing. NULL means
   "recompute"; an empty array means "computed, no assets". This trigger is
   independent of the migration 060 `local_modified` trigger (disjoint columns).
+
+## Enterprise article AI policy governance (EE migration 930, SPEC-EE-001)
+
+```mermaid
+erDiagram
+    spaces ||--o{ pages : "default seeds new pages while entitled"
+    pages ||--o{ ai_policy_enforcement_events : "recorded decisions; no FK, no content"
+
+    spaces {
+        text default_ai_policy "EE; NULL | all | local_only | none"
+    }
+
+    ai_policy_enforcement_events {
+        bigint id PK
+        timestamptz occurred_at
+        text event_type "admitted | blocked | policy_changed | cascade_committed"
+        int page_id "deliberately no FK"
+        text user_id
+        text usecase
+        text provider_id "destination actually named"
+        text reason
+        text policy
+        text from_policy
+        text to_policy
+        bigint revision
+        bigint config_revision
+    }
+```
+
+The EE-only overlay migration is idempotent and lives in the reserved 9xx
+range. Cascade events are inserted in the same transaction as the page rows
+they describe. The shared `applyAiPolicyOnClient` owns labels, policy revisions
+and derived-state purge/requeue; the EE caller publishes content revisions on
+the same held transaction. Lifecycle locks protect pending writers and frozen
+rows before AI-policy locks. A refusal rolls back the entire owner target set.
+Normal `policy_changed` events are emitted after commit through a best-effort
+observer, not a durable outbox. The table carries identifiers and policies only,
+never page content, prompts or completions. Missing locality and blocked-event
+revisions remain unknown; current provider settings cannot reconstruct them.
+See [policy audit flow](./13-flow-ai-policy-audit.md) for delivery and reporting
+boundaries; these rows have no cryptographic tamper protection.

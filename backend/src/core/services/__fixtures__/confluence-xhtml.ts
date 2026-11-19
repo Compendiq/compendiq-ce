@@ -198,7 +198,7 @@ export const COMPLEX_PAGE = `<ac:structured-macro ac:name="toc"></ac:structured-
 </tbody>
 </table>`;
 
-/** Page with user mentions and emoticons (should be stripped) */
+/** Page with user mentions and an emoticon; both round-trip (#300, #1750) */
 export const USER_MENTIONS_PAGE = `<h2>Team</h2>
 <p>Contact <ri:user ri:userkey="user123" /> or <ri:user ri:userkey="user456" /> for questions.</p>
 <p>Great job! <ac:emoticon ac:name="smile" /></p>`;

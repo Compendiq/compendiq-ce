@@ -9,6 +9,9 @@ import { REPORT_IDS } from '@compendiq/contracts';
 import { ComplianceReportsTab } from './ComplianceReportsTab';
 import { useAuthStore } from '../../stores/auth-store';
 
+const license = vi.hoisted(() => ({ entitled: true }));
+vi.mock('../../shared/enterprise/use-enterprise', () => ({ useEnterprise: () => ({ hasFeature: () => license.entitled }) }));
+
 // ── Mocks ────────────────────────────────────────────────────────────
 
 vi.mock('sonner', () => ({
@@ -66,6 +69,7 @@ function setupCatalogue(opts: {
 }
 
 beforeEach(() => {
+  license.entitled = true;
   // Stub a logged-in admin so the auth header can be set.
   useAuthStore.setState({
     user: { id: 'u-admin', username: 'admin', role: 'admin', email: 'a@b.c' } as never,
@@ -91,6 +95,15 @@ afterEach(() => {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe('ComplianceReportsTab', () => {
+  it('removes cached report controls on live entitlement loss', async () => {
+    setupCatalogue({});
+    const view = render(<ComplianceReportsTab />, { wrapper: createWrapper() });
+    await screen.findByTestId('generate-model_governance');
+    license.entitled = false;
+    view.rerender(<ComplianceReportsTab />);
+    expect(screen.queryByTestId('generate-model_governance')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('live Enterprise');
+  });
   it('renders the shared report catalogue', async () => {
     setupCatalogue({});
     render(<ComplianceReportsTab />, { wrapper: createWrapper() });

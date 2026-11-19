@@ -397,6 +397,31 @@ describe('article-extensions', () => {
   });
 
   describe('DrawioDiagram', () => {
+    it('round-trips the source-only unavailable marker for later preview publication', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, DrawioDiagram],
+        content: '<div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/attachments/1/flow.drawio"><span>Draw.io preview unavailable: flow</span></div>',
+      });
+      const html = editor.getHTML();
+      expect(html).toContain('class="drawio-preview-unavailable"');
+      expect(html).toContain('data-drawio-source="/api/attachments/1/flow.drawio"');
+      expect(html).not.toContain('<img');
+      editor.destroy();
+    });
+
+    it('keeps an imported placeholder\'s name and unavailable marker through the editor (#1754)', () => {
+      // Exactly what POST /api/pages/import/preview returns for a ```drawio fence
+      // naming architecture.drawio (backend pages-import-drawio.test.ts):
+      // a name and the marker, no source and no preview yet.
+      const imported = '<div class="confluence-drawio" data-diagram-name="architecture.drawio">'
+        + '<span class="drawio-preview-unavailable">Draw.io preview unavailable: architecture.drawio</span></div>';
+      const editor = new Editor({ extensions: [StarterKit, DrawioDiagram], content: imported });
+      expect((editor.getJSON().content ?? []).map((node) => [node.type, node.attrs?.diagramName]))
+        .toEqual([['drawioDiagram', 'architecture.drawio']]);
+      expect(editor.getHTML()).toBe(imported);
+      editor.destroy();
+    });
+
     it('has correct name and is atomic and draggable', () => {
       expect(DrawioDiagram.name).toBe('drawioDiagram');
       expect(DrawioDiagram.config.atom).toBe(true);

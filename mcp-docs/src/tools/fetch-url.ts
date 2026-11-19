@@ -14,6 +14,9 @@ import { logOutboundRequest } from '../security/audit-logger.js';
 import { DocsCache, type CachedDoc } from '../cache/redis-cache.js';
 
 const DEFAULT_MAX_LENGTH = 10_000;
+// Largest page one call returns. The document cache stores at most this many
+// characters per entry (CACHE_MAX_CHARS in cache/redis-cache.ts), so every
+// first page is a cache hit — change the two together.
 const ABSOLUTE_MAX_LENGTH = 100_000;
 const FETCH_TIMEOUT_MS = 30_000;
 // Hard ceiling on bytes pulled into memory before HTML→Markdown conversion.
@@ -82,26 +85,34 @@ export async function fetchUrl(
     throw new Error(`Domain '${parsed.hostname}' is not allowed by the current domain policy`);
   }
 
-  // 3. Check cache
+  // 3. Check cache. An entry holds the first `storedLength` characters of the
+  // document — all of it for a short document or an entry written before
+  // #1770 (no `storedLength`). It answers a window it holds in full, or an
+  // empty one; a window reaching past the stored prefix falls through to a
+  // fresh fetch, which serves it and re-stores the entry. Never a short slice:
+  // a caller paging by max_length would silently lose the missing characters.
   const cache = new DocsCache(redis, options.cacheTtl);
   const cached = await cache.getCachedDoc(url);
   if (cached) {
-    logOutboundRequest({
-      tool: 'fetch_url', url, userId: options.userId, cached: true,
-      contentLength: cached.contentLength, timestamp: new Date().toISOString(),
-    });
-
+    const storedLength = cached.storedLength ?? cached.markdown.length;
     const safeStartIndex = Math.min(Math.max(startIndex, 0), cached.contentLength);
     const endIndex = Math.min(safeStartIndex + maxLength, cached.contentLength);
-    const content = cached.markdown.slice(safeStartIndex, endIndex);
-    return {
-      markdown: content,
-      title: cached.title,
-      url: cached.url,
-      cached: true,
-      contentLength: cached.contentLength,
-      truncated: endIndex < cached.contentLength,
-    };
+    if (endIndex <= storedLength || endIndex <= safeStartIndex) {
+      logOutboundRequest({
+        tool: 'fetch_url', url, userId: options.userId, cached: true,
+        contentLength: cached.contentLength, timestamp: new Date().toISOString(),
+      });
+
+      const content = cached.markdown.slice(safeStartIndex, endIndex);
+      return {
+        markdown: content,
+        title: cached.title,
+        url: cached.url,
+        cached: true,
+        contentLength: cached.contentLength,
+        truncated: endIndex < cached.contentLength,
+      };
+    }
   }
 
   // 4. Fetch — GET only, no redirects (SSRF + data leakage prevention).
@@ -219,7 +230,7 @@ export async function fetchUrl(
 
   const fullLength = markdown.length;
 
-  // 6. Cache the full document
+  // 6. Cache the document — DocsCache stores a bounded prefix of it (#1770)
   const docEntry: CachedDoc = {
     markdown, title, url,
     fetchedAt: new Date().toISOString(),

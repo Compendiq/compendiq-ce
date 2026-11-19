@@ -29,6 +29,9 @@ const ADMIN_RATE_LIMIT = {
 const RANGE = /^bytes[ =](\d+)-(\d+)\/(\d+)$/;
 const SearchQuerySchema = z.object({ q: z.string().optional() });
 const InspectQuerySchema = z.object({ repo: HfRepoIdSchema });
+// Every chunk of one upload carries the same id, so two uploads of the same
+// file cannot continue each other's session (#1784).
+const UploadIdSchema = z.string().regex(/^[A-Za-z0-9-]{8,128}$/);
 
 export async function llmClientAssetAdminRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.requireAdmin);
@@ -93,6 +96,13 @@ export async function llmClientAssetAdminRoutes(fastify: FastifyInstance) {
           throw fastify.httpErrors.badRequest('Content-Range does not match body length');
         }
       }
+      const uploadIdHeader = request.headers['upload-id'];
+      let uploadId: string | undefined;
+      if (uploadIdHeader !== undefined) {
+        const parsed = UploadIdSchema.safeParse(uploadIdHeader);
+        if (!parsed.success) throw fastify.httpErrors.badRequest('Invalid Upload-Id');
+        uploadId = parsed.data;
+      }
       try {
         const result = await writeClientAssetChunk({
           modelId: request.params.modelId,
@@ -100,6 +110,7 @@ export async function llmClientAssetAdminRoutes(fastify: FastifyInstance) {
           body,
           start,
           total,
+          uploadId,
         });
         return reply.send(result);
       } catch (err) {

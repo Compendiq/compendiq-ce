@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AiDecisionEvent } from '@compendiq/contracts';
+import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { z } from 'zod';
 import {
   isDbAvailable,
@@ -12,6 +14,7 @@ import {
 import { PAGE_LIFECYCLE_LOCK_KEY } from '../../../core/db/advisory-locks.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { encryptPat } from '../../../core/utils/crypto.js';
+import { enqueue, getMetrics, setConcurrency } from '../../llm/services/llm-queue.js';
 import {
   applyLabelChanges,
   applyTags,
@@ -42,6 +45,7 @@ let server: Server;
 let origin: string;
 let requests: ExternalRequest[] = [];
 let respondToProvider: ProviderResponder;
+let respondToLabels: ProviderResponder;
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'content-type': 'application/json' });
@@ -138,6 +142,10 @@ beforeAll(async () => {
       };
       requests.push(externalRequest);
 
+      if (externalRequest.method === 'GET' && externalRequest.url.startsWith('/rest/api/content/remote-model-race/label')) {
+        sendJson(response, 200, { results: [], size: 0, limit: 200 });
+        return;
+      }
       if (externalRequest.method === 'POST' && externalRequest.url === '/v1/chat/completions') {
         respondToProvider(body, response);
         return;
@@ -146,7 +154,7 @@ beforeAll(async () => {
         externalRequest.method === 'POST'
         && /^\/rest\/api\/content\/[^/]+\/label$/.test(externalRequest.url)
       ) {
-        sendJson(response, 200, {});
+        respondToLabels(body, response);
         return;
       }
       sendJson(response, 404, { message: 'Unexpected external request' });
@@ -165,6 +173,7 @@ beforeEach(async () => {
   await truncateAllTables();
   requests = [];
   respondToProvider = (_body, response) => sendTags(response);
+  respondToLabels = (_body, response) => sendJson(response, 200, {});
   const provider = await query<{ id: string }>(
     `INSERT INTO llm_providers
        (name, base_url, auth_type, verify_ssl, default_model)
@@ -194,11 +203,12 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
   it('uses the persisted provider with an explicit model override and real content preparation', async () => {
     const actorId = await createUser();
 
-    await expect(autoTagContent(
-      actorId,
-      '<h1>Deployment</h1><p>Recover the database safely.</p>',
-      { isHtml: true, modelOverride: 'operator-selected-model' },
-    )).resolves.toEqual(['architecture']);
+    const page = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id)
+      VALUES ('Deployment', '<h1>Deployment</h1><p>Recover the database safely.</p>',
+        'standalone', 'private', $1) RETURNING id`, [actorId]);
+    await expect(autoTagPage(actorId, String(page.rows[0]!.id), 'operator-selected-model'))
+      .resolves.toMatchObject({ suggestedTags: ['architecture'] });
 
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
@@ -213,6 +223,12 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
   it('resolves both the integer primary key and Confluence identifier from persisted pages', async () => {
     const actorId = await createUser();
     await query(`INSERT INTO spaces (space_key, space_name) VALUES ('TAG', 'Tagging')`);
+    const role = await query<{ id: number }>(
+      `INSERT INTO roles (name, display_name, permissions)
+       VALUES ('tag-reader', 'Tag reader', ARRAY['read']) RETURNING id`,
+    );
+    await query(`INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+      VALUES ('TAG', 'user', $1, $2)`, [actorId, role.rows[0]!.id]);
     const numericPage = await query<{ id: number }>(
       `INSERT INTO pages
          (title, body_html, body_text, labels, source, visibility, created_by_user_id)
@@ -252,9 +268,24 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
       sendJson(response, 503, { error: { message: 'provider unavailable' } });
     };
 
-    await expect(autoTagContent(actorId, 'Deployment guide'))
+    const page = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id)
+      VALUES ('Deployment', '<p>Deployment guide</p>', 'standalone', 'private', $1)
+      RETURNING id`, [actorId]);
+    await expect(autoTagPage(actorId, String(page.rows[0]!.id)))
       .rejects.toThrow(/Auto-tag failed:.*HTTP 503/);
     expect(requests).toHaveLength(1);
+  });
+
+  it('requires article provenance at compile time and refuses omission or a non-article marker without HTTP', async () => {
+    const actorId = await createUser();
+    // @ts-expect-error Article auto-tagging requires an explicit article stage.
+    await expect(autoTagContent(actorId, 'Secret')).rejects.toMatchObject({ name: 'ArticleStageRefusedError' });
+    await expect(autoTagContent(actorId, 'Secret', {
+      // @ts-expect-error A non-article classification cannot authorize article content.
+      articleStage: { kind: 'non_article', purpose: 'probe' },
+    })).rejects.toMatchObject({ name: 'ArticleStageRefusedError' });
+    expect(requests).toEqual([]);
   });
 
   it('persists standalone labels and keeps a synced page local while integration is off', async () => {
@@ -290,9 +321,9 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
     );
 
     await expect(applyTags(actorId, String(standalone.rows[0]!.id), ['security']))
-      .resolves.toEqual(['existing', 'security']);
+      .resolves.toEqual(['existing', 'security', 'all-ai']);
     await expect(applyTags(actorId, confluenceId, ['api']))
-      .resolves.toEqual(['policy', 'api']);
+      .resolves.toEqual(['policy', 'api', 'all-ai']);
 
     const persisted = await query<{ title: string; labels: string[] }>(
       `SELECT title, labels FROM pages
@@ -300,8 +331,8 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
        ORDER BY title`,
     );
     expect(persisted.rows).toEqual([
-      { title: 'Previously synced', labels: ['policy', 'api'] },
-      { title: 'Standalone', labels: ['existing', 'security'] },
+      { title: 'Previously synced', labels: ['policy', 'api', 'all-ai'] },
+      { title: 'Standalone', labels: ['existing', 'security', 'all-ai'] },
     ]);
     expect(requests).toEqual([]);
   });
@@ -331,17 +362,17 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
     );
 
     await expect(applyTags(actorId, String(page.rows[0]!.id), ['deployment']))
-      .resolves.toEqual(['existing', 'deployment']);
+      .resolves.toEqual(['existing', 'deployment', 'all-ai']);
 
     expect(requests).toEqual([{
       method: 'POST',
       url: `/rest/api/content/${confluenceId}/label`,
-      body: [{ prefix: 'global', name: 'deployment' }],
+      body: [{ prefix: 'global', name: 'deployment' }, { prefix: 'global', name: 'all-ai' }],
     }]);
     await expect(query<{ labels: string[] }>(
       'SELECT labels FROM pages WHERE id = $1',
       [page.rows[0]!.id],
-    )).resolves.toMatchObject({ rows: [{ labels: ['existing', 'deployment'] }] });
+    )).resolves.toMatchObject({ rows: [{ labels: ['existing', 'deployment', 'all-ai'] }] });
   });
 
   it('tags accessible Confluence pages and local pages while excluding inaccessible or labeled rows', async () => {
@@ -372,7 +403,7 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
          ('hidden-page', 'HIDDEN', 'Hidden unlabeled', '<p>Hidden body</p>', 'Hidden body',
           ARRAY[]::text[], 'confluence', 'private', $1),
          (NULL, NULL, 'Local unlabeled', '<p>Local body</p>', 'Local body',
-          ARRAY[]::text[], 'standalone', 'private', $1),
+          ARRAY['all-ai']::text[], 'standalone', 'private', $1),
          ('labeled-page', 'VISIBLE', 'Already labeled', '<p>Labeled body</p>', 'Labeled body',
           ARRAY['manual'], 'confluence', 'private', $1)`,
       [actorId],
@@ -386,13 +417,167 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
     expect(pages.rows).toEqual([
       { title: 'Already labeled', labels: ['manual'] },
       { title: 'Hidden unlabeled', labels: [] },
-      { title: 'Local unlabeled', labels: ['architecture'] },
-      { title: 'Visible unlabeled', labels: ['architecture'] },
+      { title: 'Local unlabeled', labels: ['architecture', 'all-ai'] },
+      { title: 'Visible unlabeled', labels: ['architecture', 'all-ai'] },
     ]);
     expect(requests).toHaveLength(2);
     expect(new Set(requests.map((request) => userMessage(request.body)))).toEqual(
       new Set(['Local body', 'Visible body']),
     );
+  });
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describeDb('auto-tag article admission and publication', () => {
+  it.each(['suggestions', 'labels', 'stale-result'] as const)('records only the dispatched inference for %s', async (mode) => {
+    const actorId = await createUser();
+    const inserted = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id, labels)
+      VALUES ('Evidence', '<p>Deployment</p>', 'standalone', 'private', $1, ARRAY['all-ai']) RETURNING id`, [actorId]);
+    const id = inserted.rows[0]!.id;
+    const events: AiDecisionEvent[] = [];
+    vi.spyOn(getEnterprisePlugin(), 'onAiDecision').mockImplementation((event) => { events.push(event); });
+    let release!: () => void;
+    let reached!: () => void;
+    const arrived = new Promise<void>((resolve) => { reached = resolve; });
+    respondToProvider = (_body, response) => { release = () => sendTags(response); reached(); };
+    let published = false;
+    const work = autoTagPage(actorId, String(id), undefined, mode === 'suggestions' ? undefined : async (tags, articleStage) => {
+      published = true;
+      await applyLabelChanges(actorId, String(id), { add: tags, articleStage });
+    }).then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+    await arrived;
+    try {
+      if (mode === 'stale-result') await query("UPDATE pages SET body_html = '<p>Successor</p>' WHERE id = $1", [id]);
+    } finally { release(); }
+    const result = await work;
+    if (mode === 'stale-result') {
+      expect(result.error).toMatchObject({ name: 'ArticleStageRefusedError' });
+      expect(published).toBe(false);
+    } else {
+      expect(result.error).toBeNull();
+      expect(result.value?.suggestedTags).toEqual(['architecture']);
+      expect(published).toBe(mode === 'labels');
+    }
+    expect(requests).toHaveLength(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'decision', decision: 'admitted', reason: 'allowed',
+      stage: 'auto_tag', attempt: 1, actor: { kind: 'user', id: actorId },
+      provider: { model: ASSIGNED_MODEL }, articles: [{ pageId: id }] });
+    expect(events[0]!.operationId).toEqual(expect.any(String));
+    expect((await query('SELECT labels FROM pages WHERE id = $1', [id])).rows[0].labels)
+      .toEqual(mode === 'labels' ? ['architecture', 'all-ai'] : ['all-ai']);
+  });
+  it('rechecks policy after queue wait without sending article bytes', async () => {
+    const actorId = await createUser();
+    const page = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id)
+      VALUES ('Queued', '<p>Secret</p>', 'standalone', 'private', $1) RETURNING id`, [actorId]);
+    const priorConcurrency = getMetrics().concurrency;
+    setConcurrency(1);
+    let release!: () => void;
+    const blocker = enqueue(() => new Promise<void>((resolve) => { release = resolve; }));
+    const work = autoTagPage(actorId, String(page.rows[0]!.id)).then(() => null, (err: unknown) => err);
+    try {
+      while (getMetrics().pendingCount === 0 || !release) await nextEventLoopTurn();
+      await query(`UPDATE pages SET ai_policy = 'none' WHERE id = $1`, [page.rows[0]!.id]);
+      release();
+      await blocker;
+      expect(await work).toMatchObject({ name: 'ArticleStageRefusedError' });
+      expect(requests).toEqual([]);
+    } finally {
+      release?.();
+      await blocker;
+      setConcurrency(priorConcurrency);
+    }
+  });
+
+  it('rejects a stale result inside label publication even after inference validation', async () => {
+    const actorId = await createUser();
+    const page = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id, labels)
+      VALUES ('Publish', '<p>Deployment</p>', 'standalone', 'private', $1, ARRAY[]::text[]) RETURNING id`, [actorId]);
+    const id = page.rows[0]!.id;
+    await expect(autoTagPage(actorId, String(id), undefined, async (tags, articleStage) => {
+      await query(`UPDATE pages SET body_html = '<p>Successor</p>' WHERE id = $1`, [id]);
+      await applyLabelChanges(actorId, String(id), { add: tags, articleStage });
+    })).rejects.toMatchObject({ name: 'ArticleStageRefusedError' });
+    expect(requests).toHaveLength(1);
+    expect((await query('SELECT labels FROM pages WHERE id = $1', [id])).rows[0].labels).toEqual([]);
+  });
+  it.each(['policy', 'content', 'provider', 'model'] as const)('discards a generated result after a %s change during HTTP inference', async (change) => {
+    const actorId = await createUser();
+    const inserted = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id, labels)
+      VALUES ('Race', '<p>Deployment</p>', 'standalone', 'private', $1, ARRAY[]::text[]) RETURNING id`, [actorId]);
+    const id = inserted.rows[0]!.id;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      respondToProvider = (_body, response) => { release = () => sendTags(response); resolve(); };
+    });
+    const work = autoTagAllPages(actorId);
+    await reached;
+    if (change === 'policy') await query(`UPDATE pages SET ai_policy = 'none' WHERE id = $1`, [id]);
+    if (change === 'content') await query(`UPDATE pages SET body_html = '<p>New content</p>' WHERE id = $1`, [id]);
+    if (change === 'provider') await query(`UPDATE llm_providers SET base_url = base_url || '/changed'`);
+    if (change === 'model') await query(`UPDATE llm_usecase_assignments SET model = 'successor' WHERE usecase = 'auto_tag'`);
+    release();
+    await expect(work).resolves.toEqual({ tagged: 0, errors: 0, policyBlocked: 1 });
+    expect(requests).toHaveLength(1);
+    const result = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [id]);
+    expect(result.rows[0]!.labels).not.toContain('architecture');
+  });
+
+  it('revalidates the effective model on the held local publication client', async () => {
+    const actorId = await createUser();
+    const inserted = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id, labels)
+      VALUES ('Local model race', '<p>Deployment</p>', 'standalone', 'private', $1, ARRAY[]::text[]) RETURNING id`, [actorId]);
+    const id = inserted.rows[0]!.id;
+    await expect(autoTagPage(actorId, String(id), undefined, async (tags, articleStage) => {
+      await query(`UPDATE llm_usecase_assignments SET model = 'successor' WHERE usecase = 'auto_tag'`);
+      await applyLabelChanges(actorId, String(id), { add: tags, articleStage });
+    })).rejects.toMatchObject({ name: 'ArticleStageRefusedError' });
+    expect((await query('SELECT labels FROM pages WHERE id = $1', [id])).rows[0].labels).toEqual([]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it('retains a pending generated-label intent rather than claiming success after a remote in-flight model change', async () => {
+    const actorId = await createUser('admin');
+    await configureConfluence(actorId, true);
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('RACE', 'Race')`);
+    const inserted = await query<{ id: number }>(`INSERT INTO pages
+      (confluence_id, space_key, title, body_html, source, visibility, created_by_user_id, labels)
+      VALUES ('remote-model-race', 'RACE', 'Remote model race', '<p>Deployment</p>', 'confluence', 'private', $1, ARRAY[]::text[]) RETURNING id`, [actorId]);
+    const id = inserted.rows[0]!.id;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      respondToLabels = (_body, response) => { release = () => sendJson(response, 200, {}); resolve(); };
+    });
+    const work = autoTagPage(actorId, String(id), undefined, async (tags, articleStage) => {
+      await applyLabelChanges(actorId, String(id), { add: tags, articleStage });
+    }).then(() => null, (error: unknown) => error);
+    await reached;
+    await query(`UPDATE llm_usecase_assignments SET model = 'successor' WHERE usecase = 'auto_tag'`);
+    release();
+    expect(await work).toMatchObject({ name: 'ArticleStageRefusedError' });
+    expect((await query('SELECT labels FROM pages WHERE id = $1', [id])).rows[0].labels).toEqual([]);
+    const intent = (await query('SELECT status, effect FROM page_write_intents WHERE page_ids @> ARRAY[$1]::int[]', [id])).rows[0];
+    expect(intent.status).toBe('pending');
+    expect(intent.effect.autoTagStage.model).toBe(ASSIGNED_MODEL);
+    expect(intent.effect.autoTagStage.provenance.pages[0].pageId).toBe(id);
+    expect(requests).toHaveLength(3);
+  });
+
+  it('blocks restricted articles before any outbound HTTP request', async () => {
+    const actorId = await createUser();
+    const inserted = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id, ai_policy)
+      VALUES ('Restricted', '<p>Secret</p>', 'standalone', 'private', $1, 'none') RETURNING id`, [actorId]);
+    await expect(autoTagPage(actorId, String(inserted.rows[0]!.id)))
+      .rejects.toMatchObject({ statusCode: 403, body: { error: 'ai_policy_denied' } });
+    expect(requests).toEqual([]);
   });
 });
 

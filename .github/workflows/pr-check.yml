@@ -76,7 +76,7 @@ jobs:
           # content-converter is in the list because the EMBEDDING INPUT goes
           # through it since #1265 (htmlToEmbeddingText / htmlToMarkdown) — a
           # turndown-rule change moves retrieval as surely as a rag-service one.
-          flag retrieval '^backend/src/domains/llm/(services/(rag-service|embedding-service|llm-provider-resolver)|eval/)|^backend/src/core/services/content-converter|^backend/scripts/run-retrieval-eval|^\.github/workflows/pr-check'
+          flag retrieval '^backend/src/domains/llm/(services/(rag-service|embedding-service|llm-provider-resolver|sibling-assembly|identifier-shortcircuit|lexical-chunk-resolution|derived-provenance|ai-policy-retrieval|openai-compatible-client|query-instruction|query-article-transport|hnsw-ef-search|retrieval-confidence|mmr)|eval/)|^backend/src/core/services/(content-converter|fts-language|page-visibility|admin-settings-service)|^backend/src/core/utils/lexical-query|^backend/src/core/db/vector-column-tier|^backend/scripts/run-retrieval-eval|^\.github/workflows/pr-check'
           flag e2e '^(frontend/|backend/|packages/contracts/|e2e/|docker/|scripts/|configs?/|package(-lock)?\.json$|playwright\.config\.|[^/]*config[^/]*$|tsconfig[^/]*\.json$|\.env[^/]*$|\.npmrc$|build-info\.json$|\.github/workflows/)'
 
   typecheck-lint:
@@ -99,7 +99,8 @@ jobs:
       # disappears at runtime and the container crash-loops on boot —
       # invisible to `npm run build` and to `docker build` alike. Simulate
       # the Docker prod-deps install in a tmpdir and assert the two
-      # historically-fragile packages stay at the root.
+      # historically-fragile packages and the PDF export's font engine stay
+      # at the root.
       - name: Verify prod-deps hoist runtime-critical packages to root
         run: |
           set -euo pipefail
@@ -111,7 +112,7 @@ jobs:
           cp frontend/package.json "$T/frontend/"
           (cd "$T" && npm ci --omit=dev -w backend -w @compendiq/contracts >/dev/null)
           missing=()
-          for pkg in p-limit ipaddr.js; do
+          for pkg in p-limit ipaddr.js @pdf-lib/fontkit; do
             test -d "$T/node_modules/$pkg" || missing+=("$pkg")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
@@ -120,7 +121,7 @@ jobs:
             echo "  See the //deps-note in package.json for context."
             exit 1
           fi
-          echo "✓ p-limit + ipaddr.js hoisted to root node_modules"
+          echo "✓ p-limit + ipaddr.js + @pdf-lib/fontkit hoisted to root node_modules"
 
       - name: Typecheck (contracts + backend + frontend)
         run: npm run typecheck

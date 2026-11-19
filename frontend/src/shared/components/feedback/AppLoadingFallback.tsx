@@ -1,5 +1,5 @@
 import { useLocation } from 'react-router-dom';
-import { Logo } from '../Logo';
+import { LogoMark, LogoWordmark } from '../Logo';
 import { isAiRoute } from '../../lib/ai-routes';
 import { isArticlePath } from '../../lib/article-route';
 import { cn } from '../../lib/cn';
@@ -33,18 +33,26 @@ function LibraryListSkeleton() {
 function WorkspaceBones() {
   return (
     <div className="app-shell flex min-h-0 flex-1">
-      <aside
+      <div
         aria-hidden="true"
-        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col gap-2 border-r border-border p-3 md:flex"
+        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col items-center gap-1.5 pt-1.5 md:flex"
       >
-        <Bone className="h-8 w-full" />
-        <Bone className="mt-3 h-3 w-16" />
-        {Array.from({ length: 10 }).map((_, i) => (
-          <Bone key={i} className="h-7 w-full" />
-        ))}
-      </aside>
+        <Bone className="size-8 rounded-md" />
+        <Bone className="size-8 rounded-md" />
+        <Bone className="size-8 rounded-md" />
+      </div>
       <div className="app-workspace flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        <div className="min-h-0 flex-1 overflow-hidden px-4 pt-5 sm:px-6">
+        <aside
+          aria-hidden="true"
+          className="app-sidebar hidden w-[282px] shrink-0 flex-col gap-2 p-3 md:flex"
+        >
+          <Bone className="h-8 w-full" />
+          <Bone className="mt-3 h-3 w-16" />
+          {Array.from({ length: 10 }).map((_, i) => (
+            <Bone key={i} className="h-7 w-full" />
+          ))}
+        </aside>
+        <div className="app-content-pane min-h-0 flex-1 overflow-hidden px-4 pt-5 sm:px-6">
           <LibraryListSkeleton />
         </div>
       </div>
@@ -77,15 +85,13 @@ export function AppBootSkeleton({
       aria-busy="true"
     >
       <BootAnnouncer label="Loading Compendiq" />
-      <header className="app-header relative z-10 flex shrink-0 items-center px-3">
-        <Logo className="h-6 w-auto text-foreground md:ml-3" title="Compendiq" />
-        {quiet ? null : (
-          <div aria-hidden="true" className="hidden md:flex items-center gap-1 ml-4">
-            <Bone className="h-7 w-16 rounded-md" />
-            <Bone className="h-7 w-12 rounded-md" />
-            <Bone className="h-7 w-16 rounded-md" />
-          </div>
-        )}
+      <header className="app-header relative z-10 flex shrink-0 items-center px-3 md:pl-0">
+        <div className="flex items-center gap-2 text-foreground md:gap-0">
+          <span className="flex shrink-0 items-center justify-center md:w-[var(--app-nav-rail-width)]">
+            <LogoMark className="size-7 shrink-0" title="Compendiq" />
+          </span>
+          <LogoWordmark className="h-7 w-auto shrink-0" />
+        </div>
       </header>
       {quiet ? null : <WorkspaceBones />}
     </div>

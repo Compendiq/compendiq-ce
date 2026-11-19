@@ -87,7 +87,7 @@ function renderDock(
   const { initialEntry = '/pages/page-1', onClose = () => {} } =
     typeof opts === 'string' ? { initialEntry: opts } : opts;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <LazyMotion features={domAnimation}>
         <MemoryRouter initialEntries={[initialEntry]}>
@@ -104,6 +104,7 @@ function renderDock(
       </LazyMotion>
     </QueryClientProvider>,
   );
+  return { ...view, unmount: () => { view.unmount(); queryClient.clear(); } };
 }
 
 /** Open the dock and wait until it has a model, i.e. until Send can run. */
@@ -260,19 +261,44 @@ describe('AiDock (#1126)', () => {
   // The core of "one thread, four chips". runStream used to `setMessages([...])`
   // for every seeded turn, so each chip wiped the conversation it landed in.
   it('appends chip turns to one continuous thread instead of replacing it', async () => {
-    renderDock();
-    await openAndSettle();
+    streamSSEMock
+      .mockImplementationOnce(() => sse({ content: 'First completed answer.' }, { final: true, done: true }))
+      .mockImplementationOnce(() => sse({ content: 'Second completed answer.' }, { final: true, done: true }));
+    const { unmount } = renderDock();
+    try {
+      await openAndSettle();
 
-    fireEvent.change(composer(), { target: { value: 'what does this cover?' } });
-    fireEvent.keyDown(composer(), { key: 'Enter' });
-    expect(await screen.findByText('what does this cover?')).toBeInTheDocument();
+      fireEvent.change(composer(), { target: { value: 'what does this cover?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      // The user bubble is seeded before runStream awaits the iterator. It
+      // does not mean the disabled Radix selector can accept another action.
+      await waitFor(() => {
+        expect(screen.getByText('First completed answer.')).toBeInTheDocument();
+        expect(screen.queryByTestId('ai-dock-streaming')).not.toBeInTheDocument();
+        expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled();
+        expect(composer()).not.toBeDisabled();
+      });
 
-    await selectDockAction('diagram');
-    fireEvent.click(screen.getByTestId('ai-dock-send'));
+      await selectDockAction('diagram');
+      expect(screen.getByTestId('ai-dock-send')).not.toBeDisabled();
+      fireEvent.click(screen.getByTestId('ai-dock-send'));
 
-    expect(await screen.findByText('Draw a flowchart diagram of this page.')).toBeInTheDocument();
-    // The earlier question is still there — that is the whole fix.
-    expect(screen.getByText('what does this cover?')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByText('Second completed answer.')).toBeInTheDocument();
+        expect(screen.queryByTestId('ai-dock-streaming')).not.toBeInTheDocument();
+        expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled();
+      });
+      const thread = screen.getByTestId('ai-dock-thread');
+      expect(thread).toHaveTextContent('what does this cover?');
+      expect(thread).toHaveTextContent('First completed answer.');
+      expect(thread).toHaveTextContent('Draw a flowchart diagram of this page.');
+      expect(thread).toHaveTextContent('Second completed answer.');
+      expect(streamSSEMock.mock.calls.map(([endpoint]) => endpoint)).toEqual([
+        '/llm/ask', '/llm/generate-diagram',
+      ]);
+    } finally {
+      unmount();
+    }
   });
 
   it('sends the composer text as Improve instructions and shows the user their own words', async () => {
@@ -371,6 +397,19 @@ describe('AiDock (#1126)', () => {
 
       expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
       expect(await askDock('where is the PAT setting?')).not.toHaveProperty('deepSearch');
+    });
+
+    // #282: a question typed beside an article is declared page-bound so the
+    // backend admits THAT article before it reads the question. The dock is
+    // never mounted without a page, but a route without one (`/ai`) would be
+    // the user's own question.
+    it('declares the open article as the question’s input', async () => {
+      renderDock();
+      await openAndSettle();
+
+      expect(await askDock('is the PAT step still right?')).toMatchObject({
+        inputKind: 'page', pageId: 'page-1',
+      });
     });
 
     // NON-STICKINESS TEST 1 — must not survive a SEND.
@@ -691,6 +730,46 @@ describe('AiDock (#1126)', () => {
       expect(classes).not.toMatch(/destructive/);
       // Nor does it borrow a reserved status hue for what is a measurement.
       expect(classes).not.toMatch(/status-(connected|disconnected|syncing|embedding|ai)/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Interrupted stream with partial output (#1801)
+  // -------------------------------------------------------------------------
+  describe('interrupted stream with partial output', () => {
+    async function askAndGetCutOff(...tail: Array<Record<string, unknown>>) {
+      streamSSEMock.mockImplementation(() => sse(
+        { content: '## Setup\n\nRun the **installer** first.\n\n```sh\nnpm ci\n```\n\nThen' },
+        ...tail,
+      ));
+      renderDock();
+      await openAndSettle();
+      fireEvent.change(composer(), { target: { value: 'how do I set it up?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      return screen.findByTestId('message-error');
+    }
+
+    it('keeps the partial as Markdown and puts the failure in a short notice beneath it', async () => {
+      // EOF without `done`.
+      const notice = await askAndGetCutOff();
+
+      expect(notice.textContent).toBe('The response was interrupted before completion. Try again.');
+      expect(notice.className).toContain('destructive');
+      // The partial is an answer body: headings, emphasis and code survive
+      // instead of collapsing into one red run inside the notice.
+      expect(screen.getByRole('heading', { name: 'Setup' })).toBeInTheDocument();
+      expect(screen.getByText('installer').tagName).toBe('STRONG');
+      expect(screen.getByText('npm ci').closest('pre')).not.toBeNull();
+      expect(notice.textContent).not.toContain('installer');
+    });
+
+    it('announces only the notice, never the partial', async () => {
+      const notice = await askAndGetCutOff({ error: 'provider failed' });
+
+      expect(notice.textContent).toBe('provider failed');
+      expect(screen.getByTestId('ai-dock-error-announcer').textContent).toBe('provider failed');
+      // A cut-off answer is not "ready" either.
+      expect(screen.getByTestId('ai-dock-answer-announcer').textContent).toBe('');
     });
   });
 

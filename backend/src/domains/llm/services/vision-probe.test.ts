@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockChat = vi.fn();
 vi.mock('./openai-compatible-client.js', () => ({
-  chat: (...args: unknown[]) => mockChat(...args),
+  chatCompletion: (...args: unknown[]) => mockChat(...args),
 }));
 
 vi.mock('../../../core/utils/logger.js', () => ({
@@ -26,6 +26,9 @@ const CFG = {
 };
 
 beforeEach(() => { mockChat.mockReset(); });
+
+const reply = (text: string, finishReason: string | null = 'stop') =>
+  mockChat.mockResolvedValue({ text, finishReason, promptTokens: 0, completionTokens: 0 });
 
 describe('probe image', () => {
   it('is a valid PNG under 1 KB', () => {
@@ -53,7 +56,7 @@ describe('probe image', () => {
 
 describe('probeVision', () => {
   it('sends the image as a content part on a user message', async () => {
-    mockChat.mockResolvedValue('yellow purple green');
+    reply('yellow purple green');
     await probeVision(CFG, 'qwen2.5vl');
 
     const messages = mockChat.mock.calls[0]![2];
@@ -70,28 +73,31 @@ describe('probeVision', () => {
    * naming all three bands — 16 tokens truncates before the last one.
    */
   it('allows enough tokens for a full-sentence answer and thinking blocks', async () => {
-    mockChat.mockResolvedValue('yellow purple green');
+    reply('yellow purple green');
     await probeVision(CFG, 'm');
-    expect(mockChat.mock.calls[0]![3]).toEqual({ maxTokens: 512 });
+    expect(mockChat.mock.calls[0]![3]).toEqual({
+      maxTokens: 512,
+      transportContext: { kind: 'non_article', purpose: 'provider_probe' },
+    });
   });
 
   it('returns vision:true when the reply names all three bands in order', async () => {
-    mockChat.mockResolvedValue('yellow purple green');
+    reply('yellow purple green');
     expect(await probeVision(CFG, 'm')).toEqual({ vision: true });
   });
 
   it('tolerates punctuation and filler around the answer', async () => {
-    mockChat.mockResolvedValue('Sure! The bands are yellow, purple, and green.');
+    reply('Sure! The bands are yellow, purple, and green.');
     expect(await probeVision(CFG, 'm')).toEqual({ vision: true });
   });
 
   it('is case-insensitive', async () => {
-    mockChat.mockResolvedValue('YELLOW PURPLE GREEN');
+    reply('YELLOW PURPLE GREEN');
     expect(await probeVision(CFG, 'm')).toEqual({ vision: true });
   });
 
   it('returns vision:false when the bands are named out of order', async () => {
-    mockChat.mockResolvedValue('green purple yellow');
+    reply('green purple yellow');
     expect((await probeVision(CFG, 'm')).vision).toBe(false);
   });
 
@@ -101,8 +107,52 @@ describe('probeVision', () => {
    * correct negative instead of a false positive.
    */
   it('returns vision:false when the model answers without reading the image', async () => {
-    mockChat.mockResolvedValue('I cannot see any image.');
+    reply('I cannot see any image.');
     expect((await probeVision(CFG, 'm')).vision).toBe(false);
+  });
+
+  /** The colours appear only inside reasoning, and the answer denies the image. */
+  it('ignores colours named inside a think block (visible denial is false)', async () => {
+    reply('<think>Yellow, purple, green maybe?</think>I cannot see any image.');
+    expect(await probeVision(CFG, 'm')).toEqual({ vision: false });
+  });
+
+  it('counts the visible answer after a think block', async () => {
+    reply('<think>Let me look at the bands.</think>yellow purple green');
+    expect(await probeVision(CFG, 'm')).toEqual({ vision: true });
+  });
+
+  /** A reply cut inside reasoning says nothing about image support. */
+  it('returns vision:null with a fixed error when the reply ends inside a think block', async () => {
+    reply('<think>The top band looks yellow, then purple, then green');
+    expect(await probeVision(CFG, 'm')).toEqual({
+      vision: null,
+      error: 'Vision probe reply ended inside a reasoning block',
+    });
+  });
+
+  it('returns vision:null with a fixed error when cut off by the token limit without an answer', async () => {
+    reply('The image shows some', 'length');
+    expect(await probeVision(CFG, 'm')).toEqual({
+      vision: null,
+      error: 'Vision probe reply was cut off by the token limit',
+    });
+  });
+
+  it('returns vision:null when a hosted reasoner spent the budget on reasoning (empty content, length)', async () => {
+    reply('', 'length');
+    expect((await probeVision(CFG, 'm')).vision).toBeNull();
+  });
+
+  /** The answer was given before the cut, so the verdict stays positive. */
+  it('keeps vision:true when an in-order visible answer was then truncated', async () => {
+    reply('yellow purple green', 'length');
+    expect(await probeVision(CFG, 'm')).toEqual({ vision: true });
+  });
+
+  it('ignores colours before an orphan closing think tag (visible denial is false)', async () => {
+    reply('yellow purple green</think>I cannot see any image.');
+    expect(await probeVision(CFG, 'm')).toEqual({ vision: false });
   });
 
   it('returns vision:false when the provider rejects the image part', async () => {

@@ -611,6 +611,82 @@ describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
     });
   });
 
+  /**
+   * #283 — `GET /llm/usecase-locality` reports the resolved provider's
+   * DECLARED locality so a `local_only` article surface can say whether this
+   * use case's destination is admitted. A provider created without a
+   * declaration is `external` and unconfirmed; one the administrator
+   * explicitly declared `local` at creation is `local` and confirmed for the
+   * configuration revision that write produced. Nothing about the URL
+   * (`http://localhost…` here) is allowed to decide either answer. The
+   * default row itself gains NO keys — `llm-usecases-vision.test.ts` pins
+   * its exact set as the non-admin leak boundary.
+   */
+  it('reports the resolved provider\'s declared locality on its own route, defaulting to external for a loopback URL (#283)', async () => {
+    const external = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Loopback undeclared', baseUrl: 'http://localhost:11434/v1', authType: 'none', verifySsl: true, defaultModel: 'qwen3:4b' }),
+    });
+    expect(external.statusCode).toBe(201);
+    await app.inject({
+      method: 'POST', url: `/api/admin/llm-providers/${external.json().id}/set-default`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    // A non-admin may read it: it is a category of the destination, not evidence.
+    const userResult = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role) VALUES ('locality_reader', 'fakehash', 'user') RETURNING id`,
+    );
+    await query('INSERT INTO user_settings (user_id) VALUES ($1)', [userResult.rows[0]!.id]);
+    const userToken = await generateAccessToken({ sub: userResult.rows[0]!.id, username: 'locality_reader', role: 'user' });
+
+    const undeclared = await app.inject({
+      method: 'GET', url: '/api/llm/usecase-locality?usecase=chat',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(undeclared.statusCode).toBe(200);
+    expect(undeclared.json()).toEqual({
+      usecase: 'chat', providerId: external.json().id, providerName: 'Loopback undeclared',
+      locality: 'external', localityConfirmed: false,
+    });
+    // The default row is untouched by this feature.
+    const defaultRow = await app.inject({
+      method: 'GET', url: '/api/llm/usecase-default?usecase=chat',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(Object.keys(defaultRow.json()).sort()).toEqual(['model', 'providerId', 'providerName', 'usecase', 'vision']);
+
+    const local = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Declared local', baseUrl: 'http://gpu.internal/v1', authType: 'none', verifySsl: true, defaultModel: 'qwen3:8b', locality: 'local' }),
+    });
+    expect(local.statusCode).toBe(201);
+    expect(local.json()).toMatchObject({ locality: 'local', localConfirmed: true });
+    await app.inject({
+      method: 'PUT', url: '/api/admin/llm-usecases',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ summary: { providerId: local.json().id, model: 'qwen3:8b' } }),
+    });
+    const declared = await app.inject({
+      method: 'GET', url: '/api/llm/usecase-locality?usecase=summary',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(declared.statusCode).toBe(200);
+    expect(declared.json()).toMatchObject({ providerId: local.json().id, locality: 'local', localityConfirmed: true });
+    // The route reports what the admin list reports; the two wires agree.
+    expect(declared.json().localityConfirmed).toBe(local.json().localConfirmed);
+    // No endpoint, key or probe body rides along.
+    expect(Object.keys(declared.json()).sort()).toEqual(['locality', 'localityConfirmed', 'providerId', 'providerName', 'usecase']);
+
+    const unassigned = await app.inject({
+      method: 'GET', url: '/api/llm/usecase-locality?usecase=rerank',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(unassigned.statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/llm/usecase-locality?usecase=chat' })).statusCode).toBe(401);
+  });
+
   it('rejects an invalid usecase with 400', async () => {
     const r = await app.inject({
       method: 'GET',

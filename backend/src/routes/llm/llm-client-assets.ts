@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import { finished } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { ClientAssetIdSchema, ClientAssetManifestSchema, clientAssetKind } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
@@ -38,10 +39,17 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.get<{ Params: { modelId: string; '*': string } }>(
-    '/models/client-assets/:modelId/*',
-    { preHandler: requireGlobalPermission('llm:query') },
-    async (request, reply) => {
+  // GET and HEAD are registered together so HEAD never goes through Fastify's
+  // implicit HEAD route, which drains a stream payload (reading the whole
+  // asset) and rewrites an empty payload's Content-Length to 0. Compression
+  // is off: it would drop Content-Length and gzip bytes under an
+  // identity-offset Content-Range.
+  fastify.route<{ Params: { modelId: string; '*': string } }>({
+    method: ['GET', 'HEAD'],
+    url: '/models/client-assets/:modelId/*',
+    compress: false,
+    preHandler: requireGlobalPermission('llm:query'),
+    handler: async (request, reply) => {
       const file = request.params['*'] ?? '';
       const parsedId = ClientAssetIdSchema.safeParse(request.params.modelId);
       if (parsedId.success && clientAssetKind(parsedId.data) === 'onnx' && !(await slmEnabled())) {
@@ -50,6 +58,19 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
       const resolved = resolveClientAssetPath(request.params.modelId, file);
       if (!resolved.ok) return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
       const verified = await resolvePolicyClientAsset(resolved.modelId, resolved.file);
+      // A verified asset's stream may depend on a resource that dispose()
+      // frees, so it lives until the body stream has ended or been destroyed
+      // (#1793). Exactly one path releases it: the body's end-of-stream for a
+      // streamed response, the handler's `finally` for every other response.
+      const release = async (): Promise<void> => {
+        if (!verified) return;
+        try {
+          await verified.dispose();
+        } catch (err) {
+          request.log.warn({ err }, 'Failed to release verified client asset');
+        }
+      };
+      let streaming = false;
       try {
         const local = verified ? null : await statClientAsset(resolved.modelId, resolved.file);
         const found = verified ?? (local && {
@@ -59,7 +80,10 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
         });
         if (!found) return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
 
-        const range = parseBytesRange(request.headers.range, found.size);
+        // Range handling is defined only for GET (RFC 9110 §14.2).
+        const range = request.method === 'GET'
+          ? parseBytesRange(request.headers.range, found.size)
+          : 'full';
         if (range === 'unsatisfiable') {
           reply.header('Content-Range', `bytes */${found.size}`);
           return reply.code(416).send({ error: 'Range Not Satisfiable', statusCode: 416 });
@@ -77,16 +101,25 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
 
         if (range === 'full') {
           reply.header('Content-Length', found.size);
-          return reply.send(await found.stream());
+        } else {
+          reply.code(206);
+          reply.header('Content-Range', `bytes ${range.start}-${range.end}/${found.size}`);
+          reply.header('Content-Length', range.end - range.start + 1);
         }
+        if (request.method === 'HEAD') return reply.send();
 
-        reply.code(206);
-        reply.header('Content-Range', `bytes ${range.start}-${range.end}/${found.size}`);
-        reply.header('Content-Length', range.end - range.start + 1);
-        return reply.send(await found.stream(range));
+        const body = await found.stream(range === 'full' ? undefined : range);
+        streaming = true;
+        // One release path: the body has finished, failed or been destroyed.
+        // When the response ends for any reason (sent, client gone, a failing
+        // onSend hook) the body is destroyed first, so dispose() never runs
+        // while a read is still in flight.
+        finished(body, () => void release());
+        reply.then(() => body.destroy(), () => body.destroy());
+        return reply.send(body);
       } finally {
-        await verified?.dispose();
+        if (!streaming) await release();
       }
     },
-  );
+  });
 }

@@ -10,46 +10,16 @@ import {
 
 const dbAvailable = await isDbAvailable();
 
-// Mock the LLM streaming helper and content converter to avoid real calls in tests.
-// The worker streams via `streamChat` from openai-compatible-client; the
-// `getSystemPrompt` helper from prompts.ts is a pure string builder and
-// runs unmocked.
-vi.mock('../../llm/services/openai-compatible-client.js', () => ({
-  streamChat: vi.fn().mockImplementation(() => {
-    async function* generator() {
-      yield {
-        content: `## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.`,
-        done: false,
-      };
-      yield { content: '', done: true };
-    }
-    return generator();
-  }),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
-
-vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
-  sanitizeLlmInput: vi.fn().mockImplementation((input: string) => ({ sanitized: input, wasSanitized: false })),
-}));
-
-vi.mock('../../../core/services/content-converter.js', () => ({
-  htmlToMarkdown: vi.fn().mockImplementation((html: string) => html),
-}));
-
-vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn().mockResolvedValue({
-    config: {
-      providerId: 'p1', id: 'p1', name: 'X',
-      baseUrl: 'http://x/v1', apiKey: null,
-      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
-    },
-    model: 'qwen3.5',
-  }),
-}));
+// Exercise the real resolver, admission and streaming transport; only the
+// outbound provider is replaced. No synthetic article or persistence mocks.
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { bumpProviderCacheVersion } from '../../llm/services/cache-bus.js';
+let server: Server;
+let baseUrl: string;
+const report = `## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.`;
+/** When set, the stub sends a provider `error` frame after the report and before `[DONE]` (#1728). */
+let providerErrorText: string | undefined;
 
 // Webhook emit-call-site (#114). The hook is a CE-side no-op; we mock it
 // to assert call shape from the worker's success path.
@@ -217,10 +187,28 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
   beforeAll(async () => {
     await setupTestDb();
+    server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        const errorFrame = providerErrorText === undefined ? '' : `data: ${JSON.stringify({ error: { message: providerErrorText } })}\n\n`;
+        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: report } }] })}\n\n${errorFrame}data: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   });
 
   beforeEach(async () => {
     await truncateAllTables();
+    providerErrorText = undefined;
+
+    const provider = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, default_model) VALUES ('X', $1, 'none', 'qwen3.5') RETURNING id::text`,
+      [baseUrl],
+    );
+    await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('quality', $1, 'qwen3.5')", [provider.rows[0]!.id]);
+    bumpProviderCacheVersion();
 
     // Re-seed system roles (truncateAllTables clears them)
     await query(
@@ -257,6 +245,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
   afterAll(async () => {
     stopQualityWorker();
+    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     await teardownTestDb();
   });
 
@@ -278,6 +267,34 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(result.rows[0].quality_status).toBe('analyzed');
       expect(result.rows[0].quality_score).toBe(75);
       expect(result.rows[0].quality_retry_count).toBe(0);
+    });
+
+    it('fails the page and stores no score when the provider sends an error frame (#1728)', async () => {
+      // The complete report arrives first; the error frame and [DONE]
+      // follow. Before #1728 the report was parsed and stored as a score.
+      providerErrorText = 'upstream worker crashed: CUDA out of memory on gpu-7';
+      const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+         VALUES ('q1728', $1, 'Error Frame Page', $2, $3, 'pending')`,
+        [testSpaceKey, longContent, `<p>${longContent}</p>`],
+      );
+
+      expect(await processBatch()).toEqual({ processed: 0, errors: 1 });
+
+      const result = await query<{
+        quality_status: string; quality_score: number | null; quality_summary: string | null;
+        quality_error: string | null; quality_retry_count: number;
+      }>(
+        "SELECT quality_status, quality_score, quality_summary, quality_error, quality_retry_count FROM pages WHERE confluence_id = 'q1728'",
+      );
+      expect(result.rows[0]).toEqual({
+        quality_status: 'failed',
+        quality_score: null,
+        quality_summary: null,
+        quality_error: 'streamChat: provider reported an error in the stream',
+        quality_retry_count: 1,
+      });
     });
 
     it('takes at most admin_settings.quality_batch_size pages per run and 5 when the row is absent', async () => {

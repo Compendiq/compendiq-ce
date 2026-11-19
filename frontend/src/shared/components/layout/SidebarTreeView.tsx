@@ -17,7 +17,11 @@ import {
 } from 'lucide-react';
 import { ApiError } from '../../lib/api';
 import { getSpaceIcon } from '../spaces/space-icons';
-import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { m, useReducedMotion } from 'framer-motion';
+import {
+  PANEL_COLLAPSE_TRANSITION,
+  usePanelCollapseInitial,
+} from '../../hooks/use-panel-collapse-motion';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 
 import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
@@ -75,14 +79,16 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   if (homepageId) {
     const homepageNode = nodeMap.get(homepageId);
     if (homepageNode) {
-      const promoted = homepageNode.children;
-      const withoutHomepage = roots.filter((r) => r.page.id !== homepageId);
-      const withoutHome = [...promoted, ...withoutHomepage];
+      const parent = homepageNode.page.parentId && nodeMap.get(homepageNode.page.parentId);
+      const siblings = parent ? parent.children : roots;
+      const withoutHomepage = siblings.filter((node) => node !== homepageNode);
+      const withoutHome = parent ? [...homepageNode.children, ...roots] : [...homepageNode.children, ...withoutHomepage];
       // #961: hiding the homepage must not leave the sidebar empty. When the
       // space contains only its homepage (no children, no sibling roots),
       // keep the homepage visible so the tree doesn't render a false
       // "empty space" state above a "1 page in <SPACE>" footer.
       if (withoutHome.length > 0) {
+        if (parent) parent.children = withoutHomepage;
         return withoutHome.sort(bySortOrderThenTitle);
       }
     }
@@ -127,8 +133,6 @@ function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
   }
   return ancestors;
 }
-
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
 /**
  * One treatment for every section label in this panel. There were four:
@@ -299,7 +303,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             // its children's chevrons now share ~6px of column. Without this the
             // guide would sit on top and clicking a child's left edge would
             // collapse its parent instead of toggling the child.
-            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             style={{ left: `${level * 12 + 2}px` }}
             // A MOUSE affordance, and only that — hence out of the tab order and
             // out of the accessibility tree.
@@ -430,8 +434,8 @@ interface SidebarTreeViewProps {
   forceCollapsed?: boolean;
   /** Lets a user explicitly reopen a temporarily compacted rail. */
   onForceExpand?: () => void;
-  /** Pages / AI / Graph live on the chassis on desktop. The mobile drawer
-   *  and isolated tests pass true; AppLayout desktop passes false. */
+  /** Pages / AI / Graph live in the outer chassis icon rail on desktop. The
+   *  mobile drawer and isolated tests pass true; AppLayout desktop passes false. */
   embedMainNav?: boolean;
 }
 
@@ -752,49 +756,33 @@ export function SidebarTreeView({
       : Globe;
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
+  const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
+    collapsed,
+    treeSidebarWidth,
+    COLLAPSED_TREE_SIDEBAR_WIDTH,
+    reduceEffects,
+  );
 
   if (collapsed) {
     return (
-      <AnimatePresence mode="wait">
-        {/* <aside>, not <div>. The expanded panel below is an <aside>, so
+        /* <aside>, not <div>. The expanded panel below is an <aside>, so
             collapsing the rail used to DELETE the complementary landmark from
             the page — a screen-reader user who collapsed the tree lost the
             region, not just its contents. Both branches are the same region in
             two sizes, and both are named: the app renders two unlabelled
             <aside>s otherwise (this and the article inspector), which announce
-            as two indistinguishable "complementary" regions. */}
+            as two indistinguishable "complementary" regions. */
         <m.aside
           key="collapsed-rail"
           aria-label="Page tree"
-          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+          initial={collapsedInitial}
           animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center overflow-hidden"
+          transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
+          className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          {/* Keep the collapsed control in the same 48px chrome row as the
-              expanded main-nav toolbar, so both panes start their content on
-              one baseline. No hairline since 2026-08-31 — the height is the
-              alignment now, not a shared line. */}
-          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center">
-            <button
-              onClick={() => {
-                if (forceCollapsed && !treeSidebarCollapsed) {
-                  onForceExpand?.();
-                } else {
-                  toggleTreeSidebar();
-                }
-              }}
-              className="flex items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-              aria-label="Expand sidebar"
-              title="Expand sidebar (,)"
-            >
-              {/* Shortcut in the tooltip, not glued to the icon — see the twin in
-                  ArticleRightPane. A "," rendered as a bordered chip beside a
-                  rail icon reads as stray punctuation, not a key. */}
-              <PanelLeft size={16} />
-            </button>
-          </div>
+          {/* Keep the collapsed spacer at the same 48px chrome height as the
+              expanded toolbar, so both panes start their content on one baseline. */}
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -804,7 +792,7 @@ export function SidebarTreeView({
               onNavigate?.();
             }}
             className={cn(
-              'nm-icon-button mb-2 mt-auto shrink-0',
+              'nm-icon-button mb-1 mt-auto shrink-0',
               location.pathname === '/trash' && 'nav-selection',
             )}
             label="Trash"
@@ -814,8 +802,37 @@ export function SidebarTreeView({
             icon={<Trash2 size={15} aria-hidden="true" />}
           />
 
+          <button
+            type="button"
+            onClick={() => {
+              if (forceCollapsed && !treeSidebarCollapsed) {
+                onForceExpand?.();
+              } else {
+                toggleTreeSidebar();
+              }
+            }}
+            className="mb-1.5 ml-1.5 flex size-7 shrink-0 items-center justify-center self-start rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (,)"
+          >
+            <PanelLeft size={15} aria-hidden="true" />
+          </button>
+
+          <span
+            data-rail-hairline
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 -right-px top-0 z-10 flex w-[3px] flex-col items-center"
+          >
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+            <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+            </span>
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+          </span>
+
         </m.aside>
-      </AnimatePresence>
     );
   }
 
@@ -835,9 +852,9 @@ export function SidebarTreeView({
       ref={sidebarRef}
       key="expanded-sidebar"
       aria-label="Page tree"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      initial={expandedInitial}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
-      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects || isResizing ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className={cn(
         'app-sidebar relative flex max-w-full flex-col overflow-hidden',
         isResizing && 'select-none',
@@ -846,14 +863,6 @@ export function SidebarTreeView({
       {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
-          <button
-            onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-          </button>
       </div>
       )}
 
@@ -871,7 +880,7 @@ export function SidebarTreeView({
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-card border border-border px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-[var(--shell-control-bg)] border border-[var(--shell-control-border)] px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
             title={
               selectedSpaceOption
@@ -1060,16 +1069,6 @@ export function SidebarTreeView({
             </div>
           )}
         </div>
-        {!embedMainNav && (
-          <button
-            onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-          </button>
-        )}
       </div>
 
       {/* A compact navigation shortcut; the Pages dashboard remains the rich
@@ -1157,7 +1156,7 @@ export function SidebarTreeView({
             navigate('/pages/new');
             onNavigate?.();
           }}
-          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="New Page"
           title="New Page (Alt+N)"
           data-testid="sidebar-new-page-btn"
@@ -1322,7 +1321,16 @@ export function SidebarTreeView({
       {/* Scope count + low-frequency storage navigation. Out of the scroller
           so both stay visible under a long tree. Trash belongs with the page
           corpus, but not beside the Library's primary New Page action. */}
-      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] py-1.5 pl-1.5 pr-2">
+        <button
+          type="button"
+          onClick={toggleTreeSidebar}
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {treeData
             ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
@@ -1369,12 +1377,35 @@ export function SidebarTreeView({
         title="Drag to resize · Double-click to reset"
       >
         <span
-          className={cn(
-            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
-            isResizing && 'bg-action/70',
-          )}
+          data-rail-hairline
           aria-hidden="true"
-        />
+          className="-mr-px flex h-full w-[3px] flex-col items-center"
+        >
+          <span
+            className={cn(
+              'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+          />
+          <span
+            data-testid="sidebar-resize-grip"
+            className={cn(
+              'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-all duration-150',
+              'group-hover:opacity-100 group-focus-visible:opacity-100',
+              isResizing && 'scale-125 opacity-100',
+            )}
+          >
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+          </span>
+          <span
+            className={cn(
+              'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+          />
+        </span>
       </div>
     </m.aside>
   );

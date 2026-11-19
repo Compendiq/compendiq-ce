@@ -5,11 +5,11 @@ import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { LlmCache } from './llm-cache.js';
 
 const redisAvailable = await isRedisAvailable();
-function waitForRedisExpiry(): Promise<void> {
+function waitForRedisExpiry(milliseconds = 1_100): Promise<void> {
   // This integration test exercises Redis's independent server-side TTL clock;
   // Vitest fake timers cannot advance it.
   const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 1_100);
+  setTimeout(resolve, milliseconds);
   return promise;
 }
 async function expectOwnershipLifecycle(
@@ -77,5 +77,34 @@ describe.skipIf(!redisAvailable)('LlmCache lock ownership with real Redis', () =
   it('uses a fresh token for overlapping acquisitions from one cache instance', async () => {
     const cache = new LlmCache(redis);
     await expectOwnershipLifecycle(redis, cache, cache, cache);
+  });
+
+  it('renews a live lease and refuses to renew after ownership changes', async () => {
+    const cacheKey = `kb:llm:renew-${randomUUID()}`;
+    const lockKey = `llm:lock:${cacheKey}`;
+    const owner = new LlmCache(redis);
+    const waiter = new LlmCache(redis);
+
+    try {
+      const ownerToken = await owner.acquireLock(cacheKey, 2);
+      expect(ownerToken).toBeTypeOf('string');
+      if (ownerToken === null) throw new Error('Initial Redis lock was not acquired');
+
+      await waitForRedisExpiry(1_200);
+      await expect(owner.renewLock(cacheKey, ownerToken, 2)).resolves.toBe(true);
+      await waitForRedisExpiry(1_200);
+      await expect(waiter.acquireLock(cacheKey, 30)).resolves.toBeNull();
+
+      await owner.releaseLock(cacheKey, ownerToken);
+      const successorToken = await waiter.acquireLock(cacheKey, 30);
+      expect(successorToken).toBeTypeOf('string');
+      if (successorToken === null) throw new Error('Successor Redis lock was not acquired');
+
+      await expect(owner.renewLock(cacheKey, ownerToken, 30)).resolves.toBe(false);
+      expect(await redis.get(lockKey)).toBe(successorToken);
+      await waiter.releaseLock(cacheKey, successorToken);
+    } finally {
+      await redis.del(lockKey);
+    }
   });
 });

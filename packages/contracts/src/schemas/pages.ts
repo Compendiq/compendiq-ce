@@ -1,20 +1,35 @@
 import { z } from 'zod';
 import { PageIconSchema } from './page-icon.js';
+import { PagePrimaryKeySchema } from './page-id.js';
 import {
   PageFreezeDetailFieldsSchema,
   PageFreezeSummaryFieldsSchema,
 } from './page-baselines.js';
+import {
+  AiPolicyFilterSchema,
+  AiPolicyInputSchema,
+  AiPolicySchema,
+  PageAiPolicyDetailFieldsSchema,
+  PageAiPolicyWorkerFieldsSchema,
+} from './ai-policy.js';
 
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
 
-export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed']);
+/**
+ * Worker stage statuses. `policy_blocked` is the article-AI-policy outcome
+ * (#281, migration 135): the stage was refused by the page's `aiPolicy` or by
+ * provider locality and is NOT a failure to retry — the reason sits in
+ * `ai_policy_block_reason`. Every status CHECK on `pages` admits it, so the
+ * wire enums must too or a blocked page cannot be parsed at all.
+ */
+export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed', 'policy_blocked']);
 export type PageEmbeddingStatus = z.infer<typeof PageEmbeddingStatusEnum>;
 
-export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']);
+export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped', 'policy_blocked']);
 export type PageQualityStatus = z.infer<typeof PageQualityStatusEnum>;
 
-export const PageSummaryStatusEnum = z.enum(['pending', 'summarizing', 'summarized', 'failed', 'skipped']);
+export const PageSummaryStatusEnum = z.enum(['pending', 'summarizing', 'summarized', 'failed', 'skipped', 'policy_blocked']);
 export type PageSummaryStatus = z.infer<typeof PageSummaryStatusEnum>;
 
 export const PageSourceEnum = z.enum(['confluence', 'standalone']);
@@ -66,7 +81,8 @@ const ConnectionVisitSchema = z.object({
 const ConnectionClickSchema = z.object({
   event: z.literal('connection_click'),
   visitId: z.string().uuid(),
-  targetPageId: z.string().regex(/^[1-9]\d*$/),
+  targetPageId: z.string().regex(/^[1-9]\d*$/)
+    .refine((id) => PagePrimaryKeySchema.safeParse(id).success, 'Invalid page ID'),
   group: z.enum(['linked', 'section', 'related']),
 }).strict();
 
@@ -115,6 +131,16 @@ export const PageSummarySchema = z.object({
   confluenceId: z.string().nullable().optional(),
   icon: PageIconSchema.nullable().optional(),
   ...PageFreezeSummaryFieldsSchema.shape,
+  /**
+   * Article AI policy on the LIST wire (#283): the stored policy and its
+   * revision, so a bulk policy action can send the compare-and-set key for
+   * every selected row without a detail round-trip each. Optional: a server
+   * that predates the fields sends none, and absent is unknown, never `all`.
+   */
+  aiPolicy: AiPolicySchema.optional(),
+  aiPolicyRevision: z.number().int().nonnegative().optional(),
+  /** Worker block reason / blocked stages / recovering (#281/#283). */
+  ...PageAiPolicyWorkerFieldsSchema.shape,
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({
@@ -152,6 +178,8 @@ export const PageDetailSchema = PageSummarySchema.extend({
     baselineId: true,
     frozenVersion: true,
   }).shape,
+  /** Article AI policy (#280): `aiPolicy`, `aiPolicyRevision`, `canChangeAiPolicy`, `aiPolicyActivation`. */
+  ...PageAiPolicyDetailFieldsSchema.shape,
 });
 
 export const CreatePageSchema = z.object({
@@ -166,12 +194,18 @@ export const CreatePageSchema = z.object({
    * Labels to apply at creation (#1133). Carried here rather than applied by a
    * follow-up `PUT /pages/:id/labels` because the id this route returns is
    * ambiguous: for a Confluence create it is the *Confluence content id*, which
-   * is numeric, and the labels route reads a numeric id as a database primary
-   * key — so the follow-up would silently label a different page.
+   * may be numeric, and the labels route treats an in-range numeric id as a
+   * database primary key — so the follow-up could silently label a different page.
    *
    * Bounds mirror the Markdown-import route the front-matter comes from.
    */
   labels: z.array(z.string().min(1).max(100)).max(50).optional(),
+  /**
+   * Explicit article AI policy at creation (#280). Stored in the same
+   * transaction as the row; never looser than what `labels` spell out.
+   * `no_ai` is accepted as an input alias of `none`.
+   */
+  aiPolicy: AiPolicyInputSchema.optional(),
 });
 
 export const UpdatePageSchema = z.object({
@@ -179,7 +213,24 @@ export const UpdatePageSchema = z.object({
   bodyHtml: z.string(),
   version: z.number().int().positive().optional(),
   visibility: PageVisibilityEnum.optional(),
+  /**
+   * Explicit article AI policy change applied in the same transaction as the
+   * content write (#280). Requires policy authority. `expectedRevision` is the
+   * frozen compare-and-set key shared with `PUT /pages/:id/ai-policy`
+   * (`aiPolicyRevision` from the page detail) and is REQUIRED whenever
+   * `aiPolicy` is sent — a stale value is 409 `ai_policy_conflict`. Sending
+   * one without the other is refused BY THE ROUTE as a 422
+   * `ai_policy_revision_required` (not a schema-shape 400), so the pairing
+   * is not enforced here; `isAiPolicyUpdatePaired` is the shared predicate.
+   */
+  aiPolicy: AiPolicyInputSchema.optional(),
+  expectedRevision: z.number().int().nonnegative().optional(),
 });
+
+/** True when `aiPolicy` and `expectedRevision` are both present or both absent. */
+export function isAiPolicyUpdatePaired(value: { aiPolicy?: unknown; expectedRevision?: unknown }): boolean {
+  return (value.aiPolicy === undefined) === (value.expectedRevision === undefined);
+}
 
 /**
  * Body for POST /api/pages/:id/versions/:version/restore.
@@ -216,6 +267,13 @@ export const SearchHybridQuerySchema = z.object({
   mode: SearchModeEnum.default('keyword'),
   spaceKey: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(20).default(10),
+  /**
+   * #283 Library AI-policy filter. Absent = all articles (no filter). This
+   * narrows WHICH readable pages come back; it never changes whether a
+   * `none`/`local_only` page is readable or lexically findable — an
+   * unfiltered search still returns them.
+   */
+  aiPolicy: AiPolicyFilterSchema.optional(),
 });
 export type SearchHybridQuery = z.infer<typeof SearchHybridQuerySchema>;
 
@@ -231,6 +289,30 @@ export const SearchResultItemSchema = z.object({
 });
 export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
 
+/**
+ * PostgreSQL-safe calendar dates or qualified timestamps, kept as raw strings.
+ * Match microsecond precision and offset/year limits without changing bounds
+ * or cache identity; a date-only upper bound remains session-local midnight.
+ */
+export const PageDateFilterSchema = z.union([
+  z.string().date(),
+  z.string().datetime({ offset: true })
+    .regex(
+      /(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/,
+      'UTC offset must be between -15:59 and +15:59',
+    )
+    .refine(
+      (value) => !/\.\d{7}/.test(value),
+      'Use at most 6 fractional-second digits',
+    ),
+]).refine(
+  (value) => !value.startsWith('0000-'),
+  'Year must be between 0001 and 9999',
+).refine(
+  (value) => !/\s/.test(value),
+  'Date filters must not contain whitespace',
+);
+
 export const PageListQuerySchema = z.object({
   spaceKey: z.string().optional(),
   search: z.string().optional(),
@@ -240,11 +322,13 @@ export const PageListQuerySchema = z.object({
   embeddingStatus: z.enum(['pending', 'done']).optional(),
   qualityMin: z.coerce.number().int().min(0).max(100).optional(),
   qualityMax: z.coerce.number().int().min(0).max(100).optional(),
-  qualityStatus: z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']).optional(),
+  qualityStatus: PageQualityStatusEnum.optional(),
   source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional(),
-  dateFrom: z.string().optional(), // ISO date string
-  dateTo: z.string().optional(),   // ISO date string
+  /** #283 — see SearchHybridQuerySchema.aiPolicy. Absent means no filter. */
+  aiPolicy: AiPolicyFilterSchema.optional(),
+  dateFrom: PageDateFilterSchema.optional(),
+  dateTo: PageDateFilterSchema.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   sort: z.enum(['title', 'modified', 'author', 'quality', 'relevance']).default('title'),
@@ -294,6 +378,8 @@ export const TrashItemSchema = z.object({
   title: z.string(),
   source: PageSourceEnum,
   visibility: PageVisibilityEnum,
+  spaceKey: z.string().nullable(),
+  spaceMissing: z.boolean(),
   deletedAt: z.string(),
   createdAt: z.string(),
   deletedBy: z.string(),
@@ -307,6 +393,12 @@ export const TrashListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 export type TrashListResponse = z.infer<typeof TrashListResponseSchema>;
+
+/** Optional caller-chosen destination when a trashed page's stored space is gone. */
+export const RestorePageBodySchema = z.object({
+  targetSpaceKey: z.string().min(1).optional(),
+});
+export type RestorePageBody = z.infer<typeof RestorePageBodySchema>;
 
 // -- Relocate between a local space and Confluence (Issue #1123) --
 
@@ -494,7 +586,7 @@ export const AdminDuplicatesQuerySchema = z.object({
 });
 
 export const BatchExportBodySchema = z.object({
-  pageIds: z.array(z.coerce.number().int().positive()).min(1).max(50),
+  pageIds: z.array(PagePrimaryKeySchema).min(1).max(50),
 });
 
 export type DuplicatesQuery = z.infer<typeof DuplicatesQuerySchema>;

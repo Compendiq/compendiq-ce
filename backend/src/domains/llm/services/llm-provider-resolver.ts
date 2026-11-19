@@ -1,7 +1,7 @@
 import { query } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
-import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
-import { getProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
+import { invalidateAllProviderResources, invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
+import { getProviderCacheVersion, onProviderCacheBump, onProviderCacheReconnect, onProviderDeleted } from './cache-bus.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { logger } from '../../../core/utils/logger.js';
 import type {
@@ -21,6 +21,7 @@ interface ResolveRow {
   provider_verify_ssl: boolean;
   provider_default_model: string | null;
   provider_is_default: boolean;
+  provider_config_revision: number | string;
 }
 
 interface Resolved {
@@ -42,6 +43,9 @@ onProviderCacheBump(() => {
   }
   configCache.clear();
 });
+
+// A missed deletion can concern a provider tested without ever resolving it.
+onProviderCacheReconnect(() => invalidateAllProviderResources());
 
 // Issue #267 — Definitive per-id cleanup on provider deletion. Runs even if
 // the resolver's configCache doesn't have an entry for `id` (e.g. a provider
@@ -67,10 +71,17 @@ function loadProviderFromRow(
 ): ProviderConfig & { id: string; name: string; defaultModel: string | null } {
   const cacheKey = row.provider_id;
   let cached = configCache.get(cacheKey);
-  if (!cached || cached.version !== getProviderCacheVersion()) {
+  const revision = Number(row.provider_config_revision);
+  if (!cached || cached.version !== getProviderCacheVersion()
+    || cached.cfg.configRevision !== revision) {
+    if (cached) {
+      invalidateDispatcher(cacheKey);
+      invalidateBreaker(cacheKey);
+    }
     cached = {
       version: getProviderCacheVersion(),
       cfg: {
+        configRevision: revision,
         providerId: row.provider_id,
         id: row.provider_id,
         name: row.provider_name,
@@ -84,6 +95,17 @@ function loadProviderFromRow(
     configCache.set(cacheKey, cached);
   }
   return cached.cfg;
+}
+
+// A SELECT may have observed an old snapshot before a bump/reconnect. Never
+// populate the cache, or decide an assignment is missing, from that snapshot
+// after the generation has changed.
+async function queryProviderRows(sql: string, params: unknown[]) {
+  for (;;) {
+    const version = getProviderCacheVersion();
+    const result = await query<ResolveRow>(sql, params);
+    if (version === getProviderCacheVersion()) return result;
+  }
 }
 
 /**
@@ -107,7 +129,7 @@ export class ProviderNotFoundError extends Error {
 export async function loadProviderConfig(
   providerId: string,
 ): Promise<ProviderConfig & { id: string; name: string; defaultModel: string | null }> {
-  const { rows } = await query<ResolveRow>(
+  const { rows } = await queryProviderRows(
     `SELECT
        NULL::uuid AS usecase_provider_id,
        NULL::text AS usecase_model,
@@ -118,6 +140,7 @@ export async function loadProviderConfig(
        auth_type     AS provider_auth_type,
        verify_ssl    AS provider_verify_ssl,
        default_model AS provider_default_model,
+       config_revision AS provider_config_revision,
        is_default    AS provider_is_default
      FROM llm_providers WHERE id = $1`,
     [providerId],
@@ -183,7 +206,7 @@ export async function resolveInlineCompletionUsecase(): Promise<Resolved | null>
 async function resolveExplicitOnlyUsecase(
   usecase: 'rerank' | 'inline_completion' | 'image_analysis',
 ): Promise<Resolved | null> {
-  const rows = await query<ResolveRow>(
+  const rows = await queryProviderRows(
     `SELECT
        a.provider_id  AS usecase_provider_id,
        a.model        AS usecase_model,
@@ -194,6 +217,7 @@ async function resolveExplicitOnlyUsecase(
        p.auth_type    AS provider_auth_type,
        p.verify_ssl   AS provider_verify_ssl,
        p.default_model AS provider_default_model,
+       p.config_revision AS provider_config_revision,
        p.is_default   AS provider_is_default
      FROM llm_usecase_assignments a
      JOIN llm_providers p ON p.id = a.provider_id
@@ -206,6 +230,71 @@ async function resolveExplicitOnlyUsecase(
   const model = row.usecase_model || cfg.defaultModel || '';
   if (!model) return null;
   return { config: cfg, model };
+}
+
+export type ArticleModelSelection = { kind: 'assigned' } | { kind: 'explicit'; model: string };
+
+/** Authoritative dispatch resolution, on the admission transaction only.
+ * SHARE table locks fence inserts/deletes as well as updates (including an
+ * absent assignment/default), and conflict with native SQL writers without
+ * requiring every writer to opt into a process-local or advisory convention.
+ * Acquire before page/provider row locks. Never perform HTTP under this fence.
+ */
+export async function resolveArticleUsecaseOnClient(
+  client: import('pg').PoolClient,
+  usecase: LlmUsecase,
+  selection: ArticleModelSelection = { kind: 'assigned' },
+): Promise<Resolved | null> {
+  await client.query('LOCK TABLE llm_usecase_assignments, llm_providers IN SHARE MODE');
+  const explicitOnly = ['rerank', 'inline_completion', 'image_analysis'].includes(usecase);
+  const assignments = await client.query<{ usecase: string; provider_id: string | null; model: string | null }>(
+    'SELECT usecase, provider_id, model FROM llm_usecase_assignments',
+  );
+  const assignment = assignments.rows.find((row) => row.usecase === usecase);
+  if (explicitOnly && !assignment?.provider_id) return null;
+
+  const plugin = getEnterprisePlugin();
+  // A legacy hook cannot certify current override state on this transaction.
+  // Do not silently bypass an installed enterprise policy when its held-client
+  // contract has not been deployed yet.
+  const usesOverride = usecase !== 'rerank' && usecase !== 'image_analysis';
+  if (usesOverride && plugin.version !== 'community' && plugin.resolveUsecaseOverride && !plugin.resolveUsecaseOverrideOnClient) {
+    throw new Error('Authoritative enterprise provider resolution unavailable');
+  }
+  const override = usecase === 'rerank' || usecase === 'image_analysis' ? null
+    : await plugin.resolveUsecaseOverrideOnClient?.(client, usecase);
+  const providerId = override?.providerId ?? assignment?.provider_id;
+  const result = await client.query<ResolveRow>(
+    `SELECT id AS provider_id, name AS provider_name, base_url AS provider_base_url,
+       api_key AS provider_api_key, auth_type AS provider_auth_type,
+       verify_ssl AS provider_verify_ssl, default_model AS provider_default_model,
+       config_revision AS provider_config_revision, is_default AS provider_is_default
+     FROM llm_providers WHERE ${providerId ? 'id = $1' : 'is_default = TRUE'}`,
+    providerId ? [providerId] : [],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const assignedModel = override?.model ?? assignment?.model ?? row.provider_default_model ?? '';
+  let model = assignedModel;
+  if (selection.kind === 'explicit') {
+    // Text routes already permit an explicit model on their resolved provider.
+    // Assignments are defaults, not a model allow-list. Preserve that contract
+    // while keeping EE overrides binding and vector/vision stages assignment-only.
+    // The provider endpoint and configuration are still checked at dispatch.
+    const textUses = ['chat', 'summary', 'quality', 'auto_tag'];
+    if (!selection.model || (override || !textUses.includes(usecase)) && selection.model !== assignedModel) {
+      throw new Error('Article model selection is not authorized');
+    }
+    model = selection.model;
+  }
+  if (!model) return null;
+  // No process cache and no decryption fallback at the authorization boundary.
+  return { model, config: {
+    providerId: row.provider_id, id: row.provider_id, name: row.provider_name,
+    baseUrl: row.provider_base_url, apiKey: row.provider_api_key === null ? null : decryptPat(row.provider_api_key),
+    authType: row.provider_auth_type, verifySsl: row.provider_verify_ssl,
+    configRevision: Number(row.provider_config_revision), defaultModel: row.provider_default_model,
+  } };
 }
 
 export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
@@ -235,7 +324,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   // policy's (providerId, model). CE noop always returns null.
   const override = await getEnterprisePlugin().resolveUsecaseOverride?.(usecase);
   if (override) {
-    const overrideRows = await query<ResolveRow>(
+    const overrideRows = await queryProviderRows(
       `SELECT
          NULL::uuid AS usecase_provider_id,
          NULL::text AS usecase_model,
@@ -246,7 +335,8 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
          auth_type     AS provider_auth_type,
          verify_ssl    AS provider_verify_ssl,
          default_model AS provider_default_model,
-         is_default    AS provider_is_default
+         config_revision AS provider_config_revision,
+       is_default    AS provider_is_default
        FROM llm_providers WHERE id = $1`,
       [override.providerId],
     );
@@ -291,11 +381,12 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
       t.auth_type   AS provider_auth_type,
       t.verify_ssl  AS provider_verify_ssl,
       t.default_model AS provider_default_model,
+      t.config_revision AS provider_config_revision,
       t.is_default  AS provider_is_default
     FROM target t
     LEFT JOIN assignment a ON TRUE
   `;
-  const r = await query<ResolveRow>(sql, [usecase]);
+  const r = await queryProviderRows(sql, [usecase]);
   const row = r.rows[0];
   if (!row) throw new NoProviderConfiguredError('No default provider configured — set one in Settings → AI Models.');
 

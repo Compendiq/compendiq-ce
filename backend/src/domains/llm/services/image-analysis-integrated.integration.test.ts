@@ -332,7 +332,7 @@ describe.skipIf(!dbAvailable)('image analysis, integrated with #1615 (issue #161
     await retainResolvedIdentity();
     const body = '<p>The deployment runbook lives here and is long enough to embed on its own.</p>'
       + '<img src="/api/attachments/1/dash.png">';
-    const pageId = await seedPage(body, 'The deployment runbook lives here and is long enough to embed on its own.');
+    const pageId = await seedPage(body, 'The deployment runbook lives here and is long enough to embed on its own.', 'Runbook');
     await writeAttachment(pageId, 'dash.png', png(33));
 
     const batch = await runImageAnalysisBatch();

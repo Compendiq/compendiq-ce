@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type * as Undici from 'undici';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 const mockUndiciRequest = vi.hoisted(() => vi.fn());
 vi.mock('undici', async (importOriginal) => ({
@@ -25,11 +26,17 @@ import {
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import {
+  activeEmbeddingHolders,
   buildKnowledgeTestApp,
+  holdOtherEmbeddingLease,
+  expectNoEmbeddingLeaseLeak,
+  holdEmbeddingLease,
+  releaseEmbeddingLeases,
   insertConfluencePage,
   insertLocalSpace,
   insertStandalonePage,
   insertUser,
+  OTHER_EMBEDDING_HOLDER,
 } from './pages.test-helpers.js';
 
 const available = await isDbAvailable() && await isRedisAvailable();
@@ -129,7 +136,15 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
       // known route module until the suite's filesystem sandbox exists.
       const { pagesCrudRoutes } = await import('./pages-crud.js');
       await instance.register(pagesCrudRoutes, { prefix: '/api' });
+      const { attachmentRoutes } = await import('../confluence/attachments.js');
+      await instance.register(attachmentRoutes, { prefix: '/api' });
     });
+  });
+
+  // Declared first on purpose: afterAll hooks run last-declared first, so this
+  // runs after the teardown below and a failure here cannot skip that teardown.
+  afterAll(async () => {
+    await expectNoEmbeddingLeaseLeak();
   });
 
   afterAll(async () => {
@@ -302,6 +317,115 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['bulk-sync', 'flow.drawio'], ['bulk-sync', 'flow.xml'], ['bulk-sync', 'flow'],
+    ['page-put', 'flow.drawio'], ['page-put', 'flow.xml'], ['page-put', 'flow'],
+    ['page-put', 'flow.xml', 'png', false], ['page-put', 'flow.xml', 'png', true],
+    ['page-put', 'flow.xml', 'invalid', false], ['page-put', 'flow.xml', 'invalid', true],
+  ] as const)(
+    'keeps cold-cache draw.io XML reachable after %s publication from %s',
+    async (publication, sourceTitle, preferredPayload?: 'png' | 'invalid', streaming = false) => {
+      const confluenceId = `cold-${publication}-${sourceTitle.replace('.', '-')}-${preferredPayload ?? 'only'}-${streaming}`;
+      const pageId = await seedConfluencePage(confluenceId, 'Source-only diagram');
+      const storage = '<p>Keep prose</p><ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro>';
+      const xml = '<mxfile><diagram id="flow"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+      const { STREAM_THRESHOLD_BYTES } = await import('../../domains/confluence/services/attachment-handler.js');
+      const requests: string[] = [];
+      let version = 1;
+      const server = createServer(async (request, response) => {
+        const path = new URL(request.url!, 'http://localhost').pathname;
+        requests.push(`${request.method} ${path}`);
+        if (path === '/download/flow.drawio') {
+          response.setHeader('content-type', 'application/xml');
+          response.end(xml);
+          return;
+        }
+        if (path === '/download/preferred') {
+          response.end(preferredPayload === 'png' ? png : Buffer.from('unrelated bytes'));
+          return;
+        }
+        response.setHeader('content-type', 'application/json');
+        if (path.endsWith('/child/attachment')) {
+          const extensions = streaming ? { fileSize: STREAM_THRESHOLD_BYTES + 1 } : undefined;
+          response.end(JSON.stringify({ results: [
+            ...(preferredPayload ? [{
+              id: 'preferred', title: 'flow.drawio', version: { number: 1 },
+              _links: { download: '/download/preferred' }, extensions,
+            }] : []),
+            {
+              id: 'source', title: sourceTitle, version: { number: 1 },
+              _links: { download: '/download/flow.drawio' }, extensions,
+            },
+          ] }));
+          return;
+        }
+        if (path === `/rest/api/content/${confluenceId}`) {
+          if (request.method === 'PUT') {
+            const chunks: Buffer[] = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const body = JSON.parse(Buffer.concat(chunks).toString()) as { version: { number: number } };
+            version = body.version.number;
+          }
+          response.end(JSON.stringify({
+            id: confluenceId, title: 'Source-only diagram', type: 'page', status: 'current',
+            version: { number: version }, body: { storage: { value: storage } },
+            ancestors: [], metadata: { labels: { results: [] } },
+          }));
+          return;
+        }
+        response.statusCode = 404;
+        response.end('{}');
+      });
+      const listening = Promise.withResolvers<void>();
+      server.once('error', listening.reject);
+      server.listen(0, '127.0.0.1', listening.resolve);
+      await listening.promise;
+      try {
+        const address = server.address() as { port: number };
+        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1',
+          [actorId, `http://127.0.0.1:${address.port}`]);
+        const undici = await vi.importActual<typeof Undici>('undici');
+        mockUndiciRequest.mockImplementation(undici.request);
+        const sourcePath = join(attachmentsDir, confluenceId, 'flow.drawio');
+        await expect(access(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+        const response = publication === 'bulk-sync'
+          ? await app.inject({ method: 'POST', url: '/api/pages/bulk/sync', payload: { ids: [confluenceId] } })
+          : await app.inject({
+            method: 'PUT', url: `/api/pages/${pageId}`,
+            payload: {
+              title: 'Source-only diagram', version: 1,
+              bodyHtml: `<p>Keep prose</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/attachments/${confluenceId}/flow.drawio"><span>Draw.io preview unavailable: flow</span></div>`,
+            },
+          });
+        expect(response.statusCode, response.body).toBe(200);
+        if (publication === 'bulk-sync') expect(response.json()).toMatchObject({ succeeded: 1, failed: 0 });
+        const html = (await rowForPage(pageId))!.body_html;
+        expect(html).toContain(`data-drawio-source="/api/attachments/${confluenceId}/flow.drawio"`);
+        expect(html).toContain('Draw.io preview unavailable: flow');
+        expect(html).not.toContain('<img');
+        // Page-only publication must not silently fetch or claim cached bytes.
+        await expect(access(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(requests.some((request) => request.includes('/download/'))).toBe(false);
+        const source = await app.inject({ method: 'GET', url: `/api/attachments/${confluenceId}/flow.drawio` });
+        expect(source.statusCode, source.body).toBe(200);
+        expect(source.body).toBe(xml);
+        expect(requests).toContain('GET /download/flow.drawio');
+        if (preferredPayload) {
+          expect(requests).toContain('GET /download/preferred');
+          const pngPath = join(attachmentsDir, confluenceId, 'flow.png');
+          if (preferredPayload === 'png') expect(await readFile(pngPath)).toEqual(png);
+          else await expect(access(pngPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        }
+      } finally {
+        server.closeAllConnections();
+        const closed = Promise.withResolvers<void>();
+        server.close((error) => error ? closed.reject(error) : closed.resolve());
+        await closed.promise;
+      }
+    },
+  );
+
   it('re-syncs authorized rows independently and persists the successful remote representation', async () => {
     const goodId = await seedConfluencePage('sync-good', 'Old good');
     const badId = await seedConfluencePage('sync-bad', 'Old bad');
@@ -436,8 +560,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     // The route must still enqueue through the real embedding service. Hold an
     // unrelated production lease so that global scanner backs off immediately
     // after the route mutation, without replacing the worker with a test fake.
-    await redis.set('embedding:lock:other-bulk-test-user', 'other-runtime', { EX: 60 });
-    await redis.sAdd('embedding:locks:active', 'other-bulk-test-user');
+    await holdEmbeddingLease(redis, 'other-bulk-test-user');
 
     const embed = await app.inject({
       method: 'POST',
@@ -451,6 +574,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
 
     // Keep the actual worker from racing the route-level mutation assertion.
     // Its distributed lease is the production exclusion mechanism, not a mock.
+    onTestFinished(async () => { await redis.del('worker:lock:quality-worker'); });
     await redis.set('worker:lock:quality-worker', 'another-runtime', { EX: 60 });
     const quality = await app.inject({
       method: 'POST',
@@ -488,6 +612,146 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     ]);
   });
 
+  it('queues both sources of a mixed re-embed selection by primary key and reports a missing id as failed', async () => {
+    const synced = await seedConfluencePage('embed-synced', 'Synced');
+    const native = await insertStandalonePage('Native', 'private', actorId, 'LOCAL');
+    const unselected = await insertStandalonePage('Unselected', 'private', actorId, 'LOCAL');
+    await holdOtherEmbeddingLease(redis);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: { ids: ['embed-synced', String(native), 'missing-page'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      succeeded: 2,
+      failed: 1,
+      errors: ['Page missing-page not found'],
+    });
+    expect((await rowForPage(synced))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(native))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(unselected))?.embedding_dirty).toBe(false);
+    await expect
+      .poll(() => activeEmbeddingHolders(redis), { timeout: 5_000 })
+      .toEqual([OTHER_EMBEDDING_HOLDER]);
+  });
+
+  it('queues every page a filter-mode re-embed resolves, standalone pages included', async () => {
+    const first = await insertStandalonePage('First', 'private', actorId, 'LOCAL');
+    const second = await insertStandalonePage('Second', 'shared', actorId, 'LOCAL');
+    const hidden = await insertStandalonePage('Hidden', 'private', otherUserId, 'LOCAL');
+    await holdOtherEmbeddingLease(redis);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: {
+        filter: { spaceKey: 'LOCAL', source: 'standalone' },
+        expectedCount: 2,
+        driftToleranceFraction: 0,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ succeeded: 2, failed: 0, errors: [] });
+    expect((await rowForPage(first))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(second))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(hidden))?.embedding_dirty).toBe(false);
+    await expect
+      .poll(() => activeEmbeddingHolders(redis), { timeout: 5_000 })
+      .toEqual([OTHER_EMBEDDING_HOLDER]);
+  });
+
+  it('counts policy-blocked, folder and bodiless pages as queued for embedding, not as embedded', async () => {
+    const blocked = await insertStandalonePage('Blocked', 'private', actorId, 'LOCAL');
+    const folder = await insertStandalonePage('Folder', 'private', actorId, 'LOCAL');
+    const bodiless = await insertStandalonePage('Bodiless', 'private', actorId, 'LOCAL');
+    // `none`, not `all`: with an embedding provider configured, worker
+    // recovery would un-park an `all` row and embed it; a `none` row stays
+    // parked either way.
+    await query(
+      `UPDATE pages
+          SET ai_policy = 'none', ai_policy_block_reason = 'policy_none',
+              embedding_status = 'policy_blocked'
+        WHERE id = $1`,
+      [blocked],
+    );
+    await query("UPDATE pages SET page_type = 'folder' WHERE id = $1", [folder]);
+    await query('UPDATE pages SET body_html = NULL WHERE id = $1', [bodiless]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: { ids: [blocked, folder, bodiless].map(String) },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // `succeeded` means marked dirty (queued), not embedded.
+    expect(response.json()).toEqual({ succeeded: 3, failed: 0, errors: [] });
+    // No lease is held, so the real worker runs to completion: it finds none
+    // of the three eligible and leaves them queued exactly as marked.
+    await expect
+      .poll(
+        async () =>
+          (await redis.exists('embedding:last_run_at')) === 1 &&
+          (await redis.exists(`embedding:lock:${actorId}`)) === 0,
+        { timeout: 5_000 },
+      )
+      .toBe(true);
+    const rows = await query<{ id: number; embedding_dirty: boolean; embedding_status: string }>(
+      `SELECT id, embedding_dirty, embedding_status
+         FROM pages WHERE id = ANY($1::int[]) ORDER BY id`,
+      [[blocked, folder, bodiless]],
+    );
+    expect(rows.rows).toEqual([
+      { id: blocked, embedding_dirty: true, embedding_status: 'policy_blocked' },
+      { id: folder, embedding_dirty: true, embedding_status: 'not_embedded' },
+      { id: bodiless, embedding_dirty: true, embedding_status: 'not_embedded' },
+    ]);
+    const embedded = await query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM page_embeddings WHERE page_id = ANY($1::int[])',
+      [[blocked, folder, bodiless]],
+    );
+    expect(embedded.rows[0]!.count).toBe('0');
+  });
+
+  it.each([
+    {
+      guard: 'the caller already has an embedding run',
+      arrange: async () => {
+        onTestFinished(() => releaseEmbeddingLeases(redis, [actorId]));
+        await redis.set(`embedding:lock:${actorId}`, 'running', { EX: 60 });
+      },
+      error: 'Embedding processing is already in progress for this user',
+    },
+    {
+      guard: 'a swapped shadow migration awaits validation',
+      arrange: async () => {
+        // SHADOW_MIGRATION_STATE_KEY; a renamed key fails this case loudly (200).
+        await query(
+          'INSERT INTO admin_settings (setting_key, setting_value) VALUES ($1, $2)',
+          ['embedding_shadow_migration', JSON.stringify({ status: 'swapped' })],
+        );
+      },
+      error: 'A shadow embedding migration has swapped',
+    },
+  ])('refuses re-embed with 409 before marking anything when $guard', async ({ arrange, error }) => {
+    const native = await insertStandalonePage('Guarded', 'private', actorId, 'LOCAL');
+    await arrange();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: { ids: [String(native)] },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toContain(error);
+    expect((await rowForPage(native))?.embedding_dirty).toBe(false);
+  });
+
   it('applies additive and replacement label semantics to real rows and records one audit event per request', async () => {
     const standalone = await insertStandalonePage('Labels', 'private', actorId, 'LOCAL');
     await query('UPDATE pages SET labels = ARRAY[$2, $3] WHERE id = $1', [standalone, 'old', 'keep']);
@@ -499,7 +763,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(additive.statusCode).toBe(200);
     expect(additive.json()).toMatchObject({ succeeded: 1, failed: 0 });
-    expect((await rowForPage(standalone))?.labels).toEqual(['keep', 'new']);
+    expect((await rowForPage(standalone))?.labels).toEqual(['keep', 'new', 'all-ai']);
 
     const replacement = await app.inject({
       method: 'POST',
@@ -508,7 +772,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(replacement.statusCode).toBe(200);
     expect(replacement.json()).toMatchObject({ succeeded: 1, failed: 0, cancelled: false });
-    expect((await rowForPage(standalone))?.labels).toEqual(['alpha', 'beta']);
+    expect((await rowForPage(standalone))?.labels).toEqual(['alpha', 'beta', 'all-ai']);
     expect(await auditMetadata('BULK_PAGE_TAGGED')).toHaveLength(1);
     expect(await auditMetadata('BULK_PAGE_TAGS_REPLACED')).toHaveLength(1);
   });
@@ -532,7 +796,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ succeeded: 1, failed: 1 });
     expect(response.json().errors[0]).toContain('labels rejected upstream');
-    expect((await rowForPage(goodId))?.labels).toEqual(['old', 'new']);
+    expect((await rowForPage(goodId))?.labels).toEqual(['old', 'new', 'all-ai']);
     expect((await rowForPage(badId))?.labels).toEqual(['old']);
     const pending = await query<{ page_ids: number[] }>(
       'SELECT page_ids FROM page_write_intents WHERE settled_at IS NULL',
@@ -557,8 +821,8 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(applied.statusCode).toBe(200);
     expect(applied.json()).toMatchObject({ succeeded: 2, failed: 0 });
-    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered']);
-    expect((await rowForPage(matchingB))?.labels).toEqual(['filtered']);
+    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered', 'all-ai']);
+    expect((await rowForPage(matchingB))?.labels).toEqual(['filtered', 'all-ai']);
     expect((await rowForPage(hidden))?.labels).toEqual([]);
 
     const drift = await app.inject({
@@ -573,7 +837,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(drift.statusCode).toBe(409);
     expect(drift.json()).toMatchObject({ error: 'CountDrift', expected: 20, actual: 2 });
-    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered']);
+    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered', 'all-ai']);
   });
 
   it('does not expose or mutate a Confluence page outside the caller space assignment', async () => {

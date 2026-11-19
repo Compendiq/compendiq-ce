@@ -259,7 +259,7 @@ describe.skipIf(!dbAvailable)('GET /api/admin/embedding/image-analysis', () => {
     expect(res.statusCode).toBe(200);
     const body = ImageAnalysisStatusSchema.parse(res.json());
 
-    expect(body.rows).toEqual({ analyzed: 1, stale: 1, pending: 1, failed: 1, terminal: 1, skipped: 3 });
+    expect(body.rows).toEqual({ analyzed: 1, stale: 1, pending: 1, failed: 1, terminal: 1, skipped: 3, policyBlocked: 0 });
     expect(body.skipReasons).toEqual({
       missing: 1,
       unsupported: 1,

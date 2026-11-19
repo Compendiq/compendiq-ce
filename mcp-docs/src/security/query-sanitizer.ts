@@ -10,8 +10,11 @@ export class QuerySanitizationError extends Error {
   }
 }
 
-const MAX_QUERY_LENGTH = 200;
-const MAX_WORD_COUNT = 30;
+// Mirrored by WEB_SEARCH_QUERY_MAX_CHARS / WEB_SEARCH_QUERY_MAX_WORDS in
+// @compendiq/contracts (which this package cannot import); both sides are
+// pinned by literal tests — never widen one side alone (#1767).
+export const MAX_QUERY_LENGTH = 200;
+export const MAX_WORD_COUNT = 30;
 
 export function sanitizeSearchQuery(query: string): string {
   let clean = query

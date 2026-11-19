@@ -93,3 +93,31 @@ describe('backend image provisions ATTACHMENTS_DIR for the node user', () => {
     expect(dockerfileEnterprise).toMatch(/mkdir -p \/app\/data\/attachments/);
   });
 });
+
+describe('backend images ship the PDF export fonts (#1729)', () => {
+  // pdf-fonts.ts reads dist/core/services/fonts; tsc emits no assets, so the backend build copies
+  // them. Every image that copies a built backend dist then has them — no Dockerfile COPY to forget.
+  const backendPackage: { scripts: { build: string } } = JSON.parse(readFileSync(join(backendDir, 'package.json'), 'utf8'));
+
+  it('copies the vendored fonts into dist when the backend builds', () => {
+    expect(backendPackage.scripts.build).toMatch(
+      /^tsc -p tsconfig\.build\.json && .*cpSync\('src\/core\/services\/fonts','dist\/core\/services\/fonts',\{recursive:true\}\)/,
+    );
+  });
+
+  it('builds the CE backend with that script and ships its whole dist', () => {
+    const builder = dockerfile.slice(0, dockerfile.indexOf('AS prod-deps'));
+    expect(builder.indexOf('COPY backend/src/ backend/src/')).toBeLessThan(builder.indexOf('RUN npm run build -w backend'));
+    expect(runtimeStage(dockerfile)).toMatch(/COPY [^\n]*--from=builder \/app\/backend\/dist\/ dist\//);
+  });
+
+  it('builds the enterprise backend with that script and ships a dist', () => {
+    // Loose on purpose: the private overlay replaces this file in EE builds and may spell it differently.
+    expect(dockerfileEnterprise).toMatch(/RUN npm run build -w backend/);
+    expect(runtimeStage(dockerfileEnterprise)).toMatch(/COPY [^\n]*dist\/ (\/app\/)?dist\//);
+  });
+
+  it('renders a CJK and Hangul PDF in the image smoke test, which reads every font file', () => {
+    expect(smokeStep(dockerBuildWorkflow)).toMatch(/generatePdf\('<p>Установка 手順 한국어<\/p>'/);
+  });
+});

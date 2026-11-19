@@ -22,6 +22,7 @@ import {
 } from '../../core/services/page-baseline-service.js';
 import { MAX_LOCAL_ATTACHMENT_BYTES } from '../../core/services/local-attachment-service.js';
 import { REAL_PNG_40x30_BASE64 } from '../../core/services/test-image-fixtures.js';
+import { htmlToYDoc, yDocToHtml } from '../../core/services/collab-schema.js';
 import {
   buildKnowledgeTestApp,
   insertConfluencePage,
@@ -137,6 +138,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         // so the known route import must remain after the isolated path is set.
         const { localAttachmentsRoutes } = await import('./local-attachments.js');
         await instance.register(localAttachmentsRoutes, { prefix: '/api' });
+        const { pagesCrudRoutes } = await import('./pages-crud.js');
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
       });
     });
 
@@ -155,6 +158,34 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       await rm(attachmentsDir, { recursive: true, force: true });
       await mkdir(attachmentsDir, { recursive: true });
       userId = await insertUser(`local-attachment-${randomUUID()}`);
+    });
+
+    it.each([true, false])('promotes a source-only diagram only for a valid saved PNG (%s)', async (valid) => {
+      const pageId = await seedPage();
+      const source = `/api/local-attachments/${pageId}/flow.drawio`;
+      const doc = htmlToYDoc(`<p>Local edits stay</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${source}"><span>Draw.io preview unavailable: flow</span></div><p>After</p>`);
+      const html = yDocToHtml(doc);
+      doc.destroy();
+      expect(html).toContain('class="drawio-preview-unavailable"');
+      await seedLegacyAttachment(pageId, 'flow.drawio', 'application/xml', Buffer.from('<mxfile/>'));
+      await query('UPDATE pages SET body_html = $2, body_text = $2 WHERE id = $1', [pageId, html]);
+      const put = await upload(pageId, 'flow.png', valid ? PNG_DATA_URI : `data:image/png;base64,${Buffer.from('<mxfile/>').toString('base64')}`, '<mxfile><diagram>saved</diagram></mxfile>');
+      expect(put.statusCode, put.body).toBe(200);
+      const reloaded = await app.inject({ method: 'GET', url: `/api/pages/${pageId}` });
+      expect(reloaded.statusCode, reloaded.body).toBe(200);
+      const persisted = (await query<{ body_html: string; body_text: string }>('SELECT body_html, body_text FROM pages WHERE id = $1', [pageId])).rows[0]!;
+      expect(reloaded.json().bodyHtml).toBe(persisted.body_html);
+      expect(persisted.body_html).toContain('Local edits stay');
+      expect(persisted.body_html).toContain('After');
+      expect(persisted.body_html).toContain(`data-drawio-source="${source}"`);
+      if (valid) {
+        expect(persisted.body_html).toContain(`src="/api/local-attachments/${pageId}/flow.png"`);
+        expect(persisted.body_html).not.toContain('preview unavailable');
+        expect(persisted.body_text).not.toContain('preview unavailable');
+      } else {
+        expect(persisted.body_html).toBe(html);
+        expect(persisted.body_html).not.toContain('<img');
+      }
     });
 
     it('writes, reads and lists a genuine PNG through the public routes', async () => {

@@ -20,9 +20,9 @@ import {
 } from '../article/ArticleRightPane';
 import { AiProvider } from '../../../features/ai/AiContext';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
-import { Logo } from '../Logo';
+import { LogoMark, LogoWordmark } from '../Logo';
 import { HeaderSessionCluster } from './HeaderSessionCluster';
-import { MainNavChassisRail, MainNavHeaderTabs } from './MainNavStrip';
+import { MainNavChassisRail } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
 import { useIsInspectorWideLayout, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
@@ -325,7 +325,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setMobileContextOpen(false);
   }, [location.pathname]);
 
-  useOverlayFocusTrap(mobileSidebarOpen, mobileSidebarRef, closeMobileSidebar);
+  // A drawer hidden by the md breakpoint must not keep its old open state.
+  useEffect(() => {
+    if (!isMobileLayout) setMobileSidebarOpen(false);
+  }, [isMobileLayout]);
+
+  useOverlayFocusTrap(isMobileLayout && mobileSidebarOpen, mobileSidebarRef, closeMobileSidebar);
   useOverlayFocusTrap(
     isArticleRoute && isMobileLayout && mobileContextOpen,
     mobileContextRef,
@@ -355,10 +360,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
     // the page that started it. It is inert until an AI surface mounts and
     // registers as a consumer — see `retainAi` in AiContext.
     <AiProvider>
-    {/* Chassis is the viewport ground. The rounded shell sits inset on the
-        end and bottom on desktop; the destination rail is flush to the start
-        edge. Edge-to-edge below `md`. Do not swap `app-chassis` for a `bg-*`
-        utility: the inset padding is part of the same contract. */}
+    {/* Chassis is the viewport ground. The rounded workspace card sits inset on
+        the end and bottom on desktop; the compact destination icon rail is
+        flush to the start edge (matching the header height). Edge-to-edge
+        below `md`. Do not swap `app-chassis` for a `bg-*` utility: the inset
+        padding is part of the same contract. */}
     <div data-testid="app-chassis" className="app-chassis flex h-screen flex-col overflow-hidden">
       {/* WCAG 2.4.1 Bypass Blocks (Level A): the first focusable element in the
           whole app, invisible until it earns focus. Without it a keyboard user
@@ -378,7 +384,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Mobile sidebar slide-over — chassis-level so it covers the inset
           and is not clipped by the shell's overflow:hidden. */}
-      <AnimatePresence>
+      {isMobileLayout && <AnimatePresence>
         {mobileSidebarOpen && (
           <>
             {/* Backdrop */}
@@ -409,7 +415,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               // a phone. Sizing the drawer to the viewport with a cap contains
               // it, and `overflow-hidden` makes that a clip rather than a
               // horizontal scroll. The sidebar itself carries `max-w-full`.
-              className="fixed inset-y-0 left-0 z-50 w-[85vw] max-w-[20rem] overflow-hidden md:hidden"
+              className="fixed inset-y-0 left-0 z-50 flex w-fit max-w-[min(85vw,20rem)] overflow-hidden md:hidden"
             >
               {isAiRoute
                 ? <AiConversationsSidebar onNavigate={closeMobileSidebar} embedMainNav />
@@ -419,7 +425,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             </m.div>
           </>
         )}
-      </AnimatePresence>
+      </AnimatePresence>}
 
       {/* Mobile page inspector — Outline, Details, and Assistant together.
           Chassis-level so it is not clipped by the shell. Mirrors the left
@@ -463,7 +469,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           the same outer frame visible on the left, right and bottom. It sits
           outside the brighter workspace card. Height is --app-header-height
           so the side inset can grow without stretching this band. */}
-      <header className="app-header relative z-10 flex shrink-0 items-center justify-between px-3">
+      <header className="app-header relative z-10 flex shrink-0 items-center justify-between px-3 md:pl-0">
         <div className="flex min-w-0 items-center gap-3">
           {/* Mobile hamburger — opens sidebar slide-over */}
           <button
@@ -480,18 +486,21 @@ export function AppLayout({ children }: { children: ReactNode }) {
             {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
 
-          {/* Full horizontal lockup (Q-tile + Compendiq wordmark) */}
+          {/* Full horizontal lockup (Q-tile + Compendiq wordmark); on desktop the
+              Q-tile centers inside the --app-nav-rail-width column directly above
+              the left rail icons (Pages / AI / Graph) and the wordmark aligns
+              flush with the left border of the workspace card. */}
           <Link
             to="/"
             aria-label="Compendiq home"
             data-testid="header-chassis-slot"
-            className="flex items-center md:ml-3 rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex items-center gap-2 rounded-md text-foreground transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:gap-0"
           >
-            <Logo className="h-6 w-auto text-foreground" title="Compendiq" />
+            <span className="flex shrink-0 items-center justify-center md:w-[var(--app-nav-rail-width)]">
+              <LogoMark className="size-7 shrink-0" title="Compendiq" />
+            </span>
+            <LogoWordmark className="h-7 w-auto shrink-0" />
           </Link>
-
-          {/* 3 Main Nav destination buttons as Notion flat tabs */}
-          <MainNavHeaderTabs />
         </div>
         <div className="ml-auto flex min-w-0 items-center justify-end gap-1">
           {isArticleRoute && isMobileLayout && (
@@ -520,22 +529,22 @@ export function AppLayout({ children }: { children: ReactNode }) {
           its own content, and its box-shadow must reach the chassis margin.
           app-chassis (h-screen, overflow-hidden) still stops page scroll. */}
       <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1">
-      <MainNavChassisRail>
-        {/* The tree / left side panel lives in the chassis rail, outside the workspace card */}
-        {isAiRoute
-          ? <AiConversationsSidebar embedMainNav={false} />
-          : isSettingsRoute
-            ? <SettingsSidebar embedMainNav={false} />
-            : <SidebarTreeView embedMainNav={false} />}
-      </MainNavChassisRail>
+      <MainNavChassisRail />
       <div
         data-testid="panel-wrapper"
-        className="ml-2 flex min-h-0 min-w-0 flex-1"
+        className="flex min-h-0 min-w-0 flex-1"
       >
         <div data-testid="app-workspace" className="app-workspace flex min-h-0 min-w-0 flex-1 overflow-hidden">
-          {/* Left navigation and <main> share --color-card. They remain one
-              clipped workspace composition, split by the sidebar hairline
-              rather than nested cards or a second value step. */}
+          {/* Route sidebar (page tree, AI conversations, or settings nav) lives
+              inside the workspace card on --app-sidebar-bg (slightly darker
+              than <main>), separated by a subtle 1px border-right. */}
+          {!isMobileLayout && (
+            isAiRoute
+              ? <AiConversationsSidebar embedMainNav={false} />
+              : isSettingsRoute
+                ? <SettingsSidebar embedMainNav={false} />
+                : <SidebarTreeView embedMainNav={false} />
+          )}
           <main
             id="main-content"
             // Not natively focusable — the skip link above targets this id and
@@ -554,7 +563,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 // keep this container as the page scroller.
                 isArticleRoute
                   ? 'overflow-hidden'
-                  : 'overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable_both-edges]',
+                  : 'overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable]',
               )}
             >
               <PageTransition>
@@ -606,7 +615,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                     overflow-y-auto in #1218 (it spilled 39px at 1440x560
                     before). A new one is the thing to check when adding a
                     height-capping page. */}
-                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isArticleRoute ? 'max-w-none' : 'max-w-7xl')}>
+                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isSettingsRoute || isArticleRoute ? 'max-w-none' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>

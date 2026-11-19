@@ -22,6 +22,7 @@ import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { markPageImagesDirty } from './image-analysis-dirty.js';
 import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
+import { publishSavedDrawioPreviews } from './drawio-previews.js';
 import { userCanAccessPage } from './rbac-service.js';
 import {
   advancePageWriteIntent,
@@ -432,6 +433,11 @@ export async function putLocalAttachments(opts: {
       );
       rows.push(mapRow(res.rows[0]!));
     }
+    await publishSavedDrawioPreviews(client, opts.pageId, staged.map((file) => ({
+      filename: file.filename,
+      path: localFilePath(opts.pageId, file.filename),
+      url: `/api/local-attachments/${opts.pageId}/${encodeURIComponent(file.filename)}`,
+    })));
     await markPageImagesDirty(opts.pageId, client);
     await client.query(
       'UPDATE pages SET content_revision = content_revision + 1 WHERE id = $1',
@@ -993,6 +999,11 @@ async function repairLocalAttachmentPut(intent: PageWriteRecoveryIntent): Promis
         ],
       );
     }
+    await publishSavedDrawioPreviews(client, observed.expected.pageId, observed.expected.files.map((file) => ({
+      filename: file.filename,
+      path: localFilePath(observed.expected.pageId, file.filename),
+      url: `/api/local-attachments/${observed.expected.pageId}/${encodeURIComponent(file.filename)}`,
+    })));
     await markPageImagesDirty(observed.expected.pageId, client);
     await client.query(
       'UPDATE pages SET content_revision = content_revision + 1 WHERE id = $1',

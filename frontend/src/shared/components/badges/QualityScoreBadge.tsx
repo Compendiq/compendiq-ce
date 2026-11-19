@@ -63,6 +63,7 @@ function getScoreConfig(
   score: number | null,
   status: QualityStatus | null,
 ): ScoreConfig {
+  if (status === 'policy_blocked') return { label: 'Quality: policy blocked', badgeClass: 'text-muted-foreground border border-border', animate: false, band: null };
   // Handle non-analyzed statuses first
   if (status === 'analyzing') {
     return {
@@ -160,6 +161,7 @@ function QualityMeter({ band }: { band: number }) {
 function buildTooltip(props: QualityScoreBadgeProps): string {
   const { qualityScore, qualityStatus, qualityError, qualityAnalyzedAt } = props;
 
+  if (qualityStatus === 'policy_blocked') return 'Quality analysis is blocked by article policy or provider locality; it is not a failed inference.';
   if (qualityStatus === 'analyzing') {
     return 'Quality analysis in progress';
   }

@@ -189,58 +189,37 @@ export function GraphPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Read initial state from URL search params (#360: shareable views)
+  // The URL is the source of truth: a history navigation can change it
+  // without remounting this component. Filter edits replace the current entry;
+  // focus changes below push a new one.
   const focusPageId = searchParams.get('focus') ?? undefined;
   const initialView = (searchParams.get('view') as ViewMode) || 'individual';
-
   const [viewMode, setViewMode] = useState<ViewMode>(focusPageId ? 'individual' : initialView);
-  // #360: space filter is now multi-select. Stored as a string[]; URL state
-  // round-trips via comma-separated `?space=DEV,OPS`. Empty array == "no
-  // filter" (RBAC fallback handled server-side).
-  const initialFilterSpaces = (searchParams.get('space') ?? '').split(',').filter(Boolean);
-  const [filterSpaces, setFilterSpaces] = useState<string[]>(initialFilterSpaces);
-
-  // #360: filter sidebar state. All optional; mirrored to URL on change
-  // so the view is shareable. Empty values = "no filter" (omitted from URL).
-  const initialEdgeTypes = (searchParams.get('edgeTypes') ?? '').split(',').filter(Boolean);
-  const initialMinScore = searchParams.get('minScore');
-  const initialLabels = (searchParams.get('labels') ?? '').split(',').filter(Boolean);
-  const initialShowFullGraph = searchParams.get('full') === '1';
-
-  const [edgeTypes, setEdgeTypes] = useState<string[]>(initialEdgeTypes);
-  const [minScore, setMinScore] = useState<number | undefined>(
-    initialMinScore !== null ? Number.parseFloat(initialMinScore) : undefined,
+  const filterSpaces = useMemo(
+    () => (searchParams.get('space') ?? '').split(',').filter(Boolean),
+    [searchParams],
   );
-  const [labels, setLabels] = useState<string[]>(initialLabels);
+  const edgeTypes = useMemo(
+    () => (searchParams.get('edgeTypes') ?? '').split(',').filter(Boolean),
+    [searchParams],
+  );
+  const scoreParam = searchParams.get('minScore');
+  const minScore = scoreParam !== null ? Number.parseFloat(scoreParam) : undefined;
+  const labels = useMemo(
+    () => (searchParams.get('labels') ?? '').split(',').filter(Boolean),
+    [searchParams],
+  );
+  const showFullGraph = searchParams.get('full') === '1';
   const showFilters = true;
-  // The "global hairball" view is opt-in (#360). Either an explicit ?full=1
-  // in the URL or the user clicking "Show full graph anyway" enables it.
-  const [showFullGraph, setShowFullGraph] = useState<boolean>(initialShowFullGraph);
 
-  // Mirror filter state to URL (#360 shareable views). Uses the functional
-  // setSearchParams updater so the effect never reads `searchParams` — that
-  // keeps the dependency list complete (no exhaustive-deps escape) and avoids
-  // the update→re-run loop that depending on `searchParams` would cause.
-  useEffect(() => {
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        const sync = (key: string, value: string | undefined | null) => {
-          if (value === undefined || value === null || value === '') next.delete(key);
-          else next.set(key, value);
-        };
-        sync('edgeTypes', edgeTypes.length > 0 ? edgeTypes.join(',') : '');
-        sync('minScore', minScore !== undefined ? minScore.toString() : '');
-        sync('labels', labels.length > 0 ? labels.join(',') : '');
-        sync('full', showFullGraph ? '1' : '');
-        // #360 multi-select: encode the space filter as a comma-separated list
-        // so it round-trips through the URL the same way edgeTypes/labels do.
-        sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
-        return next;
-      },
-      { replace: true },
-    );
-  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces, setSearchParams]);
+  const setFilterParam = useCallback((key: string, value: string | undefined) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value) next.set(key, value);
+      else next.delete(key);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   const filters = useMemo<LocalGraphFilters>(() => ({
     edgeTypes: edgeTypes.length > 0 ? edgeTypes : undefined,
@@ -416,12 +395,12 @@ export function GraphPage() {
         // Expand cluster: switch to individual view filtered by the cluster's space
         // (#360 multi-select — clicking a cluster scopes to that one space).
         setViewMode('individual');
-        setFilterSpaces([node.spaceKey]);
+        setFilterParam('space', node.spaceKey);
         return;
       }
       if (node.id) navigate(`/pages/${node.id}`);
     },
-    [navigate],
+    [navigate, setFilterParam],
   );
 
   const handleNodeHover = useCallback(
@@ -646,7 +625,7 @@ export function GraphPage() {
           next.set('focus', pageId);
           setSearchParams(next, { replace: false });
         }}
-        onShowFullGraph={() => setShowFullGraph(true)}
+        onShowFullGraph={() => setFilterParam('full', '1')}
       />
     );
   }
@@ -730,7 +709,7 @@ export function GraphPage() {
             <SpaceMultiSelect
               spaceKeys={spaceKeys}
               selected={filterSpaces}
-              onChange={setFilterSpaces}
+              onChange={(value) => setFilterParam('space', value.join(','))}
             />
           )}
 
@@ -795,11 +774,11 @@ export function GraphPage() {
         {focusPageId && showFilters && (
           <GraphFilterSidebar
             edgeTypes={edgeTypes}
-            onEdgeTypesChange={setEdgeTypes}
+            onEdgeTypesChange={(value) => setFilterParam('edgeTypes', value.join(','))}
             minScore={minScore}
-            onMinScoreChange={setMinScore}
+            onMinScoreChange={(value) => setFilterParam('minScore', value?.toString())}
             labels={labels}
-            onLabelsChange={setLabels}
+            onLabelsChange={(value) => setFilterParam('labels', value.join(','))}
             availableLabels={Array.from(
               new Set(((data?.nodes ?? []) as GraphNode[]).flatMap((n) => n.labels ?? [])),
             ).sort()}
@@ -920,8 +899,12 @@ interface ArticlePickerLandingProps {
  */
 function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePages }: ArticlePickerLandingProps) {
   const [q, setQ] = useState('');
+  const [retryingQuery, setRetryingQuery] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { data, isLoading } = useSearch({ q: q.trim(), page: 1 });
+  const retryRef = useRef<HTMLButtonElement>(null);
+  const retryGeneration = useRef(0);
+  const { data, isLoading, isError, isFetching, refetch } = useSearch({ q: q.trim(), page: 1 });
+  const retrying = retryingQuery === q.trim();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -963,7 +946,11 @@ function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePage
             ref={inputRef}
             type="text"
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              retryGeneration.current++;
+              setRetryingQuery(null);
+              setQ(e.target.value);
+            }}
             placeholder="Search pages by title…"
             // A text field is operable, so its resting edge is the measured
             // --color-border-interactive one (WCAG 1.4.11, forced-colors), not
@@ -979,13 +966,42 @@ function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePage
           <p className="py-6 text-center text-xs text-muted-foreground">
             Type at least 2 characters to search.
           </p>
-        ) : isLoading ? (
-          <p className="py-6 text-center text-xs text-muted-foreground">Searching…</p>
-        ) : items.length === 0 ? (
-          <p className="py-6 text-center text-xs text-muted-foreground" data-testid="graph-picker-no-results">
-            No pages match “{q}”.
-          </p>
         ) : (
+          <>
+            {(isError || retrying) && (
+              <div role="alert" className="py-3 text-center text-sm">
+                <p>Could not search pages. Try again.</p>
+                {items.length > 0 && <p>Showing the last results for this search.</p>}
+                <button
+                  ref={retryRef}
+                  type="button"
+                  aria-disabled={isFetching || retrying}
+                  onClick={() => {
+                    if (isFetching || retrying) return;
+                    const query = q.trim();
+                    const generation = ++retryGeneration.current;
+                    setRetryingQuery(query);
+                    void refetch().then((result) => {
+                      if (generation !== retryGeneration.current) return;
+                      if (!result.isError && document.activeElement === retryRef.current) {
+                        inputRef.current?.focus();
+                      }
+                      setRetryingQuery((current) => current === query ? null : current);
+                    });
+                  }}
+                  className="mt-2 rounded-md border border-border-interactive px-3 py-1.5 text-xs hover:bg-foreground/5"
+                >
+                  {isFetching || retrying ? 'Retrying…' : 'Retry search'}
+                </button>
+              </div>
+            )}
+            {isLoading ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">Searching…</p>
+            ) : !isError && !retrying && items.length === 0 ? (
+              <p className="py-6 text-center text-xs text-muted-foreground" data-testid="graph-picker-no-results">
+                No pages match “{q}”.
+              </p>
+            ) : items.length > 0 ? (
           <ul role="listbox" aria-label="Search results" className="max-h-72 space-y-1 overflow-y-auto" data-testid="graph-picker-results">
             {items.slice(0, 20).map((item: { id: number | string; title: string; spaceKey?: string }) => (
               <li key={String(item.id)}>
@@ -1005,7 +1021,9 @@ function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePage
                 </button>
               </li>
             ))}
-          </ul>
+              </ul>
+            ) : null}
+          </>
         )}
 
         <div className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">

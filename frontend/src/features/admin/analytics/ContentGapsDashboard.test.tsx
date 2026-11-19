@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ReactNode } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ContentGapsDashboard } from './ContentGapsDashboard';
 import type { DashboardProps } from './AnalyticsPage';
@@ -43,9 +43,9 @@ const mockData = {
   requestBacklog: [{ status: 'open', count: 3 }],
 };
 
-function renderDashboard() {
+function renderDashboard(onExportPdf: DashboardProps['onExportPdf'] = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const props: DashboardProps = { dateRange: defaultDateRange, onExportPdf: vi.fn() };
+  const props: DashboardProps = { dateRange: defaultDateRange, onExportPdf };
   return render(
     <QueryClientProvider client={queryClient}>
       <ContentGapsDashboard {...props} />
@@ -118,5 +118,29 @@ describe('ContentGapsDashboard severity column', () => {
       expect(marker.querySelector('[aria-hidden="true"]')).not.toBeNull();
       expect(marker.querySelector('.sr-only')?.textContent).toBeTruthy();
     }
+  });
+});
+
+describe('ContentGapsDashboard PDF export', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('passes its rows, title and KPIs to the PDF export handler (#1732)', async () => {
+    mockFetch.mockResolvedValue(mockData);
+    const onExportPdf = vi.fn();
+    renderDashboard(onExportPdf);
+
+    fireEvent.click(await screen.findByTestId('gaps-export-pdf'));
+
+    expect(onExportPdf).toHaveBeenCalledTimes(1);
+    expect(onExportPdf).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'gap', query: 'severe query', occurrences: 12 }),
+        expect.objectContaining({ type: 'backlog', status: 'open', count: 3 }),
+      ]),
+      'Content Gaps',
+      expect.arrayContaining([expect.objectContaining({ label: 'Content gaps', value: 4 })]),
+    );
   });
 });

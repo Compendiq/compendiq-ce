@@ -1,13 +1,15 @@
+import { directArticleTransport } from './_article-transport.js';
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt, SystemPromptKey } from '../../domains/llm/services/prompts.js';
-import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { resolveDirectArticleChat } from './_article-resolution.js';
+import { directRefusalResponse, replayDirectOutput } from './_article-cache.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { GenerateDiagramRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   checkCacheWithLock,
   sendCachedSSE,
@@ -48,6 +50,8 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    let promptInjectionDetected = warnings.length > 0;
+    let wasSanitized = sanitized !== markdown;
     if (warnings.length > 0) {
       await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate-diagram' }, request);
     }
@@ -60,7 +64,10 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
       const stripped = instruction.replace(/<[^>]*>/g, '').slice(0, 10_000);
       const { sanitized: cleanInstruction, warnings: instructionWarnings } = sanitizeLlmInput(stripped);
       sanitizedInstruction = cleanInstruction;
+      if (cleanInstruction !== stripped) wasSanitized = true;
       if (instructionWarnings.length > 0) {
+        promptInjectionDetected = true;
+        wasSanitized = true;
         await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
           warnings: instructionWarnings,
           route: '/llm/generate-diagram',
@@ -77,17 +84,24 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     // Resolve the `chat` use-case up-front so the cache key includes the
     // resolved provider+model. Queue + per-provider breakers wrap streamChat().
-    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
+    const { config: chatConfig, model: resolvedModel, operation } = await resolveDirectArticleChat(request.userId, body.pageId);
     logger.debug(
       { userId: request.userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
       'Resolved chat usecase assignment',
     );
 
+    const transportContext = await directArticleTransport(request.userId, body.pageId, false, chatConfig, 'chat', operation);
+
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      sendCachedSSE(reply, cached.content);
+      // #282: re-admitted under the RECORDED provenance (replayDirectOutput);
+      // a refusal is a status code before any SSE header.
+      const replayed = await replayDirectOutput(cached, {
+        transport: chatConfig, transportContext, userId: request.userId, usecase: 'chat', model: resolvedModel,
+      });
+      sendCachedSSE(reply, replayed);
       return;
     }
 
@@ -97,19 +111,28 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
         { role: 'user' as const, content: userContent },
       ];
       await streamSSE(request, reply,
-        (signal) => streamChat(chatConfig, resolvedModel, diagramMessages, signal, { thinking: body.thinking }),
+        (signal) => streamChat(chatConfig, resolvedModel, diagramMessages, signal, { thinking: body.thinking, transportContext }),
         undefined, {
           llmCache, cacheKey,
           audit: {
             userId: request.userId, action: 'diagram', model: resolvedModel, provider: chatConfig.providerId,
             inputTokens: estimateTokens(diagramMessages.map((m) => m.content).join('')),
             inputMessages: diagramMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            promptHash: fingerprintPrompt(diagramMessages),
             retrievedChunkIds: [],
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           },
+          cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
+    } catch (err) {
+      // #282: a pre-hijack refusal is a 409/503 with the contract body, never a 500.
+      const refusal = reply.sent ? null : directRefusalResponse(err, 'chat');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     } finally {
       await slot.release();
     }

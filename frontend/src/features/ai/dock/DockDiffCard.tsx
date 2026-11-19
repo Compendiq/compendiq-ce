@@ -2,7 +2,10 @@ import { useCallback, useMemo, useState } from 'react';
 import { diffWords } from 'diff';
 import { Check, Loader2, RotateCcw, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { useAiContext } from '../AiContext';
+import {
+  useAiContext, readmitImprovement,
+  IMPROVEMENT_NOT_REPLAYABLE_MESSAGE, IMPROVEMENT_READMIT_UNAVAILABLE_MESSAGE, IMPROVEMENT_TEXT_MISMATCH_MESSAGE,
+} from '../AiContext';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import type { DockChipId } from './dock-chips';
@@ -57,12 +60,25 @@ interface ApplyFailure {
  *
  * The consequence to know about: this rewrites the *saved* page, so it is
  * unavailable while the editor is open — see `editing` below.
+ *
+ * ── Why Apply re-admits the improvement first (#282) ────────────────────────
+ *
+ * The diff can sit here for as long as the thread is retained, and the text
+ * in it proves nothing about the article policy or the provider binding it
+ * was generated under — both may have moved since. So Apply does not send
+ * the text it holds: it hands the durable row back BY REFERENCE
+ * (`POST /llm/improvements/:id/readmit`, via `readmitImprovement`), the
+ * server re-proves the row's recorded provenance against the article and
+ * provider as they are NOW, and only text the server has just re-admitted
+ * goes to the apply route. A refusal is kept on the card like the apply
+ * route's own 409/422: the page is untouched and the way forward — re-run,
+ * or try again shortly — is a decision made here.
  */
 export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void }) {
   const {
     page, pageId, queryClient, isStreaming, showDiffView, setShowDiffView,
     improvedContent, originalMarkdown, layoutTokensLost: backendLayoutTokensLost,
-    diffBaseVersion,
+    diffBaseVersion, improvementId,
   } = useAiContext();
 
   const editing = useArticleViewStore((s) => s.editing);
@@ -90,11 +106,32 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
     setIsApplying(true);
     setFailure(null);
     try {
+      // #282: re-admit the stored row before its text touches the article.
+      // The page is untouched on every refusal; what differs is whether
+      // pressing Apply again could change the answer.
+      let improvedMarkdown = improvedContent;
+      if (improvementId) {
+        const readmit = await readmitImprovement(improvementId);
+        if (readmit.outcome === 'refused') {
+          setFailure(readmit.retryable
+            ? { message: IMPROVEMENT_READMIT_UNAVAILABLE_MESSAGE, rerunnable: false }
+            : { message: IMPROVEMENT_NOT_REPLAYABLE_MESSAGE, rerunnable: true });
+          return;
+        }
+        // The row's bytes are what was re-proved. If they are not the text
+        // the user reviewed, neither copy is applied: the stored one has not
+        // been seen, the on-screen one has not been admitted.
+        if (readmit.improvedMarkdown !== improvedContent) {
+          setFailure({ message: IMPROVEMENT_TEXT_MISMATCH_MESSAGE, rerunnable: true });
+          return;
+        }
+        improvedMarkdown = readmit.improvedMarkdown;
+      }
       await apiFetch('/llm/improvements/apply', {
         method: 'POST',
         body: JSON.stringify({
           pageId,
-          improvedMarkdown: improvedContent,
+          improvedMarkdown,
           version: page.version,
           title: page.title,
         }),
@@ -129,7 +166,7 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
     } finally {
       setIsApplying(false);
     }
-  }, [page, pageId, improvedContent, isApplying, queryClient, setShowDiffView]);
+  }, [page, pageId, improvedContent, improvementId, isApplying, queryClient, setShowDiffView]);
 
   if (!showDiffView || !page || !improvedContent || isStreaming) return null;
 

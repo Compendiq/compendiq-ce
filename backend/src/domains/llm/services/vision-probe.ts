@@ -1,4 +1,5 @@
-import { chat, type ProviderConfig } from './openai-compatible-client.js';
+import { chatCompletion, type ProviderConfig } from './openai-compatible-client.js';
+import { stripThinkBlocks } from './think-blocks.js';
 import { LlmHttpError } from './llm-http-error.js';
 import type { ChatMessage } from './prompts.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -138,7 +139,7 @@ export const VISION_PROBE_TIMEOUT_MS = 60_000;
 export interface ProbeVisionOptions {
   /**
    * #1615 — hard budget covering queue wait plus the request, forwarded to
-   * `chat()`. A probe that runs out of budget is `null` (unconfirmed), never
+   * `chatCompletion()`. A probe that runs out of budget is `null` (unconfirmed), never
    * `false`. Absent for the chat path's fire-and-forget refresh, which keeps
    * its old behaviour.
    */
@@ -162,8 +163,9 @@ export async function probeVision(
   ];
 
   try {
-    // Routed through chat(), so the probe inherits the queue and the
-    // per-provider breaker rather than bypassing backpressure.
+    // Routed through chatCompletion() (what chat() wraps), so the probe inherits
+    // the queue and the per-provider breaker rather than bypassing backpressure,
+    // and can read `finishReason` to tell a cut-off reply from a denial.
     // 512, not 64: the matcher deliberately tolerates filler ("The three
     // horizontal bands from top to bottom are yellow, purple, and green.").
     // Reasoning models (such as Qwen 3.6, Gemma 4, DeepSeek R1) emit thinking
@@ -171,16 +173,28 @@ export async function probeVision(
     // token budget cuts off mid-think, turning a capable vision-reasoning model into
     // a cached false negative. 512 tokens gives reasoning models enough room to
     // complete their thinking block and output the answer.
-    const reply = await chat(cfg, model, messages, {
+    const { text, finishReason } = await chatCompletion(cfg, model, messages, {
+      transportContext: { kind: 'non_article', purpose: 'provider_probe' },
       maxTokens: 512,
       ...(opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
     });
-    const vision = replyNamesBandsInOrder(reply);
+    // Reasoning is not the answer: colours named while thinking prove nothing.
+    const visible = stripThinkBlocks(text);
+    const named = replyNamesBandsInOrder(visible.text);
+    // No in-order answer, but the reply was cut off: that says nothing about
+    // image support, and a `false` would be cached for CAPABILITY_MAX_AGE_DAYS.
+    const result: { vision: boolean | null; error?: string } = named
+      ? { vision: true }
+      : visible.unclosed
+        ? { vision: null, error: 'Vision probe reply ended inside a reasoning block' }
+        : finishReason === 'length'
+          ? { vision: null, error: 'Vision probe reply was cut off by the token limit' }
+          : { vision: false };
     logger.debug(
-      { providerId: cfg.providerId, model, vision, reply: reply.slice(0, 120) },
+      { providerId: cfg.providerId, model, vision: result.vision, reply: visible.text.slice(0, 120) },
       'Vision probe completed',
     );
-    return { vision };
+    return result;
   } catch (err) {
     // `describeProbeFailure` folds in a slice of the provider's error body — it
     // is the whole point of the body-conditional branch above, but it is still

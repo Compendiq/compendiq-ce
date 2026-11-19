@@ -1,8 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { NewPagePage } from './NewPagePage';
+import { useAuthStore } from '../../stores/auth-store';
+import { beginDraftEdit, persistDraft, readDraft } from '../../shared/lib/editor-drafts';
+import { logoutApi } from '../../shared/lib/api';
 
 // Toast is the only channel a failed import has — an assertion that the editor
 // was left alone says nothing about whether the user was told why (#1178).
@@ -43,13 +46,20 @@ vi.mock('../../shared/hooks/use-pages', () => ({
 
 // Mutable so a test can model an instance with no Confluence spaces at all
 // (Confluence unconfigured, or configured but nothing synced yet) — the case
-// the #1122 preselection has to fall back from.
-const { spacesState } = vi.hoisted(() => ({
+// the #1122 preselection has to fall back from. `undefined` models a query
+// that has not answered yet (#1747 location restore).
+const { spacesState, localSpacesState } = vi.hoisted(() => ({
   spacesState: {
     confluence: [
       { key: 'DEV', name: 'Development', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 10 },
       { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 5 },
-    ] as { key: string; name: string; homepageId: null; lastSynced: string; pageCount: number }[],
+    ] as { key: string; name: string; homepageId: null; lastSynced: string; pageCount: number }[] | undefined,
+  },
+  localSpacesState: {
+    items: undefined as {
+      key: string; name: string; source: 'local'; description: null; icon: null;
+      pageCount: number; createdBy: null; createdAt: string;
+    }[] | undefined,
   },
 }));
 
@@ -57,6 +67,14 @@ const DEFAULT_CONFLUENCE_SPACES = [
   { key: 'DEV', name: 'Development', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 10 },
   { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 5 },
 ];
+
+const DEFAULT_LOCAL_SPACES = [
+  { key: '__local__', name: 'Default Local Space', source: 'local' as const, description: null, icon: null, pageCount: 0, createdBy: null, createdAt: '2026-01-01T00:00:00Z' },
+  { key: 'notes', name: 'My Notes', source: 'local' as const, description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-01-01T00:00:00Z' },
+];
+
+/** The local space the #1747 acceptance criteria name. */
+const LOCAL_SPACE = { key: 'LOCAL', name: 'Local Space', source: 'local' as const, description: null, icon: null, pageCount: 0, createdBy: null, createdAt: '2026-01-01T00:00:00Z' };
 
 /** What `GET /api/spaces` appends for an RBAC-assigned space with nothing synced. */
 function unsyncedSpace(key: string) {
@@ -82,7 +100,7 @@ vi.mock('../../shared/hooks/use-inline-completion-availability', () => ({
   useInlineCompletionAvailability: () => ({ data: true }),
 }));
 
-const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockCreateTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
+const { editorHtml, editorCallbacks, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockCreateTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
   // Live HTML the fake editor owns. setContent (template apply) and the
   // textarea's onChange (typing) both write here; getHTML reads it — mirroring
   // the real Editor now that the body is read off the instance, not synced to
@@ -91,6 +109,9 @@ const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsy
   const setContent = vi.fn((content: string) => { html.current = content; });
   return {
     editorHtml: html,
+    // The onChange the page last handed the editor, for signals that change
+    // no content (Vim's :w calls it too).
+    editorCallbacks: { onChange: undefined as ((dirty: boolean) => void) | undefined },
     mockSetContent: setContent,
     mockEditorInstance: {
       commands: { setContent },
@@ -117,12 +138,7 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
   useUseTemplate: () => ({ mutateAsync: mockUseTemplateMutateAsync, isPending: false }),
   useCreateTemplate: () => ({ mutateAsync: mockCreateTemplateMutateAsync, isPending: false }),
   useImportMarkdown: () => ({ mutateAsync: mockImportMutateAsync, isPending: false }),
-  useLocalSpaces: () => ({
-    data: [
-      { key: '__local__', name: 'Default Local Space', source: 'local', description: null, icon: null, pageCount: 0, createdBy: null, createdAt: '2026-01-01T00:00:00Z' },
-      { key: 'notes', name: 'My Notes', source: 'local', description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-01-01T00:00:00Z' },
-    ],
-  }),
+  useLocalSpaces: () => ({ data: localSpacesState.items }),
 }));
 
 // Mock Editor to avoid complex TipTap setup. It reports a fake editor
@@ -136,6 +152,7 @@ vi.mock('../../shared/components/article/Editor', async () => {
         onEditorReady?.(mockEditorInstance);
         return () => onEditorReady?.(null);
       }, [onEditorReady]);
+      editorCallbacks.onChange = onChange;
       return (
         <textarea
           data-testid="mock-editor"
@@ -210,6 +227,7 @@ describe('NewPagePage', () => {
     templatesState.items.length = 0;
     editorHtml.current = '';
     spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
+    localSpacesState.items = [...DEFAULT_LOCAL_SPACES];
     localStorage.clear();
   });
 
@@ -1159,6 +1177,571 @@ describe('NewPagePage', () => {
     await waitFor(() => {
       expect(mockSetContent).toHaveBeenCalledWith('<h1>Architecture Spec</h1><p>Content here</p>', { emitUpdate: true });
       expect(screen.getByTestId('title-input')).toHaveValue('Architecture Spec');
+    });
+  });
+
+  // ── Interrupted-create recovery (#1747) ───────────────────────────────────
+  // The editor autosaves the body under `new-page`; this page keeps title,
+  // space and parent under `new-page:meta`. Both are per-account drafts, so
+  // every seed and every read here goes through editor-drafts, never a
+  // hand-built storage key.
+  describe('interrupted-create recovery (#1747)', () => {
+    const ACCOUNT_A = { id: '11111111-1111-4111-8111-111111111111', username: 'author_a', role: 'user' as const };
+    const ACCOUNT_B = { id: '22222222-2222-4222-8222-222222222222', username: 'reader_b', role: 'user' as const };
+    const BODY_KEY = 'new-page';
+    const META_KEY = 'new-page:meta';
+    const AUTO_SAVE_DELAY_MS = 2000;
+    const AC1_META = JSON.stringify({ title: 'NEW DRAFT TITLE', spaceKey: 'LOCAL', parentId: null });
+    const OLD_META = JSON.stringify({ title: 'OLD TITLE', spaceKey: 'OPS', parentId: 'page-2' });
+
+    function signIn(user: typeof ACCOUNT_A) {
+      act(() => useAuthStore.getState().setAuth(`jwt-${user.id}`, user));
+    }
+
+    function writeDraftAs(user: typeof ACCOUNT_A, key: string, value: string) {
+      signIn(user);
+      const pending = beginDraftEdit(key);
+      if (!pending) throw new Error('expected a signed-in draft scope');
+      persistDraft(pending, () => value);
+    }
+
+    function readMeta(): unknown {
+      const raw = readDraft(META_KEY);
+      return raw === null ? null : JSON.parse(raw);
+    }
+
+    function storedValuesContaining(text: string): string[] {
+      const hits: string[] = [];
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (key && localStorage.getItem(key)?.includes(text)) hits.push(key);
+      }
+      return hits;
+    }
+
+    async function advancePastAutosave() {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(AUTO_SAVE_DELAY_MS + 500);
+      });
+    }
+
+    function restoreOffer() {
+      return screen.findByRole('dialog', { name: 'Restore draft?' });
+    }
+
+    async function confirmRestore() {
+      fireEvent.click(within(await restoreOffer()).getByTestId('confirm-dialog-confirm'));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    }
+
+    async function startBlank() {
+      fireEvent.click(within(await restoreOffer()).getByTestId('confirm-dialog-cancel'));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    }
+
+    async function settledOnPreselection() {
+      await waitFor(() => expect(screen.getByTestId('space-selector')).toHaveValue('DEV'));
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mockCreateMutateAsync.mockReset();
+      localSpacesState.items = [...DEFAULT_LOCAL_SPACES, LOCAL_SPACE];
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      act(() => useAuthStore.getState().clearAuth());
+    });
+
+    it('offers the stored draft and restores title, body, LOCAL space and type; a late Confluence preselection does not move it', async () => {
+      spacesState.confluence = undefined;
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, AC1_META);
+      const { rerender } = render(<NewPagePage />, { wrapper: createWrapper() });
+
+      const dialog = await restoreOffer();
+      expect(within(dialog).getByTestId('confirm-dialog-confirm')).toHaveTextContent('Restore draft');
+      expect(within(dialog).getByTestId('confirm-dialog-confirm')).toHaveClass('nm-button-primary');
+      expect(within(dialog).getByTestId('confirm-dialog-cancel')).toHaveTextContent('Start blank');
+      await confirmRestore();
+
+      expect(screen.getByTestId('title-input')).toHaveValue('NEW DRAFT TITLE');
+      expect(editorHtml.current).toBe('<p>NEW DRAFT BODY</p>');
+      expect(screen.getByTestId('space-selector')).toHaveValue('LOCAL');
+      expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+
+      // GET /api/spaces answers only now: the #1122 preselection must stay out.
+      spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
+      rerender(<NewPagePage />);
+      await act(async () => {});
+      expect(screen.getByTestId('space-selector')).toHaveValue('LOCAL');
+      expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('applies a restored space and parent once the spaces query answers, and creates there', async () => {
+      spacesState.confluence = undefined;
+      writeDraftAs(ACCOUNT_A, META_KEY, JSON.stringify({ title: 'Ops runbook', spaceKey: 'OPS', parentId: 'page-2' }));
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'created-1', title: 'Ops runbook', version: 1 });
+      const { rerender } = render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await confirmRestore();
+      expect(screen.getByTestId('title-input')).toHaveValue('Ops runbook');
+      expect(screen.getByTestId('space-selector')).toHaveValue('');
+
+      spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
+      rerender(<NewPagePage />);
+      // The preselection would have picked DEV; the restored OPS wins.
+      await waitFor(() => expect(screen.getByTestId('space-selector')).toHaveValue('OPS'));
+      expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+
+      fireEvent.click(screen.getByTestId('create-page-button'));
+      await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ spaceKey: 'OPS', parentId: 'page-2', title: 'Ops runbook' }),
+      ));
+    });
+
+    it.each([
+      ['Start blank', () => fireEvent.click(screen.getByTestId('confirm-dialog-cancel'))],
+      ['Escape', () => fireEvent.keyDown(screen.getByTestId('confirm-dialog'), { key: 'Escape' })],
+    ])('%s starts an empty form and leaves both stored keys unchanged', async (_label, decline) => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, AC1_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await restoreOffer();
+      decline();
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+      expect(screen.getByTestId('title-input')).toHaveValue('');
+      expect(mockSetContent).not.toHaveBeenCalled();
+      expect(editorHtml.current).toBe('');
+      // An empty form is a fresh visit: the #1122 preselection still applies.
+      expect(screen.getByTestId('space-selector')).toHaveValue('DEV');
+      await advancePastAutosave();
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW DRAFT BODY</p>');
+      expect(readDraft(META_KEY)).toBe(AC1_META);
+
+      fireEvent.click(screen.getByTestId('cancel-new-page-btn'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages');
+      expect(readDraft(META_KEY)).toBe(AC1_META);
+    });
+
+    it.each([
+      ['nothing stored', [] as [string, string][]],
+      ['an empty-paragraph body', [[BODY_KEY, '<p></p>']] as [string, string][]],
+      ['an empty body and a blank-titled meta', [
+        [BODY_KEY, ''],
+        [META_KEY, JSON.stringify({ title: '   ', spaceKey: 'OPS', parentId: null })],
+      ] as [string, string][]],
+    ])('opens no restore offer with %s', async (_label, entries) => {
+      for (const [key, value] of entries) writeDraftAs(ACCOUNT_A, key, value);
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('writes new-page:meta as exactly {title, spaceKey, parentId} within the debounce after title, space and parent edits', async () => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Draft title' } });
+      expect(readDraft(META_KEY)).toBeNull();
+      await advancePastAutosave();
+      const raw = readDraft(META_KEY);
+      expect(raw === null ? null : Object.keys(JSON.parse(raw))).toEqual(['title', 'spaceKey', 'parentId']);
+      expect(readMeta()).toEqual({ title: 'Draft title', spaceKey: 'DEV', parentId: null });
+
+      fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'OPS' } });
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: 'Draft title', spaceKey: 'OPS', parentId: null });
+
+      fireEvent.click(screen.getByLabelText('Select page location'));
+      fireEvent.click(await screen.findByText('Getting Started'));
+      fireEvent.click(screen.getByText('Confirm'));
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: 'Draft title', spaceKey: 'OPS', parentId: 'page-1' });
+    });
+
+    it('flushes a pending meta write when the page unmounts inside the debounce window', async () => {
+      signIn(ACCOUNT_A);
+      const { unmount } = render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Leaving quickly' } });
+      expect(readDraft(META_KEY)).toBeNull();
+      unmount();
+      expect(readMeta()).toEqual({ title: 'Leaving quickly', spaceKey: 'DEV', parentId: null });
+    });
+
+    it('skips a meta write with a blank title, no space and no parent', async () => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.click(screen.getByTestId('article-type-local'));
+      expect(screen.getByTestId('space-selector')).toHaveValue('');
+      await advancePastAutosave();
+      expect(readDraft(META_KEY)).toBeNull();
+    });
+
+    it('a successful create removes both keys and no pending write brings them back', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p></p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, JSON.stringify({ title: '', spaceKey: 'OPS', parentId: null }));
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'created-2', title: 'Created page', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Created page' } });
+      fireEvent.click(screen.getByTestId('create-page-button'));
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/pages/created-2'));
+      expect(readDraft(BODY_KEY)).toBeNull();
+      expect(readDraft(META_KEY)).toBeNull();
+      await advancePastAutosave();
+      expect(readDraft(BODY_KEY)).toBeNull();
+      expect(readDraft(META_KEY)).toBeNull();
+    });
+
+    it('a failed create leaves both keys intact; the retry that succeeds removes them', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, AC1_META);
+      mockCreateMutateAsync
+        .mockRejectedValueOnce(new Error('Access denied to this space'))
+        .mockResolvedValueOnce({ id: 'created-3', title: 'NEW DRAFT TITLE', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await confirmRestore();
+
+      fireEvent.click(screen.getByTestId('create-page-button'));
+      await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Access denied to this space'));
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW DRAFT BODY</p>');
+      expect(readDraft(META_KEY)).toBe(AC1_META);
+      expect(mockNavigate).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTestId('create-page-button'));
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/pages/created-3'));
+      expect(readDraft(BODY_KEY)).toBeNull();
+      expect(readDraft(META_KEY)).toBeNull();
+    });
+
+    it.each([
+      ['a typed title', () => fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Half-written' } })],
+      ['an edited body', () => fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>Some text</p>' } })],
+      ['a chosen space', () => fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'OPS' } })],
+    ])('Cancel on a form with %s asks "Discard changes?" first', async (_label, dirty) => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      dirty();
+      fireEvent.click(screen.getByTestId('cancel-new-page-btn'));
+      const dialog = await screen.findByRole('dialog', { name: 'Discard changes?' });
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(within(dialog).getByTestId('confirm-dialog-confirm')).toHaveClass('nm-button-destructive');
+      expect(within(dialog).getByTestId('confirm-dialog-cancel')).toHaveTextContent('Keep editing');
+    });
+
+    it('"Keep editing" keeps the form and keys; "Discard changes" removes both keys and leaves', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p></p>');
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Half-written' } });
+
+      fireEvent.click(screen.getByTestId('cancel-new-page-btn'));
+      fireEvent.click(within(await screen.findByRole('dialog', { name: 'Discard changes?' })).getByTestId('confirm-dialog-cancel'));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.getByTestId('title-input')).toHaveValue('Half-written');
+      expect(mockNavigate).not.toHaveBeenCalled();
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: 'Half-written', spaceKey: 'DEV', parentId: null });
+      expect(readDraft(BODY_KEY)).not.toBeNull();
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Half-written, more' } });
+      fireEvent.click(screen.getByTestId('cancel-new-page-btn'));
+      fireEvent.click(within(await screen.findByRole('dialog', { name: 'Discard changes?' })).getByTestId('confirm-dialog-confirm'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages');
+      expect(readDraft(BODY_KEY)).toBeNull();
+      expect(readDraft(META_KEY)).toBeNull();
+      await advancePastAutosave();
+      expect(readDraft(META_KEY)).toBeNull();
+    });
+
+    it('Cancel on a clean form (preselected space only) leaves at once', async () => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.click(screen.getByTestId('cancel-new-page-btn'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it("does not offer account A's draft to account B, and B's edits stay in B's scope", async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, AC1_META);
+      signIn(ACCOUNT_B);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByTestId('title-input')).toHaveValue('');
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'B title' } });
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: 'B title', spaceKey: 'DEV', parentId: null });
+      signIn(ACCOUNT_A);
+      expect(readDraft(META_KEY)).toBe(AC1_META);
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW DRAFT BODY</p>');
+    });
+
+    it("explicit sign-out removes both of A's keys and drops A's pending meta write", async () => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'A secret title SO42' } });
+      await advancePastAutosave();
+      // Stands in for the editor's own body autosave (the Editor is mocked here).
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>A secret body SO42</p>');
+      expect(readMeta()).toEqual({ title: 'A secret title SO42', spaceKey: 'DEV', parentId: null });
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'A secret title SO42 more' } });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await act(async () => { await logoutApi(); });
+      // Still mounted, like another tab: its debounced write must not land.
+      await advancePastAutosave();
+      expect(storedValuesContaining('SO42')).toEqual([]);
+      signIn(ACCOUNT_A);
+      expect(readDraft(BODY_KEY)).toBeNull();
+      expect(readDraft(META_KEY)).toBeNull();
+    });
+
+    it('restores title and body but leaves the location unset for a space that no longer exists', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, JSON.stringify({ title: 'NEW DRAFT TITLE', spaceKey: 'GONE', parentId: 'page-9' }));
+      const { rerender } = render(<NewPagePage />, { wrapper: createWrapper() });
+      await confirmRestore();
+      expect(screen.getByTestId('title-input')).toHaveValue('NEW DRAFT TITLE');
+      expect(editorHtml.current).toBe('<p>NEW DRAFT BODY</p>');
+      await waitFor(() => expect(screen.getByTestId('space-selector')).toHaveValue(''));
+      expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
+      rerender(<NewPagePage />);
+      await act(async () => {});
+      expect(screen.getByTestId('space-selector')).toHaveValue('');
+    });
+
+    it.each([
+      ['not JSON', '{"title": "unterminated'],
+      ['no title', JSON.stringify({ spaceKey: 'DEV', parentId: null })],
+      ['a non-string title', JSON.stringify({ title: 42, spaceKey: 'DEV', parentId: null })],
+      ['a JSON array', '["NEW DRAFT TITLE"]'],
+      ['JSON null', 'null'],
+    ])('treats a meta value with %s as absent: no offer, no crash', async (_label, raw) => {
+      writeDraftAs(ACCOUNT_A, META_KEY, raw);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByTestId('title-input')).toHaveValue('');
+    });
+
+    it('restores only the body when the stored meta is malformed', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, '{oops');
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await confirmRestore();
+      expect(editorHtml.current).toBe('<p>NEW DRAFT BODY</p>');
+      expect(screen.getByTestId('title-input')).toHaveValue('');
+      await settledOnPreselection();
+    });
+
+    it('ignores unknown meta fields instead of treating the draft as malformed', async () => {
+      writeDraftAs(ACCOUNT_A, META_KEY, JSON.stringify({ title: 'Kept title', spaceKey: 'OPS', parentId: null, icon: 'x', schema: 2 }));
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await confirmRestore();
+      expect(screen.getByTestId('title-input')).toHaveValue('Kept title');
+      await waitFor(() => expect(screen.getByTestId('space-selector')).toHaveValue('OPS'));
+    });
+
+    it('registers no beforeunload listener while the form is dirty', async () => {
+      signIn(ACCOUNT_A);
+      const addListener = vi.spyOn(window, 'addEventListener');
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Dirty' } });
+      fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'OPS' } });
+      expect(addListener.mock.calls.filter(([type]) => type === 'beforeunload')).toEqual([]);
+    });
+
+    // Never a mixed draft: once the page starts a new draft over stored keys,
+    // its first edit rewrites both of them together.
+    it('after Start blank, the first body edit rewrites both keys as the new draft', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>OLD BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, OLD_META);
+      const { unmount } = render(<NewPagePage />, { wrapper: createWrapper() });
+      await startBlank();
+      expect(readDraft(BODY_KEY)).toBe('<p>OLD BODY</p>');
+      expect(readDraft(META_KEY)).toBe(OLD_META);
+
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>NEW BODY</p>' } });
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: '', spaceKey: 'DEV', parentId: null });
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW BODY</p>');
+      expect(storedValuesContaining('OLD TITLE')).toEqual([]);
+      expect(storedValuesContaining('OLD BODY')).toEqual([]);
+
+      unmount();
+      editorHtml.current = '';
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await confirmRestore();
+      expect(screen.getByTestId('title-input')).toHaveValue('');
+      expect(editorHtml.current).toBe('<p>NEW BODY</p>');
+      await settledOnPreselection();
+    });
+
+    it('after Start blank, the first title edit rewrites both keys as the new draft', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>OLD BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, OLD_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await restoreOffer();
+      fireEvent.keyDown(screen.getByTestId('confirm-dialog'), { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'NEW TITLE' } });
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: 'NEW TITLE', spaceKey: 'DEV', parentId: null });
+      expect(readDraft(BODY_KEY)).not.toBeNull();
+      expect(storedValuesContaining('OLD TITLE')).toEqual([]);
+      expect(storedValuesContaining('OLD BODY')).toEqual([]);
+    });
+
+    it('an unoffered stored draft is superseded by the first edit', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p></p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, JSON.stringify({ title: '', spaceKey: 'OPS', parentId: 'page-2' }));
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>NEW BODY</p>' } });
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: '', spaceKey: 'DEV', parentId: null });
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW BODY</p>');
+    });
+
+    it('erasing the form back to blank writes the cleared meta instead of keeping the stale title', async () => {
+      signIn(ACCOUNT_A);
+      const { unmount } = render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Temp title' } });
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: 'Temp title', spaceKey: 'DEV', parentId: null });
+
+      fireEvent.click(screen.getByTestId('article-type-local'));
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: '' } });
+      await advancePastAutosave();
+      expect(readMeta()).toEqual({ title: '', spaceKey: '', parentId: null });
+
+      unmount();
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('leaving inside the debounce window after Start blank still rewrites both keys', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>OLD BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, OLD_META);
+      const { unmount } = render(<NewPagePage />, { wrapper: createWrapper() });
+      await startBlank();
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>NEW BODY</p>' } });
+      unmount();
+      expect(readMeta()).toEqual({ title: '', spaceKey: 'DEV', parentId: null });
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW BODY</p>');
+    });
+
+    // Timing: the meta write is a trailing 2000 ms debounce, and the pair
+    // write over a stored draft keeps its first-edit deadline so the editor's
+    // own body write can never land before it (review r1 F1).
+    it('waits the full 2000 ms debounce for a meta write and restarts it on each edit', async () => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'One' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1800); });
+      expect(readDraft(META_KEY)).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(readMeta()).toEqual({ title: 'One', spaceKey: 'DEV', parentId: null });
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Two' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Three' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(readMeta()).toEqual({ title: 'One', spaceKey: 'DEV', parentId: null });
+      await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+      expect(readMeta()).toEqual({ title: 'Three', spaceKey: 'DEV', parentId: null });
+    });
+
+    it('keeps the pair write at its first-edit deadline after Start blank; later edits do not push it back', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>OLD BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, OLD_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await startBlank();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'N1' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'N2' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(readDraft(META_KEY)).toBe(OLD_META);
+      expect(readDraft(BODY_KEY)).toBe('<p>OLD BODY</p>');
+      await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+      expect(readMeta()).toEqual({ title: 'N2', spaceKey: 'DEV', parentId: null });
+      expect(readDraft(BODY_KEY)).toBe(''); // the live (mocked) editor body
+    });
+
+    // Dialog accessibility specific to this page (review r1 F3).
+    it.each([
+      ['Restore draft', 'confirm-dialog-confirm'],
+      ['Start blank', 'confirm-dialog-cancel'],
+    ])('Restore draft? is named and described, starts on Start blank and returns focus to the title after %s', async (_label, testId) => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, AC1_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      const dialog = await screen.findByRole('dialog', { name: 'Restore draft?', description: /unsaved draft of a new page/ });
+      await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByTestId('confirm-dialog-cancel')));
+      fireEvent.click(within(dialog).getByTestId(testId));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('title-input')));
+    });
+
+    it.each([
+      ['Keep editing', () => fireEvent.click(screen.getByTestId('confirm-dialog-cancel'))],
+      ['Escape', () => fireEvent.keyDown(screen.getByTestId('confirm-dialog'), { key: 'Escape' })],
+    ])('Discard changes? starts on Keep editing; %s keeps the form, the keys and the route and returns focus to Cancel', async (_label, close) => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Keep me' } });
+      await advancePastAutosave();
+      const cancel = screen.getByTestId('cancel-new-page-btn');
+      cancel.focus();
+      fireEvent.click(cancel);
+      const dialog = await screen.findByRole('dialog', { name: 'Discard changes?', description: /not been created yet/ });
+      await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByTestId('confirm-dialog-cancel')));
+      close();
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(screen.getByTestId('title-input')).toHaveValue('Keep me');
+      expect(readMeta()).toEqual({ title: 'Keep me', spaceKey: 'DEV', parentId: null });
+      await waitFor(() => expect(document.activeElement).toBe(cancel));
+    });
+
+    // Vim's :w reports a change without editing anything (review r1 F4).
+    it('a save signal without an edit after Start blank does not replace the declined draft', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>OLD BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, OLD_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await startBlank();
+      act(() => editorCallbacks.onChange?.(true));
+      await advancePastAutosave();
+      expect(readDraft(BODY_KEY)).toBe('<p>OLD BODY</p>');
+      expect(readDraft(META_KEY)).toBe(OLD_META);
+
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>NEW BODY</p>' } });
+      await advancePastAutosave();
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW BODY</p>');
+      expect(readMeta()).toEqual({ title: '', spaceKey: 'DEV', parentId: null });
     });
   });
 });

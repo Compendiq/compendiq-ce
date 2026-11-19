@@ -1,4 +1,6 @@
 import { query, getPool } from '../../../core/db/postgres.js';
+import { allocateEmbeddingAttempt, nextExplicitEmbeddingAttempt, shadowEmbeddingAttempt } from './embedding-stage-operation.js';
+import type { AiOperationContext } from '@compendiq/contracts';
 // One statement of pgvector's HNSW tiering, shared with the destructive
 // re-embed path, the eval seeder and #1115's image index.
 import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
@@ -7,6 +9,8 @@ import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.
 // worked out here and its rationale now lives with the helper.
 import { withLockRetry } from '../../../core/db/with-lock-retry.js';
 import { generateEmbedding } from './openai-compatible-client.js';
+import { captureEmbeddingArticle, embeddingArticleStage, validateEmbeddingPublicationOnClient } from './embedding-article-stage.js';
+import { ArticleStageRefusedError } from './article-stage-admission.js';
 import { LlmHttpError } from './llm-http-error.js';
 import { getProviderById } from './llm-provider-service.js';
 import { bumpProviderCacheVersion } from './cache-bus.js';
@@ -14,6 +18,7 @@ import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.j
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { warnThresholdOutlivedItsModel } from '../../../core/services/confidence-calibration.js';
 import { resolveConfidenceBasisPair } from './llm-provider-resolver.js';
+import { admitPageForProvider, emitUnresolvedDecision, loadProviderMetadata } from './ai-policy-admission.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
@@ -104,6 +109,12 @@ export interface ShadowMigrationStatus extends ShadowMigrationState {
   backfilledPages: number;
   stragglerPages: number;
   indexReady: boolean;
+  /**
+   * Of `stragglerPages`, those the article AI policy keeps away from the
+   * candidate provider (SPEC-WORK-001). Absent when zero; the swap gate
+   * names it so the refusal reads as policy, not as a provider failure.
+   */
+  policyBlockedPages?: number;
 }
 
 export async function getShadowMigrationState(): Promise<ShadowMigrationState | null> {
@@ -159,6 +170,7 @@ async function providerConfigFor(providerId: string) {
   if (!cfg) return null;
   return {
     providerId: cfg.id,
+    configRevision: cfg.configRevision,
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
     authType: cfg.authType,
@@ -259,7 +271,7 @@ export async function startShadowMigration(opts: {
   // accepted at all.
   let vectors: number[][];
   try {
-    vectors = await generateEmbedding(cfg, opts.model, 'probe');
+    vectors = await generateEmbedding(cfg, opts.model, 'probe', { kind: 'non_article', purpose: 'provider_probe' });
   } catch (err) {
     // LlmHttpError means the provider ANSWERED with an error status; the
     // failure an admin is most likely to cause — wrong port, service down,
@@ -340,6 +352,44 @@ async function countStragglerPages(): Promise<number> {
   return r.rows[0]?.n ?? 0;
 }
 
+/**
+ * Stragglers the article AI policy will never let the CANDIDATE provider
+ * fill (SPEC-WORK-001): `local_only` pages while the candidate's locality is
+ * not `local` at its current configuration revision, plus any `none` page
+ * still holding rows. Reported apart from provider failures so an operator
+ * can see that a swap is refused by policy, not by an endpoint — and that
+ * declaring the candidate local (or changing the pages' policy) is the fix.
+ */
+async function countPolicyBlockedStragglers(
+  state: Pick<ShadowMigrationState, 'providerId'>,
+  runner: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> } = { query },
+): Promise<number> {
+  const candidate = await loadProviderMetadata(runner, state.providerId);
+  const r = await runner.query(
+    `SELECT COUNT(*)::int AS n FROM pages p
+      WHERE p.deleted_at IS NULL AND COALESCE(p.page_type, 'page') <> 'folder'
+        AND p.ai_policy = 'local_only' AND NOT $1::boolean
+        AND (length(COALESCE(p.body_text, '')) >= 20
+          OR length(regexp_replace(COALESCE(p.body_html, ''), '<[^>]*>', '', 'g')) >= 20
+          OR EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id)
+          OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = p.id))`,
+    [candidate?.effectiveLocality === 'local'],
+  );
+  return (r.rows[0] as { n: number } | undefined)?.n ?? 0;
+}
+
+/** Called with the schema/page locks held: provider edits must also wait for
+ * this transaction. Neither already-filled vectors nor absent vectors waive
+ * current locality. This is a lifecycle gate, never a dispatch permit. */
+async function assertCandidatePolicyCoverage(client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }, providerId: string): Promise<void> {
+  await client.query('SELECT id FROM llm_providers WHERE id::text = $1 FOR SHARE', [providerId]);
+  if (!(await loadProviderMetadata(client, providerId))) {
+    throw new Error('Candidate provider policy unavailable — migration refused');
+  }
+  const blocked = await countPolicyBlockedStragglers({ providerId }, client);
+  if (blocked > 0) throw new Error(`${blocked} pages blocked by article AI policy — select a permitted candidate or explicitly change article policy through its authorized flow`);
+}
+
 async function shadowIndexesReady(state: ShadowMigrationState): Promise<boolean> {
   if (!state.indexed) return true;
   // BOTH shadow indexes (review r4): a crash between the two CREATE INDEX
@@ -391,16 +441,38 @@ async function readShadowMigrationStatus(): Promise<ShadowMigrationStatus | null
     const totalPages = await countBackfillPages();
     return { ...state, phase: 'swapped', totalPages, backfilledPages: totalPages, stragglerPages: 0, indexReady: true };
   }
-  const totalPages = await countBackfillPages();
-  const stragglerPages = await countStragglerPages();
+  const candidate = await loadProviderMetadata({ query }, state.providerId);
+  const populations = await query<{ total: number; missing: number; complete: number }>(
+    `WITH population AS (
+       SELECT p.id,
+         EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id) AS has_vectors,
+         EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id AND pe.embedding_next IS NULL) AS missing,
+         (p.ai_policy = 'all' OR $1::boolean) AS allowed
+       FROM pages p WHERE p.deleted_at IS NULL AND COALESCE(p.page_type, 'page') <> 'folder'
+         AND p.ai_policy IN ('all', 'local_only')
+         AND (EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id)
+           OR (p.ai_policy = 'local_only' AND NOT $1::boolean))
+         AND (length(COALESCE(p.body_text, '')) >= 20
+           OR length(regexp_replace(COALESCE(p.body_html, ''), '<[^>]*>', '', 'g')) >= 20
+           OR EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id)
+           OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = p.id))
+     ) SELECT COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE NOT has_vectors OR missing OR NOT allowed)::int AS missing,
+       COUNT(*) FILTER (WHERE has_vectors AND NOT missing AND allowed)::int AS complete
+       FROM population`, [candidate?.effectiveLocality === 'local'],
+  );
+  const totalPages = populations.rows[0]?.total ?? 0;
+  const stragglerPages = populations.rows[0]?.missing ?? 0;
   const indexReady = await shadowIndexesReady(state);
+  const policyBlockedPages = await countPolicyBlockedStragglers(state);
   return {
     ...state,
-    phase: stragglerPages === 0 && indexReady ? 'ready' : 'backfilling',
+    phase: stragglerPages === 0 && policyBlockedPages === 0 && indexReady ? 'ready' : 'backfilling',
     totalPages,
     backfilledPages: totalPages - stragglerPages,
     stragglerPages,
     indexReady,
+    ...(policyBlockedPages > 0 ? { policyBlockedPages } : {}),
   };
 }
 
@@ -431,27 +503,27 @@ async function abortedOutFromUnder(err: unknown): Promise<boolean> {
  */
 export async function runShadowBackfillJob(job?: {
   updateProgress?: (p: number | object) => Promise<void>;
-}): Promise<{ processed: number; failed: number } | 'no-active-migration' | 'aborted'> {
+}): Promise<{ processed: number; failed: number; blocked?: number } | 'no-active-migration' | 'aborted'> {
   let state = await getShadowMigrationState();
   if (!state || state.status !== 'active') return 'no-active-migration';
-
-  const cfg = await providerConfigFor(state.providerId);
-  if (!cfg) {
-    logger.error({ providerId: state.providerId }, 'Shadow migration provider vanished — leaving stragglers');
-    return { processed: 0, failed: 0 };
-  }
 
   const total = await countBackfillPages();
   let processed = 0;
   let failed = 0;
+  let blocked = 0;
   // Pages that failed THIS run are excluded from every later batch SELECT, so
   // a poison page cannot be re-selected forever (review r1, blocking): the
   // loop ends when every remaining NULL page is in this set. Values come from
   // the DB's integer PK column and are re-validated before interpolation.
   const failedPages = new Set<number>();
+  // Pages the article AI policy does not admit to the CANDIDATE provider
+  // (SPEC-WORK-001): no call is made, nothing is written, the page stays a
+  // straggler the swap gate reports apart from failures. Excluded from later
+  // batches of this run for the same reason as `failedPages`.
+  const blockedPages = new Set<number>();
 
   for (;;) {
-    const exclude = [...failedPages].filter((n) => Number.isInteger(n));
+    const exclude = [...failedPages, ...blockedPages].filter((n) => Number.isInteger(n));
     let batch: { rows: Array<{ page_id: number }> };
     try {
       batch = await query<{ page_id: number }>(
@@ -472,10 +544,42 @@ export async function runShadowBackfillJob(job?: {
       // inside a large batch (review r1).
       state = await getShadowMigrationState();
       if (!state || state.status !== 'active') return 'aborted';
+      const epoch = shadowStateFingerprint(state);
+      let allocated;
       try {
-        await shadowEmbedExistingRows(page_id, cfg, state.model);
+        allocated = await shadowEmbeddingAttempt(page_id, epoch, { providerId: state.providerId, model: state.model });
+      } catch (err) {
+        if (!(err instanceof ArticleStageRefusedError)) throw err;
+        blocked++;
+        blockedPages.add(page_id);
+        continue;
+      }
+      const { operation, attempt } = allocated;
+      const admission = await admitPageForProvider(page_id, 'embedding', state.providerId, state.model,
+        { operation, stage: 'shadow_embedding', attempt, preliminary: true });
+      if (!admission.admitted) {
+        blocked++;
+        blockedPages.add(page_id);
+        logger.info({ pageId: page_id, reason: admission.reason }, 'Shadow backfill skipped page — article AI policy does not admit the candidate provider');
+        continue;
+      }
+      try {
+        const cfg = await providerConfigFor(state.providerId).catch(() => null);
+        if (!cfg) {
+          await emitUnresolvedDecision(page_id, 'embedding',
+            { operation, stage: 'shadow_embedding', attempt }, 'policy_unavailable');
+          blocked++;
+          blockedPages.add(page_id);
+          continue;
+        }
+        await shadowEmbedExistingRows(page_id, cfg, state.model, admission, epoch, operation, attempt);
         processed++;
       } catch (err) {
+        if (err instanceof ArticleStageRefusedError) {
+          blocked++;
+          blockedPages.add(page_id);
+          continue;
+        }
         failed++;
         failedPages.add(page_id);
         logger.warn({ err, pageId: page_id }, 'Shadow backfill failed for page — left as straggler');
@@ -496,7 +600,7 @@ export async function runShadowBackfillJob(job?: {
     throw err;
   }
 
-  return { processed, failed };
+  return blocked > 0 ? { processed, failed, blocked } : { processed, failed };
 }
 
 /** Embed one page's existing chunk rows with the shadow model and fill embedding_next. */
@@ -504,7 +608,28 @@ async function shadowEmbedExistingRows(
   pageId: number,
   cfg: NonNullable<Awaited<ReturnType<typeof providerConfigFor>>>,
   model: string,
+  admission: Extract<Awaited<ReturnType<typeof admitPageForProvider>>, { admitted: true }>,
+  epoch: string,
+  operation: AiOperationContext,
+  firstAttempt: number,
 ): Promise<void> {
+  let article;
+  try {
+    const source = (await query<{ title: string; space_key: string; body_html: string }>(
+      'SELECT title, space_key, body_html FROM pages WHERE id = $1 AND deleted_at IS NULL', [pageId],
+    )).rows[0];
+    if (!source) throw new ArticleStageRefusedError();
+    article = await captureEmbeddingArticle(pageId, source.title, source.space_key, source.body_html);
+  } catch (err) {
+    // Preliminary success emitted nothing. Only this pre-transport boundary
+    // owns the refusal; catching the whole method would double-count final
+    // dispatch refusals and misreport publication as another inference.
+    await emitUnresolvedDecision(pageId, 'embedding',
+      { operation, stage: 'shadow_embedding', attempt: firstAttempt }, 'policy_unavailable',
+      { providerId: cfg.providerId, model });
+    throw err;
+  }
+  const stage = embeddingArticleStage(article, admission, 'shadow_embedding', operation);
   const rows = await query<{ chunk_index: number; chunk_text: string }>(
     `SELECT chunk_index, chunk_text FROM page_embeddings WHERE page_id = $1 AND embedding_next IS NULL ORDER BY chunk_index`,
     [pageId],
@@ -514,7 +639,13 @@ async function shadowEmbedExistingRows(
   const embeddings: Array<{ chunkIndex: number; text: string; embedding: number[] }> = [];
   for (let i = 0; i < rows.rows.length; i += EMBED_BATCH) {
     const slice = rows.rows.slice(i, i + EMBED_BATCH);
-    const vectors = await generateEmbedding(cfg, model, slice.map((r) => r.chunk_text));
+    // Later batches belong to this retained job, not a successor generation.
+    // Final transport admission emits the stale-source refusal before HTTP.
+    const attempt = i === 0 ? firstAttempt : await allocateEmbeddingAttempt(pageId, operation, 'shadow_embedding',
+      () => nextExplicitEmbeddingAttempt(article, operation), { providerId: cfg.providerId, model });
+    const vectors = await generateEmbedding(cfg, model, slice.map((r) => r.chunk_text), {
+      kind: 'article', stage: { ...stage, context: { ...stage.context, attempt } },
+    });
     for (let j = 0; j < slice.length; j++) {
       embeddings.push({ chunkIndex: slice[j]!.chunk_index, text: slice[j]!.chunk_text, embedding: vectors[j]! });
     }
@@ -523,6 +654,10 @@ async function shadowEmbedExistingRows(
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    // Schema first: swap/abort lock both tables before the candidate row.
+    await client.query('LOCK TABLE page_embeddings, pages IN ROW EXCLUSIVE MODE');
+    await validateEmbeddingPublicationOnClient(client, article, stage, model);
+    if (await shadowEpochFromClient(client) !== epoch) throw new ArticleStageRefusedError();
     for (const e of embeddings) {
       // Guarded write-back (review r1): the provider round-trip above is a
       // long lock-free window in which embedPage can replace the page's rows
@@ -542,7 +677,7 @@ async function shadowEmbedExistingRows(
     await client.query(
       `UPDATE pages SET page_avg_embedding_next = (
          SELECT CASE WHEN COUNT(*) FILTER (WHERE embedding_next IS NULL) = 0
-                     THEN AVG(embedding_next) END
+                     THEN AVG(embedding_next) FILTER (WHERE (metadata->>'source') IS DISTINCT FROM 'image_analysis') END
          FROM page_embeddings WHERE page_id = $1
        ) WHERE id = $1`,
       [pageId],
@@ -680,8 +815,17 @@ export async function performShadowSwap(opts?: {
     throw new Error('No active shadow migration to swap');
   }
   if (status.phase !== 'ready') {
+    // A policy straggler is a `local_only` (or `none`) page the candidate
+    // provider may not embed: swapping would leave it searchable by vectors
+    // the new model never produced, or drop it from search. Re-running the
+    // backfill cannot change that — only the candidate's locality or the
+    // pages' policy can (SPEC-WORK-001).
+    const policy = status.policyBlockedPages ?? 0;
+    const remedy = policy > 0
+      ? ` (${policy} blocked by article AI policy — declare the candidate provider local or change those pages' policy; a re-run cannot fill them)`
+      : ' — re-run the backfill';
     throw new Error(
-      `Shadow migration not ready to swap: ${status.stragglerPages} straggler pages${status.indexReady ? '' : ', shadow index missing'} — re-run the backfill`,
+      `Shadow migration not ready to swap: ${status.stragglerPages} straggler pages${status.indexReady ? '' : ', shadow index missing'}${remedy}`,
     );
   }
 
@@ -742,6 +886,7 @@ export async function performShadowSwap(opts?: {
       if (!preState || preState.status !== 'active') {
         throw new Error(`Migration state changed mid-swap (now ${preState?.status ?? 'absent'}) — swap refused`);
       }
+      await assertCandidatePolicyCoverage(client, preState.providerId);
       const straggle = await client.query(
         `SELECT COUNT(DISTINCT page_id)::int AS n FROM page_embeddings WHERE embedding_next IS NULL`,
       );
@@ -912,6 +1057,16 @@ export async function rollbackShadowMigration(opts?: {
       if (!revState || revState.status !== 'swapped') {
         throw new Error(`Migration state changed mid-rollback (now ${revState?.status ?? 'absent'}) — rollback refused`);
       }
+      // Lock the default-provider set too: an inherited previous assignment
+      // must not resolve to a different provider while the rename commits.
+      await client.query('LOCK TABLE llm_providers IN SHARE MODE');
+      const defaultProvider = (await client.query(
+        'SELECT id FROM llm_providers WHERE is_default = TRUE',
+      )).rows[0] as { id: string } | undefined;
+      const restoredProvider = revState.prev?.providerId ?? defaultProvider?.id;
+      if (!restoredProvider) throw new Error('Previous provider unavailable — rollback refused');
+      await assertCandidatePolicyCoverage(client, restoredProvider);
+      if (await embeddingPolicyOverride()) throw new Error(POLICY_OVERRIDE_MSG);
       revertedFrom = revState.model;
       revertedTo = revState.prev?.model ?? null;
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding TO embedding_next`);

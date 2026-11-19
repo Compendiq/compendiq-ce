@@ -11,7 +11,8 @@
  * first touched, so every consumer inherits it.
  */
 import { describe, expect, it } from 'vitest';
-import { distinctDerivedImages, readDerivedProvenance } from './derived-provenance.js';
+import { buildDerivedImageSources, distinctDerivedImages, readDerivedProvenance } from './derived-provenance.js';
+import type { PageIdentityReader } from './page-identity.js';
 
 const COMPLETE = {
   page_title: 'Checkout outage',
@@ -92,31 +93,97 @@ describe('distinctDerivedImages', () => {
     };
   }
 
-  it('orders by the carrying row’s fused rank, then part, then page', () => {
-    // There is no cross-modal score to sort on (ADR-027 `:4318`), so the row's
-    // own fused rank is the only ranking quantity — and the fallbacks make the
-    // order TOTAL, which is what keeps two identical requests citing the same
-    // pictures in the same order.
+  /**
+   * An in-memory identity reader: every page is a Confluence page whose
+   * directory key is `c<id>`. Injected through `buildDerivedImageSources`'s
+   * own parameter — the read is not what these cases are about.
+   */
+  function identities(): PageIdentityReader {
+    return {
+      async load(pageIds) {
+        return new Map(pageIds.map((id) => [id, { id, confluence_id: `c${id}`, source: 'confluence' as const }]));
+      },
+    };
+  }
+
+  it('orders by the carrying row’s position in the final array — before score, part, page and key (#1716)', () => {
+    // The array order IS the pipeline's verdict (`SearchResult`'s contract in
+    // `rag-service.ts`): reranking, the ranking prior, MMR and identifier pins
+    // reorder rows whose fused `score` no longer describes that order. So the
+    // row at position 0 leads with the lowest score, and an earlier position
+    // beats an earlier part and a lower page id.
     const images = distinctDerivedImages([
       row(2, 'b.png', 0.02, 2),
       row(1, 'a.png', 0.05, 2),
       row(1, 'a0.png', 0.05, 1),
       row(3, 'c.png', 0.02, 2),
     ]);
-    expect(images.map((i) => i.derived.attachmentKey)).toEqual(['a0.png', 'a.png', 'b.png', 'c.png']);
+    expect(images.map((i) => i.derived.attachmentKey)).toEqual(['b.png', 'a.png', 'a0.png', 'c.png']);
   });
 
-  it('breaks the last tie on attachmentKey, so the order is TOTAL as documented', () => {
-    // Review r1 finding 4. Two DIFFERENT images of the SAME page at the same
-    // fused score and the same part tie on every earlier key, and without
-    // this fallback they resolve by `Array#sort` stability — i.e. by the
-    // order retrieval happened to return the rows in, which is not a
-    // property either caller controls. The docstring claims the order is
-    // total; this is what makes that true.
-    const forward = distinctDerivedImages([row(1, 'zulu.png', 0.05), row(1, 'alpha.png', 0.05)]);
-    const reversed = distinctDerivedImages([row(1, 'alpha.png', 0.05), row(1, 'zulu.png', 0.05)]);
-    expect(forward.map((i) => i.derived.attachmentKey)).toEqual(['alpha.png', 'zulu.png']);
-    expect(reversed.map((i) => i.derived.attachmentKey)).toEqual(['alpha.png', 'zulu.png']);
+  it('follows the input order rather than the attachment key', () => {
+    // Before #1716 the key decided this pair whatever the input order, on the
+    // reasoning that the order retrieval returned the rows in was arbitrary.
+    // It is the final result order, so it decides.
+    const forward = [row(1, 'zulu.png', 0.05), row(1, 'alpha.png', 0.05)];
+    expect(distinctDerivedImages(forward).map((i) => i.derived.attachmentKey)).toEqual(['zulu.png', 'alpha.png']);
+    expect(distinctDerivedImages([...forward].reverse()).map((i) => i.derived.attachmentKey))
+      .toEqual(['alpha.png', 'zulu.png']);
+  });
+
+  it('puts a reranked head first although the row below it has the higher fused score, and cites only it at max 1', async () => {
+    // The issue's rerank case: the cross-encoder moved B to position 0 (0.95
+    // against 0.10) while A kept the higher fused score.
+    const rows = [
+      { ...row(2, 'b.png', 0.01613), rerankScore: 0.95 },
+      { ...row(1, 'a.png', 0.01639), rerankScore: 0.1 },
+    ];
+    expect(distinctDerivedImages(rows).map((i) => i.derived.attachmentKey)).toEqual(['b.png', 'a.png']);
+    const cited = await buildDerivedImageSources(rows, 1, identities());
+    expect(cited.map((s) => s.attachmentKey)).toEqual(['b.png']);
+  });
+
+  it('puts a pinned derived row (score 0) at position 0 first, cites only it at max 1, and keeps every row’s score', async () => {
+    // A NEW pin carries `score: 0` and leads by array position alone
+    // (`lookupIdentifier`); before #1716 its picture sorted LAST. The score
+    // still travels unchanged, and `similarity` stays null: no cross-modal
+    // score (ADR-027 D12).
+    const rows = [
+      { ...row(7, 'inc.png', 0), pinned: true as const },
+      row(1, 'a.png', 0.0328),
+      row(2, 'b.png', 0.0161),
+    ];
+    expect(distinctDerivedImages(rows).map((i) => [i.derived.attachmentKey, i.score]))
+      .toEqual([['inc.png', 0], ['a.png', 0.0328], ['b.png', 0.0161]]);
+    expect((await buildDerivedImageSources(rows, 1, identities())).map((s) => s.attachmentKey)).toEqual(['inc.png']);
+    const cited = await buildDerivedImageSources(rows, 4, identities());
+    expect(cited.map((s) => [s.attachmentKey, s.score, s.similarity]))
+      .toEqual([['inc.png', 0, null], ['a.png', 0.0328, null], ['b.png', 0.0161, null]]);
+    expect(cited[0]).toEqual({
+      kind: 'image',
+      pageId: 7,
+      pageTitle: 'Page 7',
+      spaceKey: 'OPS',
+      attachmentUrl: '/api/attachments/c7/inc.png',
+      attachmentStore: 'confluence',
+      attachmentKey: 'inc.png',
+      contentHash: 'sha256:7-inc.png',
+      analysisVersion: 1,
+      similarity: null,
+      score: 0,
+    });
+  });
+
+  it('cites a picture two rows carry ONCE, from the EARLIER row — its part and its score', () => {
+    // Two parts of one multi-part serialization in one top-K. The later row
+    // has the earlier part and the higher score; the earlier row still wins.
+    // The order depends on the input's values and order only: a separately
+    // built copy of the same input returns the identical list.
+    const rows = [row(1, 'x.png', 0.01, 2), row(2, 'y.png', 0.03, 1), row(1, 'x.png', 0.05, 1)];
+    const images = distinctDerivedImages(rows);
+    expect(images.map((i) => [i.derived.attachmentKey, i.derived.part, i.score]))
+      .toEqual([['x.png', 2, 0.01], ['y.png', 1, 0.03]]);
+    expect(distinctDerivedImages(structuredClone(rows))).toEqual(images);
   });
 
   it('collapses several rows of ONE picture to one image', () => {

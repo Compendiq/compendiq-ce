@@ -226,6 +226,24 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     );
   }
 
+  it.each([false, true])('defers restrictive Notion import (existing=%s) without publishing policy or labels', async (existing) => {
+    if (existing) {
+      await query(`INSERT INTO pages (title, source, created_by_user_id, visibility, notion_page_id, body_html, body_text, labels)
+        VALUES ('Before', 'standalone', $1, 'private', 'restricted', '<p>before</p>', 'before', ARRAY['ops', 'all-ai'])`, [userId]);
+    }
+    const before = (await query('SELECT id, title, body_html, labels, ai_policy, ai_policy_revision FROM pages')).rows;
+    const client = await start({
+      validToken: TOKEN,
+      pages: { restricted: { object: 'page', id: 'restricted', properties: {
+        ...titleProp('Restricted'), Tags: { type: 'multi_select', multi_select: [{ name: 'no-ai' }, { name: 'ops' }] },
+      } } },
+      blockChildren: { restricted: [paragraph('body', 'Restricted body')] },
+    });
+    const result = await runNotionImport({ userId, client, pageIds: ['restricted'], visibility: 'private', overwriteExisting: true });
+    expect(result[0]).toMatchObject({ status: 'fail', reason: expect.stringContaining('ai_policy_enforcement_unavailable') });
+    expect((await query('SELECT id, title, body_html, labels, ai_policy, ai_policy_revision FROM pages')).rows).toEqual(before);
+  });
+
   it('keeps the selected Knowledge Base body and nests a wiki database before its rows regardless of input order', async () => {
     const rootId = 'aabbccdd-1122-3344-5566-778899aabbcc';
     const rootAlias = rootId.replace(/-/g, '').toUpperCase();

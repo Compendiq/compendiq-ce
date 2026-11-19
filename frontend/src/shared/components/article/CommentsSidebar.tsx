@@ -37,7 +37,7 @@ function useAddComment(pageId: string) {
     mutationFn: (data: { body: string; parentId?: string }) =>
       apiFetch<Comment>(`/pages/${pageId}/comments`, {
         method: 'POST',
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, ...(data.parentId ? { parentId: Number(data.parentId) || data.parentId } : {}) }),
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['comments', pageId] });
@@ -81,28 +81,14 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
 
   const { unresolvedThreads, resolvedThreads, totalCount } = useMemo(() => {
     if (!comments) return { unresolvedThreads: [], resolvedThreads: [], totalCount: 0 };
-    // Build threads: top-level comments with nested replies
-    const topLevel = comments.filter((c) => !c.parentId);
-    const replyMap = new Map<string, Comment[]>();
-    for (const c of comments) {
-      if (c.parentId) {
-        const existing = replyMap.get(c.parentId) ?? [];
-        existing.push(c);
-        replyMap.set(c.parentId, existing);
-      }
-    }
-    const threads = topLevel.map((tl) => ({
-      ...tl,
-      resolved: Boolean(tl.resolved ?? tl.isResolved),
-      replies: (replyMap.get(tl.id) ?? []).map((r) => ({
-        ...r,
-        resolved: Boolean(r.resolved ?? r.isResolved),
-      })),
+    const threads = comments.map((comment) => ({
+      ...comment,
+      resolved: Boolean(comment.resolved ?? comment.isResolved),
     }));
     return {
       unresolvedThreads: threads.filter((t) => !t.resolved),
       resolvedThreads: threads.filter((t) => t.resolved),
-      totalCount: topLevel.length,
+      totalCount: comments.length,
     };
   }, [comments]);
 

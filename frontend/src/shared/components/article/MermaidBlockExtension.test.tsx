@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import type { Editor as TipTapEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { MermaidBlock } from './MermaidBlockExtension';
 import { _resetMermaidCache, loadMermaid } from '../diagrams/MermaidDiagram';
@@ -186,5 +187,42 @@ describe('MermaidBlockExtension', () => {
     const outputHtml = editorInstance!.getHTML();
     expect(outputHtml).toContain('language-mermaid');
     expect(outputHtml).toContain('graph TD');
+  });
+
+  // #1749: a Confluence code macro whose language is mermaid is parsed by
+  // MermaidBlock (priority 200), not the code block, so MermaidBlock carries its
+  // title (data-title) and other parameters (data-macro-params) too. Editor and
+  // ArticleViewer both register this extension; read mode's copy serializes it.
+  it('keeps a Confluence code macro\'s title and parameters on a mermaid block (#1749)', async () => {
+    const html =
+      '<pre data-title="Flow" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;}">'
+      + '<code class="language-mermaid">graph TD\n  A --> B</code></pre>';
+
+    let editorInstance: TipTapEditor | null = null;
+
+    function EditorWithRef({ content }: { content: string }) {
+      const editor = useEditor({
+        extensions: [
+          StarterKit.configure({ codeBlock: false }),
+          MermaidBlock,
+        ],
+        content,
+        immediatelyRender: false,
+      });
+      editorInstance = editor;
+      return <EditorContent editor={editor} />;
+    }
+
+    render(<EditorWithRef content={html} />);
+
+    await waitFor(() => {
+      expect(editorInstance).toBeTruthy();
+    });
+
+    const pre = new DOMParser().parseFromString(editorInstance!.getHTML(), 'text/html').querySelector('pre');
+    expect(pre?.querySelector('code')?.className).toBe('language-mermaid');
+    expect(pre?.querySelector('code')?.textContent).toBe('graph TD\n  A --> B');
+    expect(pre?.getAttribute('data-title')).toBe('Flow');
+    expect(JSON.parse(pre?.getAttribute('data-macro-params') ?? 'null')).toEqual({ linenumbers: 'true' });
   });
 });

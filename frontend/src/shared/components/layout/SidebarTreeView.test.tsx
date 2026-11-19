@@ -800,6 +800,31 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('API Reference')).toBeInTheDocument();
   });
 
+  it('detaches a nested homepage before promoting its children (#1815)', () => {
+    mockTreeData = {
+      items: [
+        defaultTreeData.items[0]!,
+        defaultTreeData.items[1]!,
+        { ...defaultTreeData.items[2]!, parentId: 'child-1' },
+        { ...defaultTreeData.items[3]!, parentId: 'root-1' },
+      ],
+      total: 4,
+    };
+    mockSpacesData = [{ ...defaultSpaces[0]!, homepageId: 'child-1' }];
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByLabelText('Expand'));
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Configuration')).toHaveLength(1);
+    expect(screen.getAllByText('API Reference')).toHaveLength(1);
+    const rows = screen.getAllByRole('treeitem');
+    expect(rows.map((row) => row.getAttribute('data-page-id')).sort()).toEqual(
+      ['root-1', 'child-2', 'root-2'].sort(),
+    );
+    expect(rows.filter((row) => row.tabIndex === 0)).toHaveLength(1);
+  });
+
   it('keeps the homepage visible when it is the only page in the space (#961)', () => {
     mockTreeData = {
       items: [
@@ -845,17 +870,37 @@ describe('SidebarTreeView', () => {
     expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
   });
 
-  it('sits the space selector left of collapse, at the collapse control height', () => {
+  it('sits the space selector in the h-12 toolbar and places collapse in the bottom footer', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
     const selector = screen.getByTestId('space-selector-toggle');
     const collapse = screen.getByLabelText('Collapse sidebar');
-    expect(selector.compareDocumentPosition(collapse) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const trash = screen.getByTestId('sidebar-trash');
     expect(selector.className).toMatch(/\bh-8\b/);
     expect(selector).not.toHaveTextContent('Every connected space');
-    expect(collapse.parentElement).toContainElement(selector);
-    expect(collapse.parentElement!.className).toMatch(/\bh-12\b/);
-    expect(collapse.parentElement!.className).toContain('panel-toolbar');
+    const toolbar = selector.closest('.panel-toolbar');
+    expect(toolbar).not.toBeNull();
+    expect(toolbar!.className).toMatch(/\bh-12\b/);
+    expect(collapse.parentElement).toContainElement(trash);
+    expect(collapse.parentElement!.className).toContain('border-t');
+  });
+
+  it('omits embedded main nav when embedMainNav is false in both expanded and collapsed states while preserving app-sidebar and collapse/expand', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    const { unmount } = render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+    const expandedAside = screen.getByRole('complementary', { name: 'Page tree' });
+    expect(expandedAside).toHaveClass('app-sidebar');
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
+    expect(screen.getByRole('separator', { name: 'Resize tree sidebar' })).toBeInTheDocument();
+    unmount();
+
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+    const collapsedAside = screen.getByRole('complementary', { name: 'Page tree' });
+    expect(collapsedAside).toHaveClass('app-sidebar');
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
   });
 
   it('shows collapse sidebar button in expanded sidebar header', () => {

@@ -202,7 +202,14 @@ class GcmDecryptTransform extends Transform {
         throw new BackupCryptoError('Backup truncated: missing auth tag');
       }
       this.decipher.setAuthTag(this.hold);
-      const tail = this.decipher.final();
+      let tail: Buffer;
+      try {
+        tail = this.decipher.final();
+      } catch {
+        // OpenSSL wording differs across versions ("unable to authenticate data" vs
+        // "bad decrypt"); surface a stable, version-independent error instead.
+        throw new BackupCryptoError('Backup truncated or authentication failed');
+      }
       if (tail.length) this.push(tail);
       cb();
     } catch (err) {

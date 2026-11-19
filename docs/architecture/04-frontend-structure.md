@@ -66,32 +66,70 @@ flowchart TB
     class stores,zAuth,zTheme,zUI,zAV,zDock,zCmd,zKb st
 ```
 
+## Stream completion and partial output (#1801)
+
+```mermaid
+flowchart LR
+    wire["streamSSE<br/>parsed frames until EOF"]
+    ai["AiContext<br/>chat and generation"]
+    edit["useImproveStream<br/>editor preview"]
+    workers["WorkersTab<br/>embedding progress"]
+    done["LLM done: true<br/>continue for later metadata"]
+    complete["commit / enable application"]
+    incomplete["EOF without done<br/>retain partial + error"]
+    embed["type: complete<br/>required for success"]
+    wire --> ai --> done --> complete
+    wire --> edit --> done
+    ai --> incomplete
+    edit --> incomplete
+    wire --> workers --> embed
+```
+
+An LLM error or incomplete stream keeps any partial output visible without
+running success callbacks. In chat the partial stays the assistant message's
+`content` (rendered as ordinary Markdown) and the failure travels as a separate
+short `interruption` string beside `isError`; both renderers paint only that
+notice destructive and the `role="alert"` announcers speak only it. The editor
+preview keeps that text selectable but disables Replace and Insert.
+Cancellation is separate. A cached LLM response can finish with `done: true`
+and no `final` frame; later metadata still matters.
+
 ## Authenticated inset shell
 
-`AppLayout` paints a flat viewport **chassis** (`--app-chassis`, inset on
-`md+`). The top app header — logo, then the Pages / AI / Graph tabs
-(`MainNavHeaderTabs`), then the session cluster — and the left navigation
-column (`MainNavChassisRail` hosting the route's sidebar) are transparent over
-it, so the frame is one colour on every side of a single rounded **workspace
-card**, which carries the light `--app-workspace-shadow` (ADR-010 v1.7). The
-composition is:
+`AppLayout` paints the diagonal gradient **chassis** (`--app-chassis` with `--shell-grad-*` + `--shell-pool`, inset on `md+`). The top app header (logo and session cluster, `--app-header-height`)
+and the compact left destination icon rail (`MainNavChassisRail`, matching
+`--app-nav-rail-width: var(--app-header-height)`, rendering the icon-only
+Pages / AI / Graph links) are transparent over `--app-chassis`, forming a
+uniform-width L-shaped frame around a single rounded **workspace card**
+(`app-workspace`, carrying `--app-workspace-shadow`). Inside the frosted translucent workspace card (`--panel-bg` over the shell
+gradient with `backdrop-filter: blur(16px)`, `--panel-border`, `--panel-divider`, and `--rail-divider`), the
+collapsible/resizable route sidebar (`SidebarTreeView` / `AiConversationsSidebar`
+/ `SettingsSidebar` on `--app-sidebar-translucent`, slightly darker than `<main>`
+with `background-clip: padding-box`) sits directly to the left of the transparent `<main>`
+pane and attached inspector (`--app-rail-bg: transparent`, divided by `--rail-divider`) on article routes,
+letting the chassis gradient show through while keeping in-flow workspace cards,
+toolbars, wells, Library search, and both article/inspector headers lightly translucent (`--workspace-card-bg` /
+`--workspace-toolbar-bg` / `--workspace-well-bg`). The composition is:
 ```mermaid
 flowchart TB
     chassis["viewport chassis --app-chassis (flat)"]
-    header["top app header<br/>logo · Pages / AI / Graph tabs · session"]
+    header["top app header<br/>logo · session"]
     shell["app shell (no overflow clip)"]
-    left["left column MainNavChassisRail<br/>SidebarTreeView | AiConversationsSidebar | SettingsSidebar<br/>transparent, resizable"]
-    card["workspace card --app-shell-* + --app-workspace-shadow<br/>main [+ attached inspector on article routes]"]
+    rail["left icon rail MainNavChassisRail<br/>Pages / AI / Graph icons only · width = header height"]
+    card["workspace card --app-shell-* + --app-workspace-shadow<br/>route sidebar (--app-sidebar-bg) | main [--color-card] | [inspector]"]
 
     chassis --> header
     chassis --> shell
-    shell --> left
+    shell --> rail
     shell --> card
 ```
 
 Mobile (`<md`) is edge-to-edge: inset and shell radius are 0, the
 destinations and sidebar live in the navigation drawer, and the inspector is a
 sheet.
+The navigation drawer traps focus only while open below `md`. Crossing to
+`md` or wider releases containment and clears its open state, so returning
+to mobile does not reopen the drawer.
 
 ## Article route panels (#1126)
 
@@ -176,9 +214,12 @@ enters the viewport, not on ordinary re-renders or background refetches.
   manifest identity (`expectedManifestDigest` + `expectedContentRevision`),
   and the badge, the editor gate and the tree follow the re-read page. A
   refusal keeps the operator's typed text so a stale preview or a busy room
-  is retried, not retyped. The dialogs restore focus to the control that
-  opened them **after** the portal unmounts — focusing in the same tick lands
-  on `body`, which a browser run caught and jsdom did not.
+  is retried, not retyped. Focus moves only **after** the portal unmounts:
+  a dismissal returns it to the control that opened the dialog, and a
+  success hands it to the section heading if the pressed confirm still owned
+  it (decided when the dialog closes). Focusing while the modal is mounted is
+  pulled back by its focus trap and then lands on `body` — a browser run
+  caught both paths, after a keyboard-confirmed thaw for the second.
 - `FrozenBadge` is neutral ink plus a lock glyph in both forms. It is not a
   status hue: amber, green and red stay reserved pipeline signals, and the
   glyph is the channel that survives `forced-colors` and colour blindness.
@@ -204,7 +245,29 @@ enters the viewport, not on ordinary re-renders or background refetches.
   marked stale in amber and offers no vote; an `approved` proposal carrying a
   `finalizeError` reports the named failure and the explicit retry the server
   requires, because the freeze happens inside the final approval and nothing
-  reschedules it.
+  reschedules it. That error is a reason slug rendered through
+  `governanceRefusal`; an older row holding prose is shown verbatim. A final
+  vote answers `finalized` when its freeze completed, or `approved` with a
+  `finalizeError` when it did not, which is a recorded vote, not a refusal.
+  After a completed freeze the re-read page detail reports
+  `governanceProposalStatus: 'finalized'` with the id of the proposal whose
+  approvals froze its **current** baseline, so the section reads that
+  proposal, says the approvals froze the article and lists the votes as a
+  record with no controls; after a thaw the page reports `none` again. A
+  frozen page never offers **Request approval**, whatever its status says
+  (one frozen while the space was ungoverned reports `none`), because the
+  server refuses a proposal on it.
+  Every governed mutation invalidates the page and the proposal when it
+  **settles**, success or refusal, because a refusal can still have moved
+  server state. The one exception is `governance_license_required`: the
+  client's licence view can be stale, so that refusal (from a mutation or
+  the proposal read) latches the unlicensed branch with no further
+  governance request — the proposal is not re-read on settle — until the
+  licence `useEnterprise()` reports changes identity or validity. A latch
+  taken from the proposal read is also released by a later successful read
+  (a remount can start from the cached refusal while a fresh read is in
+  flight). It is not `governance_unavailable`, which means the workflow
+  could not be reached.
 - **Retained evidence is a disclosure, not a second list** (`PageBaselineHistory`).
   It fetches only once opened, pages on the server's cursor, and keeps the
   same three claims apart as the section above it: the server's immutable
@@ -213,9 +276,10 @@ enters the viewport, not on ordinary re-renders or background refetches.
   article and labelled as unverified. A reference id renders as text, never as
   a link, and a failed read is a failure rather than an article that was never
   frozen.
-- **Every protected-write entry point on the article route shares one refusal.**
-  Edit, the empty-article `Add content`, the shortcuts that reach them, the
-  draw.io overlay and the attachment write behind it all go through
+- **Every protected-write entry point on the article route is withheld or
+  refused on a frozen article.** Edit, the empty-article `Add content` (no
+  longer rendered once frozen), the shortcuts that reach them, the draw.io
+  overlay and the attachment write behind it all go through
   `contentWriteRefusal`, which distinguishes *frozen* from *not yours to
   change* because the next step differs. `DrawioEditor` has no read-only mode,
   so a frozen article supplies **no** `onEditDiagram` callback and the viewer
@@ -224,7 +288,19 @@ enters the viewport, not on ordinary re-renders or background refetches.
   AI `Apply` is a protected write too: the dock and the improve diff withdraw
   the control and keep the generated text, and a **423** from
   `/llm/improvements/apply` is reported as a refusal that changed nothing, not
-  as a re-runnable failure.
+  as a re-runnable failure. The other server-admitted writes
+  (`page-write-admission` intents) are not offered at all while frozen: the
+  page icon is shown but not editable, the inspector withholds Auto-tag
+  (labels), `Move to Confluence…`/the Danger zone (relocation, Confluence
+  delete), `Move to trash`, `Pull latest from Confluence` and Version
+  history's Restore, and `Alt+Shift+D` answers with the frozen reason
+  instead of the trash confirm. Reading, version history and diffs, Pin,
+  Show in graph, Export PDF, Verify and the derived-data maintenance actions
+  stay.
+  The lifecycle heading is a programmatic focus target, not a control, so it
+  draws its ring only on `:focus-visible`: the shared `nm-focus-ring` keeps a
+  transparent outline at rest, which `forced-colors: active` paints as a
+  permanent box.
 - **Settings → Governance → Article baselines** (`ArticleBaselinesTab`) is the
   admin surface: baseline creation activation with the deployment's readiness
   blockers in prose, and per space the CE governance marker plus — under an
@@ -234,6 +310,15 @@ enters the viewport, not on ordinary re-renders or background refetches.
   cluster, and once baselines exist a non-enforcing build is not a rollback
   path. The article inspector links admins here when a policy is refusing
   their direct freeze (`BASELINE_SETTINGS_PATH`).
+- **Settings → Governance → Article AI policy** (`ArticleAiPolicyActivationTab`,
+  #1881) turns the CE-owned enforcement switch on or off through
+  `PUT /admin/ai-policy/activation`. Blockers render by code with their
+  details; the legacy-client acknowledgement appears only when every blocker
+  is overridable; both transitions confirm first and actions stay mounted with
+  `aria-disabled`. Session-issuing fetches (`apiFetch`, refresh, logout, OIDC
+  exchange, setup-admin) carry `X-Compendiq-Client-Protocol` through
+  `shared/lib/client-protocol.ts`, and a `client_reload_required` refusal is
+  shown as a reload prompt, never a login failure.
 - Library rows and search results carry the same compact lock as the trees,
   fed by the freeze summary fields the contract puts on every page shape.
   Freezing does not bump `pages.version`, so `PageListItem`'s memo comparator
@@ -282,6 +367,98 @@ enters the viewport, not on ordinary re-renders or background refetches.
   that existed only to keep a pending seed from firing at whatever document
   loaded next. Every request now starts at a chip or the composer.
 
+## Article AI policy surfaces (#283)
+
+The shared CE bundle carries the article AI policy UI (`all` / `local_only` /
+`none`) and provider locality (`local` / `external`); there is no EE
+frontend overlay. The logic lives in `shared/lib/article-ai-policy.ts`, the
+chips in `shared/components/badges/AiPolicyChips.tsx`.
+
+- **Policy and locality are categories, not statuses.** `AiPolicyChip`
+  (with a `compact` header form) and `LocalityChip` are neutral ink plus a
+  glyph, like `FrozenBadge`: the glyph survives `forced-colors` and colour
+  blindness. No Steel fill, no green seal, no amber, and the words never say
+  "verified" — locality is an administrator *declaration* that Compendiq does
+  not independently verify (`LOCALITY_HELP_TEXT`).
+- **The selector is capability-gated by the server**
+  (`canShowPolicySelector` validates the page-detail contract and requires
+  `canChangeAiPolicy === true`, `aiPolicyActivation === 'active'`, a known
+  policy and its revision); read access or shared visibility alone never
+  shows it. Missing fields and foundation-only activation fail closed, not
+  as `all`. A capability-name array is not the server's wire contract. `selectorReducer` is never optimistic: `saved` follows only a
+  server success, a 409 keeps the draft with `conflict`, and the reload the
+  conflict offers adopts the committed policy/revision, keeps the draft for
+  review and clears the stale-revision conflict.
+- **`no_ai` confirmation names the real effect** (`NO_AI_CONFIRMATION`):
+  vectors, image analyses, summaries and quality results are removed;
+  authored content, attachments, versions and keyword search remain; history
+  is retained but may no longer replay; sent work cannot be recalled.
+- **Editor gating is one verdict for mouse, keyboard and programmatic
+  paths** (`isEditorAiAllowed`, failing closed on unknown policy) with an
+  accessible prose reason (`editorAiUnavailableReason`); ghost text is
+  reconciled against the policy/revision snapshot it was generated under and
+  dropped on any change (`reconcileGhostText`).
+- **History refusal** (`handleChatRefusal`) keeps the draft:
+  `ai_history_not_replayable` offers New chat, `ai_policy_unavailable`
+  offers retry without reclassifying the history; both say nothing was sent.
+- **Locality is never auto-selected.** `LocalityDeclaration` starts null, an
+  endpoint edit clears it, and `localityToSubmit` sends `local` only when
+  Local was explicitly chosen for exactly the endpoint being saved —
+  otherwise External. Connection or vision probes never touch it.
+- **Worker states** `policy_blocked` and `recovering` render as their own
+  tones in `WorkerStatusBadge`, never as success or failure, with the block
+  reason as visible text wired by `aria-describedby`, not a `title`.
+  Each instance generates a stable unique description ID when the caller
+  supplies none, so multiple blocked stages cannot announce another stage's
+  reason. Recovery removes the obsolete description association.
+- The Library filter helpers (`pagesQueryKey` / `pagesSearchParams`) put
+  `aiPolicy` on the real list query key and request; "All articles" is the
+  absence of a filter, not the `all` value.
+
+These helpers and chips are the shared vocabulary; mounting them into the
+inspector Details section, the article header, the Library filter row, the
+editor menus, the dock and the provider editor is tracked against #283 and is
+not yet wired in this tree.
+
+## Frontend test determinism
+
+The Vitest suite runs at normal concurrency on a loaded CI runner, so a test
+that passes only when the machine is idle is a defect in the test. These
+conventions keep the suite honest without inflating timeouts, adding retries
+or skipping cases:
+
+- **Assert consumer behaviour, not a mock's echo.** A test pins what a
+  consumer can observe through the public contract (conversation contents,
+  readiness, mode, draft, thread isolation). It does not assert a value that
+  only proves a mock answered — the server resolves chat centrally and
+  ignores the request body's `model`, so `AiContext.threads.test.tsx` does not
+  wait for a literal default-model string.
+- **Await stream completion before a second action.** A seeded user bubble
+  precedes the async SSE iterator finishing; it is not a readiness signal for
+  the disabled action selector. Sequential dock tests supply distinct answers
+  at the network boundary, await the completed answer plus removal of the
+  streaming indicator and enabled controls, then send the next action. Assert
+  both questions and answers remain in the same thread. Unmount in `finally`
+  and clear the render's query client so assertion failures also clean up.
+- **Await an independent source only when it is the subject.** Two queries
+  that nothing orders (conversation hydration and the default-model lookup,
+  for instance) may settle in either order. A test that asserts one must not
+  silently depend on the other having finished first.
+- **Use direct state setup for tests unrelated to typing.** `PagesPage`
+  reads search, mode, space, filters and page from the URL, so a test about
+  banner copy, pagination names or row provenance renders straight at the
+  supported deep link (`/?mode=semantic&search=…`) instead of typing through
+  the 300 ms search debounce and switching modes through unrelated controls.
+  Only the tests whose subject *is* the debounce or the gesture drive it.
+- **Scope expensive DOM queries.** `getByRole` computes an accessible name
+  for every candidate; against the 600+ button icon grid a page-wide query
+  for a colour swatch is the slowest step of the test. `within(...)` the
+  smallest container that holds the target (`page-icon-color-row`).
+- **Shims install once per test.** `installVirtualizerRectShim` runs in
+  `beforeEach` and its restore in `afterEach`; a second installation inside a
+  test captures the shimmed function as the "original", so the real
+  `getBoundingClientRect` is never restored for the tests that follow.
+
 ## Collaborative editing (#1447, #276)
 
 Realtime CRDT editing is **opt-in** (`GET /api/collab/config` →
@@ -304,6 +481,7 @@ flowchart TB
     fence["Lifecycle / authority / document reset<br/>or connection loss"]
     draft["Mounted inert or offline draft<br/>no automatic replay"]
     recovery["Download draft<br/>or confirmed Open current version"]
+    join["Before first sync: one reason message<br/>Retry for rate_limited after the window or an interrupted join<br/>no draft · title and tags read-only · Save blocked"]
     sse["usePresence SSE (issue 301)"]
     stack["PresenceAvatarStack<br/>merge by userId · pencil = collab room"]
 
@@ -313,7 +491,8 @@ flowchart TB
     ed --> save --> api --> ack
     ack -->|captured state changed meanwhile| stay
     ack -->|unchanged| exit
-    hook --> fence --> draft --> recovery
+    hook -->|before first sync| join
+    hook -->|after first sync| fence --> draft --> recovery
     hook --> stack
     sse --> stack
 ```
@@ -329,6 +508,16 @@ flowchart TB
   and transport generation and contain the captured client state. If
   title/labels or the Y.Doc change while the request is in flight, the
   acknowledged capture is saved but the editor stays open with the later edits.
+- **The ordinary versioned PUT is based on the editing session (#1746).** The
+  flag-off Save sends `editBaseVersionRef`, not the live page query: Edit,
+  Restore draft and Edit published version take it — and the title — from the
+  page on screen, and only the session's own successful PUT replaces it (with
+  the version `useUpdatePage` read back and validated). Background refetches
+  never move it, and a 409, `confluence_modified` or any other failure keeps
+  it, so every later Save of a stale draft is refused again; the conflict
+  toast's **Reload** leaves edit mode with the local draft intact and the next
+  Edit offers it. A newer version this session did not write — another user,
+  another tab, a version restore or an inbound sync — is a conflict.
 - **Save is single-flight per editing session.** `PageViewPage` claims the
   flight synchronously before draw.io draining (the first await), so the Save
   button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the
@@ -349,6 +538,22 @@ flowchart TB
   `Open current version` requires explicit confirmation, then refetches and
   discards only after a successful refetch; failure leaves the draft in place.
   These are editor recovery controls, not #277's baseline-management UI.
+- **Before the first sync there is no draft (#1895).** Until
+  `collabHasSynced`, the editor slot is one `role="status"` region that owns
+  the screen. It shows connecting, *could not connect — retrying* (a
+  transient close that y-websocket retries), or one sentence for the refusal:
+  4401 without a session, each 4403 reason, 4404, or a lifecycle, permission or
+  reset control. The read-only banner, `Download draft` and title/tag/icon
+  editing wait for the first sync, and Save stays blocked even after
+  `writable_admission`; `Ctrl`/`Cmd`+`S` says there is nothing to save yet.
+  `Retry` appears for `rate_limited` (inert via `aria-disabled` until
+  `COLLAB_UPGRADE_WINDOW_SEC` after the refusal) and for an interrupted join.
+  It stays mounted as `Retrying…` until the attempt settles (the first sync or
+  any refusal, including a lifecycle, permission or reset one), then hands
+  orphaned focus to the editor column, a region named "Page body". `flag_off`
+  refetches the config, and lifecycle and reset refusals refetch the page, so
+  closing and reopening the editor uses current state. After the first sync
+  every 4403 keeps the read-only draft treatment above.
 - **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
   ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
   caret palette. `@tiptap/extension-collaboration-caret` — not the v2

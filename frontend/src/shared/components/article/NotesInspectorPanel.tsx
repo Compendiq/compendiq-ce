@@ -43,7 +43,7 @@ function useAddNote(pageId: string | undefined | null) {
       if (!pageId) throw new Error('Cannot add notes to an unsaved page.');
       return apiFetch<Comment>(`/pages/${encodeURIComponent(pageId)}/comments`, {
         method: 'POST',
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, ...(data.parentId ? { parentId: Number(data.parentId) || data.parentId } : {}) }),
       });
     },
     onSuccess: () => {
@@ -98,22 +98,9 @@ export function NotesInspectorPanel({
 
   const { unresolvedThreads, resolvedThreads } = useMemo(() => {
     if (!comments) return { unresolvedThreads: [], resolvedThreads: [] };
-    const topLevel = comments.filter((c) => !c.parentId);
-    const replyMap = new Map<string, Comment[]>();
-    for (const c of comments) {
-      if (c.parentId) {
-        const existing = replyMap.get(String(c.parentId)) ?? [];
-        existing.push(c);
-        replyMap.set(String(c.parentId), existing);
-      }
-    }
-    const threads = topLevel.map((tl) => ({
-      ...tl,
-      resolved: Boolean(tl.resolved ?? tl.isResolved),
-      replies: (replyMap.get(String(tl.id)) ?? []).map((r) => ({
-        ...r,
-        resolved: Boolean(r.resolved ?? r.isResolved),
-      })),
+    const threads = comments.map((comment) => ({
+      ...comment,
+      resolved: Boolean(comment.resolved ?? comment.isResolved),
     }));
     return {
       unresolvedThreads: threads.filter((t) => !t.resolved),

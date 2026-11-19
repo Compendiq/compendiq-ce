@@ -3,6 +3,15 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { useEffect, useState } from 'react';
+import { EditorAiContext } from '../../lib/editor-ai-context';
+
+beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => new Response(JSON.stringify(
+    String(url).includes('browser-authorization')
+      ? { authorized: true, pageId: 7, aiPolicy: 'all', aiPolicyRevision: 2 }
+      : { active: false, mode: 'allowed' },
+  ), { headers: { 'Content-Type': 'application/json' } }));
+});
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Node } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
@@ -149,7 +158,9 @@ function Harness({
     <>
       <EditorContent editor={editor} />
       {mounted && node && (
-        <EditorBlockMenu editor={editor} pos={target.pos} node={node} onClose={onClose} />
+        <EditorAiContext.Provider value={{ pageId: '7', policy: 'all', revision: 2, permitted: true }}>
+          <EditorBlockMenu editor={editor} pos={target.pos} node={node} onClose={onClose} />
+        </EditorAiContext.Provider>
       )}
     </>
   );

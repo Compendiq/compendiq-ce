@@ -542,6 +542,7 @@ describe('identity-bound stream writers (#1361)', () => {
         await gate;
         if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
         yield { content: ' and the rest' };
+        yield { done: true };
       })(),
     );
     return () => release();
@@ -691,7 +692,7 @@ describe('resolveAiPageId', () => {
  */
 function StateProbe() {
   const {
-    messages, conversationId, input, mode, setMode, model, activeThreadId,
+    messages, conversationId, input, mode, setMode, activeThreadId,
     threadLoadState, threadLoadError, historyTruncated, retryThreadLoad,
     setInput, setConversationId, purgeConversation, runStream, startNewConversation,
   } = useAiContext();
@@ -703,7 +704,6 @@ function StateProbe() {
       <span data-testid="active-thread-id">{activeThreadId}</span>
       <span data-testid="draft">{input}</span>
       <span data-testid="mode">{mode}</span>
-      <span data-testid="model">{model}</span>
       <span data-testid="load-state">{threadLoadState}</span>
       <span data-testid="load-error">{threadLoadError ?? 'none'}</span>
       <span data-testid="history-truncated">{historyTruncated ? 'yes' : 'no'}</span>
@@ -713,6 +713,7 @@ function StateProbe() {
             key={msg.id}
             data-refusal={msg.isRefusal ? 'yes' : 'no'}
             data-error={msg.isError ? 'yes' : 'no'}
+            data-interruption={msg.interruption ?? ''}
           >
             {msg.content}
           </li>
@@ -787,6 +788,62 @@ describe('AiContext conversation state machine (#1361)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+  // The partial stays the message body and the failure rides as a separate
+  // short `interruption` (#1801): one concatenated string would flatten the
+  // partial's Markdown in both renderers and feed all of it to the alert
+  // announcers. Both branches — EOF without `done` and an in-band error.
+  it('retains an interrupted answer without promoting its conversation', async () => {
+    streamSSEMock.mockImplementation(async function* () {
+      yield { content: 'recoverable partial' };
+      yield { conversationId: 'c-incomplete' };
+    });
+    renderStateApp('/ai');
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => expect(screen.getByTestId('thread').lastElementChild).toHaveAttribute('data-error', 'yes'));
+    const turn = screen.getByTestId('thread').lastElementChild!;
+    expect(turn).toHaveTextContent(/^recoverable partial$/);
+    expect(turn).toHaveAttribute('data-interruption', 'The response was interrupted before completion. Try again.');
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+    expect(screen.getByTestId('location')).toHaveTextContent('/ai');
+  });
+
+  it('keeps partial text with an explicit stream error', async () => {
+    streamSSEMock.mockImplementation(async function* () {
+      yield { content: 'recoverable partial' };
+      yield { error: 'provider failed', done: true };
+    });
+    renderStateApp('/ai');
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => expect(screen.getByTestId('thread').lastElementChild).toHaveAttribute('data-error', 'yes'));
+    const turn = screen.getByTestId('thread').lastElementChild!;
+    expect(turn).toHaveTextContent(/^recoverable partial$/);
+    expect(turn).toHaveAttribute('data-interruption', 'provider failed');
+    expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+  });
+
+  it('makes the error the body itself when nothing was received', async () => {
+    streamSSEMock.mockImplementation(async function* () {
+      yield { error: 'provider failed', done: true };
+    });
+    renderStateApp('/ai');
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => expect(screen.getByTestId('thread').lastElementChild).toHaveAttribute('data-error', 'yes'));
+    const turn = screen.getByTestId('thread').lastElementChild!;
+    expect(turn).toHaveTextContent(/^provider failed$/);
+    expect(turn).toHaveAttribute('data-interruption', '');
+  });
+
+  it('accepts cached done and processes conversation metadata after it', async () => {
+    streamSSEMock.mockImplementation(async function* () {
+      yield { content: 'cached answer', done: true };
+      yield { final: true, conversationId: 'c-cached', sources: [] };
+    });
+    renderStateApp('/ai');
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/ai/c/c-cached'));
+    expect(screen.getByTestId('thread')).toHaveTextContent('cached answer');
+  });
+
 
   it('promotes the first answer on /ai: re-keys the draft, replaces the URL, files a fresh draft', async () => {
     streamSSEMock.mockImplementation(askStreamReturning('c-1'));
@@ -1136,10 +1193,8 @@ describe('AiContext conversation state machine (#1361)', () => {
     });
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
     expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
-    // Opening loads, never sends (#1176), and sets the action to Q&A…
+    // Opening loads, never sends (#1176), and sets the action to Q&A.
     expect(screen.getByTestId('mode')).toHaveTextContent('ask');
-    // …but never the model: the per-conversation dropdown is gone (#355 AC-4).
-    expect(screen.getByTestId('model')).toHaveTextContent('llama3');
 
     // The draft it was fetched next to is untouched.
     goTo('/ai');

@@ -144,6 +144,8 @@ export function ArticleSummary({
     });
   }, [pageId, regenerateMutation]);
 
+  if (summaryStatus === 'policy_blocked') return <p role="status" className="mb-6 rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">AI summary: policy blocked. Article policy or the assigned provider prevents generation; authored content remains readable.</p>;
+
   // Don't render if no summary and not in a visible state
   if (summaryStatus === 'skipped') return null;
 
@@ -174,7 +176,7 @@ export function ArticleSummary({
         <span className="text-sm text-muted-foreground">
           {summaryStatus === 'summarizing'
             ? 'Generating AI summary...'
-            : 'AI summary will be generated shortly'}
+            : 'AI summary pending — eligible work is queued, not completed'}
         </span>
       </div>
     );

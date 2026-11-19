@@ -21,6 +21,7 @@ process.env.OLLAMA_BASE_URL = 'http://localhost:11434';
 process.env.COLLAB_ACTIVE_TTL_SEC ??= '4';
 process.env.COLLAB_PING_INTERVAL_MS ??= '100';
 process.env.COLLAB_EMPTY_ROOM_GRACE_MS ??= '200';
+process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS ??= '100';
 process.env.LLM_HEALTH_TIMEOUT_MS ??= '50';
 
 process.env.POSTGRES_URL =

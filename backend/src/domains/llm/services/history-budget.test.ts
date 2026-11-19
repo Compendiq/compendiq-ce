@@ -68,6 +68,21 @@ describe('selectReplayableHistory', () => {
     expect(replay.map((m) => m.content)).toEqual(['a0', 'q1', 'a1']);
   });
 
+  it('retains only actually used source objects for transitive provenance', () => {
+    const old = { role: 'assistant' as const, content: chars(400), aiProvenance: { pages: [1] } };
+    const newest = { role: 'assistant' as const, content: 'answer', aiProvenance: { pages: [2] } };
+    const selection = selectReplayableHistory([
+      { role: 'user', content: chars(400) }, old,
+      { role: 'user', content: 'question' }, newest,
+    ], 20);
+    expect(selection.selected).toContain(newest);
+    expect(selection.selected).not.toContain(old);
+    expect(selection.replay).toEqual([
+      { role: 'user', content: 'question' }, { role: 'assistant', content: 'answer' },
+    ]);
+    expect(selection.truncated).toBe(true);
+  });
+
   it('exports the default budget as a plain constant', () => {
     expect(HISTORY_REPLAY_TOKEN_BUDGET).toBe(4_000);
   });

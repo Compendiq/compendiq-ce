@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor, fireEvent } from '@testing-library/react';
+import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { handleTableCellTripleClick } from './table-cell-selection';
+import type { Editor as TipTapEditor } from '@tiptap/core';
 
 // Records every options object passed to `useEditor`, so a test can assert what
 // ArticleViewer wires into its editor without needing a reference to the view.
@@ -61,6 +62,30 @@ describe('ArticleViewer', () => {
     vi.clearAllMocks();
     capturedEditorOptions.length = 0;
   });
+
+  it.each(['/api/local-attachments/42', '/api/attachments/remote-page'])(
+    'offers read-mode source editing and reloads a saved preview (%s)',
+    async (prefix) => {
+      const edit = vi.fn();
+      const sourceOnly = `<p>Before</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${prefix}/flow.drawio"><span class="drawio-preview-unavailable">Draw.io preview unavailable: flow</span></div><p>After</p>`;
+      const { container, getByRole, rerender } = render(<ArticleViewer content={sourceOnly} onEditDiagram={edit} />);
+      await waitFor(() => expect(getByRole('button', { name: 'Edit this draw.io diagram' })).toBeInTheDocument());
+      expect(container.querySelector('.confluence-drawio')).toHaveAttribute('data-drawio-source', `${prefix}/flow.drawio`);
+      expect(container.querySelector('img')).toBeNull();
+      fireEvent.click(getByRole('button', { name: 'Edit this draw.io diagram' }));
+      expect(edit).toHaveBeenCalledWith('flow');
+      mockFetchAuthenticatedBlob.mockResolvedValueOnce('blob:saved-preview');
+      const saved = `<p>Before</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${prefix}/flow.drawio"><img src="${prefix}/flow.png" alt="Draw.io diagram: flow"></div><p>After</p>`;
+      rerender(<ArticleViewer content={saved} onEditDiagram={edit} />);
+      await waitFor(() => expect(container.querySelector('img')).toHaveAttribute('src', 'blob:saved-preview'));
+      expect(container).not.toHaveTextContent('preview unavailable');
+      expect(container).toHaveTextContent('Before');
+      expect(container).toHaveTextContent('After');
+      // A freeze revokes the callback without unmounting the viewer.
+      rerender(<ArticleViewer content={saved} />);
+      await waitFor(() => expect(container.querySelector('.drawio-inline-edit-btn')).toBeNull());
+    },
+  );
 
   it('preserves semantic insertion and deletion marks in formatted version diffs', async () => {
     const { container } = render(
@@ -638,6 +663,46 @@ describe('ArticleViewer', () => {
     expect(pre.getAttribute('data-title')).toBeNull();
   });
 
+  // #1749: read mode never saves, but ProseMirror serializes a copy with the
+  // viewer's own schema, and a block copied from here is pasted into the editor
+  // and written back, so read mode must carry the macro parameters too.
+  it('copies Confluence macro parameters out of the read view (#1749)', async () => {
+    const html =
+      '<p>Intro</p>'
+      + '<pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;,&quot;collapse&quot;:&quot;true&quot;}">'
+      + '<code class="language-c#">var app = builder.Build();</code></pre>'
+      + '<div class="confluence-toc" data-macro-params="{&quot;exclude&quot;:&quot;Secret&quot;}">[Table of Contents]</div>'
+      + '<p>State: <span class="confluence-status" data-color="green" data-macro-params="{&quot;subtle&quot;:&quot;true&quot;}">DONE</span></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+    await waitFor(() => {
+      expect(container.querySelector('.ProseMirror pre')).toBeTruthy();
+    });
+
+    const view = container.querySelector('.ProseMirror') as HTMLElement & { editor: TipTapEditor };
+    act(() => {
+      view.editor.commands.selectAll();
+    });
+    let copied = '';
+    fireEvent.copy(view, {
+      clipboardData: {
+        clearData: vi.fn(),
+        setData: (type: string, value: string) => {
+          if (type === 'text/html') copied = value;
+        },
+      },
+    });
+
+    const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+    const pre = clipboard.querySelector('pre');
+    expect(pre?.getAttribute('data-title')).toBe('Startup.cs');
+    expect(pre?.querySelector('code')?.className).toBe('language-c#');
+    expect(JSON.parse(pre?.getAttribute('data-macro-params') ?? 'null')).toEqual({ linenumbers: 'true', collapse: 'true' });
+    expect(JSON.parse(clipboard.querySelector('div.confluence-toc')?.getAttribute('data-macro-params') ?? 'null'))
+      .toEqual({ exclude: 'Secret' });
+    expect(JSON.parse(clipboard.querySelector('span.confluence-status')?.getAttribute('data-macro-params') ?? 'null'))
+      .toEqual({ subtle: 'true' });
+  });
+
   // Prose ink is owned by the CSS cascade (`[data-theme-type] .prose` in
   // index.css), not by a JSX conditional, so the viewer carries `prose` and
   // never `prose-invert` — whichever theme is mounted.
@@ -921,6 +986,38 @@ describe('ArticleViewer', () => {
       fireEvent.click(checkbox);
       expect(checkbox.checked).toBe(true);
     });
+
+    // #1751: read mode never saves, but ProseMirror serializes a copy with the
+    // viewer's own schema, and a task copied from here is pasted into the
+    // editor and written back, so read mode carries the task id too.
+    it('keeps the Confluence task id in a copy out of the read view (#1751)', async () => {
+      const html =
+        '<p>Intro</p><ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="true" data-task-id="42">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="7">Write <strong>docs</strong></li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
+        .toEqual(['42', '7']);
+    });
   });
 
   describe('text color and highlight in read mode', () => {
@@ -945,5 +1042,47 @@ describe('ArticleViewer', () => {
         expect(mark?.textContent).toBe('Highlighted text');
       });
     });
+  });
+});
+
+// #1750: read mode shows emoticons through the same node as the editor, and a
+// copy out of it (serialized with the viewer's schema, then pasted into the
+// editor and written back) keeps every attribute.
+describe('ArticleViewer: Confluence emoticons (#1750)', () => {
+  it('shows each emoticon as a named image that is not a tab stop, and a copy keeps its attributes', async () => {
+    const html =
+      '<p>State <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;tick&quot;}"'
+      + ' data-emoticon-label="✅" role="img" aria-label="tick"></span> complete</p>'
+      + '<p>Cloud <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;laugh&quot;,'
+      + '&quot;ac:emoji-shortname&quot;:&quot;:grinning:&quot;,&quot;ac:emoji-id&quot;:&quot;1f600&quot;,'
+      + '&quot;ac:emoji-fallback&quot;:&quot;😀&quot;}" data-emoticon-label="😀" role="img" aria-label="grinning"></span></p>';
+    const { container, findByRole, getByRole } = render(<ArticleViewer content={html} />);
+    const tick = await findByRole('img', { name: 'tick' });
+    expect(tick).toHaveAttribute('data-emoticon-label', '✅');
+    expect(tick).toBeEmptyDOMElement();
+    expect(tick).not.toHaveAttribute('tabindex');
+    expect(getByRole('img', { name: 'grinning' })).toHaveAttribute('data-emoticon-label', '😀');
+
+    const view = container.querySelector('.ProseMirror') as HTMLElement & {
+      editor: { commands: { selectAll: () => boolean } };
+    };
+    view.editor.commands.selectAll();
+    let copied = '';
+    fireEvent.copy(view, {
+      clipboardData: {
+        clearData: vi.fn(),
+        setData: (type: string, value: string) => {
+          if (type === 'text/html') copied = value;
+        },
+      },
+    });
+
+    const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+    expect([...clipboard.querySelectorAll('span.confluence-emoticon')]
+      .map((span) => [JSON.parse(span.getAttribute('data-emoticon-attrs') ?? 'null'), span.getAttribute('data-emoticon-label')]))
+      .toEqual([
+        [{ 'ac:name': 'tick' }, '✅'],
+        [{ 'ac:name': 'laugh', 'ac:emoji-shortname': ':grinning:', 'ac:emoji-id': '1f600', 'ac:emoji-fallback': '😀' }, '😀'],
+      ]);
   });
 });

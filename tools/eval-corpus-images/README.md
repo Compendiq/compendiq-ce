@@ -4,14 +4,14 @@ Builds `backend/src/domains/llm/eval/corpus-de-images/` from German Wikipedia:
 one Markdown page per article, the images it references, a manifest, an
 attribution file and a README.
 
-Python rather than TypeScript, and the one place in this repo that is: the job
+Python rather than TypeScript, like `tools/pdf-fonts/`: the job
 is image re-encoding, and Pillow does in four lines what the backend
 deliberately has no dependency for. `core/services/image-validator.ts` is
 dependency-free on purpose (`sharp` and `image-size` were both refused as
 supply-chain additions for four header layouts), and the answer to that is not
 to add a decoder to the product so a fixture can be built once a year.
 
-Requires **Python 3.11 or newer** (Pillow 13's minimum).
+Requires **Python 3.11.5 or newer** (`soupsieve` 4.0's minimum; Pillow 13's is 3.11).
 
 ```bash
 python3 -m venv .venv
@@ -282,6 +282,21 @@ builder smoke verified pinned drift exits 1, the refreshed subset exits 0,
   floating on purpose: pinning `certifi` freezes a CA bundle, and a build tool
   that stops trusting Wikimedia's certificate is a worse failure than a
   floating transitive.
+- **`soupsieve` is pinned at 4.0, and the pin is a security floor as well as a
+  reproducibility one.** Every earlier release is inside at least one of four
+  published advisories (GHSA-mmhr-3c5m-f64f: polynomial-time descendant
+  combinator, fixed in 4.0.0; GHSA-6655-6qjp-jx7x and GHSA-7g44-g9rc-x53w:
+  selector-compilation ReDoS and nested pseudo-class recursion, fixed in 3.0.2;
+  GHSA-4j63-6c4x-wfg4: quadratic `:has()` with the general sibling combinator,
+  fixed in 2.10.0). The builder only selects with its own constant selectors
+  over Wikipedia's rendered HTML, so exposure was small, but a pin below 4.0 is
+  not accepted. 4.0 needs **Python 3.11.5**: older 3.11 patch releases have
+  broken possessive quantifiers in `re`. Do not set soupsieve's `NOCACHE`
+  flag — it restores the vulnerable descendant algorithm — and the builder does
+  not use `NOSTRICT`. Moving the pin again goes through the same old/new
+  comparison on identical saved HTML as an encoder upgrade, because a selector
+  semantics change (`<template>` contents, `<iframe>`, `:has()` strictness,
+  attribute case) moves which nodes are dropped and so the page bytes.
 - **Two rejection denominators are reported, not one.** A page stops evaluating
   once it has its three images, so most captioned figures never reach the
   licence filter. Quoting refusals against every figure seen would describe a

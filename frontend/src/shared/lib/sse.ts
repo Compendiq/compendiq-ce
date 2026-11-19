@@ -44,7 +44,8 @@ export async function* streamSSE<T = { content: string; done: boolean }>(
     const errorBody = await res.json().catch(() => ({ message: res.statusText }));
     // ApiError (extends Error) keeps the HTTP status so callers can branch on
     // it — e.g. runStream renders a permission explanation for 403 responses.
-    throw new ApiError(res.status, errorBody.message ?? `SSE request failed: ${res.status}`);
+    throw new ApiError(res.status, errorBody.message ?? errorBody.error ?? `SSE request failed: ${res.status}`,
+      typeof errorBody.code === 'string' ? errorBody.code : typeof errorBody.error === 'string' ? errorBody.error : undefined);
   }
 
   const reader = res.body?.getReader();

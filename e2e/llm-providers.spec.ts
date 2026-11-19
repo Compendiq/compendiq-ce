@@ -50,7 +50,7 @@ test.describe('Multi-LLM-provider flow', () => {
           state: { accessToken, user, isAuthenticated: true },
           version: 0,
         };
-        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
+        localStorage.setItem('compendiq-auth:p1', JSON.stringify(authState));
       },
       { accessToken: data.accessToken, user: data.user },
     );
@@ -94,7 +94,7 @@ test.describe('Multi-LLM-provider flow', () => {
     page,
   }) => {
     const headers = await page.evaluate(() => {
-      const raw = localStorage.getItem('compendiq-auth');
+      const raw = localStorage.getItem('compendiq-auth:p1');
       if (!raw) return {};
       const token = (JSON.parse(raw) as { state: { accessToken: string } }).state.accessToken;
       return { authorization: `Bearer ${token}` };

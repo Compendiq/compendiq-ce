@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { PageTitleIcon } from './PageTitleIcon';
 
 vi.mock('../../hooks/use-can-hover', () => ({
@@ -98,10 +98,12 @@ describe('PageTitleIcon', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Change page icon' }));
-    expect(screen.getByTestId('page-icon-color-row')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Blue icon' }));
+    // Scoped to the colour row: a page-wide role query would compute the
+    // accessible name of every one of the 600+ grid buttons first.
+    const colorRow = within(screen.getByTestId('page-icon-color-row'));
+    fireEvent.click(colorRow.getByRole('button', { name: 'Blue icon' }));
     expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'rocket', color: '#3b82f6' });
-    fireEvent.click(screen.getByRole('button', { name: 'Indigo icon' }));
+    fireEvent.click(colorRow.getByRole('button', { name: 'Indigo icon' }));
     expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'rocket', color: '#6366f1' });
     expect(screen.getByTestId('page-icon-color-row')).toBeInTheDocument();
   });
@@ -147,7 +149,8 @@ describe('PageTitleIcon', () => {
     expect(filledBtn).toHaveAttribute('aria-pressed', 'true');
 
     // Picking a colour retains filled: true
-    fireEvent.click(screen.getByRole('button', { name: 'Indigo icon' }));
+    const colorRow = within(screen.getByTestId('page-icon-color-row'));
+    fireEvent.click(colorRow.getByRole('button', { name: 'Indigo icon' }));
     expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', color: '#6366f1', filled: true });
 
     // Switching back to outline

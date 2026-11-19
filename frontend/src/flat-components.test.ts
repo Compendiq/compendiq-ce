@@ -946,19 +946,19 @@ describe('the component layer is as flat as the token layer', () => {
     ).toEqual([]);
   });
 
-  it('CSS @utility backdrop-filter blur is only nm-popover-glass', () => {
+  it('CSS @utility backdrop-filter blur is only nm-popover-glass and app-workspace', () => {
     const css = stripComments(readFileSync(join(SRC, 'index.css'), 'utf8'));
     const offenders: string[] = [];
     for (const m of css.matchAll(/@utility\s+(\S+)\s*\{/g)) {
       const name = m[1]!;
       const block = extractBlock(css, `@utility ${name} {`);
-      if (/backdrop-filter:\s*blur/.test(block) && name !== 'nm-popover-glass') {
+      if (/backdrop-filter:\s*blur/.test(block) && name !== 'nm-popover-glass' && name !== 'app-workspace') {
         offenders.push(name);
       }
     }
     expect(
       offenders,
-      'only nm-popover-glass may blur behind an overlay; in-page utilities stay opaque',
+      'only nm-popover-glass and app-workspace may blur; other utilities stay opaque',
     ).toEqual([]);
     const glass = extractBlock(css, '@utility nm-popover-glass {');
     expect(glass, 'nm-popover-glass is the overlay glass surface').toMatch(
@@ -969,10 +969,11 @@ describe('the component layer is as flat as the token layer', () => {
     );
   });
 
-  it('nm-popover-glass drops blur under prefers-reduced-transparency', () => {
+  it('nm-popover-glass and app-workspace drop blur under prefers-reduced-transparency', () => {
     const css = stripComments(readFileSync(join(SRC, 'index.css'), 'utf8'));
     const block = extractBlock(css, '@media (prefers-reduced-transparency: reduce) {');
     expect(block, 'the reduced-transparency rule must exist').toMatch(/\.nm-popover-glass/);
+    expect(block, 'app-workspace must also respect reduced transparency').toMatch(/\.app-workspace/);
     expect(block, 'blur must be none, not a quieter blur').toMatch(/backdrop-filter:\s*none/);
   });
 

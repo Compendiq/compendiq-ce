@@ -185,6 +185,53 @@ manifest, media coverage, rollout gate, authority model, retention/backup rules,
 and conservative writer recovery procedure, see
 [`docs/runbooks/immutable-page-baselines.md`](runbooks/immutable-page-baselines.md).
 
+### Article AI policy enforcement (Settings → Governance → Article AI policy)
+
+Restrictive article AI policies (`local_only`, `none`) can be chosen only
+while the **enforcement switch** is on. It is off by default on every new and
+upgraded install, is turned on and off by an active system administrator at
+**Settings → Governance → Article AI policy** (or `PUT
+/api/admin/ai-policy/activation`), and is independent of edition and licence:
+CE and EE behave identically, and a lapsed licence never turns it off. There
+is no environment variable; a leftover `COMPENDIQ_AI_POLICY_ENFORCEMENT` is
+ignored and logged once at startup.
+
+The panel shows the state (off, or on since *date* by *name*), the current
+blockers and **Turn on enforcement…**. Enabling is refused while a blocker
+stands. If another switch change, an old runtime's registration or a long
+restrictive policy write holds the switch row, the change answers 503
+`ai_policy_activation_busy` after 5 seconds and nothing changes; retry it.
+
+| Blocker | Meaning | What to do |
+|---|---|---|
+| Incompatible runtime | A backend process without AI-policy enforcement is still registered (the list shows runtime id, host, pid, start time and the total). Includes every runtime row left by builds before this release. | Deploy this release everywhere, then retire each listed runtime through the baseline runbook: drain a live process with quiescence and fence it with its acknowledgement; fence a dead process with the server-verified no-started-effects mode. Never fence a process that may still be running. |
+| Legacy browser sessions | Users still hold sessions issued to a pre-upgrade browser tab; the list names them with last-seen time and when the blocker clears. | Wait until it clears (at most one access-token lifetime), ask those users to reload, or tick the acknowledgement. |
+| Legacy-client window open | The server could not yet observe every pre-upgrade session (just after the migration, or after an old replica was drained). | Wait until the shown time, or acknowledge. On a fresh install acknowledging is appropriate: nobody can hold a pre-upgrade session. |
+| Enforcement not registered / readiness unavailable | This process did not install its readiness provider, or the readiness read failed. | Check backend logs and the deployment; not overridable. |
+
+**Acknowledging legacy clients** means accepting a bounded residual: a tab
+running the old bundle keeps what it already loaded, and its current access
+token, for at most one access-token lifetime (`ACCESS_TOKEN_EXPIRY`). The
+acknowledgement is recorded in the audit log with the observed users, applies
+to that one enable only, and is cleared when enforcement is turned off. The
+checkbox appears only when legacy sessions are the sole blocker.
+
+Once on, editors with policy authority can set restrictive policies, builds
+without AI-policy enforcement can no longer start against this database, and
+**old browser tabs must reload**: their next login, token refresh or SSO
+exchange is refused with "Reload this page to continue" until they load the
+current bundle. Reloading is enough; drafts kept per user survive. During an
+upgrade, signing in does not carry across tabs running different builds; an
+explicit sign-out (from builds 0.9.0 and later) still signs out every tab of
+the browser.
+
+**Turning off** needs no preconditions and is the emergency lever, not a
+routine state. Stored restrictions stay enforced on every AI path; only new
+restrictive choices (and relaxing a stored restriction from the UI) are
+closed while it is off. Every transition records actor and time
+(`AI_POLICY_ENFORCEMENT_ACTIVATED` / `…_DEACTIVATED` in the audit log).
+Details, failure handling and the bulk runtime-retirement loop:
+[`docs/architecture/article-ai-policy-activation.md`](architecture/article-ai-policy-activation.md).
 
 ### Client inference (on-device editor model)
 
@@ -201,15 +248,17 @@ Settings → Editor.
 Providers live in the `llm_providers` table and are configured in the admin UI
 (**Settings → AI → AI Models → LLM providers**), not by flipping an env
 toggle. Every row is a generic OpenAI-compatible `/v1` endpoint (ADR-021):
-hosted OpenAI, DeepSeek, Groq, Mistral, OpenRouter, Together, Fireworks,
-Azure OpenAI, local Ollama / LM Studio / vLLM, or any other `/v1` shim. There
-is no separate OpenAI SDK path and no DeepSeek-specific protocol.
+hosted OpenAI, Anthropic (its OpenAI-compatibility layer at
+`https://api.anthropic.com/v1`), DeepSeek, Grok (xAI, `https://api.x.ai/v1`),
+Mistral, OpenRouter, Together, Fireworks, Azure OpenAI, local Ollama /
+LM Studio / vLLM, or any other `/v1` shim. There is no separate OpenAI SDK
+path and no DeepSeek-specific protocol.
 
 #### Add a provider
 
 1. Open **Settings → AI → AI Models → LLM providers** and click **+ Add**.
-2. Pick a **preset** (OpenAI, DeepSeek, …) to fill the base URL, bearer auth,
-   and a suggested default model — or leave **Custom** blank for a local
+2. Pick a **preset** (OpenAI, Anthropic, DeepSeek, Grok, …) to fill the base
+   URL, bearer auth, and a suggested default model — or leave **Custom** blank for a local
    server (`http://host.docker.internal:1234/v1` for LM Studio / vLLM in
    Docker). Typed values are not overwritten silently when you change preset.
 3. Paste the API key into the password field (bearer). Keys are AES-256-GCM
@@ -373,13 +422,53 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 **Configuration:**
 - `USE_BULLMQ=true` (default) -- set to `false` to fall back to legacy `setInterval` workers
 - Redis `maxmemory-policy` must be `noeviction` (default in the provided Docker config)
-- Job history is stored in the `job_history` PostgreSQL table for observability; BullMQ queue metrics are not exposed via the API
+- Redis keeps the last 100 completed and 200 failed scheduler runs per queue (older records are removed as new runs finish; records stored before an upgrade are trimmed the same way, no startup cleanup). Every run is also written to the `job_history` PostgreSQL table, the longer record; finished on-demand jobs on those queues count toward the same limits; BullMQ queue metrics are not exposed via the API
 - `REEMBED_WAIT_LOCKS_MS=600000` (default 10 min): how long the `reembed-all`
   worker waits for in-flight per-user embedding runs to finish before
   aborting the job. Visible in the admin UI via `GET /api/admin/embedding/locks`.
 - `reembed_history_retention` (admin setting, default 150): how many
   completed/failed `reembed-all` job records BullMQ keeps in Redis before
   sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
+- `webhook_deliveries_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Webhook delivery attempts retention** under Retention windows (below), or as `webhookDeliveriesRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS` when the row is absent): the daily `maintenance` retention sweep prunes `webhook_deliveries` attempt rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Only attempts of finished deliveries (`webhook_outbox.status` `done`/`dead`) are pruned, because the delivery worker counts a pending item's ledger rows to pick its next attempt number. `webhook_outbox` rows are never deleted by this sweep.
+- `job_history_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Job history retention** under Retention windows (below), or as `jobHistoryRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_JOB_HISTORY_DAYS` only while the row is absent): the daily `maintenance` retention sweep deletes `job_history` rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Every `job_history` row records a finished job (`completed` or `failed`), so age alone decides; no other table is touched. If the setting cannot be read, the sweep is skipped and logged instead of running with a default. **Upgrading deletes `job_history` rows older than 90 days at the first sweep unless you set the window first (see the upgrade paragraph below).**
+- `notifications_read_retention_days` (admin setting, default 90, range [7, 3650]; edited as **Read notifications retention** under Retention windows (below), or as `notificationsReadRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_NOTIFICATIONS_READ_DAYS` only while the row is absent): the same sweep deletes notifications that have been read (`is_read = TRUE`) and are older than this, in batches of 10 000, with its own `RETENTION_PRUNED` heartbeat (zero-row runs included). **Unread notifications are never deleted, whatever their age**, and `notification_preferences` is untouched. If the setting cannot be read, the sweep is skipped and logged instead of running with a default. **Upgrading deletes read notifications older than 90 days at the first sweep unless you set the window first (see the upgrade paragraph below).**
+
+**Upgrading to the job history and read notification windows.** Migration 154
+seeds both windows at 90 days, so the first daily sweep after the upgrade
+deletes `job_history` rows and read notifications older than 90 days. To keep
+more, either insert the rows before upgrading
+(`INSERT INTO admin_settings (setting_key, setting_value) VALUES ('job_history_retention_days', '365'), ('notifications_read_retention_days', '365') ON CONFLICT (setting_key) DO NOTHING;`,
+which the migration leaves untouched), or set them with
+`PUT /api/admin/settings` (`{"jobHistoryRetentionDays": 365, "notificationsReadRetentionDays": 365}`)
+right after the upgrade and before the first sweep. The previous version drops
+these fields from a `PUT`, so the API cannot set them before the upgrade. The
+`RETENTION_JOB_HISTORY_DAYS` / `RETENTION_NOTIFICATIONS_READ_DAYS` variables
+apply only while the row is absent, which a migrated database never is, so they
+cannot keep rows. With `USE_BULLMQ=false` the first sweep runs 24 hours after
+the backend starts; with BullMQ it runs at the existing
+`data-retention-scheduler` slot, which on a new Redis, or after a missed slot,
+is right at start, so inserting the rows first is the only guaranteed way. The
+windows also apply to restored data: after a restore, the next sweep deletes
+restored `job_history` rows and read notifications older than the window.
+
+**Retention windows.** **Settings → Governance → Data & Compliance → Retention**
+opens with a *Retention windows* section holding the single-table windows
+the daily sweep applies: **Admin access-denied audit retention**
+(`admin_access_denied_retention_days`, `ADMIN_ACCESS_DENIED` rows of
+`audit_log`), **Webhook delivery attempts retention**
+(`webhook_deliveries_retention_days`), **Job history retention**
+(`job_history_retention_days`) and **Read notifications retention**
+(`notifications_read_retention_days`). All take whole days from 7 to 3650;
+an out-of-range or fractional value is rejected inline and cannot be saved.
+Each window has its own **Save** (or Enter in its field), which sends only
+that one setting, so saving one never changes another window or any other admin
+setting. A failed save keeps the typed value and shows the server's reason.
+If the settings cannot be read, the section says so and offers **Retry**
+instead of showing defaults. The section sits above, and is independent of,
+the Enterprise per-table policy matrix. The Retention tab itself is shown only
+under an Enterprise licence with the `data_retention_policies` feature; other
+deployments set these windows through `PUT /api/admin/settings` (or the env
+fallbacks while the rows are absent).
 
 ### LLM Request Queue
 
@@ -477,6 +566,8 @@ Compendiq can send email notifications for key events. Configure SMTP in **Setti
 
 Settings configured via the admin UI are persisted in the `admin_settings` database table and take precedence over environment variables. Use the **Send Test** button to verify SMTP connectivity.
 
+A save applies on every backend replica without a restart: the replica that handles it writes the rows first, then re-reads them, and signals the others through Redis (`smtp:config:changed`) to re-read them too; a replica whose Redis connection was interrupted re-reads them when it reconnects. A failed save changes nothing: neither the stored settings nor the mail transport in use. A field that has no stored row falls back to that replica's `SMTP_*` environment variable, so keep those identical on every replica. The exception is `secure`: once any `smtp_*` row exists, TLS is off unless an `smtp_secure` row says `true`, even when `SMTP_SECURE=true` (unchanged behaviour). Saving from the admin UI always writes that row.
+
 Edits made while a save is in progress remain in the form and require a subsequent save; the completed request only saves the values submitted with it.
 
 ### Enterprise
@@ -543,14 +634,16 @@ RAG retrieval in CE already post-filters candidate chunks by the user's readable
 
 **How it works**
 
-1. The Confluence sync calls `/rest/api/content/{pageId}/restriction` for each page (and walks ancestors — Confluence view restrictions **are** inherited) and writes the effective read list into `access_control_entries` as `source='confluence'` rows with `synced_at=<run start>`.
-2. A stale-ACE sweep at the end of the sync removes any `source='confluence'` row that wasn't refreshed this run — so restrictions removed in Confluence, or users de-listed from a restriction, propagate on the next sync.
+1. The Confluence sync calls `/rest/api/content/{pageId}/restriction` for each page it walks (and walks ancestors — Confluence view restrictions **are** inherited; when the audit log confirms a page's restrictions are unchanged, the fetch is skipped) and writes the effective read list into `access_control_entries` as `source='confluence'` rows with `synced_at=<run start>`.
+2. A stale-ACE sweep at the end of the sync removes the `source='confluence'` rows that were not refreshed on the pages whose restrictions this run re-read — so a restriction removed in Confluence, or a user de-listed from one, propagates on the next sync that re-reads the page. Pages a run does not re-read keep their last mirrored entries: an incremental run walks only recently edited pages (before #1771 it deleted those entries and hid unmodified restricted pages from their readers).
 3. The RAG hybrid retrieval (`hybridSearch`) fetches `max(rag_fetch_width, topK, ceil(topK × 1.5))` candidates per leg (see *Retrieval fetch width* below). After the RRF merge, a second post-filter calls `userCanAccessPage(userId, pageId)` per candidate — in order-preserving batches, stopping once `topK` candidates have passed — and drops blocked pages. Rank order is preserved.
 4. `source='local'` (admin-created) ACEs are never touched by sync. Manual overrides survive.
 
 **Sync cadence and leak-window behaviour**
 
-Restriction changes in Confluence take effect on Compendiq's next successful sync of the affected page — same cadence as content changes (`SYNC_INTERVAL_MIN`, default 15 min). Within that window, RAG may return stale visibility. This is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
+Restriction changes in Confluence take effect when a sync next re-reads the affected page. Incremental runs (every `SYNC_INTERVAL_MIN`, default 15 min) re-read only pages edited inside their modified-pages window (the space's last sync minus a 24 h overlap); a full walk re-reads every page but only runs on a space's first sync or after it went ≥24 h without a successful sync. A restriction-only change on a page nobody edits — a new restriction, a restriction removed, or a user de-listed — is therefore applied at the next full walk or the next edit of the page; on a healthy schedule, where every run succeeds, that means the next edit. Until then, RAG answers and page views reflect the previous restrictions. A sync that fails partway still applies the de-listings of the pages it already re-read, unless the end-of-sync sweep itself fails (a database error) or the process dies first; those pages then wait for their next re-read.
+
+While a run is in progress, page restrictions are mirrored page by page as the run reaches each page: this is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
 
 **Sync duration impact**
 
@@ -566,7 +659,7 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 
 **Verification**
 
-- Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
+- Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path), `backend/src/domains/confluence/services/sync-service-incremental-ace-sweep.integration.test.ts` (sweep scope across full and incremental runs) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
 - ADR-023 documents the full design and rationale.
 
 ### Retrieval settings panel (`Settings → AI Models → Retrieval`)
@@ -1158,6 +1251,21 @@ Confluence is the system of record for synced pages, but Compendiq supports loca
 
 **Important fall-through**: the policy only kicks in when there are *actual* local edits (`local_modified_at > last_synced`). If the page has no local edits, both `compendiq-wins` and `manual-review` transparently fall through to `confluence-wins` — there's nothing to preserve, so the queue isn't padded with non-conflicts and the routine sync rate isn't degraded.
 
+**Where the policy applies**: a page's **Re-sync** / **Force re-sync** (`POST /api/pages/bulk/sync`), and the scheduled or manual space sync, including when Confluence's version of the page moved ahead of the local one (see *Upstream version jumps* below). Edits made while the Confluence integration was switched off are local edits too.
+
+**Upstream version jumps (#1772)**: the policy also applies when the Confluence version moved since the last sync. On such a version jump a local rename counts as a local edit even when the body still matches Confluence; a local save that left title and body equal to Confluence's new version does not. When the version moved and the policy keeps or queues the local edit, sync also leaves the page's cached attachments alone and downloads nothing. The kept row keeps its older version, so every later sync run that fetches the page records the conflict again: one `SYNC_CONFLICT_DETECTED` per run under `Compendiq wins`, one more queued version per run under `Manual review`. Incremental runs re-fetch pages edited in Confluence during the last 24 hours. Pages with draw.io diagrams are also re-walked by the missing-attachment retry on every incremental run, so they can record the conflict twice per run and keep recording it, beyond those 24 hours, until it is resolved. Under `Confluence wins`, the overwritten local version is saved to the page's version history first, unless that version number is already taken there (for example by a Confluence version that opening Version History imported); then no history entry is added.
+
+**Rename-only conflicts under Manual review**: the conflicts queue stores page bodies, not titles. A rename-only conflict (the local title differs, the bodies match) therefore appears in the queue with an empty body diff. **Keep local** keeps the local title. **Take Confluence** applies the queued body (the same text) and Confluence's version number and clears the local-edit markers, but it does not apply Confluence's title: the local title stays until Confluence's next edit of the page brings its title in. No content is lost either way; rename the page by hand to adopt Confluence's title sooner.
+
+**Re-sync specifics**: a re-sync sets the page's version number to Confluence's, unless the local number is higher, which it keeps (the number never goes down). Under `Confluence wins` it first stores the local text in the page's version history (`page_versions`) and then applies the Confluence text. When Confluence's version was ahead of the local one, that entry is listed in **Version history** and can be viewed. When Confluence was behind or at the same number — for example right after an edit made while the integration was off — the entry carries the page's current version number, and **Version history** does not list it until the page's version changes again; an administrator can read it from `page_versions` (by page id and version number) in the meantime. Restoring the entry, like saving the page, publishes to Confluence and is subject to the next paragraph. If the history already holds other content under the local version number, the re-sync leaves that page unchanged and lists it among the failed pages (the request itself still succeeds); saving the page with the Confluence integration off gives the edit a new version number for the next re-sync. A page the policy kept or queued still counts as re-synced, and the audit rows of a re-sync carry the user who triggered it (`user_id`; null for the scheduled sync).
+
+**Publishing after local edits**: an edit made while the integration was off moves the page's version number ahead of Confluence's, and a re-sync does not move it back. Until Confluence's version catches up with the local one:
+
+- Publishing the page from Compendiq fails and blocks it. The editor save (and a version restore) sends the number after the local one without checking Confluence first, and Confluence accepts only its own next number. The refused write stays unresolved and blocks every later change to the page — re-sync included — until a system administrator resolves it under page-write recovery. The collaborative editor's commit refuses the mismatch up front (409 "modified in Confluence") and blocks nothing.
+- The scheduled sync treats a newer Confluence version that is still at or below the local number as "not newer": its content is applied through the conflict policy, cached attachments are downloaded only when missing (a changed attachment with the same file name is not refreshed), and an open collaborative session keeps the change out.
+
+Once Confluence's version passes the local one, the scheduled sync realigns the number when the conflict policy lets Confluence's version in; under `Compendiq wins` and `Manual review` a kept or queued local edit keeps the local number until it is resolved (see *Upstream version jumps* above).
+
 **Resolution flow (manual-review)**
 
 1. Sync detects a conflict; the page lands in the conflicts list.
@@ -1188,7 +1296,7 @@ Saving a new policy publishes on the `sync:conflict:policy:changed` cache-bus ch
 
 **Lost-update guard**
 
-The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes.
+The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes. When the Confluence version moved, the policy decision takes the same lock before the cached attachments are touched, and the later write re-reads the row under its own lock. If a local save landed while attachments were downloading, that run writes nothing and the next sync decides on the new edit.
 
 ### AI Review Policy (Enterprise, v0.4+)
 
@@ -1494,8 +1602,12 @@ Ordinary page history redacts reported signatory emails, while the system-admin
 evidence response may contain the stored caller-reported email. A UUID or digest
 never grants access.
 
-Interrupted writers never expire by heartbeat or TTL. Recovery is active
-system-administrator work through `/api/admin/page-write-recovery`: quiescence
+Interrupted writers never expire by heartbeat or TTL. One exception is
+deployment-scoped: the version upgrade that applies migration 152 first retires
+every pre-upgrade writer epoch itself (migration 151b) — closing its write gate,
+fencing only epochs that dispatched no effect, and leaving started unknown work
+pending for a termination-verified fence. Recovery of those remaining intents
+is active system-administrator work through `/api/admin/page-write-recovery`: quiescence
 must reach the process that owns the runtime ID, fencing accepts only an exact
 owner acknowledgment, server-proven no-start state, or independently verified
 local process termination, and outcome reconciliation uses trusted
@@ -1524,8 +1636,11 @@ use: the Confluence cache `<confluence_id | page id>/<file>` (synced
 attachments, pasted images — standalone pages key by numeric id, so the
 keyspace is shared with Confluence ids) and the local store
 `local/<page id>/<file>` (draw.io saves and relocated pages, with metadata
-rows in `local_attachments`). Sync and page deletes clean their own pages;
-everything else is covered by the observability card and the sweep shipped in
+rows in `local_attachments`). Page deletes clean their own pages. A sync that
+brings in a newer upstream version removes the cached files that version
+references (so they are fetched fresh) and the ones nothing references, but
+keeps images still named by the page's draft, body or version history.
+Everything else is covered by the observability card and the sweep shipped in
 #1349. A third entry, `page-icons/<page id>/<sha>.<ext>`, is a **separate
 store** for uploaded page marks: it is reserved by name, never walked and never
 swept. Those files *are* reconcilable — for `icon_kind = 'image'` the page row's
@@ -1713,6 +1828,33 @@ for restore verification.
 - **Schedule:** configure interval hours, keep-last-N, and delete-after-days.
   One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
   History refreshes while a run is active.
+- **Failures:** if `pg_dump` fails to start or exits non-zero, or an attachment
+  vanishes or becomes unreadable mid-backup, the backup fails without affecting
+  the server: a download is cut off and audited as `BACKUP_EXPORT_FAILED`, an
+  S3 run is marked `failed` with the `pg_dump` or file error and its multipart
+  upload is aborted. The lock is released at once, so the next run can retry.
+- **Retention prune failures (#1710):** once the upload has completed, the run
+  is recorded as `success` with its object key and size, and `backup_last_run_at`
+  is set, so the schedule interval is honoured. Retention (keep-last-N and
+  delete-after-days) then runs as a separate step after the backup lock is
+  released. If it fails — a denied `ListObjects` or `DeleteObjects`, a network
+  error — the run stays `success`, `error` stays empty, and the prune error
+  message (truncated to 1000 characters) is stored as the run's *warning*. It
+  appears in the **History** list under Backup & Recovery as
+  `— warning: <text>`, in `GET /api/admin/backup` history entries as `warning`,
+  and as `pruneWarning` in the `BACKUP_UPLOADED` audit event that is written
+  for every completed S3 upload. The failure is also logged at `warn`, and the
+  job result stays `Uploaded <filename>`. Nothing prunes the old objects until
+  a later due run succeeds at it, so storage grows meanwhile; fix the
+  credentials or bucket policy to restore pruning. This is what makes
+  append-only (delete-less) credentials workable: you get one upload per
+  interval and a visible warning instead of an upload on every 15-minute tick.
+  Two database-fault cases still re-upload on the next due tick, because the
+  schedule gate is not stored in either: (1) the upload completed but recording
+  `backup_last_run_at` fails — the run stays `success` and the error is logged;
+  (2) the upload completed but the database rejects the success write itself —
+  the run is marked `failed` without an object key (the object is in the
+  bucket), as before.
 
 #### Enterprise KMS and immutable storage
 
@@ -1741,11 +1883,14 @@ because the frontend is newer.
   sends Governance bypass and never creates a delete marker to hide a retained
   backup. Unreadable policy or protection metadata fails closed.
 
-For version-aware pruning, grant `s3:ListBucketVersions`,
+Enterprise prunes version-aware for every S3 destination, whether or not
+Object Lock is enabled, so grant `s3:ListBucketVersions`,
 `s3:GetBucketObjectLockConfiguration`, `s3:GetObjectRetention`,
 `s3:GetObjectLegalHold`, `s3:GetObjectVersion`, and `s3:DeleteObjectVersion`,
-in addition to upload/list permissions. Missing metadata-read permission is not
-treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
+in addition to upload/list permissions, for all Enterprise S3 backups. A missing
+permission does not fail the backup: the run stays `success` and the prune error
+is stored as the run's warning in Backup & Recovery history. Missing
+metadata-read permission is not treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
 per-part and included in completion; a multipart checksum is not SHA-256 of the
 concatenated object bytes.
 
@@ -1787,9 +1932,11 @@ the target database and attachment directory.
 Restore is an offline, standalone operation: stop Fastify traffic before a
 non-dry-run restore, and run `backend/scripts/restore-backup.ts` from a source
 checkout with `postgresql17-client` (`pg_restore`) installed. `POSTGRES_URL`
-must reach the target database. `ATTACHMENTS_DIR` must identify the real live
-attachment tree; its parent must be writable and on the filesystem that will
-hold the restored tree.
+must reach the target database, **also for `--dry-run`**: validation reads the
+target's newest applied migration. Without it the CLI exits with code 2 and
+`POSTGRES_URL is required (also for --dry-run)`. `ATTACHMENTS_DIR` must
+identify the real live attachment tree; its parent must be writable and on the
+filesystem that will hold the restored tree.
 
 The CLI creates a mode-`0700` `.compendiq-restore-*` directory next to
 `ATTACHMENTS_DIR`. Reserve free space there for the complete decrypted
@@ -1820,11 +1967,26 @@ listings and often shell history; do not use it for routine operations.
 Before any live mutation, restore fully consumes AES-GCM authentication and
 validates safe/unique archive members, a strict closed manifest (bounded to
 1 MiB), the exact SHA-256 checksum set, database size, the
-`PAT_ENCRYPTION_KEY` fingerprint, and that the archive migration is not newer
-than this binary. `--force` overrides **only** the PAT-key fingerprint
-mismatch; it never bypasses authentication, schema, path, member, checksum,
-size, or forward-migration checks. Validation failure and dry-run leave
-PostgreSQL and live attachments unchanged and remove staging.
+`PAT_ENCRYPTION_KEY` fingerprint, that the archive migration is not newer
+than this binary, and that it is **not older than the target database**
+(newest `_migrations` row). An empty target (no `_migrations` table, or no
+rows) is allowed, as is a target at or behind the archive's level; an
+unreadable target refuses the restore. In Enterprise builds the level on both
+sides is the newest migration name across Community and Enterprise
+migrations, so an archive with an older Community level under an unchanged
+Enterprise level is not detected; restore a backup taken before an upgrade
+with the empty-database procedure. An older archive is refused with
+`Backup migration <archive> is older than the target database (<target>)`;
+see [Restoring an older archive](#restoring-an-older-archive). `--force`
+overrides **only** the PAT-key fingerprint mismatch; it never bypasses
+authentication, schema, path, member, checksum, size, forward-migration, or
+target-schema checks. Validation failure and dry-run leave PostgreSQL and live
+attachments unchanged and remove staging.
+
+The target level is read once, before staging. The target database must not
+change between that check and the restore (no application start, migration
+run, or second restore against it), which is one reason restore is an offline
+procedure.
 
 Commit renames the previous attachment tree aside, installs the staged tree,
 and runs `pg_restore --clean --if-exists --no-owner --no-acl
@@ -1843,6 +2005,32 @@ does not attempt a database or attachment rollback. The error reports both
 the retained old-attachment rollback directory and restore staging directory.
 Keep both while diagnosing/recovering the database; remove them manually only
 after the restored state is accepted or another restore has completed.
+
+##### Restoring an older archive
+
+An archive taken at an older schema than the target database (for example a
+v0.8.0 backup after upgrading to v0.9.x, or a pre-upgrade backup after a failed
+upgrade) cannot be restored in place, and both `--dry-run` and the restore
+refuse it. `pg_restore --clean` only drops the objects the archive contains:
+tables added by newer migrations keep foreign keys to restored tables (for
+example `cannot drop constraint users_pkey … because other objects depend on
+it`), and their rows would describe data that no longer exists.
+
+Restore into an empty database instead and let the application migrations
+move it forward:
+
+1. Stop Fastify traffic. Create an empty database owned by the application
+   role (for example `createdb -O kb_user kb_creator_restore`) and an empty
+   attachment directory beside the live one.
+2. Point `POSTGRES_URL` at the empty database and `ATTACHMENTS_DIR` at the
+   empty directory, then run the restore with `--dry-run`, and again without
+   it. The restore applies the shipped migrations after `pg_restore`, so the
+   database ends at this binary's newest migration.
+3. Point the backend's `POSTGRES_URL` and `ATTACHMENTS_DIR` at the restored
+   database and directory and start it; startup migrations find nothing left
+   to apply.
+4. Keep the previous database and attachment tree until the restored state is
+   accepted, then remove them.
 
 ### Manual PostgreSQL dump
 
@@ -1903,9 +2091,11 @@ Compendiq provides Kubernetes-compatible health probes:
 |----------|---------|--------|
 | `GET /api/health` | Public health status | PostgreSQL + Redis + LLM connectivity (coarse; no internal telemetry) |
 | `GET /api/health/ready` | Readiness probe | PostgreSQL + Redis |
-| `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive) |
+| `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive); no database or Redis access, not rate limited |
 | `GET /api/health/start` | Startup probe | Startup complete + PostgreSQL + LLM availability |
 | `GET /api/llm/circuit-breaker-status` | Per-provider circuit-breaker state | Returns a provider-keyed flat map: `{ [providerId]: { state, failureCount, nextRetryTime } }`. Requires auth. |
+
+During a database outage, rate limits stay in force: each backend process keeps applying the rate limits it last loaded (or the built-in defaults if it never loaded any) and retries the settings read at most once every 10 seconds instead of on every request.
 
 Example response from `GET /api/health`:
 
@@ -1953,6 +2143,26 @@ The backend auto-instruments HTTP (including incoming Fastify requests, as HTTP
 server spans), undici, `pg` and Redis. There is no Fastify-specific route
 instrumentation.
 
+#### Query-string credentials in spans (GHSA-3v2p-hm54-8qcq)
+
+HTTP server spans carry the request's query string in `url.query`
+(outgoing client spans carry `url.full`). Before `@opentelemetry/instrumentation-http` 0.222.0 the value
+was exported verbatim, so `GET /api/internal/health?token=<secret>` sent the
+persistent health token to the collector. The backend now configures the
+instrumentation's `redactedQueryParamsServer` option (experimental upstream;
+it replaces the built-in list, so the defaults are re-listed) to replace the
+values of `token` and the seven built-in names (`sig`, `Signature`,
+`AWSAccessKeyId`, `X-Goog-Signature`, `X-Amz-Signature`, `X-Amz-Credential`,
+`X-Amz-Security-Token`) with `REDACTED`; parameter names and every other
+parameter stay visible. The list lives in `backend/src/telemetry.ts` and
+covers the Community Edition routes only. Routes added by an Enterprise
+overlay, and any other credential passed in a query string (for example
+through a reverse proxy), are not covered — keep a collector-side redaction
+rule for `url.query` (and `url.full` on client spans) (for example the OpenTelemetry Collector
+`redaction` or `attributes` processor). A health token exported by an earlier
+release with tracing enabled should be rotated
+(`POST /api/admin/health-api/rotate`).
+
 #### Stable semantic conventions (since the 0.221 OTel release)
 
 The OpenTelemetry instrumentations now emit **only** the stable semantic
@@ -1999,14 +2209,14 @@ remains available only when the licence grants `advanced_rbac`.
 2. Fill in username (required), optional email, optional display name, and pick the role (`user` or `admin`).
 3. Choose one of two credential modes:
    - **Explicit password** — type it into the form. The user signs in with that password on first login.
-   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → System → Integrations → Email / SMTP admin tab). When SMTP is not configured the API returns the temporary password in the response so the admin can hand it over out-of-band.
+   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → System → Integrations → Email / SMTP admin tab). When the email cannot be delivered (SMTP not configured, the send fails, or it is not confirmed within 15 seconds) the temporary password is shown once in the create dialog so the admin can hand it over out-of-band; it is not shown when the email was sent. The audit event `user_created` records `invitationSent` for the outcome. A reverse proxy or load balancer in front of `/api/` whose timeout is 15 seconds or less can still cut the request off before the password is returned when the SMTP server stalls; the user then exists without a known password and has to be deleted and created again.
 4. The new user is created immediately — there is no email-verification step in CE.
 
 ### Editing a user
 
 From the user's row in the table:
 
-- **Display name, email, role** can be patched via `PUT /api/admin/users/:id`. Changing an email to one that is already in use returns HTTP 409 (`EMAIL_TAKEN`).
+- **Display name, email, role** can be patched via `PUT /api/admin/users/:id`. Send `null` to clear the email or display name; fields left out of the body stay unchanged. Changing an email to one that is already in use returns HTTP 409 (`EMAIL_TAKEN`).
 - **Demoting the last active admin** is rejected with HTTP 409 (`LAST_ADMIN`). Promote another admin first.
 - Username and password cannot be changed through this form. Password changes go through the self-service flow from the user's own profile; username is immutable once set.
 
@@ -2300,8 +2510,10 @@ LLM providers → **Image analysis (vision)**.
   previous assignment untouched: **provider not found**, **no model
   resolves**, **the model refused the test image** (text-only — pick a
   vision-capable model) and **image support could not be confirmed**
-  (unreachable, auth, 429, open breaker — not a verdict about the model; fix
-  the endpoint and save again, or **Re-check**).
+  (the provider did not answer — unreachable, auth, 429, open breaker — or it
+  answered but the reply was cut off before a visible answer, as a reasoning
+  model can when it uses up the probe's token budget; not a verdict about the
+  model; fix the endpoint and save again, or **Re-check**).
 - **Pause, not purge.** Unassigning stops new analysis; descriptions already
   indexed and still valid stay searchable. The **Index identity** line shows
   the model identity the index was built under; if the provider's endpoint

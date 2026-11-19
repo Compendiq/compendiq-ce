@@ -48,7 +48,7 @@ test.describe('Confluence sync flow', () => {
           state: { accessToken, user, isAuthenticated: true },
           version: 0,
         };
-        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
+        localStorage.setItem('compendiq-auth:p1', JSON.stringify(authState));
       },
       { accessToken: authToken, user: authUser },
     );

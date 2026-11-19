@@ -67,8 +67,12 @@ credentials to do it.
 Turning the switch back on restores the credential form with your saved values
 and resumes sync with the space selection you already had; edits you made while
 standalone are reconciled by the normal sync conflict handling, exactly as a
-local edit between two syncs always was. Entering credentials in the setup
-wizard turns the integration back on for you.
+local edit between two syncs always was. A page's **Re-sync** follows the same
+conflict policy: depending on your administrator's setting it keeps your edit,
+queues the Confluence version for review, or replaces your edit after storing a
+copy of it. That copy appears in **Version history** once the page has a newer
+version than your edit; until then an administrator can retrieve it. Entering
+credentials in the setup wizard turns the integration back on for you.
 
 ### The Getting Started checklist
 
@@ -140,6 +144,12 @@ After configuring your Confluence connection:
 
 Synced spaces are periodically updated in the background (default: every 15 minutes) for as long as **Sync with Confluence** is on. In standalone mode that schedule does not run, and **Fetch Spaces**, **Sync Selected** and the sync overview are not offered; the spaces you already have stay listed and your selection stays editable, so nothing you configured is lost when you switch back on.
 
+Only one synchronization runs at a time across the whole installation. While the background sync or another user's sync is running, **Sync Now** and **Sync Selected** start nothing and show *A Confluence sync is currently running. Wait for it to finish and try again.* — start yours again once that sync has finished. While your own sync is running, **Sync Now** is unavailable and reads *Syncing...*.
+
+If local space settings cannot load, use **Try again** to retry the read. A
+failed refresh keeps the last loaded settings and any unsaved edits available;
+the missing-space message appears only after a successful list excludes it.
+
 ## Working with Pages
 
 ### Browsing Pages
@@ -179,6 +189,17 @@ an access denial discards them until a successful authorized read.
 3. Enter a title and start writing in the TipTap editor.
 4. Use the formatting toolbar or keyboard shortcuts for rich text.
 5. Save with `Ctrl+S`.
+
+While you write, a new page's title, space, location and text are kept in this
+browser for your account, about two seconds after each change; a reload or a
+closed tab within those seconds can lose the last change. If you leave or
+reload before **Create Page** and the kept draft has a title or text, opening
+**New Page** again asks **Restore draft?** (a space or location alone is not
+offered): **Restore draft** brings it back; **Start blank** (or Escape) opens
+an empty form without deleting anything, and your first edit there replaces
+the whole kept draft. **Cancel** on a form with content asks **Discard
+changes?** first. Creating the page, discarding it, or signing out deletes the
+kept draft.
 
 You can also start a page from a template (Meeting Notes, Incident Report, How-to Guide, ADR, Runbook, Cornell Notes, plus any templates you or an admin created) via the **Use Template** button on the New Page screen. Shared templates and your own templates are listed separately. If the editor already has content, **Save current as template** stores it as a personal template (admins can tick **Share with everyone**).
 
@@ -239,6 +260,15 @@ Skipped and unselected Notion items keep their Notion URLs in imported page bodi
 4. Save with `Ctrl+S`.
 
 Changes to Confluence-synced pages can be pushed back to Confluence.
+
+When collaborative editing is off and someone else saves the page while you
+are editing it, **Save** is refused with *Version conflict detected* instead
+of overwriting their change, and it stays refused until you decide. Choose
+**Reload** in that message: the current version opens and the text of your
+unsaved draft stays in this browser (title and tag changes are not kept).
+Press **Edit** again and choose **Restore draft** to continue with your text —
+saving it then replaces the newer version — or **Edit published version** to
+start from the current text.
 
 ### Page Details
 
@@ -473,6 +503,10 @@ The knowledge graph provides a visual map of relationships between pages:
 1. Go to **Graph** in the sidebar (or press `G G`).
 2. Explore connections between pages based on links, tags, and semantic similarity.
 3. Click on nodes to navigate to specific pages.
+
+Graph filter selections are included in the URL. Editing filters replaces the
+current history entry; selecting or clearing a focused article adds an entry,
+so browser Back and Forward restore the earlier graph and its filters.
 
 ## Trash
 

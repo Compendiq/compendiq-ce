@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { m, useReducedMotion } from 'framer-motion';
 import { PanelLeft, PanelLeftClose, SquarePen } from 'lucide-react';
 import { MainNavStripExpanded, MainNavStripCollapsed } from '../../../shared/components/layout/MainNavStrip';
-import { useUiStore } from '../../../stores/ui-store';
+import {
+  PANEL_COLLAPSE_TRANSITION,
+  usePanelCollapseInitial,
+} from '../../../shared/hooks/use-panel-collapse-motion';
+import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../../shared/lib/cn';
 import { useAiContext } from '../AiContext';
 import { useConversationList } from './use-conversation-list';
 import { ConversationList } from './ConversationList';
 import { filterConversations } from './filter-conversations';
-
-const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
 /**
  * A filter is a scale affordance, so it appears only at scale — the tree's own
@@ -28,10 +30,10 @@ export const CONVERSATION_FILTER_THRESHOLD = 8;
  * `app-shell-layout.test.ts` fails if either name comes back in AppLayout.
  *
  * `embedMainNav` mirrors SidebarTreeView / SettingsSidebar exactly. On desktop
- * the header's tabs (MainNavHeaderTabs) own Pages / AI / Graph, so AppLayout
- * passes `false`; the mobile drawer has no header tabs and takes the default.
- * When it is false there is no nav row at all, so the collapse button moves
- * into the row below — the tree's own two-branch treatment.
+ * the outer chassis icon rail (`MainNavChassisRail`) owns Pages / AI / Graph,
+ * so AppLayout passes `false`; the mobile drawer has no rail and takes the
+ * default. When it is false there is no nav row at all, so the collapse button
+ * moves into the row below — the tree's own two-branch treatment.
  */
 export function AiConversationsSidebar({
   onNavigate,
@@ -121,30 +123,27 @@ export function AiConversationsSidebar({
     [treeSidebarWidth, setTreeSidebarWidth],
   );
 
+  const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
+    treeSidebarCollapsed,
+    treeSidebarWidth,
+    COLLAPSED_TREE_SIDEBAR_WIDTH,
+    reduceEffects,
+  );
+
   if (treeSidebarCollapsed) {
     return (
-      <AnimatePresence mode="wait">
-        {/* <aside>, not <div>: both branches are the same region in two sizes,
-            and both are named. */}
+        /* <aside>, not <div>: both branches are the same region in two sizes,
+            and both are named. */
         <m.aside
           key="collapsed-conversations-rail"
           aria-label="Conversations"
           data-testid="ai-conversations-sidebar"
-          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center overflow-hidden"
+          initial={collapsedInitial}
+          animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
+          transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
+          className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          <button
-            type="button"
-            onClick={toggleTreeSidebar}
-            className="mt-2 flex items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            <PanelLeft size={16} />
-          </button>
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -163,8 +162,31 @@ export function AiConversationsSidebar({
           >
             <SquarePen size={16} />
           </button>
+
+          <button
+            type="button"
+            onClick={toggleTreeSidebar}
+            className="mb-1.5 ml-1.5 mt-auto flex size-7 shrink-0 items-center justify-center self-start rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (,)"
+          >
+            <PanelLeft size={15} aria-hidden="true" />
+          </button>
+
+          <span
+            data-rail-hairline
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 -right-px top-0 z-10 flex w-[3px] flex-col items-center"
+          >
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+            <span className="my-1.5 flex flex-col items-center gap-1 opacity-70">
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+              <span className="size-[3px] rounded-full bg-muted-foreground" />
+            </span>
+            <span className="w-px flex-1 bg-[var(--rail-divider)]" />
+          </span>
         </m.aside>
-      </AnimatePresence>
     );
   }
 
@@ -173,9 +195,9 @@ export function AiConversationsSidebar({
       key="expanded-conversations-sidebar"
       aria-label="Conversations"
       data-testid="ai-conversations-sidebar"
-      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      initial={expandedInitial}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
-      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
+      transition={reduceEffects || isResizing ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
       className={cn(
         'app-sidebar relative flex max-w-full flex-col overflow-hidden',
         isResizing && 'select-none',
@@ -197,15 +219,6 @@ export function AiConversationsSidebar({
       {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
-        <button
-          type="button"
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
       </div>
       )}
 
@@ -224,17 +237,6 @@ export function AiConversationsSidebar({
           <SquarePen size={14} aria-hidden="true" />
           New chat
         </button>
-        {!embedMainNav && (
-          <button
-            type="button"
-            onClick={toggleTreeSidebar}
-            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-          </button>
-        )}
       </div>
 
       {showFilter && (
@@ -269,7 +271,16 @@ export function AiConversationsSidebar({
           row's TOP edge, not its bottom — a second bordered nav-style row
           here would have to carry h-12 and would draw a line where there is
           no chrome. */}
-      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] py-1.5 pl-1.5 pr-2">
+        <button
+          type="button"
+          onClick={toggleTreeSidebar}
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
         <span
           data-testid="conversations-footer-count"
           className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
@@ -299,12 +310,35 @@ export function AiConversationsSidebar({
         title="Drag to resize · Double-click to reset"
       >
         <span
-          className={cn(
-            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
-            isResizing && 'bg-action/70',
-          )}
+          data-rail-hairline
           aria-hidden="true"
-        />
+          className="-mr-px flex h-full w-[3px] flex-col items-center"
+        >
+          <span
+            className={cn(
+              'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+          />
+          <span
+            data-testid="conversations-resize-grip"
+            className={cn(
+              'pointer-events-none my-1.5 flex flex-col items-center gap-1 opacity-70 transition-all duration-150',
+              'group-hover:opacity-100 group-focus-visible:opacity-100',
+              isResizing && 'scale-125 opacity-100',
+            )}
+          >
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+            <span className={cn('size-[3px] rounded-full bg-muted-foreground transition-colors duration-150 group-hover:bg-action group-focus-visible:bg-action', isResizing && 'bg-action')} />
+          </span>
+          <span
+            className={cn(
+              'w-px flex-1 bg-[var(--rail-divider)] transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+          />
+        </span>
       </div>
     </m.aside>
   );

@@ -13,9 +13,21 @@ vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('../../../core/db/postgres.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
-}));
+vi.mock('../../../core/db/postgres.js', () => {
+  const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
+  // A fresh Confluence import runs its first-publication fence and INSERT on
+  // one pooled client (#281). Delegate that client's statements to the same
+  // `query` mock so the per-test SQL routers below see them; BEGIN/COMMIT/
+  // ROLLBACK are no-ops.
+  const client = {
+    query: (sql: string, params?: unknown[]) => {
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return Promise.resolve({ rows: [], rowCount: 0 });
+      return query(sql, params);
+    },
+    release: () => undefined,
+  };
+  return { query, getPool: () => ({ connect: async () => client }) };
+});
 
 vi.mock('../../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue([]),

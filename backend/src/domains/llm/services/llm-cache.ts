@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 import type { RedisClientType } from 'redis';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -6,13 +7,16 @@ const LLM_CACHE_TTL = parseInt(process.env.LLM_CACHE_TTL ?? '3600', 10); // 1 ho
 const KEY_PREFIX = 'kb:llm:';
 const LOCK_PREFIX = 'llm:lock:';
 const LOCK_TTL = 120; // seconds — safety net if holder crashes
+const LOCK_HEARTBEAT_INTERVAL_MS = 30_000;
 const LOCK_POLL_INTERVAL_MS = 1_000; // 1 second between polls
 const LOCK_POLL_TIMEOUT_MS = 60_000; // give up waiting after 60 seconds
 const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+const RENEW_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("expire", KEYS[1], ARGV[2]) else return 0 end`;
 
 export interface CachedLlmResponse {
   content: string;
   cachedAt: number;
+  aiProvenance?: ConversationTurnAiProvenance;
 }
 
 /**
@@ -141,6 +145,19 @@ export function buildRagCacheKey(
     retrievedImages?: string;
     /** Sanitized/truncated attached document text; folded into the final hash. */
     referenceText?: string;
+    /**
+     * #282: the chat provider's CONFIGURATION revision and effective
+     * locality, and the policy revisions of every grounding page
+     * (`policyRevisionsCacheComponent`). A cached answer is page text
+     * exactly as fresh retrieval is: an endpoint edit (which resets
+     * locality to external), a locality re-declaration or a page's policy
+     * change must each move the key so no answer generated under a looser
+     * reading is replayed under a stricter one. The route additionally
+     * revalidates a hit against the current rows before serving it.
+     */
+    providerConfigRevision?: number;
+    providerLocality?: string;
+    policyRevisions?: string;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -163,7 +180,29 @@ export function buildRagCacheKey(
   const imageSuffix = options.imageHash ? `img:${options.imageHash}` : '';
   const retrievedImagesSuffix = options.retrievedImages ? `rimg:${options.retrievedImages}` : '';
   const referenceSuffix = options.referenceText ? `ref:${options.referenceText}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, promptSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
+  const providerRevisionSuffix = options.providerConfigRevision !== undefined ? `prev:${options.providerConfigRevision}` : '';
+  const localitySuffix = options.providerLocality ? `loc:${options.providerLocality}` : '';
+  const policySuffix = options.policyRevisions ? `pol:${options.policyRevisions}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, promptSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix, providerRevisionSuffix, localitySuffix, policySuffix);
+}
+
+/**
+ * #282: one digest over the grounding set's
+ * `(pageId, policyRevision, contentRevision)` triples, order-independent,
+ * for `buildRagCacheKey.policyRevisions`. The content revision is
+ * `pages.content_revision`: a body edit (PUT) moves it, so the identical
+ * question after an edit is a different key — the prompt hash alone cannot
+ * see an edit whose new text was not retrieved into the prompt. Empty input
+ * yields `''` so a question with no grounding pages adds no suffix.
+ */
+export function policyRevisionsCacheComponent(
+  pages: ReadonlyArray<{ pageId: number; policyRevision: number; contentRevision: number }>,
+): string {
+  if (pages.length === 0) return '';
+  const parts = [...pages]
+    .map((p) => `${p.pageId}:${p.policyRevision}:${p.contentRevision}`)
+    .sort();
+  return createHash('sha256').update(parts.join(',')).digest('hex');
 }
 
 export class LlmCache {
@@ -190,11 +229,13 @@ export class LlmCache {
     cacheKey: string,
     content: string,
     ttl: number = LLM_CACHE_TTL,
+    aiProvenance?: ConversationTurnAiProvenance,
   ): Promise<void> {
     try {
       const cached: CachedLlmResponse = {
         content,
         cachedAt: Date.now(),
+        ...(aiProvenance ? { aiProvenance } : {}),
       };
       await this.redis.setEx(cacheKey, ttl, JSON.stringify(cached));
     } catch (err) {
@@ -223,6 +264,34 @@ export class LlmCache {
     }
   }
 
+  /** Extend the lease only while the token still owns it. */
+  async renewLock(cacheKey: string, token: string, ttl: number = LOCK_TTL): Promise<boolean> {
+    try {
+      const result = await this.redis.eval(RENEW_LOCK_SCRIPT, {
+        keys: [LOCK_PREFIX + cacheKey],
+        arguments: [token, String(ttl)],
+      });
+      return Number(result) === 1;
+    } catch (err) {
+      logger.error({ err, cacheKey }, 'LLM lock renewal error');
+      return false;
+    }
+  }
+
+  /** Keep a live generation's lease from expiring while its stream is open. */
+  startLockHeartbeat(cacheKey: string, token: string): () => void {
+    let renewalInFlight = false;
+    const timer = setInterval(() => {
+      if (renewalInFlight) return;
+      renewalInFlight = true;
+      void this.renewLock(cacheKey, token).finally(() => {
+        renewalInFlight = false;
+      });
+    }, LOCK_HEARTBEAT_INTERVAL_MS);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
+
   /**
    * Release the Redis lock only when token still identifies its current owner.
    * The compare-and-delete Lua script is atomic, so a holder whose TTL expired
@@ -241,17 +310,19 @@ export class LlmCache {
 
   /**
    * Poll for a cached response to appear (written by the lock holder).
-   * Returns the cached response if it appears within the timeout, or null
-   * if the timeout expires (caller should then generate its own response).
+   * Returns null when the holder releases without caching or the poll window
+   * expires; callers must check lock ownership again before generating.
    */
   async waitForCachedResponse(
     cacheKey: string,
     pollIntervalMs: number = LOCK_POLL_INTERVAL_MS,
     timeoutMs: number = LOCK_POLL_TIMEOUT_MS,
+    signal?: AbortSignal,
   ): Promise<CachedLlmResponse | null> {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !signal?.aborted) {
       const cached = await this.getCachedResponse(cacheKey);
+      if (signal?.aborted) return null;
       if (cached) return cached;
 
       // Check if the lock is still held — if not, the holder may have failed
@@ -266,10 +337,13 @@ export class LlmCache {
         // Redis error during exists check — keep polling
       }
 
-      await sleep(pollIntervalMs);
+      await sleep(pollIntervalMs, signal);
     }
 
-    logger.warn({ cacheKey }, 'Timed out waiting for locked LLM cache — proceeding with generation');
+    if (signal?.aborted) return null;
+    if (timeoutMs >= LOCK_POLL_TIMEOUT_MS) {
+      logger.warn({ cacheKey }, 'Timed out waiting for locked LLM cache');
+    }
     return null;
   }
 
@@ -299,6 +373,19 @@ export class LlmCache {
 }
 
 /** Promise-based sleep helper. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+  });
 }
