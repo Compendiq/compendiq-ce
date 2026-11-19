@@ -22,7 +22,7 @@ import {
   PANEL_COLLAPSE_TRANSITION,
   usePanelCollapseInitial,
 } from '../../hooks/use-panel-collapse-motion';
-import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
+import { MainNavStripExpanded, MainNavStripCollapsed, MainNavTextLinks } from './MainNavStrip';
 
 import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
@@ -780,27 +780,28 @@ export function SidebarTreeView({
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          {/* Keep the collapsed spacer at the same 48px chrome height as the
-              expanded toolbar, so both panes start their content on one baseline. */}
-          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center" aria-hidden="true" />
-
-          {/* Expand sits at the top of the rail, mirroring the expanded pane's
-              collapse control so the toggle stays one place across states. */}
-          <button
-            type="button"
-            onClick={() => {
-              if (forceCollapsed && !treeSidebarCollapsed) {
-                onForceExpand?.();
-              } else {
-                toggleTreeSidebar();
-              }
-            }}
-            className="mb-1 mt-1 ml-1.5 flex size-7 shrink-0 items-center justify-center self-start rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            <PanelLeft size={15} aria-hidden="true" />
-          </button>
+          {/* The toggle's band, identical to the expanded pane's: same 36px
+              height, same 8px inset, same hairline. The toggle must not move
+              when the panel closes. The 12px spacer below restores the 48px
+              chrome height the rest of this rail aligns on. */}
+          <div className="flex h-9 w-full shrink-0 items-center border-b border-border px-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (forceCollapsed && !treeSidebarCollapsed) {
+                  onForceExpand?.();
+                } else {
+                  toggleTreeSidebar();
+                }
+              }}
+              className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Expand sidebar"
+              title="Expand sidebar (,)"
+            >
+              <PanelLeft size={15} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="h-3 w-full shrink-0" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -874,8 +875,14 @@ export function SidebarTreeView({
           carries the same thin hairline the article toolbar draws below its
           chrome. It is deliberately NOT a `panel-toolbar` row: that band owns
           the pane's 48px seam and is unlined by ADR-010 v1.1, while this row
-          states its own boundary and sits above the seam. */}
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2">
+          states its own boundary and sits above the seam.
+
+          The three destination names sit to the toggle's right, so where you
+          are is legible without the outer rail's icons and the destination
+          pages no longer need a title row saying it again. The mobile drawer
+          keeps its pill strip above (`embedMainNav`), where the names are
+          already words, so the band carries text links only on desktop. */}
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
         <button
           type="button"
           onClick={toggleTreeSidebar}
@@ -886,6 +893,7 @@ export function SidebarTreeView({
         >
           <PanelLeftClose size={15} aria-hidden="true" />
         </button>
+        {!embedMainNav && <MainNavTextLinks onNavigate={onNavigate} />}
       </div>
 
       {/* Space selector sits in the 48px chrome row the article strip and the

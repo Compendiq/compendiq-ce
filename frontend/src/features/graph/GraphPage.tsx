@@ -663,7 +663,9 @@ export function GraphPage() {
       {/* Header bar */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-[15px] font-semibold sm:text-lg">Graph</h1>
+          {/* Named in the sidebar's panel band now (owner, 2026-11-19); the
+              heading stays for screen readers and the document outline. */}
+          <h1 className="sr-only">Graph</h1>
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}

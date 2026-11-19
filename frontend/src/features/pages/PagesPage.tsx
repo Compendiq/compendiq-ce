@@ -1229,14 +1229,13 @@ export function PagesPage() {
     // page, so the cap should keep content flush-left, not float it.
     <div className="max-w-[1180px] space-y-5">
       <HeaderHost fallbackClassName="mb-1">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
-          {/* `tabIndex={-1}` adds no tab stop; it is the landing place for
-              focus when the #1402 checklist below removes itself under it. */}
-          <h1
-            ref={libraryHeadingRef}
-            tabIndex={-1}
-            className="nm-focus-ring min-w-0 truncate text-[15px] font-semibold sm:text-lg"
-          >
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-3">
+          {/* The destination's name now lives in the sidebar's panel band next
+              to the pane toggle (owner, 2026-11-19), so the title row that
+              restated it is gone from sight. The heading stays in the document
+              for screen readers, and remains the focus landing after the
+              Getting Started checklist removes itself. */}
+          <h1 ref={libraryHeadingRef} tabIndex={-1} className="sr-only">
             {LIBRARY_HEADING}
           </h1>
           <div className="flex flex-wrap items-center gap-3 sm:gap-4">

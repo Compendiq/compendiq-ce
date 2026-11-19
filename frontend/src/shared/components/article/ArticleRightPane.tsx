@@ -1182,18 +1182,14 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-center rounded-none border-none shadow-none" aria-hidden="true" />
-
-          {/* Expand sits at the top of the rail, above the hairline and the
-              view buttons, so the toggle is in the same place whether the
-              inspector is open or collapsed. It used to be pinned to the
-              bottom, which put the one control for this pane's width at the
-              far end of a column that can scroll away from it. */}
-          <div className="mt-1 mb-0.5 flex w-full shrink-0 justify-end pr-1.5">
+          {/* Same 48px band, same right inset and same 28px control as the
+              expanded tab row's toggle, so closing the inspector does not move
+              it. The rest of the rail keeps starting on the 48px seam. */}
+          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-end rounded-none border-none px-2 shadow-none">
             <button
               type="button"
               onClick={handleExpandSidebar}
-              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Expand inspector"
               title="Expand inspector (.)"
             >

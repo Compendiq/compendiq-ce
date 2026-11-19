@@ -885,7 +885,37 @@ describe('SidebarTreeView', () => {
     // carries the hairline the article toolbar draws under its chrome.
     const band = collapse.parentElement!;
     expect(band.className).toContain('border-b');
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('px-2');
     expect(band.compareDocumentPosition(toolbar!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the toggle in the same band when the tree is collapsed', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+
+    const expand = screen.getByLabelText('Expand sidebar');
+    const band = expand.parentElement!;
+    // Same height, inset and hairline as the expanded pane's band, at the top
+    // of the rail — collapsing must not move the control the user just pressed.
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('px-2');
+    expect(band.className).toContain('border-b');
+    expect(screen.getByRole('complementary', { name: 'Page tree' }).firstElementChild).toBe(band);
+  });
+
+  it('names Library, AI and Graph to the right of the panel toggle', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/') });
+
+    const destinations = screen.getByRole('navigation', { name: 'Destinations' });
+    const band = screen.getByLabelText('Collapse sidebar').parentElement!;
+    expect(band).toContainElement(destinations);
+    const library = within(destinations).getByRole('link', { name: 'Library' });
+    expect(library).toHaveAttribute('aria-current', 'page');
+    expect(library).toHaveAttribute('title', 'Library (G then P)');
+    expect(within(destinations).getByRole('link', { name: 'AI chat, full page' })).not.toHaveAttribute('aria-current');
+    expect(within(destinations).getByRole('link', { name: 'Graph' })).not.toHaveAttribute('aria-current');
   });
 
   it('omits embedded main nav when embedMainNav is false in both expanded and collapsed states while preserving app-sidebar and collapse/expand', () => {

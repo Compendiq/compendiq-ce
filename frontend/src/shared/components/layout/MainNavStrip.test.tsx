@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import {
   MainNavStripExpanded,
   MainNavStripCollapsed,
   MainNavChassisRail,
+  MainNavTextLinks,
 } from './MainNavStrip';
 
 function renderWithRouter(ui: React.ReactElement, route = '/') {
@@ -108,6 +109,29 @@ describe('MainNavChassisRail', () => {
   it('invokes onNavigate when clicked', () => {
     const onNavigate = vi.fn();
     renderWithRouter(<MainNavChassisRail onNavigate={onNavigate} />, '/');
+    fireEvent.click(screen.getByRole('link', { name: 'Graph' }));
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MainNavTextLinks', () => {
+  it('names Library, AI and Graph, and marks the destination by route', () => {
+    const { unmount } = renderWithRouter(<MainNavTextLinks />, '/pages/abc');
+    let nav = screen.getByRole('navigation', { name: 'Destinations' });
+    expect(within(nav).getByRole('link', { name: 'Library' })).toHaveAttribute('aria-current', 'page');
+    expect(within(nav).getByRole('link', { name: 'AI chat, full page' })).not.toHaveAttribute('aria-current');
+    expect(within(nav).getByRole('link', { name: 'Graph' })).not.toHaveAttribute('aria-current');
+    unmount();
+
+    renderWithRouter(<MainNavTextLinks />, '/ai/c/conv-1');
+    nav = screen.getByRole('navigation', { name: 'Destinations' });
+    expect(within(nav).getByRole('link', { name: 'AI chat, full page' })).toHaveAttribute('aria-current', 'page');
+    expect(within(nav).getByRole('link', { name: 'Library' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('invokes onNavigate when a destination is clicked', () => {
+    const onNavigate = vi.fn();
+    renderWithRouter(<MainNavTextLinks onNavigate={onNavigate} />, '/');
     fireEvent.click(screen.getByRole('link', { name: 'Graph' }));
     expect(onNavigate).toHaveBeenCalledTimes(1);
   });

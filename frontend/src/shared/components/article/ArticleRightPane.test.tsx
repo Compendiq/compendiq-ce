@@ -382,6 +382,21 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
+  it('keeps the inspector toggle in the top 48px band when collapsed', () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const expand = screen.getByLabelText('Expand inspector');
+    const band = expand.parentElement!;
+    // Same 48px row, same 8px inset and same 28px control as the expanded tab
+    // row, at the rail's first slot — closing must not move the toggle.
+    expect(band.className).toContain('h-12');
+    expect(band.className).toContain('px-2');
+    expect(band.className).toContain('panel-toolbar');
+    expect(screen.getByTestId('article-right-pane-rail').firstElementChild).toBe(band);
+  });
+
   it('starts collapsed below xl even when the wide-layout preference is expanded', () => {
     window.innerWidth = 1024;
     useUiStore.setState({

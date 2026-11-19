@@ -24,21 +24,29 @@ import { cn } from '../../lib/cn';
 export const MAIN_NAV_ITEMS: readonly {
   icon: LucideIcon;
   label: string;
+  /**
+   * The destination's own page name, for surfaces that name the room rather
+   * than the tab (`MainNavTextLinks`). The Library route is `/` and its page
+   * heading is "Library"; the compact pill keeps "Pages" because that is the
+   * corpus it shows and the name operators already navigate by.
+   */
+  pageTitle: string;
   path: string;
   shortcut: string;
   ariaLabel?: string;
 }[] = [
-  { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
+  { icon: BookOpen, label: 'Pages', pageTitle: 'Library', path: '/', shortcut: 'G then P' },
   {
     icon: Bot,
     label: 'AI',
+    pageTitle: 'AI',
     path: '/ai',
     shortcut: 'G then A',
     // Visible label stays "AI" (WCAG 2.5.3). The longer name tells it apart
     // from the page inspector's Assistant tab, which is a different room.
     ariaLabel: 'AI chat, full page',
   },
-  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
+  { icon: Share2, label: 'Graph', pageTitle: 'Graph', path: '/graph', shortcut: 'G then G' },
 ] as const;
 
 function isActive(pathname: string, path: string): boolean {
@@ -96,6 +104,47 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
               )}
             />
             {label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+/**
+ * Inline destination names for a sidebar's 36px panel band — the row that also
+ * carries the pane's open/close toggle (owner, 2026-11-19). The outer chassis
+ * rail stays icon-only; this is where the three rooms are legible as words, so
+ * the destination pages no longer need a title row restating where you are.
+ *
+ * Text, not the segmented pills `MainNavStripExpanded` draws: the band is
+ * 36px tall beside a 28px icon button, and a three-pill track there would
+ * compete with the space selector directly below it. Active is ink only
+ * (`aria-current` carries it); no underline, because an underlined label in
+ * this app means a prose link.
+ */
+export function MainNavTextLinks({ onNavigate, className }: MainNavStripProps & { className?: string }) {
+  const location = useLocation();
+  return (
+    <nav aria-label="Destinations" className={cn('flex min-w-0 items-center gap-2.5', className)}>
+      {MAIN_NAV_ITEMS.map(({ pageTitle, path, shortcut, ariaLabel }) => {
+        const active = isActive(location.pathname, path);
+        return (
+          <Link
+            key={path}
+            to={path}
+            onClick={onNavigate}
+            title={`${pageTitle} (${shortcut})`}
+            aria-label={ariaLabel}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'shrink-0 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              active
+                ? 'text-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {pageTitle}
           </Link>
         );
       })}

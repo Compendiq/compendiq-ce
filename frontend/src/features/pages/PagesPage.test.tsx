@@ -3563,7 +3563,9 @@ describe('PagesPage — Getting Started checklist (#1402)', () => {
     );
     const libraryHeading = screen.getByRole('heading', { name: 'Library' });
     expect(document.activeElement).toBe(libraryHeading);
-    expect(libraryHeading).toHaveClass('nm-focus-ring');
+    // The title is no longer painted (the sidebar band names the destination),
+    // so it is the hidden focus target rather than a visible focus ring.
+    expect(libraryHeading).toHaveClass('sr-only');
   });
 
   /**
