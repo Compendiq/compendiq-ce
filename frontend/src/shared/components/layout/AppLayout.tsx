@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
@@ -12,12 +12,22 @@ import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
 import { TrialBanner } from '../banners/TrialBanner';
 import { SidebarTreeView } from './SidebarTreeView';
-import { SettingsSidebar } from './SettingsSidebar';
-import { AiConversationsSidebar } from '../../../features/ai/conversations/AiConversationsSidebar';
-import {
-  ArticleRightPane,
-  type InspectorViewRequest,
-} from '../article/ArticleRightPane';
+import type { InspectorViewRequest } from '../article/ArticleRightPane';
+
+// Code-split route-specific chrome so initial boot on `/` or `/login` does not
+// eagerly download the 2.3k-line article inspector, AI conversations rail, or
+// settings navigation rail.
+const SettingsSidebar = lazy(() =>
+  import('./SettingsSidebar').then((mod) => ({ default: mod.SettingsSidebar })),
+);
+const AiConversationsSidebar = lazy(() =>
+  import('../../../features/ai/conversations/AiConversationsSidebar').then((mod) => ({
+    default: mod.AiConversationsSidebar,
+  })),
+);
+const ArticleRightPane = lazy(() =>
+  import('../article/ArticleRightPane').then((mod) => ({ default: mod.ArticleRightPane })),
+);
 import { AiProvider } from '../../../features/ai/AiContext';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { LogoMark, LogoWordmark } from '../Logo';
@@ -417,11 +427,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
               // horizontal scroll. The sidebar itself carries `max-w-full`.
               className="fixed inset-y-0 left-0 z-50 flex w-fit max-w-[min(85vw,20rem)] overflow-hidden md:hidden"
             >
-              {isAiRoute
-                ? <AiConversationsSidebar onNavigate={closeMobileSidebar} embedMainNav />
-                : isSettingsRoute
-                  ? <SettingsSidebar onNavigate={closeMobileSidebar} embedMainNav />
-                  : <SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav />}
+              <Suspense fallback={null}>
+                {isAiRoute
+                  ? <AiConversationsSidebar onNavigate={closeMobileSidebar} embedMainNav />
+                  : isSettingsRoute
+                    ? <SettingsSidebar onNavigate={closeMobileSidebar} embedMainNav />
+                    : <SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav />}
+              </Suspense>
             </m.div>
           </>
         )}
@@ -455,11 +467,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
               transition={{ type: 'spring', stiffness: 400, damping: 35 }}
               className="fixed inset-y-0 right-0 z-50 flex w-[90vw] max-w-[24rem] flex-col overflow-hidden md:hidden"
             >
-              <ArticleRightPane
-                inspectorViewRequest={inspectorViewRequest}
-                presentation="sheet"
-                onRequestClose={closeMobileContext}
-              />
+              <Suspense fallback={null}>
+                <ArticleRightPane
+                  inspectorViewRequest={inspectorViewRequest}
+                  presentation="sheet"
+                  onRequestClose={closeMobileContext}
+                />
+              </Suspense>
             </m.div>
           </>
         )}
@@ -539,11 +553,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
               inside the workspace card on --app-sidebar-bg (slightly darker
               than <main>), separated by a subtle 1px border-right. */}
           {!isMobileLayout && (
-            isAiRoute
-              ? <AiConversationsSidebar embedMainNav={false} />
-              : isSettingsRoute
-                ? <SettingsSidebar embedMainNav={false} />
-                : <SidebarTreeView embedMainNav={false} />
+            <Suspense fallback={null}>
+              {isAiRoute
+                ? <AiConversationsSidebar embedMainNav={false} />
+                : isSettingsRoute
+                  ? <SettingsSidebar embedMainNav={false} />
+                  : <SidebarTreeView embedMainNav={false} />}
+            </Suspense>
           )}
           <main
             id="main-content"
@@ -625,7 +641,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {/* Attached right panel. Lives inside the workspace card,
               attached to the main area, separated by a 1px border. */}
           {isArticleRoute && !isMobileLayout && (
-            <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
+            <Suspense fallback={null}>
+              <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
+            </Suspense>
           )}
         </div>
       </div>

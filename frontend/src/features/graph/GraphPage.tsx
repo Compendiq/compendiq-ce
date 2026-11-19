@@ -332,9 +332,11 @@ export function GraphPage() {
 
   const graphRef = useRef<{ zoom: (k: number, ms?: number) => void; zoomToFit: (ms?: number, padding?: number) => void }>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [hoveredNode, setHoveredNode] = useState<(GraphNode | ClusterNode) | null>(null);
-  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  const hoveredNodeRef = useRef<(GraphNode | ClusterNode) | null>(null);
+  hoveredNodeRef.current = hoveredNode;
 
   // #941/#1556: derive theme-aware canvas colours so node labels, borders and
   // edges track the palette on both Graphite and Paper.
@@ -417,16 +419,19 @@ export function GraphPage() {
     };
   }, []);
 
-  // Track the pointer only while a node is hovered. tooltipPos is consumed
-  // solely by the hover tooltip, so registering a global mousemove listener
-  // unconditionally would call setState on every pointer move — re-rendering
-  // the heavy force-graph tree at pointer frequency even with nothing
-  // hovered. Keying the effect on hoveredNode confines the cost to the
-  // (brief) hover window.
+  // Track the pointer directly onto the tooltip element while a node is
+  // hovered, avoiding React state updates on mousemove so `<ForceGraph2D>`
+  // and surrounding page chrome never re-render at 60–120Hz.
   useEffect(() => {
     if (!hoveredNode) return;
+    const tooltipMaxH = 256; // 16rem = max-h-64
     function handleMouseMove(e: MouseEvent) {
-      setTooltipPos({ x: e.clientX, y: e.clientY });
+      const el = tooltipRef.current;
+      if (!el) return;
+      const top = Math.min(e.clientY - 8, (typeof window !== 'undefined' ? window.innerHeight : 800) - tooltipMaxH - 16);
+      const left = Math.min(e.clientX + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280);
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
     }
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -437,7 +442,7 @@ export function GraphPage() {
     (node: GraphNode | ClusterNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const x = node.x ?? 0;
       const y = node.y ?? 0;
-      const isHovered = hoveredNode?.id === node.id;
+      const isHovered = hoveredNodeRef.current?.id === node.id;
       const isCenter = data?.centerId === node.id;
       const color = getSpaceColor(node.spaceKey, spaceKeys, graphColors.spaces);
 
@@ -503,7 +508,7 @@ export function GraphPage() {
         ctx.fillText(truncated, x, y + size + 2 / globalScale);
       }
     },
-    [spaceKeys, hoveredNode, data?.centerId, graphColors],
+    [spaceKeys, data?.centerId, graphColors],
   );
 
   const nodePointerAreaPaint = useCallback(
@@ -533,10 +538,10 @@ export function GraphPage() {
   const zoomOut = useCallback(() => graphRef.current?.zoom(0.5, 300), []);
   const fitAll = useCallback(() => graphRef.current?.zoomToFit(400, 40), []);
 
-  // Compute clamped tooltip position
-  const tooltipMaxH = 256; // 16rem = max-h-64
-  const tooltipTop = Math.min(tooltipPos.y - 8, (typeof window !== 'undefined' ? window.innerHeight : 800) - tooltipMaxH - 16);
-  const tooltipLeft = Math.min(tooltipPos.x + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280);
+  const availableLabels = useMemo(
+    () => Array.from(new Set(((data?.nodes ?? []) as GraphNode[]).flatMap((n) => n.labels ?? []))).sort(),
+    [data?.nodes],
+  );
 
   // Hold the loading card while the landing probe's FIRST attempt is in
   // flight — tens of milliseconds against a healthy backend — so the picker
@@ -781,9 +786,7 @@ export function GraphPage() {
             onMinScoreChange={(value) => setFilterParam('minScore', value?.toString())}
             labels={labels}
             onLabelsChange={(value) => setFilterParam('labels', value.join(','))}
-            availableLabels={Array.from(
-              new Set(((data?.nodes ?? []) as GraphNode[]).flatMap((n) => n.labels ?? [])),
-            ).sort()}
+            availableLabels={availableLabels}
             onClearFocus={() => {
               const next = new URLSearchParams(searchParams);
               next.delete('focus');
@@ -827,15 +830,13 @@ export function GraphPage() {
         {/* Hover tooltip -- clamped to viewport with max-height and label truncation */}
         {hoveredNode && (
           <div
+            ref={tooltipRef}
             className={cn(
               'pointer-events-none fixed z-50 max-w-xs rounded-lg',
               'nm-popover-glass px-3 py-2 text-xs',
               'max-h-64 overflow-y-auto',
             )}
-            style={{
-              left: tooltipLeft,
-              top: tooltipTop,
-            }}
+            style={{ left: 12, top: 12 }}
             data-testid="graph-tooltip"
           >
             <p className="font-medium text-foreground">{hoveredNode.title}</p>

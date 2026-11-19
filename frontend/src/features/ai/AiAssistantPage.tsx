@@ -350,7 +350,13 @@ export function AiAssistantPage() {
           the partial is an answer body, not an alert. */}
       <div role="alert" data-testid="ai-error-announcer" className="sr-only">
         {(() => {
-          const lastError = [...messages].reverse().find((msg) => msg.isError);
+          let lastError: Message | undefined;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i]?.isError) {
+              lastError = messages[i];
+              break;
+            }
+          }
           return lastError ? (
             <span key={lastError.id}>{lastError.interruption ?? lastError.content}</span>
           ) : null;
@@ -367,9 +373,14 @@ export function AiAssistantPage() {
       <div role="status" aria-live="polite" data-testid="ai-answer-announcer" className="sr-only">
         {(() => {
           if (isStreaming) return null;
-          const lastAnswer = [...messages].reverse().find(
-            (msg) => msg.role === 'assistant' && !msg.isError && msg.content,
-          );
+          let lastAnswer: Message | undefined;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const candidate = messages[i];
+            if (candidate && candidate.role === 'assistant' && !candidate.isError && candidate.content) {
+              lastAnswer = candidate;
+              break;
+            }
+          }
           if (!lastAnswer) return null;
           // A refusal is the one thing this region must not call an answer
           // (#1119). It is not an error either, so it stays in the polite

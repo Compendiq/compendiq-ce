@@ -39,7 +39,7 @@ describe('PageTitleIcon', () => {
     expect(screen.getByRole('button', { name: 'Add icon' })).toBeInTheDocument();
   });
 
-  it('opens the picker from Add icon', () => {
+  it('opens the picker from Add icon', async () => {
     render(
       <PageTitleIcon
         icon={null}
@@ -57,6 +57,7 @@ describe('PageTitleIcon', () => {
     expect(screen.getByRole('tab', { name: /Emoji/i })).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('tab', { name: /Upload/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Logos/i })).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('page-icon-show-all'));
     expect(screen.getByTestId('page-icon-lucide-grid').querySelectorAll('button').length).toBeGreaterThan(600);
     fireEvent.click(screen.getByRole('tab', { name: /Logos/i }));
     expect(screen.getByTestId('page-icon-brand-grid')).toBeInTheDocument();
@@ -159,7 +160,7 @@ describe('PageTitleIcon', () => {
     expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', color: '#6366f1' });
   });
 
-  it('lists diving and hiking glyphs in the icon grid', () => {
+  it('lists diving and hiking glyphs in the icon grid', async () => {
     render(
       <PageTitleIcon
         icon={null}
@@ -171,6 +172,7 @@ describe('PageTitleIcon', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add icon' }));
+    fireEvent.click(await screen.findByTestId('page-icon-show-all'));
     expect(screen.getByLabelText('Diving')).toBeInTheDocument();
     expect(screen.getByLabelText('Hiking')).toBeInTheDocument();
     expect(screen.getByLabelText('Sailing')).toBeInTheDocument();

@@ -64,11 +64,18 @@ describe('Vite build configuration', () => {
       expect(viteConfigSource).toContain("'radix-ui'");
     });
 
-    it('splits UI utilities into their own chunk', () => {
+    it('splits UI utilities into their own chunk without pinning lazy icon/chart libs', () => {
       expect(viteConfigSource).toContain("'ui-utils'");
-      expect(viteConfigSource).toContain("'lucide-react'");
       expect(viteConfigSource).toContain("'clsx'");
       expect(viteConfigSource).toContain("'tailwind-merge'");
+      expect(viteConfigSource).toContain("'sonner'");
+      // lucide-react and recharts stay out of VENDOR_CHUNKS so Rolldown keeps
+      // the 657-icon page-lucide-icons catalog and lazy AnalyticsPage charts
+      // out of the eager boot payload.
+      const blockMatch = viteConfigSource.match(/VENDOR_CHUNKS[^=]*=\s*\[([\s\S]*?)\n\];/);
+      expect(blockMatch).not.toBeNull();
+      expect(blockMatch![1]).not.toContain("'lucide-react'");
+      expect(blockMatch![1]).not.toContain("'recharts'");
     });
 
     it('splits zustand into its own chunk', () => {
