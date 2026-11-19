@@ -248,15 +248,17 @@ Settings → Editor.
 Providers live in the `llm_providers` table and are configured in the admin UI
 (**Settings → AI → AI Models → LLM providers**), not by flipping an env
 toggle. Every row is a generic OpenAI-compatible `/v1` endpoint (ADR-021):
-hosted OpenAI, DeepSeek, Groq, Mistral, OpenRouter, Together, Fireworks,
-Azure OpenAI, local Ollama / LM Studio / vLLM, or any other `/v1` shim. There
-is no separate OpenAI SDK path and no DeepSeek-specific protocol.
+hosted OpenAI, Anthropic (its OpenAI-compatibility layer at
+`https://api.anthropic.com/v1`), DeepSeek, Grok (xAI, `https://api.x.ai/v1`),
+Mistral, OpenRouter, Together, Fireworks, Azure OpenAI, local Ollama /
+LM Studio / vLLM, or any other `/v1` shim. There is no separate OpenAI SDK
+path and no DeepSeek-specific protocol.
 
 #### Add a provider
 
 1. Open **Settings → AI → AI Models → LLM providers** and click **+ Add**.
-2. Pick a **preset** (OpenAI, DeepSeek, …) to fill the base URL, bearer auth,
-   and a suggested default model — or leave **Custom** blank for a local
+2. Pick a **preset** (OpenAI, Anthropic, DeepSeek, Grok, …) to fill the base
+   URL, bearer auth, and a suggested default model — or leave **Custom** blank for a local
    server (`http://host.docker.internal:1234/v1` for LM Studio / vLLM in
    Docker). Typed values are not overwritten silently when you change preset.
 3. Paste the API key into the password field (bearer). Keys are AES-256-GCM

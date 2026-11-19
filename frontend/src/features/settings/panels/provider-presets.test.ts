@@ -6,7 +6,8 @@ describe('PROVIDER_PRESETS', () => {
     expect(PROVIDER_PRESETS.map((p) => p.id)).toEqual([
       'openai',
       'deepseek',
-      'groq',
+      'anthropic',
+      'grok',
       'mistral',
       'openrouter',
       'together',
@@ -23,14 +24,16 @@ describe('PROVIDER_PRESETS', () => {
     expect(byId.openai.suggestedModel).toBe('gpt-4.1-mini');
     expect(byId.deepseek.baseUrl).toBe('https://api.deepseek.com/v1');
     expect(byId.deepseek.suggestedModel).toBe('deepseek-chat');
-    expect(byId.groq.baseUrl).toBe('https://api.groq.com/openai/v1');
+    expect(byId.anthropic.baseUrl).toBe('https://api.anthropic.com/v1');
+    expect(byId.anthropic.suggestedModel).toBe('claude-sonnet-5-5');
+    expect(byId.grok.baseUrl).toBe('https://api.x.ai/v1');
     expect(byId.mistral.baseUrl).toBe('https://api.mistral.ai/v1');
     expect(byId.openrouter.baseUrl).toBe('https://openrouter.ai/api/v1');
     expect(byId.together.baseUrl).toBe('https://api.together.xyz/v1');
     expect(byId.fireworks.baseUrl).toBe('https://api.fireworks.ai/inference/v1');
     expect(byId['azure-openai'].baseUrl).toBe('');
     expect(byId.custom.baseUrl).toBe('');
-    for (const id of ['groq', 'mistral', 'openrouter', 'together', 'fireworks', 'azure-openai', 'custom'] as const) {
+    for (const id of ['grok', 'mistral', 'openrouter', 'together', 'fireworks', 'azure-openai', 'custom'] as const) {
       expect(byId[id].suggestedModel).toBe('');
     }
     for (const p of PROVIDER_PRESETS) {
@@ -59,7 +62,8 @@ describe('matchPresetByUrl', () => {
   });
 
   it('prefers the longest matching hosted root', () => {
-    expect(matchPresetByUrl('https://api.groq.com/openai/v1/embeddings')).toBe('groq');
+    expect(matchPresetByUrl('https://api.x.ai/v1/chat/completions')).toBe('grok');
+    expect(matchPresetByUrl('https://api.anthropic.com/v1')).toBe('anthropic');
   });
 });
 
