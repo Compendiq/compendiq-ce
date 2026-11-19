@@ -1575,5 +1575,27 @@ describe('ArticleRightPane', () => {
       fireEvent.keyDown(window, { key: 'n', altKey: true });
       expect(notesTab).toHaveAttribute('aria-selected', 'true');
     });
+
+    it('highlights the collapsed rail Notes button only when the Notes view is active', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      useUiStore.setState({ articleSidebarCollapsed: false });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      // Switch to Details, then collapse to rail: Notes button must NOT be active.
+      fireEvent.click(screen.getByTestId('page-context-tab-details'));
+      act(() => {
+        useUiStore.setState({ articleSidebarCollapsed: true });
+      });
+      expect(screen.getByTestId('article-notes-rail-btn')).not.toHaveClass('nm-pill-active');
+
+      // Click Notes on the collapsed rail (expands to Notes), then collapse again: Notes button IS active.
+      fireEvent.click(screen.getByTestId('article-notes-rail-btn'));
+      act(() => {
+        useUiStore.setState({ articleSidebarCollapsed: true });
+      });
+      expect(screen.getByTestId('article-notes-rail-btn')).toHaveClass('nm-pill-active');
+    });
   });
 });

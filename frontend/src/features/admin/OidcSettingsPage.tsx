@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
@@ -103,23 +103,25 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
   const [redirectUri, setRedirectUri] = useState('');
   const [groupsClaim, setGroupsClaim] = useState('groups');
   const [enabled, setEnabled] = useState(false);
-  const [initialized, setInitialized] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const initializedRef = useRef(false);
 
-  // Populate form when data loads
-  if (data?.provider && !initialized) {
+  // Hydrate form from server state once on load (and again after a successful save).
+  useEffect(() => {
+    if (!data?.provider || initializedRef.current) return;
     setIssuerUrl(data.provider.issuerUrl);
     setClientId(data.provider.clientId);
     setRedirectUri(data.provider.redirectUri);
     setGroupsClaim(data.provider.groupsClaim);
     setEnabled(data.provider.enabled);
-    setInitialized(true);
-  }
+    initializedRef.current = true;
+  }, [data?.provider]);
 
   const saveMutation = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       apiFetch('/admin/oidc', { method: 'PUT', body: JSON.stringify(body) }),
     onSuccess: () => {
+      initializedRef.current = false;
       queryClient.invalidateQueries({ queryKey: ['admin', 'oidc'] });
       toast.success('OIDC configuration saved');
       setClientSecret(''); // Clear secret after save
@@ -215,18 +217,6 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
                   : 'Not configured'}
             </span>
           </div>
-          {data?.configured && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-                className="h-4 w-4 rounded border-border accent-primary"
-                disabled={disabled}
-              />
-              Enabled
-            </label>
-          )}
         </div>
       </div>
 

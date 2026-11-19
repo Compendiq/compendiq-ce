@@ -1284,7 +1284,7 @@ export function ArticleRightPane({
                   }}
                   className={cn(
                     railIconBtn,
-                    activeInspectorView === 'details' && 'nm-pill-active',
+                    activeInspectorView === 'notes' && 'nm-pill-active',
                   )}
                   aria-label={`Notes (${openNotesCount} open)`}
                   title={`Notes — ${openNotesCount} open note${openNotesCount === 1 ? '' : 's'}. (Alt+N)`}

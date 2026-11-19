@@ -516,7 +516,7 @@ export function VersionHistory({
                             </button>
                           </div>
 
-                          {!selectedVersionData.isCurrent && (
+                          {!selectedVersionData.isCurrent && restoreAllowed && (
                             <button
                               onClick={() => handleRestore(selectedVersionData.versionNumber)}
                               disabled={restoreMutation.isPending}

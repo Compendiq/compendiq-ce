@@ -226,7 +226,11 @@ export async function apiFetch<T = unknown>(
   if (accessToken) {
     headers.set('Authorization', `Bearer ${accessToken}`);
   }
-  if (options.body && !headers.has('Content-Type')) {
+  const isBinaryOrFormBody =
+    (typeof FormData !== 'undefined' && options.body instanceof FormData)
+    || (typeof Blob !== 'undefined' && options.body instanceof Blob)
+    || (typeof URLSearchParams !== 'undefined' && options.body instanceof URLSearchParams);
+  if (options.body && !isBinaryOrFormBody && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -235,7 +239,8 @@ export async function apiFetch<T = unknown>(
   // the auth-cookie lock so a refresh in another tab cannot present the
   // previous cookie concurrently and overwrite the new session's cookie with
   // a successor of the old one.
-  const send = path === '/auth/login' || path === '/auth/register'
+  const isCredentialAuthRoute = path === '/auth/login' || path === '/auth/register';
+  const send = isCredentialAuthRoute
     ? () => withAuthCookieLock(request)
     : request;
 
@@ -243,8 +248,9 @@ export async function apiFetch<T = unknown>(
 
   // Reactive token refresh on 401 (covers both expired tokens and
   // page-reload where accessToken was cleared from memory but
-  // the httpOnly refresh cookie is still present)
-  if (res.status === 401) {
+  // the httpOnly refresh cookie is still present). Never refresh on
+  // credential-submitting auth routes where 401 means invalid credentials.
+  if (res.status === 401 && !isCredentialAuthRoute) {
     const newToken = await refreshAccessTokenOnce();
     if (newToken) {
       headers.set('Authorization', `Bearer ${newToken}`);

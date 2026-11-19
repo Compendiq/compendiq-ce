@@ -80,7 +80,7 @@ function DashboardSkeleton() {
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function AnalyticsPage() {
-  const { hasFeature } = useEnterprise();
+  const { hasFeature, isLoading: isEnterpriseLoading } = useEnterprise();
   const analyticsEnabled = hasFeature('advanced_analytics');
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -160,6 +160,16 @@ export function AnalyticsPage() {
     },
     [dateRange, authUser],
   );
+
+  // Avoid flashing the Enterprise gate before license state resolves on cold load.
+  if (isEnterpriseLoading) {
+    return (
+      <div className="space-y-6" data-testid="analytics-loading">
+        <h1 className="text-lg font-semibold">Enterprise Analytics</h1>
+        <DashboardSkeleton />
+      </div>
+    );
+  }
 
   // Feature gate: require advanced_analytics
   if (!analyticsEnabled) {

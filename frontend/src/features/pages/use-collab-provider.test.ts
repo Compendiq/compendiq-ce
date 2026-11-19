@@ -489,4 +489,18 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     act(() => { reconnect.close(1006, 'offline'); });
     expect(result.current.reconnecting).toBe(false);
   });
+
+  it('reports unauthorized instead of hanging when enabled without an access token', () => {
+    useAuthStore.setState({ accessToken: null, isAuthenticated: false, user: null });
+
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42',
+      enabled: true,
+      expectedLifecycleRevision: 'rev-1',
+    }));
+
+    expect(result.current.error).toBe('unauthorized');
+    expect(result.current.provider).toBeNull();
+    expect(Socket.instances).toHaveLength(0);
+  });
 });

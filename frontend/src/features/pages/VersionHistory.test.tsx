@@ -1173,4 +1173,37 @@ describe('VersionHistory', () => {
     expect(document.querySelector('.max-h-48')).toBeInTheDocument();
     expect(document.querySelector('.max-h-72')).not.toBeInTheDocument();
   });
+
+  it('hides Restore in both the list and the version preview header when the article is frozen', async () => {
+    const detailV2 = new Response(
+      JSON.stringify({
+        confluenceId: null,
+        versionNumber: 2,
+        title: 'Page v2',
+        bodyHtml: '<p>V2 body</p>',
+        bodyText: 'V2 body',
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/2')) return Promise.resolve(detailV2);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" restoreAllowed={false} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+    expect(screen.queryByTitle('Restore this version')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
+    await screen.findByText('Version 2 Preview');
+    expect(screen.queryByTitle('Restore this version')).not.toBeInTheDocument();
+  });
 });
