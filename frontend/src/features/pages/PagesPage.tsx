@@ -673,13 +673,7 @@ export function PagesPage() {
   const wasProcessingRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listContainerRef = useRef<HTMLDivElement>(null);
-  const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
-
-  // Locate the app-level scroll container on mount
-  useEffect(() => {
-    const el = document.querySelector<HTMLElement>('[data-scroll-container]');
-    if (el) setScrollElement(el);
-  }, []);
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
 
   // Focusing the search input unconditionally on mount used to kill every
   // single-key shortcut on the app's own landing route — `useKeyboardShortcuts`
@@ -1217,43 +1211,45 @@ export function PagesPage() {
   }, []);
 
   return (
-    // max-w-[1100px], matching the app's 1200px document-column convention:
-    // uncapped, a short title's flex-1 block stretched to fill whatever the
-    // viewport left over (up to AppLayout's own 1280px route cap), leaving
-    // ~700px of dead air between a row's title and its right-pinned badges
-    // at wide viewports — the eye had nothing to bind them across. No
-    // `mx-auto`: this is a workspace pane beside a sidebar, not a centered
-    // page, so the cap should keep content flush-left, not float it.
-    <div className="max-w-[1180px] space-y-5">
-      <HeaderHost fallbackClassName="mb-1">
-        <div className="flex min-w-0 flex-wrap items-center justify-end gap-3">
-          {/* The destination's name now lives in the sidebar's panel band next
-              to the pane toggle (owner, 2026-11-19), so the title row that
-              restated it is gone from sight. The heading stays in the document
-              for screen readers, and remains the focus landing after the
-              Getting Started checklist removes itself. */}
-          <h1 ref={libraryHeadingRef} tabIndex={-1} className="sr-only">
-            {LIBRARY_HEADING}
-          </h1>
-          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
-            <KPICards
-              embeddingStatus={embeddingStatusData}
-              spacesCount={spaces?.length ?? 0}
-              lastSynced={syncStatus?.lastSynced}
-            />
-            <button
-              type="button"
-              onClick={() => navigate('/pages/new')}
-              className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
-              data-testid="new-page-button"
-            >
-              <Plus size={15} />
-              <span>New Page</span>
-              <ShortcutHint shortcutId="new-page" className="border-current bg-transparent text-primary-foreground" />
-            </button>
-          </div>
-        </div>
-      </HeaderHost>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        ref={setScrollElement}
+        data-testid="library-scroll"
+        className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable]"
+      >
+        {/* max-w-[1180px], matching the app's 1200px document-column convention:
+            uncapped, a short title's flex-1 block stretched to fill whatever the
+            viewport left over (up to AppLayout's own 1280px route cap), leaving
+            ~700px of dead air between a row's title and its right-pinned badges
+            at wide viewports — the eye had nothing to bind them across. No
+            `mx-auto` on the inner column: this is a workspace pane beside a
+            sidebar, not a centered page, so the cap keeps content flush-left. */}
+        <div className="mx-auto w-full max-w-7xl">
+          <div className="max-w-[1180px] space-y-5">
+            <HeaderHost fallbackClassName="mb-1">
+              <div className="flex min-w-0 flex-wrap items-center justify-end gap-3">
+                {/* The destination's name now lives in the sidebar's panel band next
+                    to the pane toggle (owner, 2026-11-19), so the title row that
+                    restated it is gone from sight. The heading stays in the document
+                    for screen readers, and remains the focus landing after the
+                    Getting Started checklist removes itself. */}
+                <h1 ref={libraryHeadingRef} tabIndex={-1} className="sr-only">
+                  {LIBRARY_HEADING}
+                </h1>
+                <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+                  <button
+                    type="button"
+                    onClick={() => navigate('/pages/new')}
+                    className="nm-button-primary h-8 px-3 text-xs sm:text-sm"
+                    data-testid="new-page-button"
+                  >
+                    <Plus size={15} />
+                    <span>New Page</span>
+                    <ShortcutHint shortcutId="new-page" className="border-current bg-transparent text-primary-foreground" />
+                  </button>
+                </div>
+              </div>
+            </HeaderHost>
 
       {/* #1402: the Getting Started checklist. A sibling block, not a wrapper:
           it sits above discovery and the tree and never replaces any of their
@@ -2250,6 +2246,24 @@ export function PagesPage() {
       </>
       )}
 
+          </div>
+        </div>
+      </div>
+
+      {/* Fixed corpus status bar — sits outside the scroller with the same top
+          hairline token as the left sidebar footer so the two rules meet cleanly. */}
+      <footer
+        data-testid="library-status-bar"
+        className="flex min-h-[41px] shrink-0 items-center border-t border-[var(--rail-divider)] px-4 py-1.5 sm:px-6"
+      >
+        <div className="mx-auto w-full max-w-7xl">
+          <KPICards
+            embeddingStatus={embeddingStatusData}
+            spacesCount={spaces?.length ?? 0}
+            lastSynced={syncStatus?.lastSynced}
+          />
+        </div>
+      </footer>
     </div>
   );
 }

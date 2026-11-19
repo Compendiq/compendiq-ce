@@ -316,9 +316,16 @@ describe('PagesPage', () => {
     restoreRects();
   });
 
-  it('renders ambient corpus KPIs in the Library header alongside New Page', () => {
+  it('renders ambient corpus KPIs in a fixed bottom status bar outside the Library scroller', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
+    const statusBar = screen.getByTestId('library-status-bar');
+    const scrollContainer = screen.getByTestId('library-scroll');
+    const kpiCards = screen.getByTestId('kpi-cards');
+
+    expect(statusBar.tagName).toBe('FOOTER');
+    expect(statusBar).toHaveClass('shrink-0', 'border-t', 'border-[var(--rail-divider)]');
+    expect(statusBar).toContainElement(kpiCards);
+    expect(scrollContainer).not.toContainElement(statusBar);
     expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-embedded-pages')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-spaces-synced')).toBeInTheDocument();
@@ -2962,7 +2969,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const result = (await screen.findByText('Page 1')).closest('button')!;
       const input = screen.getByRole('textbox', { name: FIND_LABEL });
-      const scroller = document.querySelector<HTMLElement>('[data-scroll-container]')!;
+      const scroller = screen.getByTestId('library-scroll');
       input.focus();
       fireEvent.keyDown(input, { key: 'Enter' });
       expect(result).toHaveFocus();

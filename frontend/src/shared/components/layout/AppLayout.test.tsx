@@ -639,13 +639,24 @@ describe('AppLayout', () => {
       <AppLayout>
         <div>content</div>
       </AppLayout>,
-      { wrapper: createWrapper('/') },
+      { wrapper: createWrapper('/trash') },
     );
     const scrollContainers = container.querySelectorAll('[data-scroll-container]');
     expect(scrollContainers).toHaveLength(1);
 
     const scrollEl = scrollContainers[0] as HTMLElement;
     expect(scrollEl.className).toContain('overflow-y-auto');
+  });
+
+  it('delegates scrolling to the Library route so its bottom status bar stays fixed', () => {
+    const { container } = render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const scrollEl = container.querySelector('[data-scroll-container]') as HTMLElement;
+    expect(scrollEl.className).toContain('overflow-hidden');
   });
 
   it('stops outer scrolling at the chassis without clipping the workspace shadow', () => {

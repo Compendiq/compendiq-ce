@@ -58,6 +58,7 @@ function read(relativePath: string): string {
 const appLayoutSource = read('shared/components/layout/AppLayout.tsx');
 const pageViewSource = read('features/pages/PageViewPage.tsx');
 const newPageSource = read('features/pages/NewPagePage.tsx');
+const pagesPageSource = read('features/pages/PagesPage.tsx');
 
 /** Its top padding, in Tailwind spacing steps (non-article branch). */
 function scrollPaddingTopSteps(): number {
@@ -69,11 +70,13 @@ function scrollPaddingTopSteps(): number {
 }
 
 describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
-  it('article routes do not inset the scroll container, so the toolbar can meet the pane edge', () => {
-    expect(appLayoutSource).toMatch(/isArticleRoute\s*\n\s*\? 'overflow-hidden'/);
-    expect(appLayoutSource).toMatch(/isArticleRoute \? 'max-w-none'/);
+  it('article and library routes do not inset the scroll container, so top/bottom bars meet the pane edge', () => {
+    expect(appLayoutSource).toMatch(/isArticleRoute \|\| isLibraryRoute\s*\n\s*\? 'overflow-hidden'/);
+    expect(appLayoutSource).toMatch(/isArticleRoute \|\| isLibraryRoute \? 'max-w-none'/);
     expect(pageViewSource).toContain('data-testid="article-scroll"');
     expect(pageViewSource).toMatch(/overflow-y-auto[^"]*\[scrollbar-gutter:stable\]/);
+    expect(pagesPageSource).toContain('data-testid="library-scroll"');
+    expect(pagesPageSource).toMatch(/overflow-y-auto[^"]*\[scrollbar-gutter:stable\]/);
   });
 
   it('the non-article scroll container declares one top padding', () => {
