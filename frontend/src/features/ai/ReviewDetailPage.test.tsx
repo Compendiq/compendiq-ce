@@ -520,4 +520,28 @@ describe('ReviewDetailPage', () => {
       expect(body.notes).toBe('Tightened wording.');
     });
   });
+
+  it('keeps the selected Text or HTML view when clicking the already-active toggle button', async () => {
+    mockFetch({ detail: sampleDetail });
+    const Wrapper = createWrapper();
+    render(<ReviewDetailPage />, { wrapper: Wrapper });
+
+    const textBtn = await screen.findByTestId('ai-review-detail-text-toggle');
+    const htmlBtn = screen.getByTestId('ai-review-detail-html-toggle');
+
+    // Starts in Text view; clicking Text again must keep Text view active.
+    expect(textBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(htmlBtn).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(textBtn);
+    expect(screen.queryByTestId('ai-review-detail-html-pair')).not.toBeInTheDocument();
+    expect(textBtn).toHaveAttribute('aria-pressed', 'true');
+
+    // Switch to HTML view; clicking HTML again must keep HTML view active.
+    fireEvent.click(htmlBtn);
+    expect(screen.getByTestId('ai-review-detail-html-pair')).toBeInTheDocument();
+    expect(htmlBtn).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(htmlBtn);
+    expect(screen.getByTestId('ai-review-detail-html-pair')).toBeInTheDocument();
+    expect(htmlBtn).toHaveAttribute('aria-pressed', 'true');
+  });
 });

@@ -653,5 +653,40 @@ describe('failureMessage error-field fallback (#1116 r3)', () => {
     );
     await expect(apiFetch('/whatever')).rejects.toThrow(/Request failed \(HTTP 500\)/);
   });
+
+  it('does not attempt token refresh on /auth/login or /auth/register 401 and preserves server message', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Invalid username or password' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(
+      apiFetch('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username: 'alice', password: 'wrong' }),
+      }),
+    ).rejects.toThrow('Invalid username or password');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/auth/login');
+  });
+
+  it('does not force Content-Type: application/json for FormData bodies', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const formData = new FormData();
+    formData.append('name', 'test');
+
+    await apiFetch('/upload', { method: 'POST', body: formData });
+
+    const sentHeaders = fetchSpy.mock.calls[0]?.[1]?.headers as Headers;
+    expect(sentHeaders.has('Content-Type')).toBe(false);
+  });
 });
 

@@ -193,7 +193,7 @@ function ReviewDetailPageInner() {
     <ReviewDetailContent
       review={review}
       showHtml={showHtml}
-      onToggleHtml={() => setShowHtml((v) => !v)}
+      onSetShowHtml={setShowHtml}
       onAfterAction={() => {
         // After approve/reject/edit-and-approve the row's status moves;
         // refetch so the header reflects the new state.
@@ -207,7 +207,7 @@ function ReviewDetailPageInner() {
 interface ContentProps {
   review: AiReviewDetail;
   showHtml: boolean;
-  onToggleHtml: () => void;
+  onSetShowHtml: (show: boolean) => void;
   onAfterAction: () => void;
   onBackToQueue: () => void;
 }
@@ -215,7 +215,7 @@ interface ContentProps {
 function ReviewDetailContent({
   review,
   showHtml,
-  onToggleHtml,
+  onSetShowHtml,
   onAfterAction,
   onBackToQueue,
 }: ContentProps) {
@@ -332,7 +332,8 @@ function ReviewDetailContent({
         <div className="flex rounded-md border border-border text-xs">
           <button
             type="button"
-            onClick={onToggleHtml}
+            onClick={() => onSetShowHtml(false)}
+            aria-pressed={!showHtml}
             className={cn(
               'flex items-center gap-1 px-2 py-1',
               !showHtml
@@ -345,7 +346,8 @@ function ReviewDetailContent({
           </button>
           <button
             type="button"
-            onClick={onToggleHtml}
+            onClick={() => onSetShowHtml(true)}
+            aria-pressed={showHtml}
             className={cn(
               'flex items-center gap-1 px-2 py-1',
               showHtml

@@ -157,7 +157,10 @@ export function useCollabProvider({
     }
 
     const token = useAuthStore.getState().accessToken;
-    if (!token) return;
+    if (!token) {
+      setError('unauthorized');
+      return;
+    }
 
     let cancelled = false;
     let blocked = false;

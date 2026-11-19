@@ -362,12 +362,19 @@ export function TrashPage() {
     }
   };
 
+  const allFilteredSelected =
+    filteredItems.length > 0 && filteredItems.every((item) => selectedIds.has(item.id));
+
   const toggleSelectAll = () => {
-    if (selectedIds.size === filteredItems.length && filteredItems.length > 0) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(filteredItems.map((item) => item.id)));
-    }
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        for (const item of filteredItems) next.delete(item.id);
+      } else {
+        for (const item of filteredItems) next.add(item.id);
+      }
+      return next;
+    });
   };
 
   const toggleSelectItem = (id: string) => {
@@ -385,9 +392,6 @@ export function TrashPage() {
     const diff = Math.ceil((purge.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
     return Math.max(0, diff);
   };
-
-  const allFilteredSelected =
-    filteredItems.length > 0 && selectedIds.size === filteredItems.length;
 
   return (
     <div className="space-y-6">

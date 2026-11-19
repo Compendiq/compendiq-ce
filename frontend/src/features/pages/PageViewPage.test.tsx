@@ -1682,6 +1682,41 @@ describe('PageViewPage', () => {
       });
     });
 
+    it('resets FeedbackWidget state when navigating to a different article', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+      currentMockPage = { ...mockPage, id: 'page-a' };
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/:id', element: <PageViewPage /> }],
+        { initialEntries: ['/pages/page-a'] },
+      );
+      render(
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /Yes/i }));
+      await screen.findByText('Thanks for your feedback!');
+
+      currentMockPage = { ...mockPage, id: 'page-b' };
+      await act(async () => {
+        await router.navigate('/pages/page-b');
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Thanks for your feedback!')).not.toBeInTheDocument();
+        expect(screen.getByText('Was this page helpful?')).toBeInTheDocument();
+      });
+    });
+
   });
 
 

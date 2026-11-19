@@ -892,7 +892,27 @@ describe('NewPagePage', () => {
     expect(screen.getByTestId('skill-postmortem')).toBeInTheDocument();
   });
 
-  it('generates a draft using AI assistant create modal', async () => {
+  it('generates a draft using AI assistant create modal via authenticated SSE', async () => {
+    useAuthStore.setState({ accessToken: 'test-jwt-token' });
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"content":"# Distributed Cache Service\\n\\n## Overview\\n\\nReal AI draft."}\n\n'
+            + 'data: {"done":true}\n\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(sseBody, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    );
+
     render(<NewPagePage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('starter-ai-btn'));
     expect(await screen.findByTestId('ai-draft-modal')).toBeInTheDocument();
@@ -905,6 +925,43 @@ describe('NewPagePage', () => {
       expect(screen.queryByTestId('ai-draft-modal')).not.toBeInTheDocument();
       expect(mockSetContent).toHaveBeenCalled();
     });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/llm/generate',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'include',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-jwt-token',
+        }),
+      }),
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('shows an inline error and keeps the modal open when AI draft generation fails', async () => {
+    useAuthStore.setState({ accessToken: 'test-jwt-token' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'LLM provider unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('starter-ai-btn'));
+    expect(await screen.findByTestId('ai-draft-modal')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('ai-prompt-input'), { target: { value: 'My custom prompt' } });
+    fireEvent.click(screen.getByTestId('ai-generate-submit-btn'));
+
+    const alert = await screen.findByTestId('ai-draft-error');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent('LLM provider unavailable');
+    expect(screen.getByTestId('ai-draft-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-prompt-input')).toHaveValue('My custom prompt');
+    expect(mockSetContent).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 
 

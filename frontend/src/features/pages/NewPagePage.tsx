@@ -22,6 +22,7 @@ import { parseHeadings } from '../../shared/components/article/TableOfContents';
 import { CREATE_SKILLS } from '../ai/create-skills';
 import type { Editor as EditorType } from '@tiptap/core';
 import { cn } from '../../shared/lib/cn';
+import { streamSSE } from '../../shared/lib/sse';
 import { toast } from 'sonner';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
@@ -1184,9 +1185,21 @@ function AiDraftModal({
   const currentSkill = CREATE_SKILLS.find((s) => s.id === selectedSkill) ?? CREATE_SKILLS[0]!;
   const [prompt, setPrompt] = useState(currentSkill.suggestedPrompt);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    abortControllerRef.current?.abort();
+  }, []);
+
+  const handleClose = () => {
+    abortControllerRef.current?.abort();
+    onClose();
+  };
 
   const handleSelectSkill = (skillId: string) => {
     setSelectedSkill(skillId);
+    setGenerateError(null);
     const newSkill = CREATE_SKILLS.find((s) => s.id === skillId);
     if (newSkill) {
       setPrompt(newSkill.suggestedPrompt);
@@ -1201,46 +1214,38 @@ function AiDraftModal({
       return;
     }
 
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setIsGenerating(true);
+    setGenerateError(null);
     try {
-      const res = await fetch('/api/llm/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      let markdown = '';
+      let completed = false;
+      for await (const chunk of streamSSE<{
+        text?: string;
+        content?: string;
+        done?: boolean;
+        error?: string;
+      }>(
+        '/llm/generate',
+        {
           prompt: combinedPrompt,
           template: skill.backendTemplate ?? (selectedSkill !== 'custom' ? selectedSkill : undefined),
-        }),
-      });
-
-      let markdown = '';
-      if (res.ok && res.body) {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const dataStr = line.slice(6).trim();
-              if (dataStr === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.text) markdown += parsed.text;
-                else if (parsed.content) markdown += parsed.content;
-              } catch {
-                // ignore parsing error for non-json lines
-              }
-            }
-          }
+        },
+        controller.signal,
+      )) {
+        if (chunk.error) {
+          throw new Error(chunk.error);
         }
+        if (chunk.text) markdown += chunk.text;
+        else if (chunk.content) markdown += chunk.content;
+        if (chunk.done) completed = true;
       }
 
-      if (!markdown.trim()) {
-        markdown = `# ${prompt || skill.name}\n\n## Overview\n\nGenerated draft for ${prompt || skill.name}.\n\n## Scope & Requirements\n\n- Key requirement 1\n- Key requirement 2\n\n## Details & Architecture\n\nImplementation details and specifications.\n\n## Action Items\n\n- [ ] Review draft\n- [ ] Publish`;
+      if (!completed || !markdown.trim()) {
+        throw new Error('The AI stream ended before a complete draft was generated.');
       }
 
       const titleMatch = markdown.match(/^#\s+(.+)$/m);
@@ -1250,19 +1255,23 @@ function AiDraftModal({
       onApply(html, generatedTitle);
       toast.success('Page draft generated with AI');
       onClose();
-    } catch {
-      const sampleMarkdown = `# ${prompt || skill.name}\n\n## Overview\n\nGenerated draft for ${prompt || skill.name}.\n\n## Scope & Requirements\n\n- Key requirement 1\n- Key requirement 2\n\n## Details\n\nImplementation details and outline.\n\n## Action Items\n\n- [ ] Review draft`;
-      const html = improveMarkdownToHtml(sampleMarkdown);
-      onApply(html, prompt || skill.name);
-      toast.success('Draft generated');
-      onClose();
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      const message = err instanceof Error && err.message
+        ? err.message
+        : 'Could not generate a draft. Please try again.';
+      setGenerateError(message);
+      toast.error(message);
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
       setIsGenerating(false);
     }
   };
 
   return (
-    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
+    <Dialog.Root open onOpenChange={(next) => { if (!next) handleClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
         <Dialog.Content
@@ -1339,10 +1348,20 @@ function AiDraftModal({
               />
             </div>
 
+            {generateError && (
+              <p
+                role="alert"
+                data-testid="ai-draft-error"
+                className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              >
+                {generateError}
+              </p>
+            )}
+
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 disabled={isGenerating}
                 className="nm-button-ghost"
               >

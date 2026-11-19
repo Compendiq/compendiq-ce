@@ -1462,4 +1462,52 @@ describe('TrashPage', () => {
       await expectSelectedSecondaryCloses('RETAINED', 'true');
     });
   });
+
+  it('tracks Select all accurately when a search filter hides other selected items', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: '1',
+              title: 'Alpha Notes',
+              spaceKey: 'DOCS',
+              source: 'local',
+              deletedAt: '2026-04-01T10:00:00Z',
+              autoPurgeAt: '2026-05-01T10:00:00Z',
+            },
+            {
+              id: '2',
+              title: 'Beta Guide',
+              spaceKey: 'DOCS',
+              source: 'local',
+              deletedAt: '2026-04-01T10:00:00Z',
+              autoPurgeAt: '2026-05-01T10:00:00Z',
+            },
+          ],
+          total: 2,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<TrashPage />, { wrapper: createWrapper() });
+
+    // Select Alpha, then filter down to Beta only.
+    fireEvent.click(await screen.findByTestId('trash-checkbox-1'));
+    fireEvent.change(screen.getByTestId('trash-search-input'), { target: { value: 'Beta' } });
+
+    const selectAllBtn = screen.getByTestId('trash-select-all');
+    expect(selectAllBtn.querySelector('.text-action')).toBeNull();
+
+    // Clicking Select all should select Beta while keeping Alpha selected (total 2).
+    fireEvent.click(selectAllBtn);
+    expect(selectAllBtn.querySelector('.text-action')).not.toBeNull();
+    expect(screen.getByTestId('trash-bulk-count')).toHaveTextContent('2 pages selected');
+
+    // Clicking again should deselect only the visible filtered item (Beta), leaving Alpha selected.
+    fireEvent.click(selectAllBtn);
+    expect(selectAllBtn.querySelector('.text-action')).toBeNull();
+    expect(screen.getByTestId('trash-bulk-count')).toHaveTextContent('1 page selected');
+  });
 });

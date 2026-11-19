@@ -1707,7 +1707,7 @@ export function PageViewPage() {
             <ArticleConnections key={`connections-${page.id}`} pageId={page.id} />
 
             {/* Feedback widget — hidden on the author's own standalone pages */}
-            {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
+            {!isOwnStandalonePage && <FeedbackWidget key={`feedback-${id}`} pageId={id} />}
           </div>
         )}
       </div>

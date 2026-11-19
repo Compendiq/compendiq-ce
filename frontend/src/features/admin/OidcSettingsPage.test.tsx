@@ -284,4 +284,20 @@ describe('OidcSettingsPage', () => {
     expect(screen.getByTestId('mapping-role')).toBeInTheDocument();
     expect(screen.getByTestId('mapping-space-key')).toBeInTheDocument();
   });
+
+  it('renders a single SSO enabled checkbox when configured and hydrates fields via effect', async () => {
+    mockFetch();
+    render(<OidcSettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('oidc-issuer-url')).toHaveValue(
+        'https://idp.example.com',
+      );
+    });
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    expect(checkboxes).toHaveLength(1);
+    expect(checkboxes[0]).toBe(screen.getByTestId('oidc-enabled'));
+    expect(checkboxes[0]).toBeChecked();
+  });
 });

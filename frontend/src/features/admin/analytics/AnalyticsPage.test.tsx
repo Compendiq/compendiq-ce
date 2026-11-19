@@ -268,4 +268,28 @@ describe('AnalyticsPage', () => {
       expect(downloads).toEqual([]);
     });
   });
+
+  it('renders the loading skeleton instead of flashing the Enterprise gate while license status is loading', () => {
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EnterpriseContext.Provider
+          value={{
+            ui: null,
+            license: null,
+            isEnterprise: false,
+            hasFeature: () => false,
+            isLoading: true,
+          }}
+        >
+          <MemoryRouter initialEntries={['/admin/analytics']}>
+            <AnalyticsPage />
+          </MemoryRouter>
+        </EnterpriseContext.Provider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId('analytics-loading')).toBeInTheDocument();
+    expect(screen.queryByTestId('analytics-gate')).not.toBeInTheDocument();
+  });
 });
