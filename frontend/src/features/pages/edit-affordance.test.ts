@@ -52,9 +52,10 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/px-2\.5/);
     expect(editButton()).toMatch(/text-xs/);
     expect(editButton()).not.toMatch(/max-sm:min-h-11/);
-    // The chassis row owns the whole 48px band now that the strip draws no
-    // hairline under it (ADR-010 v1.1); it was 48 minus that border before.
-    expect(source).toContain('min-h-12');
+    // The article toolbar carries a 1px bottom hairline, so the inner row uses
+    // `calc(3rem-1px)` (47px + 1px = 48px) to align its hairline with the left
+    // sidebar and right inspector's 48px (`h-12 border-b`) bands.
+    expect(source).toContain('min-h-[calc(3rem-1px)]');
   });
 
   it('keeps its keyboard hint', () => {
