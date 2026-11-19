@@ -904,18 +904,27 @@ describe('SidebarTreeView', () => {
     expect(screen.getByRole('complementary', { name: 'Page tree' }).firstElementChild).toBe(band);
   });
 
-  it('names Library, AI and Graph to the right of the panel toggle', () => {
+  it('prints the destination title to the right of the panel toggle, not a menu', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
-    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/') });
+    const { unmount } = render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/pages/abc') });
 
-    const destinations = screen.getByRole('navigation', { name: 'Destinations' });
     const band = screen.getByLabelText('Collapse sidebar').parentElement!;
-    expect(band).toContainElement(destinations);
-    const library = within(destinations).getByRole('link', { name: 'Library' });
-    expect(library).toHaveAttribute('aria-current', 'page');
-    expect(library).toHaveAttribute('title', 'Library (G then P)');
-    expect(within(destinations).getByRole('link', { name: 'AI chat, full page' })).not.toHaveAttribute('aria-current');
-    expect(within(destinations).getByRole('link', { name: 'Graph' })).not.toHaveAttribute('aria-current');
+    const title = screen.getByTestId('sidebar-destination-title');
+    expect(title).toHaveTextContent('Library');
+    expect(band).toContainElement(title);
+    // It is a label, not navigation: no links, no second nav landmark.
+    expect(band.querySelector('a')).toBeNull();
+    expect(screen.queryByRole('navigation', { name: 'Destinations' })).not.toBeInTheDocument();
+    unmount();
+
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/graph') });
+    expect(screen.getByTestId('sidebar-destination-title')).toHaveTextContent('Graph');
+  });
+
+  it('omits the band title where there is no destination page name', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/trash') });
+    expect(screen.queryByTestId('sidebar-destination-title')).not.toBeInTheDocument();
   });
 
   it('omits embedded main nav when embedMainNav is false in both expanded and collapsed states while preserving app-sidebar and collapse/expand', () => {

@@ -25,10 +25,10 @@ export const MAIN_NAV_ITEMS: readonly {
   icon: LucideIcon;
   label: string;
   /**
-   * The destination's own page name, for surfaces that name the room rather
-   * than the tab (`MainNavTextLinks`). The Library route is `/` and its page
-   * heading is "Library"; the compact pill keeps "Pages" because that is the
-   * corpus it shows and the name operators already navigate by.
+   * The destination's own page title, read by `currentDestinationTitle` and
+   * printed as plain text in the sidebar's panel band. The Library route is
+   * `/` and its page title is "Library"; the compact pill keeps "Pages"
+   * because that is the corpus it shows and the name operators navigate by.
    */
   pageTitle: string;
   path: string;
@@ -112,44 +112,15 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 }
 
 /**
- * Inline destination names for a sidebar's 36px panel band — the row that also
- * carries the pane's open/close toggle (owner, 2026-11-19). The outer chassis
- * rail stays icon-only; this is where the three rooms are legible as words, so
- * the destination pages no longer need a title row restating where you are.
- *
- * Text, not the segmented pills `MainNavStripExpanded` draws: the band is
- * 36px tall beside a 28px icon button, and a three-pill track there would
- * compete with the space selector directly below it. Active is ink only
- * (`aria-current` carries it); no underline, because an underlined label in
- * this app means a prose link.
+ * The destination page's title for the current route — `Library`, `AI` or
+ * `Graph`. The sidebar's panel band prints it as plain text beside the pane
+ * toggle; it is a LABEL, not navigation (the destinations are the chassis
+ * rail's icons, or the mobile drawer's pills), so nothing here renders a
+ * second menu.
  */
-export function MainNavTextLinks({ onNavigate, className }: MainNavStripProps & { className?: string }) {
-  const location = useLocation();
-  return (
-    <nav aria-label="Destinations" className={cn('flex min-w-0 items-center gap-2.5', className)}>
-      {MAIN_NAV_ITEMS.map(({ pageTitle, path, shortcut, ariaLabel }) => {
-        const active = isActive(location.pathname, path);
-        return (
-          <Link
-            key={path}
-            to={path}
-            onClick={onNavigate}
-            title={`${pageTitle} (${shortcut})`}
-            aria-label={ariaLabel}
-            aria-current={active ? 'page' : undefined}
-            className={cn(
-              'shrink-0 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              active
-                ? 'text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {pageTitle}
-          </Link>
-        );
-      })}
-    </nav>
-  );
+// eslint-disable-next-line react-refresh/only-export-components
+export function currentDestinationTitle(pathname: string): string | null {
+  return MAIN_NAV_ITEMS.find(({ path }) => isActive(pathname, path))?.pageTitle ?? null;
 }
 
 /**

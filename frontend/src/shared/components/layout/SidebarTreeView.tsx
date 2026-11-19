@@ -22,7 +22,7 @@ import {
   PANEL_COLLAPSE_TRANSITION,
   usePanelCollapseInitial,
 } from '../../hooks/use-panel-collapse-motion';
-import { MainNavStripExpanded, MainNavStripCollapsed, MainNavTextLinks } from './MainNavStrip';
+import { MainNavStripExpanded, MainNavStripCollapsed, currentDestinationTitle } from './MainNavStrip';
 
 import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
@@ -754,6 +754,10 @@ export function SidebarTreeView({
     selectedSpaceOption?.source === 'local'
       ? getSpaceIcon(selectedSpaceOption.icon)
       : Globe;
+  // The band's title is the destination's own page title (`Library`, `AI`,
+  // `Graph`). It is text, never a link: the destinations are the chassis
+  // rail's icons / the mobile drawer's pills.
+  const destinationTitle = currentDestinationTitle(location.pathname);
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
   const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
@@ -877,11 +881,12 @@ export function SidebarTreeView({
           the pane's 48px seam and is unlined by ADR-010 v1.1, while this row
           states its own boundary and sits above the seam.
 
-          The three destination names sit to the toggle's right, so where you
-          are is legible without the outer rail's icons and the destination
-          pages no longer need a title row saying it again. The mobile drawer
-          keeps its pill strip above (`embedMainNav`), where the names are
-          already words, so the band carries text links only on desktop. */}
+          The page's title sits to the toggle's right, so where you are is
+          legible without the outer rail's icons and the destination pages no
+          longer need a title row saying it again. It is a LABEL, not a menu:
+          the three destinations stay on the chassis rail (and the mobile
+          drawer's pill strip, which already carries their names, so the band
+          shows the title only when it is not embedded). */}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
         <button
           type="button"
@@ -893,7 +898,14 @@ export function SidebarTreeView({
         >
           <PanelLeftClose size={15} aria-hidden="true" />
         </button>
-        {!embedMainNav && <MainNavTextLinks onNavigate={onNavigate} />}
+        {!embedMainNav && destinationTitle && (
+          <span
+            className="min-w-0 truncate text-xs font-semibold text-foreground"
+            data-testid="sidebar-destination-title"
+          >
+            {destinationTitle}
+          </span>
+        )}
       </div>
 
       {/* Space selector sits in the 48px chrome row the article strip and the

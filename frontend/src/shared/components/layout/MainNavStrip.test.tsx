@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import {
   MainNavStripExpanded,
   MainNavStripCollapsed,
   MainNavChassisRail,
-  MainNavTextLinks,
+  currentDestinationTitle,
 } from './MainNavStrip';
 
 function renderWithRouter(ui: React.ReactElement, route = '/') {
@@ -114,25 +114,18 @@ describe('MainNavChassisRail', () => {
   });
 });
 
-describe('MainNavTextLinks', () => {
-  it('names Library, AI and Graph, and marks the destination by route', () => {
-    const { unmount } = renderWithRouter(<MainNavTextLinks />, '/pages/abc');
-    let nav = screen.getByRole('navigation', { name: 'Destinations' });
-    expect(within(nav).getByRole('link', { name: 'Library' })).toHaveAttribute('aria-current', 'page');
-    expect(within(nav).getByRole('link', { name: 'AI chat, full page' })).not.toHaveAttribute('aria-current');
-    expect(within(nav).getByRole('link', { name: 'Graph' })).not.toHaveAttribute('aria-current');
-    unmount();
-
-    renderWithRouter(<MainNavTextLinks />, '/ai/c/conv-1');
-    nav = screen.getByRole('navigation', { name: 'Destinations' });
-    expect(within(nav).getByRole('link', { name: 'AI chat, full page' })).toHaveAttribute('aria-current', 'page');
-    expect(within(nav).getByRole('link', { name: 'Library' })).not.toHaveAttribute('aria-current');
+describe('currentDestinationTitle', () => {
+  it('maps the route to the destination page title', () => {
+    expect(currentDestinationTitle('/')).toBe('Library');
+    expect(currentDestinationTitle('/pages/abc')).toBe('Library');
+    expect(currentDestinationTitle('/pages/new')).toBe('Library');
+    expect(currentDestinationTitle('/ai')).toBe('AI');
+    expect(currentDestinationTitle('/ai/c/conv-1')).toBe('AI');
+    expect(currentDestinationTitle('/graph')).toBe('Graph');
   });
 
-  it('invokes onNavigate when a destination is clicked', () => {
-    const onNavigate = vi.fn();
-    renderWithRouter(<MainNavTextLinks onNavigate={onNavigate} />, '/');
-    fireEvent.click(screen.getByRole('link', { name: 'Graph' }));
-    expect(onNavigate).toHaveBeenCalledTimes(1);
+  it('returns null where the sidebar does not name a destination', () => {
+    expect(currentDestinationTitle('/trash')).toBeNull();
+    expect(currentDestinationTitle('/settings/ai')).toBeNull();
   });
 });
