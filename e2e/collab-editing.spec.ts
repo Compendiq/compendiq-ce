@@ -1,6 +1,7 @@
 import { test, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import {
   E2E_PASSWORD,
+  bearerHeaders,
   loginUser,
   openAuthenticatedPage,
   registerUser,
@@ -190,4 +191,93 @@ test.describe('Collaborative editing (#1449)', () => {
       await b.context.close();
     }
   });
+  test('a freeze over an open writer is refused, explained, and publishes nothing (#325)', async ({
+    browser,
+  }) => {
+    // The freeze control needs an admin whose own session lives in this
+    // browser context: auth is an httpOnly cookie set by the login response,
+    // and the module-level admin session was logged in on a closed context.
+    test.skip(!process.env.COLLAB_E2E_ADMIN || !process.env.COLLAB_E2E_PASSWORD,
+      COLLAB_E2E_SKIP_NO_ADMIN);
+    const a = await registerInNewContext(browser, 'c7freeze');
+    const adminContext = await browser.newContext();
+    const admin = await loginUser(
+      adminContext.request,
+      process.env.COLLAB_E2E_ADMIN!,
+      process.env.COLLAB_E2E_PASSWORD!,
+    );
+    let pageA: Page | undefined;
+    let pageAdmin: Page | undefined;
+    let activationEnabled = false;
+    try {
+      // Freeze eligibility requires the acting user's Confluence integration
+      // explicitly off; the CI admin starts with the product default on.
+      const settings = await adminContext.request.put('/api/settings', {
+        headers: bearerHeaders(admin),
+        data: { confluenceEnabled: false },
+      });
+      expect(settings.ok(), await settings.text()).toBe(true);
+
+      // The page-detail capability only offers freeze once creation is active;
+      // a freshly booted backend reports its protected writers as ready.
+      const activation = await adminContext.request.put('/api/admin/page-baselines/activation', {
+        headers: bearerHeaders(admin),
+        data: { creationEnabled: true },
+      });
+      expect(activation.ok(), await activation.text()).toBe(true);
+      activationEnabled = true;
+
+      const created = await createStandalonePage(a.context.request, a.session, {
+        title: `Collab freeze ${STAMP}`,
+        bodyHtml: '<p>Saving this paragraph can wait.</p>',
+        visibility: 'shared',
+      });
+
+      pageA = await openAuthenticatedPage(a.context, a.session, `/pages/${created.id}`);
+      await enterCollabEdit(pageA);
+      const typed = `unsaved-${STAMP}`;
+      await typeInEditor(pageA, ` ${typed}`);
+
+      // The second user is the admin who would freeze it. The inspector's
+      // Document lifecycle block is collapsed by default; open it the way a
+      // reader does, then take the freeze control.
+      pageAdmin = await openAuthenticatedPage(adminContext, admin, `/pages/${created.id}`);
+      const lifecycle = pageAdmin.getByTestId('document-lifecycle');
+      await expect(lifecycle).toBeVisible({ timeout: 15_000 });
+      if (!(await lifecycle.evaluate((el) => (el as HTMLDetailsElement).open))) {
+        await lifecycle.locator('summary').click();
+      }
+      await pageAdmin.getByTestId('freeze-btn').click();
+
+      // The writable room admission is the blocker, and the shared client
+      // explains the one action that clears it. Nothing was frozen.
+      await expect(pageAdmin.getByTestId('freeze-preview-error')).toContainText(
+        'Someone is editing this article right now. Ask them to save and close, then try again.',
+        { timeout: 15_000 },
+      );
+      await pageAdmin.getByTestId('freeze-cancel').click();
+      await expect(pageAdmin.getByTestId('freeze-btn')).toBeVisible();
+      await expect(pageAdmin.getByTestId('unfreeze-btn')).toHaveCount(0);
+
+      // The open session kept writing: a refused freeze is not a demotion and
+      // the typed text is still there.
+      await expect(pageA.getByText('This editing session is now read-only')).toHaveCount(0);
+      await expect(editor(pageA)).toContainText(typed);
+      await typeInEditor(pageA, ` after-${STAMP}`);
+      await expect(editor(pageA)).toContainText(`after-${STAMP}`);
+    } finally {
+      await pageA?.close();
+      await pageAdmin?.close();
+      if (activationEnabled) {
+        const disabled = await adminContext.request.put('/api/admin/page-baselines/activation', {
+          headers: bearerHeaders(admin),
+          data: { creationEnabled: false },
+        });
+        expect(disabled.ok(), await disabled.text()).toBe(true);
+      }
+      await a.context.close();
+      await adminContext.close();
+    }
+  });
+
 });
