@@ -128,9 +128,11 @@ discarded.
 The editor treats transient offline state and lifecycle loss differently.
 Same-lifecycle offline edits remain in the open tab, navigation and unload are
 guarded while the collaborative draft is dirty, and Save stays blocked until a
-writable connection returns. A freeze, lifecycle change, permission loss,
-document reset, or deletion disconnects the provider and leaves the existing
-Y.Doc mounted as an inert, recoverable draft. It is not automatically
+writable connection returns. A freeze that committed, a lifecycle change,
+permission loss, document reset, or deletion disconnects the provider and
+leaves the existing Y.Doc mounted as an inert, recoverable draft. A freeze
+refused with `freeze_busy` is not one of these: the editor keeps writing, and
+the freezer is asked to try again after the writers save and close. It is not automatically
 reconnected or replayed after a later thaw or reconnect. The recovery strip
 offers **Download draft** and **Open current version**. The latter requires a
 successful fresh page read before discarding the open draft and asks for
@@ -444,6 +446,20 @@ commit atomically. A stale preview or media change refuses publication.
 An already-frozen page returns `423 page_is_frozen`, including an exact retry.
 Changing the caller, reason or reported signatories cannot return success for
 evidence that was not recorded.
+
+While the freeze holds the page lifecycle locks it refuses with
+`409 freeze_busy` if any locked page has a pending write intent or an
+unreleased runtime admission (`assertPageFreezeIdle`). A writable collaborative
+room admission is the common case: it exists from the moment an editor joins
+write-enabled and is released only by a clean disconnect with a successful
+flush or by a server-proven fence. Redis presence is not the authority, and a
+read-only viewer holds no admission, so neither blocks. The refusal writes
+nothing: no baseline, reservation, history or lifecycle event. The shared
+client explains it as "someone is editing this article right now — ask them to
+save and close, then try again", and the editor's Y.Doc stays mounted in their
+tab. A governed finalization that meets the same condition records
+`freeze_busy` on the approved proposal and is retried explicitly once the
+writers have left; the approval itself is not lost.
 
 Thaw requires the current baseline and lifecycle revision:
 

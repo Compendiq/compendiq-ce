@@ -522,7 +522,12 @@ The lock order is runtime epoch row, sorted lifecycle locks, subsystem locks,
 then page rows. Multi-page discovery is retried with the complete sorted set.
 SQL-only writers hold the process epoch through their commit, not just external
 writers. Freeze and thaw acquire it too and refuse a closed local admission gate.
-They cannot commit after that epoch's durable quiescence or retirement.
+They cannot commit after that epoch's durable quiescence or retirement. A freeze
+additionally refuses (`409 freeze_busy`) while any page in its lock set has a
+pending write intent or an unreleased runtime admission: a writable
+collaborative room admission is a protected writer, so the freeze waits for the
+editor to save and close instead of committing over them. Read-only viewers
+hold no admission and do not block.
 SQL-only writers check editability and mutate on the locking transaction.
 Final freeze holds a shared space-policy fence after its page locks; policy
 changes take the same fence exclusively and never acquire page locks. The
