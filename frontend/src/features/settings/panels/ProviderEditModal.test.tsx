@@ -213,7 +213,8 @@ describe('ProviderEditModal — presets', () => {
     expect(options).toEqual([
       'OpenAI',
       'DeepSeek',
-      'Groq',
+      'Anthropic',
+      'Grok',
       'Mistral',
       'OpenRouter',
       'Together',
@@ -242,11 +243,19 @@ describe('ProviderEditModal — presets', () => {
     expect(defaultModelInput().value).toBe('deepseek-chat');
   });
 
-  it('fills Groq URL and leaves the model empty until listed', () => {
+  it('fills Anthropic URL and the suggested Claude model', () => {
     const Wrapper = createWrapper();
     render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
-    fireEvent.change(presetSelect(), { target: { value: 'groq' } });
-    expect(baseUrlInput().value).toBe('https://api.groq.com/openai/v1');
+    fireEvent.change(presetSelect(), { target: { value: 'anthropic' } });
+    expect(baseUrlInput().value).toBe('https://api.anthropic.com/v1');
+    expect(defaultModelInput().value).toBe('claude-sonnet-5-5');
+  });
+
+  it('fills Grok URL and leaves the model empty until listed', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'grok' } });
+    expect(baseUrlInput().value).toBe('https://api.x.ai/v1');
     expect(defaultModelInput().value).toBe('');
   });
 
