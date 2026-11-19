@@ -662,6 +662,14 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     });
     const roomA = runtimeA!.getRoom(pageId)!;
     roomA.doc.getText('unsaved').insert(0, 'two pods, one page');
+    // Both runtimes hold their own durable admission: runtimeB's join is not
+    // inferred from runtimeA's.
+    const admitted = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM page_runtime_admissions
+        WHERE page_id = $1 AND released_at IS NULL`,
+      [pageId],
+    );
+    expect(admitted.rows[0]?.count).toBe('2');
 
     // Two writable room admissions — the state the #277 browser run had — are
     // not a reason to commit over them. The freeze refuses and nothing is
@@ -682,10 +690,26 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     expect(runtimeA!.getRoom(pageId)?.sockets.get('pod-a-editor')?.writable).toBe(true);
     expect(runtimeB!.getRoom(pageId)?.sockets.get('pod-b-editor')?.writable).toBe(true);
 
+    // One writer leaving does not release the other's admission: the second
+    // pod alone still refuses the freeze.
+    await runtimeA!.detachSocket(pageId, 'pod-a-editor');
+    await expect(freezePage({
+      pageId,
+      actorId: SYSTEM_ADMIN,
+      reason: 'The second pod still has an admitted editor',
+      expectedContentRevision: prepared.contentRevision,
+      expectedManifestDigest: prepared.manifestDigest,
+    })).rejects.toMatchObject({ statusCode: 409, reason: 'freeze_busy' });
+    const stillOpen = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM page_runtime_admissions
+        WHERE page_id = $1 AND released_at IS NULL`,
+      [pageId],
+    );
+    expect(stillOpen.rows[0]?.count).toBe('1');
+
     // The admission, not a transient failure, was the blocker: once both
     // writers leave and their final flush releases the admissions, the same
     // freeze succeeds.
-    await runtimeA!.detachSocket(pageId, 'pod-a-editor');
     await runtimeB!.detachSocket(pageId, 'pod-b-editor');
     const afterLeave = await previewPageBaseline(pageId, SYSTEM_ADMIN);
     await freezePage({
