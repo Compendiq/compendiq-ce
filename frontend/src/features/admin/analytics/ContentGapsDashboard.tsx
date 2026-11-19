@@ -139,7 +139,7 @@ function SeverityMeter({ score }: { score: number | null }) {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps) {
-  const { data, isLoading } = useContentGaps(dateRange);
+  const { data, isLoading, isError, error, refetch } = useContentGaps(dateRange);
   const colors = useThemeColors(buildColors);
 
   if (isLoading) {
@@ -151,6 +151,25 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
           ))}
         </div>
         <div className="nm-card p-4"><ChartSkeleton /></div>
+      </div>
+    );
+  }
+
+  if (isError && !data) {
+    return (
+      <div
+        role="alert"
+        className="nm-card p-8 text-center text-sm text-destructive"
+        data-testid="content-gaps-error"
+      >
+        <p>{error instanceof Error ? error.message : 'Failed to load content gaps data.'}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="nm-button-secondary mt-3 text-xs"
+        >
+          Retry
+        </button>
       </div>
     );
   }

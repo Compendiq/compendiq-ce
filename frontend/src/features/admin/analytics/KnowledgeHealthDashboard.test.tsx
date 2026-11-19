@@ -134,4 +134,15 @@ describe('KnowledgeHealthDashboard', () => {
       expect(screen.getByText('Quality Score Distribution')).toBeInTheDocument();
     });
   });
+
+  it('renders an error alert with Retry instead of an empty state when the query fails', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Analytics service unavailable'));
+    renderDashboard();
+
+    const alert = await screen.findByTestId('knowledge-error');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent('Analytics service unavailable');
+    expect(screen.queryByTestId('knowledge-empty')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
 });

@@ -677,7 +677,9 @@ export function GraphPage() {
           {!focusPageId && (
             <>
               <button
+                type="button"
                 onClick={() => setViewMode('individual')}
+                aria-pressed={viewMode === 'individual'}
                 className={cn(
                   'nm-icon-button p-2',
                   viewMode === 'individual' && 'bg-action/15 text-action',
@@ -686,10 +688,12 @@ export function GraphPage() {
                 data-testid="graph-view-individual"
                 title="Individual pages"
               >
-                <Grid3x3 size={16} />
+                <Grid3x3 size={16} aria-hidden="true" />
               </button>
               <button
+                type="button"
                 onClick={() => setViewMode('clustered')}
+                aria-pressed={viewMode === 'clustered'}
                 className={cn(
                   'nm-icon-button p-2',
                   viewMode === 'clustered' && 'bg-action/15 text-action',
@@ -698,7 +702,7 @@ export function GraphPage() {
                 data-testid="graph-view-clustered"
                 title="Topic clusters"
               >
-                <Layers size={16} />
+                <Layers size={16} aria-hidden="true" />
               </button>
             </>
           )}
@@ -1242,6 +1246,7 @@ export function GraphFilterSidebar({
               <button
                 key={label}
                 type="button"
+                aria-pressed={labels.includes(label)}
                 onClick={() => toggleLabel(label)}
                 className={cn(
                   'rounded-full px-2 py-0.5 text-[11px] transition-colors',
@@ -1320,18 +1325,18 @@ function SpaceMultiSelect({ spaceKeys, selected, onChange }: SpaceMultiSelectPro
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="nm-icon-button flex items-center gap-1.5 px-3 py-2 text-xs"
-        aria-haspopup="listbox"
+        aria-haspopup="dialog"
         aria-expanded={open}
         aria-label="Filter by space (multi-select)"
         data-testid="graph-space-filter"
       >
-        <Filter size={12} />
+        <Filter size={12} aria-hidden="true" />
         <span>{label}</span>
       </button>
       {open && (
         <div
-          role="listbox"
-          aria-multiselectable="true"
+          role="group"
+          aria-label="Spaces"
           className="nm-popover-glass absolute right-0 top-full z-20 mt-1 max-h-64 w-44 overflow-y-auto p-2 text-xs"
           data-testid="graph-space-filter-menu"
         >

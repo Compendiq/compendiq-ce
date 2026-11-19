@@ -10,6 +10,7 @@ import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
 import { Button, IconButton } from '../../shared/components/Button';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { CustomRoleEditor } from './CustomRoleEditor';
@@ -203,7 +204,7 @@ function useUsers() {
 // --- Tab components ---
 
 function RolesTab() {
-  const { data: roles, isLoading } = useRoles();
+  const { data: roles, isLoading, isError, error, refetch } = useRoles();
   const { hasFeature } = useEnterprise();
   const advancedRbac = hasFeature('advanced_rbac');
   const [editorOpen, setEditorOpen] = useState(false);
@@ -225,6 +226,25 @@ function RolesTab() {
         {Array.from({ length: 3 }).map((_, i) => (
           <div key={i} className="nm-card h-20 animate-pulse" />
         ))}
+      </div>
+    );
+  }
+
+  if (isError && !roles) {
+    return (
+      <div
+        role="alert"
+        className="nm-card p-6 text-center text-sm text-destructive"
+        data-testid="rbac-roles-error"
+      >
+        <p>{error instanceof Error ? error.message : 'Failed to load roles.'}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="nm-button-secondary mt-3 text-xs"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -322,7 +342,7 @@ function RolesTab() {
 }
 
 function GroupsTab() {
-  const { data: groups, isLoading } = useGroups();
+  const { data: groups, isLoading, isError, error, refetch } = useGroups();
   const { data: users } = useUsers();
   const createMutation = useCreateGroup();
   const deleteMutation = useDeleteGroup();
@@ -334,6 +354,7 @@ function GroupsTab() {
   const [newGroupDesc, setNewGroupDesc] = useState('');
   const [expandedGroupId, setExpandedGroupId] = useState<number | null>(null);
   const [selectedUserId, setSelectedUserId] = useState('');
+  const [pendingDeleteGroup, setPendingDeleteGroup] = useState<Group | null>(null);
 
   const { data: groupMembers } = useGroupMembers(expandedGroupId);
 
@@ -467,7 +488,7 @@ function GroupsTab() {
                   {expandedGroupId === group.id ? 'Hide' : 'Members'}
                 </Button>
                 <IconButton
-                  onClick={() => deleteMutation.mutate(group.id)}
+                  onClick={() => setPendingDeleteGroup(group)}
                   disabled={deleteMutation.isPending}
                   variant="destructive-ghost"
                   size="sm"
@@ -535,6 +556,41 @@ function GroupsTab() {
           </m.div>
         ))
       )}
+
+      {isError && !groups && (
+        <div
+          role="alert"
+          className="nm-card p-6 text-center text-sm text-destructive"
+          data-testid="rbac-groups-error"
+        >
+          <p>{error instanceof Error ? error.message : 'Failed to load groups.'}</p>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="nm-button-secondary mt-3 text-xs"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={pendingDeleteGroup !== null}
+        title="Delete group"
+        description={
+          pendingDeleteGroup
+            ? `Delete the group "${pendingDeleteGroup.name}"? Members will lose permissions granted through this group.`
+            : ''
+        }
+        confirmLabel="Delete group"
+        destructive
+        onCancel={() => setPendingDeleteGroup(null)}
+        onConfirm={() => {
+          if (!pendingDeleteGroup) return;
+          deleteMutation.mutate(pendingDeleteGroup.id);
+          setPendingDeleteGroup(null);
+        }}
+      />
     </div>
   );
 }
@@ -768,10 +824,13 @@ export function RbacPage() {
 
       {/* Tabs */}
       <div className="nm-card p-1.5">
-        <div className="flex gap-1">
+        <div role="tablist" aria-label="RBAC sections" className="flex gap-1">
           {TAB_CONFIG.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === key}
               onClick={() => setActiveTab(key)}
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-4 py-2 text-sm transition-colors',
@@ -781,7 +840,7 @@ export function RbacPage() {
               )}
               data-testid={`rbac-tab-${key}`}
             >
-              <Icon size={14} />
+              <Icon size={14} aria-hidden="true" />
               {label}
             </button>
           ))}

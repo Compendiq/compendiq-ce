@@ -95,7 +95,7 @@ function useLicenseStatus() {
 
 function ProviderTab({ disabled }: { disabled?: boolean }) {
   const queryClient = useQueryClient();
-  const { data, isLoading } = useOidcConfig();
+  const { data, isLoading, isError, error, refetch } = useOidcConfig();
 
   const [issuerUrl, setIssuerUrl] = useState('');
   const [clientId, setClientId] = useState('');
@@ -181,6 +181,25 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="h-16 animate-pulse rounded-lg bg-foreground/5" />
         ))}
+      </div>
+    );
+  }
+
+  if (isError && !data) {
+    return (
+      <div
+        role="alert"
+        className="nm-card p-6 text-center text-sm text-destructive"
+        data-testid="oidc-provider-error"
+      >
+        <p>{error instanceof Error ? error.message : 'Failed to load OIDC configuration.'}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="nm-button-secondary mt-3 text-xs"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -441,7 +460,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
 
 function MappingsTab({ disabled }: { disabled?: boolean }) {
   const queryClient = useQueryClient();
-  const { data: mappings, isLoading } = useOidcMappings();
+  const { data: mappings, isLoading, isError, error, refetch } = useOidcMappings();
   const { data: roles } = useRoles();
 
   const [showForm, setShowForm] = useState(false);
@@ -491,6 +510,25 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         {Array.from({ length: 3 }).map((_, i) => (
           <div key={i} className="nm-card h-16 animate-pulse" />
         ))}
+      </div>
+    );
+  }
+
+  if (isError && !mappings) {
+    return (
+      <div
+        role="alert"
+        className="nm-card p-6 text-center text-sm text-destructive"
+        data-testid="oidc-mappings-error"
+      >
+        <p>{error instanceof Error ? error.message : 'Failed to load OIDC group mappings.'}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="nm-button-secondary mt-3 text-xs"
+        >
+          Retry
+        </button>
       </div>
     );
   }

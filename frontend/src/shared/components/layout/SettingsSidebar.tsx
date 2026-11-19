@@ -58,6 +58,7 @@ export function SettingsSidebar({
   if (treeSidebarCollapsed) {
     return (
       <m.aside
+        aria-label="Settings navigation"
         data-testid="settings-sidebar"
         initial={collapsedInitial}
         animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
@@ -99,6 +100,7 @@ export function SettingsSidebar({
 
   return (
     <m.aside
+      aria-label="Settings navigation"
       data-testid="settings-sidebar"
       initial={expandedInitial}
       animate={{ width: treeSidebarWidth, opacity: 1 }}

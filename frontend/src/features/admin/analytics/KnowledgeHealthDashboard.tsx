@@ -88,7 +88,7 @@ function ChartSkeleton() {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardProps) {
-  const { data, isLoading } = useKnowledgeHealth(dateRange);
+  const { data, isLoading, isError, error, refetch } = useKnowledgeHealth(dateRange);
   const colors = useThemeColors(buildColors);
 
   if (isLoading) {
@@ -99,6 +99,25 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
             <ChartSkeleton />
           </div>
         ))}
+      </div>
+    );
+  }
+
+  if (isError && !data) {
+    return (
+      <div
+        role="alert"
+        className="nm-card p-8 text-center text-sm text-destructive"
+        data-testid="knowledge-error"
+      >
+        <p>{error instanceof Error ? error.message : 'Failed to load knowledge health data.'}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="nm-button-secondary mt-3 text-xs"
+        >
+          Retry
+        </button>
       </div>
     );
   }

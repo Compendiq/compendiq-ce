@@ -10,8 +10,10 @@ export const ARTICLE_SIDEBAR_MIN_WIDTH = 400;
 export const ARTICLE_SIDEBAR_MAX_WIDTH = 1200;
 export const ARTICLE_SIDEBAR_DEFAULT_WIDTH = 400;
 
+export const TREE_SIDEBAR_MIN_WIDTH = 180;
+export const TREE_SIDEBAR_MAX_WIDTH = 600;
+
 interface UiState {
-  sidebarCollapsed: boolean;
   treeSidebarCollapsed: boolean;
   treeSidebarSpaceKey: string | undefined;
   treeSidebarWidth: number;
@@ -27,8 +29,6 @@ interface UiState {
    *  Settings, not on a permanent slot in the editor toolbar (see
    *  ThemeTab.tsx's "Editor" section). */
   vimModeEnabled: boolean;
-  toggleSidebar: () => void;
-  setSidebarCollapsed: (collapsed: boolean) => void;
   toggleTreeSidebar: () => void;
   setTreeSidebarCollapsed: (collapsed: boolean) => void;
   setTreeSidebarSpaceKey: (spaceKey: string | undefined) => void;
@@ -42,11 +42,18 @@ interface UiState {
 
 export const COLLAPSED_TREE_SIDEBAR_WIDTH = 40;
 
+function readLegacyVimMode(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return localStorage.getItem('compendiq-vim-mode') === 'true';
+  } catch {
+    return false;
+  }
+}
 
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
-      sidebarCollapsed: false,
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
       // 280, not 256: at 256 a level-1 leaf gave its title 158px while real
@@ -70,13 +77,13 @@ export const useUiStore = create<UiState>()(
       // merges this initial value under any already-persisted `compendiq-ui`
       // blob, and blobs written before this field existed simply don't have
       // `vimModeEnabled` yet, so the merge falls through to this default.
-      vimModeEnabled: typeof window !== 'undefined' && localStorage.getItem('compendiq-vim-mode') === 'true',
-      toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
-      setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+      vimModeEnabled: readLegacyVimMode(),
       toggleTreeSidebar: () => set((s) => ({ treeSidebarCollapsed: !s.treeSidebarCollapsed })),
       setTreeSidebarCollapsed: (collapsed) => set({ treeSidebarCollapsed: collapsed }),
       setTreeSidebarSpaceKey: (spaceKey) => set({ treeSidebarSpaceKey: spaceKey }),
-      setTreeSidebarWidth: (width) => set({ treeSidebarWidth: Math.max(180, Math.min(600, width)) }),
+      setTreeSidebarWidth: (width) => set({
+        treeSidebarWidth: Math.max(TREE_SIDEBAR_MIN_WIDTH, Math.min(TREE_SIDEBAR_MAX_WIDTH, width)),
+      }),
       toggleArticleSidebar: () => set((s) => ({ articleSidebarCollapsed: !s.articleSidebarCollapsed })),
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
       setArticleSidebarLaptopExpanded: (expanded) => set({ articleSidebarLaptopExpanded: expanded }),
@@ -92,15 +99,22 @@ export const useUiStore = create<UiState>()(
       name: 'compendiq-ui',
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<UiState>;
-        const persistedWidth = typeof persisted.articleSidebarWidth === 'number'
+        const persistedArticleWidth = typeof persisted.articleSidebarWidth === 'number'
           ? persisted.articleSidebarWidth
           : currentState.articleSidebarWidth;
+        const persistedTreeWidth = typeof persisted.treeSidebarWidth === 'number'
+          ? persisted.treeSidebarWidth
+          : currentState.treeSidebarWidth;
         return {
           ...currentState,
           ...persisted,
+          treeSidebarWidth: Math.max(
+            TREE_SIDEBAR_MIN_WIDTH,
+            Math.min(TREE_SIDEBAR_MAX_WIDTH, persistedTreeWidth),
+          ),
           articleSidebarWidth: Math.max(
             ARTICLE_SIDEBAR_MIN_WIDTH,
-            Math.min(ARTICLE_SIDEBAR_MAX_WIDTH, persistedWidth),
+            Math.min(ARTICLE_SIDEBAR_MAX_WIDTH, persistedArticleWidth),
           ),
         };
       },

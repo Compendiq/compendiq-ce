@@ -89,6 +89,7 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
             onClick={onNavigate}
             title={`${ariaLabel ?? label} (${shortcut})`}
             aria-label={ariaLabel}
+            aria-current={active ? 'page' : undefined}
             className={cn(
               'flex h-7 flex-1 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
@@ -98,6 +99,7 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
           >
             <Icon
               size={13}
+              aria-hidden="true"
               className={cn(
                 'transition-colors',
                 active && 'text-primary-ink',

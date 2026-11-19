@@ -242,7 +242,7 @@ if (authChannel) {
 }
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('storage', (event) => {
+  const handleStorageEvent = (event: StorageEvent) => {
     // Explicit sign-out in ANY build's tab advances the shared draft
     // sign-out epoch (GHSA-r652; unversioned on purpose). Only `logoutApi`
     // writes it — never a refused refresh — so this is the cross-build
@@ -285,5 +285,13 @@ if (typeof window !== 'undefined') {
     } catch {
       // Malformed JSON — ignore
     }
+  };
+
+  window.addEventListener('storage', handleStorageEvent);
+
+  import.meta.hot?.dispose(() => {
+    window.removeEventListener('storage', handleStorageEvent);
+    authChannel?.close();
+    unversionedAuthChannel?.close();
   });
 }

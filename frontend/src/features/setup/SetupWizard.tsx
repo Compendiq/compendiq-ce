@@ -159,15 +159,20 @@ export function SetupWizard() {
 
         {/* Progress stepper */}
         {currentStep > 0 && currentStep < STEPS.length - 1 && (
-          <m.div
+          <m.nav
+            aria-label="Setup progress"
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             className="mb-6"
             data-testid="setup-stepper"
           >
-            <div className="flex items-center justify-center gap-2">
+            <ol className="flex items-center justify-center gap-2">
               {STEPS.map((step, index) => (
-                <div key={step.id} className="flex items-center">
+                <li
+                  key={step.id}
+                  className="flex items-center"
+                  aria-current={index === currentStep ? 'step' : undefined}
+                >
                   <div
                     // Progress takes the accent, not `--color-action`. As
                     // near-black filled circles the completed steps were the
@@ -185,29 +190,34 @@ export function SetupWizard() {
                     }`}
                     data-testid={`step-indicator-${step.id}`}
                   >
+                    <span className="sr-only">
+                      Step {index + 1}: {step.label}
+                      {index < currentStep ? ' (completed)' : index === currentStep ? ' (current)' : ''}
+                    </span>
                     {index < currentStep ? (
-                      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                       </svg>
                     ) : (
-                      index + 1
+                      <span aria-hidden="true">{index + 1}</span>
                     )}
                   </div>
                   {index < STEPS.length - 1 && (
                     <div
+                      aria-hidden="true"
                       className={`mx-1 h-0.5 w-6 rounded transition-colors ${
                         index < currentStep ? 'bg-primary' : 'bg-border'
                       }`}
                     />
                   )}
-                </div>
+                </li>
               ))}
-            </div>
-          </m.div>
+            </ol>
+          </m.nav>
         )}
 
         {/* Step content card */}
-        <div className="nm-card p-8" data-testid="setup-wizard">
+        <main className="nm-card p-8" data-testid="setup-wizard">
           <AnimatePresence mode="wait">
             {currentStep === 0 && (
               <WelcomeStep key="welcome" onNext={goNext} />
@@ -225,7 +235,7 @@ export function SetupWizard() {
               <CompleteStep key="complete" />
             )}
           </AnimatePresence>
-        </div>
+        </main>
       </div>
     </div>
   );

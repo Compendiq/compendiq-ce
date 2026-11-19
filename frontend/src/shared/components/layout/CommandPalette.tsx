@@ -205,6 +205,11 @@ export function CommandPalette() {
   // (and with the selectedIndex / handleSelect indices used below).
   const activeOptionId = selectedIndex >= 0 && selectedIndex < allItems.length ? `cmdk-opt-${selectedIndex}` : undefined;
 
+  useEffect(() => {
+    if (!isOpen || !activeOptionId) return;
+    document.getElementById(activeOptionId)?.scrollIntoView?.({ block: 'nearest' });
+  }, [isOpen, activeOptionId]);
+
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => { if (!open) close(); }}>
       <Dialog.Portal>
@@ -241,7 +246,7 @@ export function CommandPalette() {
             initial={{ opacity: 0, scale: 0.95, y: -20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ duration: 0.15 }}
-            className="fixed inset-x-0 top-[15%] z-50 mx-auto w-full max-w-xl outline-none"
+            className="fixed inset-x-0 top-[15%] z-50 mx-auto w-full max-w-xl px-4 outline-none"
           >
             <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
