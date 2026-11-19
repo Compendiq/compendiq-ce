@@ -137,9 +137,25 @@ export function invalidateAllProviderResources(): void {
   invalidateAllProviderBreakers();
 }
 
+/**
+ * Anthropic's API requires `anthropic-version` on every request, including
+ * the native `GET /v1/models` catalog the Settings probe hits — without it
+ * that route answers HTTP 400. The OpenAI SDK never sends it because the
+ * compatibility layer defaults the version for `/chat/completions`, but
+ * `/v1/models` is served by the native handler (the preset label's
+ * "OpenAI-compatible" covers completions, not the catalog).
+ *
+ * Pinned to `2023-06-01`: the newest version (`2026-10-21`) drops
+ * `temperature`/`top_p`/`top_k` and 400s any request carrying one, while this
+ * one still accepts them, so the pin cannot widen the surface that 400s.
+ */
+const ANTHROPIC_API_VERSION = '2023-06-01';
+const ANTHROPIC_API_HOST = 'api.anthropic.com';
+
 function headers(cfg: ProviderConfig): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (cfg.authType === 'bearer' && cfg.apiKey) h['Authorization'] = `Bearer ${cfg.apiKey}`;
+  if (hostnameOf(cfg.baseUrl) === ANTHROPIC_API_HOST) h['anthropic-version'] = ANTHROPIC_API_VERSION;
   return h;
 }
 
