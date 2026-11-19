@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat as transportChat, streamChat as transportStreamChat, generateEmbedding as transportEmbedding, invalidateBreaker, __test_only__, LlmHttpError, ProviderStreamError, StreamIncompleteError, type ProviderConfig, type ChatMessage, type StreamChatOptions } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat as transportChat, streamChat as transportStreamChat, generateEmbedding as transportEmbedding, invalidateBreaker, providerRequestInfra, __test_only__, LlmHttpError, ProviderStreamError, StreamIncompleteError, type ProviderConfig, type ChatMessage, type StreamChatOptions } from './openai-compatible-client.js';
 
 // This suite sends only synthetic literals (hi, 2+2, a/b) to its HTTP servers.
 // Keep its queue/breaker/wire assertions on the real transport, with an explicit
@@ -76,6 +76,22 @@ describe('openai-compatible-client', () => {
   it('checkHealth returns connected:false on 401', async () => {
     const r = await checkHealth({ ...cfg, baseUrl, apiKey: null });
     expect(r.connected).toBe(false);
+  });
+});
+
+// Anthropic's native GET /v1/models requires `anthropic-version`; without it
+// the Settings probe got HTTP 400 even with a valid key.
+describe('provider headers — Anthropic API version', () => {
+  it('sends anthropic-version with the bearer key to api.anthropic.com', () => {
+    const h = providerRequestInfra.headers({ ...cfg, baseUrl: 'https://api.anthropic.com/v1' });
+    expect(h['anthropic-version']).toBe('2023-06-01');
+    expect(h.Authorization).toBe('Bearer sekret');
+  });
+
+  it('leaves every other OpenAI-compatible host untouched', () => {
+    for (const other of ['https://api.openai.com/v1', 'https://api.deepseek.com/v1', 'http://127.0.0.1:1234/v1']) {
+      expect(providerRequestInfra.headers({ ...cfg, baseUrl: other })).not.toHaveProperty('anthropic-version');
+    }
   });
 });
 
