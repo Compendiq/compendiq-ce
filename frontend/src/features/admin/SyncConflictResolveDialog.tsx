@@ -93,6 +93,16 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
           </div>
 
           <div className="overflow-auto p-4">
+            {conflict.pendingTitle && conflict.pendingTitle !== conflict.pageTitle && (
+              <div
+                className="mb-3 border-b border-border pb-3"
+                data-testid="sync-conflict-title-diff"
+              >
+                <p className="text-xs text-muted-foreground">Titles differ</p>
+                <p className="mt-1 text-sm">Local: {conflict.pageTitle}</p>
+                <p className="text-sm">Confluence: {conflict.pendingTitle}</p>
+              </div>
+            )}
             <p className="mb-3 text-xs text-muted-foreground">
               Local content is on the left; the queued Confluence version is
               on the right. Compare the two and pick which to keep.

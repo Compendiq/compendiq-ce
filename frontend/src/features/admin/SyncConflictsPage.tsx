@@ -32,6 +32,9 @@ export interface SyncConflict {
   id: number;
   pageId: number;
   pageTitle: string;
+  // Title recorded with the queued Confluence version; null when the queue
+  // row carries none (or the Enterprise overlay predates EE#315).
+  pendingTitle: string | null;
   spaceKey: string;
   spaceName: string | null;
   detectedAt: string;

@@ -43,6 +43,7 @@ const sampleConflict = {
   id: 7,
   pageId: 100,
   pageTitle: 'Onboarding runbook',
+  pendingTitle: null,
   spaceKey: 'DOCS',
   spaceName: 'Documentation',
   detectedAt: '2026-04-23T12:00:00Z',

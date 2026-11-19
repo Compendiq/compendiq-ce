@@ -2,7 +2,7 @@
  * Tests for SyncConflictResolveDialog (Compendiq/compendiq-ee#118 Phase D).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -41,6 +41,7 @@ const sampleConflict: SyncConflict = {
   id: 42,
   pageId: 100,
   pageTitle: 'Onboarding runbook',
+  pendingTitle: null,
   spaceKey: 'DOCS',
   spaceName: 'Documentation',
   detectedAt: '2026-04-23T12:00:00Z',
@@ -105,6 +106,60 @@ describe('SyncConflictResolveDialog', () => {
     );
     expect(screen.getByTestId('sync-conflict-resolve-dialog')).toBeInTheDocument();
     expect(screen.getByText(/Onboarding runbook/)).toBeInTheDocument();
+  });
+
+  it('omits the title block when the queued title is null', () => {
+    mockFetch();
+    const Wrapper = createWrapper();
+    render(
+      <SyncConflictResolveDialog
+        conflict={{ ...sampleConflict, pendingTitle: null }}
+        onClose={vi.fn()}
+        onResolved={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.queryByTestId('sync-conflict-title-diff')).not.toBeInTheDocument();
+  });
+
+  it('shows the local and Confluence titles when the queued title differs', () => {
+    mockFetch();
+    const Wrapper = createWrapper();
+    render(
+      <SyncConflictResolveDialog
+        conflict={{
+          ...sampleConflict,
+          pendingTitle: 'Onboarding runbook (2026 revision)',
+        }}
+        onClose={vi.fn()}
+        onResolved={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const titleDiff = screen.getAllByTestId('sync-conflict-title-diff');
+    expect(titleDiff).toHaveLength(1);
+    const block = within(titleDiff[0]);
+    expect(block.getByText('Local: Onboarding runbook')).toBeInTheDocument();
+    expect(
+      block.getByText('Confluence: Onboarding runbook (2026 revision)'),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the title block when the queued title matches the page title', () => {
+    mockFetch();
+    const Wrapper = createWrapper();
+    render(
+      <SyncConflictResolveDialog
+        conflict={{ ...sampleConflict, pendingTitle: 'Onboarding runbook' }}
+        onClose={vi.fn()}
+        onResolved={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.queryByTestId('sync-conflict-title-diff')).not.toBeInTheDocument();
   });
 
   it('POSTs { resolution: "local" } when "Keep local" is clicked', async () => {
