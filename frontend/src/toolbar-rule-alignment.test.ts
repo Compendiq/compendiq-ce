@@ -31,13 +31,13 @@ import { resolve } from 'node:path';
  *   `h-12` / `min-h-12` — the row owns the whole 48. Every unlined chrome row.
  *
  *   `min-h-[calc(3rem-1px)]` — for a row whose PARENT still draws a border, so
- *   the two must add up to 48. `SettingsLayout`'s title strip is the last of
- *   these: it is `sticky`, content scrolls under it, and bg-card on bg-card
- *   needs the line. Left at a plain `min-h-12` that parent measures 49 and its
- *   content sits one pixel low.
+ *   the two must add up to 48. No chrome row uses this any more: the last one,
+ *   `SettingsLayout`'s sticky title strip, went with the settings title on
+ *   2026-11-19 (the rail's band names the page). The spelling survives only in
+ *   `Skeleton`'s boot placeholder for the article strip.
  *
- * Verified by measurement at 1440x900: all three `/pages/:id` rows and both
- * `/settings` rows report an identical content box height.
+ * Verified by measurement at 1440x900: all three `/pages/:id` rows report an
+ * identical content box height.
  */
 
 const read = (p: string) => readFileSync(resolve(__dirname, p), 'utf8');
@@ -48,11 +48,6 @@ const UNLINED = [
   ['shared/components/layout/SettingsSidebar.tsx', "the settings rail's nav row"],
   ['features/ai/conversations/AiConversationsSidebar.tsx', "the conversations rail's rows"],
   ['shared/components/article/ArticleRightPane.tsx', "the inspector's tab row"],
-] as const;
-
-/** Rows whose hairline is on a sticky parent, so they subtract it. */
-const PARENT_BORDERED = [
-  ['features/settings/SettingsLayout.tsx', 'the settings title strip'],
 ] as const;
 
 const EDIT_TOOLBAR = 'shared/components/article/EditorToolbar.tsx';
@@ -103,17 +98,6 @@ describe('the 48px chrome band across the top of every pane', () => {
       src,
       'the article strip carries a thin hairline below the edit bar and toolbar',
     ).toMatch(/w-full border-b border-border bg-card/);
-  });
-
-  it.each(PARENT_BORDERED)('%s subtracts the parent hairline (%s)', (file) => {
-    const src = read(file);
-    expect(
-      src,
-      `${file}: the sticky strip's inner row is no longer min-h-[calc(3rem-1px)]. ` +
-        `Its border-b is on the sticky parent — content scrolls under it and the ` +
-        `two surfaces share a colour, so that line stays — and a plain min-h-12 ` +
-        `measures 49, dropping this row one pixel below the sidebar's.`,
-    ).toContain('min-h-[calc(3rem-1px)]');
   });
 
   it('keeps the edit toolbar on the article strip’s 48px band', () => {

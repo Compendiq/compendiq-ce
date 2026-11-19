@@ -1073,9 +1073,10 @@ the backend side.
   states: the attached inspector's left hairline (both sides are Pane), card borders
   (a card paints Pane on a Pane), `--color-border-interactive` on anything
   operable **except the one owner exception, `nm-composer`** (quiet hairline by
-  explicit decision; focus-within restores a ≥3:1 border plus ring), and the two
-  sticky headers whose own content scrolls under them
-  (`SettingsLayout`'s title strip, `Editor`'s fallback toolbar) plus the pane
+  explicit decision; focus-within restores a ≥3:1 border plus ring), and the one
+  sticky header whose own content scrolls under it
+  (`Editor`'s fallback toolbar — `SettingsLayout`'s title strip went with the
+  settings title on 2026-11-19) plus the pane
   footers a scrolling list ends against. `app-shell-layout.test.ts` holds a
   1.08:1 floor under the card's value step, since an unlined card fails
   silently (ADR-010 v1.1).

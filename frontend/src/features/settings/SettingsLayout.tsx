@@ -5,7 +5,6 @@ import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { firstVisiblePath, settingsPanelFromPath, SETTINGS_TITLE, type AccessContext } from './settings-nav';
-import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 /**
  * Extends AccessContext with the license-fetch loading flag so
@@ -36,19 +35,15 @@ export function SettingsLayout() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
     >
-      <HeaderHost
-        fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 mb-4 border-b border-border bg-card sm:-mx-6 [&>h1]:mx-auto [&>h1]:flex [&>h1]:min-h-[calc(3rem-1px)] [&>h1]:max-w-[928px] [&>h1]:items-center [&>h1]:px-4 [&>h1]:py-2 sm:[&>h1]:max-w-[944px] sm:[&>h1]:px-6"
-      >
-        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">
-          {SETTINGS_TITLE}
-          {panel && (
-            <span className="font-normal text-muted-foreground">
-              {' · '}
-              {panel.label}
-            </span>
-          )}
-        </h1>
-      </HeaderHost>
+      {/* The page title moved to the rail's panel band ("Settings") on
+          2026-11-19, so the sticky strip that carried "Settings · <Panel>" is
+          gone. The heading stays in the document for screen readers. Nothing
+          scrolls under a chrome band any more, so the strip's border and
+          under-mask went with it. */}
+      <h1 className="sr-only">
+        {SETTINGS_TITLE}
+        {panel && <span> · {panel.label}</span>}
+      </h1>
 
       {/* No card. The FORM still caps at `max-w-2xl`: without it a "Confluence
           URL" input stretched the full width of the pane — a single-line field
