@@ -42,14 +42,21 @@ import { resolve } from 'node:path';
 
 const read = (p: string) => readFileSync(resolve(__dirname, p), 'utf8');
 
-/** Panes whose chrome row owns the full 48px and draws no line. */
+/** Panes whose secondary/mobile `panel-toolbar` chrome rows own 48px and draw no line. */
 const UNLINED = [
   ['shared/components/layout/SidebarTreeView.tsx', "the pages rail's chrome rows"],
   ['shared/components/layout/SettingsSidebar.tsx', "the settings rail's nav row"],
   ['features/ai/conversations/AiConversationsSidebar.tsx', "the conversations rail's rows"],
-  ['shared/components/article/ArticleRightPane.tsx', "the inspector's tab row"],
 ] as const;
 
+/** Left rails whose top toggle band sits at y = 0..48px with a bottom hairline. */
+const LEFT_RAIL_TOP_BANDS = [
+  ['shared/components/layout/SidebarTreeView.tsx', 'the pages rail top band'],
+  ['shared/components/layout/SettingsSidebar.tsx', 'the settings rail top band'],
+  ['features/ai/conversations/AiConversationsSidebar.tsx', 'the conversations rail top band'],
+] as const;
+
+const INSPECTOR_PANE = 'shared/components/article/ArticleRightPane.tsx';
 const EDIT_TOOLBAR = 'shared/components/article/EditorToolbar.tsx';
 
 /**
@@ -91,20 +98,48 @@ describe('the 48px chrome band across the top of every pane', () => {
     }
   });
 
-  it('the article context strip carries a thin hairline below the edit bar and toolbar', () => {
+  it.each(LEFT_RAIL_TOP_BANDS)(
+    '%s puts its collapsed and expanded top hairlines at 48px (%s)',
+    (file) => {
+      const src = read(file);
+      const topBands = [...src.matchAll(/className="([^"\n]*border-b border-border px-2[^"\n]*)"/g)]
+        .map((m) => m[1]!);
+      expect(topBands.length, `${file}: expected both collapsed and expanded top hairline bands`).toBeGreaterThanOrEqual(2);
+      for (const band of topBands) {
+        expect(
+          band,
+          `${file}: top hairline band must be h-12 (48px border-box) so its rule aligns with the article toolbar and inspector: ${band}`,
+        ).toMatch(/\bh-12\b/);
+      }
+    },
+  );
+
+  it('the inspector keeps h-12 and a bottom hairline on both collapsed and expanded top bands', () => {
+    const rows = chromeRows(read(INSPECTOR_PANE));
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    for (const row of rows) {
+      expect(row).toMatch(/\bh-12\b/);
+      expect(row).toMatch(/\bborder-0\b/);
+      expect(row).toMatch(/\bborder-b\b/);
+      expect(row).toMatch(/\bborder-border\b/);
+      expect(row).not.toMatch(/\bpy-\d/);
+    }
+  });
+
+  it('the article context strip resolves to 48px total with its bottom hairline', () => {
     const src = read('features/pages/PageViewPage.tsx');
-    expect(src, "the article strip's read row must own the whole 48").toContain('min-h-12');
+    expect(
+      src,
+      "the article strip's read row must use calc(3rem-1px) so 47px + 1px parent border-b = 48px",
+    ).toContain('min-h-[calc(3rem-1px)]');
     expect(
       src,
       'the article strip carries a thin hairline below the edit bar and toolbar',
     ).toMatch(/w-full border-b border-border bg-card/);
   });
 
-  it('keeps the edit toolbar on the article strip’s 48px band', () => {
-    // The format toolbar fills its strip's full height now that the strip
-    // draws no border. NewPagePage's strip keeps its own border and is
-    // therefore 49px — multi-row chrome with no 48px alignment partner.
-    expect(read(EDIT_TOOLBAR)).toContain('h-12 min-h-12');
+  it('keeps the edit toolbar on the article strip’s 48px hairline (47px + 1px parent border)', () => {
+    expect(read(EDIT_TOOLBAR)).toContain('h-[calc(3rem-1px)] min-h-[calc(3rem-1px)]');
   });
 
   it('no chrome row falls back to vertical padding for its height', () => {

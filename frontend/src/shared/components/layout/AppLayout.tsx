@@ -108,6 +108,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const mobileContextRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = isArticlePath(location.pathname);
+  const isLibraryRoute = location.pathname === '/';
   const isMobileLayout = useIsMobileLayout();
   const inspectorWide = useIsInspectorWideLayout();
   const articleSidebarLaptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
@@ -557,11 +558,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
               data-scroll-container
               className={cn(
                 'flex min-h-0 flex-1 flex-col',
-                // Article view owns its own scroller below the 48px strip, so
-                // the workspace scrollbar cannot sit beside the toolbar and
-                // make the strip look short of the pane edge. Other routes
-                // keep this container as the page scroller.
-                isArticleRoute
+                // Article view owns its own scroller below the 48px strip, and
+                // the Library owns its own scroller above the fixed bottom
+                // status bar, so the workspace scrollbar cannot sit beside
+                // either chrome band. Other routes keep this container as the
+                // page scroller.
+                isArticleRoute || isLibraryRoute
                   ? 'overflow-hidden'
                   : 'overflow-y-auto px-4 pb-5 pt-5 sm:px-6 [scrollbar-gutter:stable]',
               )}
@@ -615,7 +617,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                     overflow-y-auto in #1218 (it spilled 39px at 1440x560
                     before). A new one is the thing to check when adding a
                     height-capping page. */}
-                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isSettingsRoute || isArticleRoute ? 'max-w-none' : 'max-w-7xl')}>
+                <div className={cn('mx-auto flex w-full min-h-0 flex-1 flex-col', isSettingsRoute || isArticleRoute || isLibraryRoute ? 'max-w-none' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>

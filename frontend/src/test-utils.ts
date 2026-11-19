@@ -82,7 +82,10 @@ export function installVirtualizerRectShim(): () => void {
 
   Element.prototype.getBoundingClientRect = function () {
     // Give the scroll container a usable height for the virtualizer
-    if (this.hasAttribute?.('data-scroll-container')) {
+    if (
+      this.hasAttribute?.('data-scroll-container')
+      || this.getAttribute?.('data-testid') === 'library-scroll'
+    ) {
       return { top: 0, left: 0, bottom: 800, right: 1024, width: 1024, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
     }
     // For virtual list items measured by the virtualizer

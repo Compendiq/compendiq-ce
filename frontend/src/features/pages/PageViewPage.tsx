@@ -1412,8 +1412,10 @@ export function PageViewPage() {
 
           Carries a thin hairline (border-b border-border) below the edit bar
           and toolbar, separating the 48px pinned strip from the article content
-          below it. The height stays 48 — the sidebar's chrome row and the
-          inspector's tab row still start their content on that same y. */}
+          below it. Because the parent draws the 1px border-b, the inner bar
+          uses `calc(3rem-1px)` (47px + 1px = 48px) so its hairline lands on
+          the exact same y as the left sidebar's and right inspector's `h-12
+          border-b` bands. */}
       <div className="relative z-30 shrink-0">
         {!isError && (inlineArticlePolicy(page).articlePolicy === 'none' || inlineArticlePolicy(page).articlePolicy === 'local_only') && (
           <div className="px-3 py-1"><AiPolicyChip compact policy={inlineArticlePolicy(page).articlePolicy!} /></div>
@@ -1440,7 +1442,7 @@ export function PageViewPage() {
           ) : (
             <div
               className={cn(
-                'flex min-h-12 w-full items-center gap-1.5 px-2',
+                'flex min-h-[calc(3rem-1px)] w-full items-center gap-1.5 px-2',
                 editing && 'justify-end',
               )}
               {...(!editing

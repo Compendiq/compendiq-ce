@@ -140,8 +140,8 @@ describe('AiConversationsSidebar', () => {
     const expanded = await screen.findByTestId('ai-conversations-sidebar');
     const collapse = within(expanded).getByRole('button', { name: 'Collapse sidebar' });
     const band = collapse.parentElement!;
-    // The Pages tree's band: same height, inset and hairline.
-    expect(band.className).toContain('h-9');
+    // The Pages tree's band: same 48px height, inset and hairline.
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('px-2');
     expect(band.className).toContain('border-b');
     expect(within(band).getByTestId('sidebar-destination-title')).toHaveTextContent('AI');
@@ -155,7 +155,7 @@ describe('AiConversationsSidebar', () => {
     const collapsed = await screen.findByTestId('ai-conversations-sidebar');
     const expand = within(collapsed).getByRole('button', { name: 'Expand sidebar' });
     const band = expand.parentElement!;
-    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('px-2');
     expect(band.className).toContain('border-b');
     expect(collapsed.firstElementChild).toBe(band);

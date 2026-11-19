@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from '
 import { useLocation } from 'react-router-dom';
 import {
   AlertCircle,
-  CheckCircle2,
   ChevronRight,
   Cpu,
   ExternalLink,
@@ -37,7 +36,7 @@ import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { PageLifecycleSection } from './PageLifecycleSection';
 import { ArticleAiPolicySection } from './ArticleAiPolicySection';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
-import { neutralChipInk, statusChipClass } from '../badges/neutral-chip';
+import { neutralChipInk } from '../badges/neutral-chip';
 import { formatDateStamp } from '../../lib/format-relative-time';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
@@ -312,6 +311,55 @@ function HealthAction({
 }
 
 /**
+ * Quiet 32x32 row-level maintenance trigger (e.g. re-index, re-check quality)
+ * paired directly beside the health dimension it refreshes. Keeps `aria-disabled`
+ * and `aria-describedby` when policy-blocked (#1882) so keyboard and screen-reader
+ * users can reach it and hear why it is unavailable.
+ */
+function HealthIconAction({
+  onClick,
+  pending = false,
+  icon: Icon,
+  label,
+  pendingLabel,
+  testId,
+  title,
+  blocked = false,
+  describedBy,
+}: {
+  onClick: () => void;
+  pending?: boolean;
+  icon: LucideIcon;
+  label: string;
+  pendingLabel?: string;
+  testId: string;
+  title?: string;
+  blocked?: boolean;
+  describedBy?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => { if (!blocked) onClick(); }}
+      disabled={pending}
+      aria-busy={pending}
+      aria-disabled={blocked || undefined}
+      aria-describedby={blocked ? describedBy : undefined}
+      aria-label={pending && pendingLabel ? pendingLabel : label}
+      data-testid={testId}
+      title={title ?? label}
+      className={cn('nm-icon-button shrink-0', blocked && POLICY_BLOCKED_ACTION_CLASS)}
+    >
+      {pending ? (
+        <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+      ) : (
+        <Icon size={14} aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
+/**
  * A refused action must not paint as accepted on hover/press. Opacity stays
  * at 0.7 (never 0.45) so 13px labels keep their contrast.
  */
@@ -529,6 +577,18 @@ export function ArticleRightPane({
   const policyReasonIdBase = useId();
   const healthPolicyReasonId = `${policyReasonIdBase}-health`;
   const railPolicyReasonId = `${policyReasonIdBase}-rail`;
+  const hasPolicyBlockedStages = (page?.aiPolicyBlockedStages?.length ?? 0) > 0;
+  const isPolicyBlocked =
+    page?.embeddingStatus === 'policy_blocked'
+    || page?.qualityStatus === 'policy_blocked'
+    || page?.summaryStatus === 'policy_blocked'
+    || hasPolicyBlockedStages;
+  // On a healthy page the aligned key-value rows below ARE the summary; reserve
+  // the callout strip for attention, in-flight work, policy blocks, or recovery.
+  const showHealthCallout =
+    overallHealth.tone !== 'neutral'
+    || isPolicyBlocked
+    || Boolean(page?.aiPolicyRecovering);
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -1182,10 +1242,11 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          {/* Same 48px band, same right inset and same 28px control as the
-              expanded tab row's toggle, so closing the inspector does not move
-              it. The rest of the rail keeps starting on the 48px seam. */}
-          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-end rounded-none border-none px-2 shadow-none">
+          {/* Same 48px band, same right inset, same hairline and same 28px
+              control as the expanded tab row's toggle, so closing the
+              inspector does not move it and the hairline stays continuous with
+              the article toolbar and left sidebar band. */}
+          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-end rounded-none border-0 border-b border-border px-2 shadow-none">
             <button
               type="button"
               onClick={handleExpandSidebar}
@@ -1197,8 +1258,7 @@ export function ArticleRightPane({
             </button>
           </div>
 
-          <div className="my-1 h-px w-6 bg-border" />
-          <div className="group relative flex w-full justify-center">
+          <div className="group relative mt-1.5 flex w-full justify-center">
             <button
               type="button"
               onClick={() => {
@@ -1665,16 +1725,10 @@ export function ArticleRightPane({
           pane was spending 48px restating it. The tabs are the only thing in
           this chrome anyone operates, so they take the row.
 
-          No hairline under it since 2026-08-31: the owner took the 48px rule
-          off every pane. The segmented control below carries its own track and
-          border, so the row still reads as chrome without one, and the height
-          survives because the panes' content must still start on one y.
-
-          `h-12` is that shared height (see SidebarTreeView and PageViewPage's
-          context strip). It is not free space: the segmented control is 34px
-          (28px segments + 2px track inset + 1px borders), so the row has ~7px
-          of breathing room and no more. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
+          Carries the same 48px height and `border-b border-border` hairline as
+          the left sidebar's top band and the article toolbar, so all three
+          panes share one continuous horizontal rule at y = 48px. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-0 border-b border-border shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
             and the search-mode toggle: `rounded-md` track, 2px inset, one raised
@@ -1975,145 +2029,194 @@ export function ArticleRightPane({
 
           <section className="border-t border-border/60 pt-3" data-testid="document-health">
             <h3 className="text-xs font-semibold text-foreground">Document health</h3>
-            <div className="mt-1.5 flex items-start gap-2 text-xs font-medium text-foreground/85">
-              {overallHealth.tone === 'active' ? (
-                <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin" aria-hidden="true" />
-              ) : overallHealth.tone === 'warning' ? (
-                <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
-              ) : (
-                <Cpu size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-              )}
-              <span data-testid="document-health-summary">{overallHealth.label}</span>
-            </div>
-            {/* #281/#283: the server's OWN block reason and the stages it
-                refused now, or the recovering verdict after a policy/provider
-                change — visible prose, never a tooltip, and never inferred
-                from a bare status. */}
-            {page.aiPolicyBlockedStages && page.aiPolicyBlockedStages.length > 0 && (
-              <p id={healthPolicyReasonId} className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-policy-reason">
-                {policyBlockReasonText}
-                {' — '}
-                {page.aiPolicyBlockedStages.map((s) => ({ embedding: 'indexing', summary: 'summary', quality: 'quality' })[s]).join(', ')}
-                {' not completed. Relaxing the policy or assigning a declared-local provider requeues eligible work.'}
-              </p>
+
+            {showHealthCallout && (
+              <div
+                className={cn(
+                  'mt-2 rounded-md border p-2.5',
+                  overallHealth.tone === 'warning'
+                    ? 'border-warning/30 bg-warning/10'
+                    : 'border-border bg-foreground/[0.03]',
+                )}
+                data-testid="document-health-callout"
+              >
+                <div className="flex items-start gap-2 text-xs font-medium text-foreground">
+                  {overallHealth.tone === 'active' ? (
+                    <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin" aria-hidden="true" />
+                  ) : overallHealth.tone === 'warning' ? (
+                    <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+                  ) : (
+                    <Cpu size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  )}
+                  <span data-testid="document-health-summary">{overallHealth.label}</span>
+                </div>
+                {/* #281/#283: the server's OWN block reason and the stages it
+                    refused now, or the recovering verdict after a policy/provider
+                    change — visible prose, never a tooltip, and never inferred
+                    from a bare status. */}
+                {page.aiPolicyBlockedStages && page.aiPolicyBlockedStages.length > 0 && (
+                  <p id={healthPolicyReasonId} className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-policy-reason">
+                    {policyBlockReasonText}
+                    {' — '}
+                    {page.aiPolicyBlockedStages.map((s) => ({ embedding: 'indexing', summary: 'summary', quality: 'quality' })[s]).join(', ')}
+                    {' not completed. Relaxing the policy or assigning a declared-local provider requeues eligible work.'}
+                  </p>
+                )}
+                {page.aiPolicyRecovering && (
+                  <p className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-recovering">
+                    Recovering: previously policy-blocked work was requeued after a policy or provider change and has
+                    not completed yet. This is not a completed result.
+                  </p>
+                )}
+                {overallHealth.remedy && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="document-health-actions">
+                    {overallHealth.remedy === 'index' && (
+                      <HealthAction
+                        onClick={handleReembed}
+                        pending={reembedMutation.isPending}
+                        icon={Cpu}
+                        label="Index now"
+                        pendingLabel="Queuing…"
+                        testId="health-remedy-index"
+                      />
+                    )}
+                    {overallHealth.remedy === 'retry-index' && (
+                      <HealthAction
+                        onClick={handleReembed}
+                        pending={reembedMutation.isPending}
+                        icon={RefreshCw}
+                        label="Retry indexing"
+                        pendingLabel="Queuing…"
+                        testId="health-remedy-retry-index"
+                      />
+                    )}
+                    {overallHealth.remedy === 'requality' && (
+                      <HealthAction
+                        onClick={handleRequality}
+                        pending={requalityMutation.isPending}
+                        icon={Gauge}
+                        label="Re-check quality"
+                        pendingLabel="Queuing…"
+                        testId="health-remedy-requality"
+                      />
+                    )}
+                    {overallHealth.remedy === 'assistant' && (
+                      <HealthAction
+                        onClick={openAssistantTab}
+                        icon={Sparkles}
+                        label="Open Assistant"
+                        testId="health-open-assistant"
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
             )}
-            {page.aiPolicyRecovering && (
-              <p className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-recovering">
-                Recovering: previously policy-blocked work was requeued after a policy or provider change and has
-                not completed yet. This is not a completed result.
-              </p>
-            )}
-            <div className="mt-2.5 flex flex-wrap items-center gap-1.5" data-testid="document-health-actions">
-              {overallHealth.remedy === 'index' && (
-                <HealthAction
-                  onClick={handleReembed}
-                  pending={reembedMutation.isPending}
-                  icon={Cpu}
-                  label="Index now"
-                  pendingLabel="Queuing…"
-                  testId="health-remedy-index"
-                />
-              )}
-              {overallHealth.remedy === 'retry-index' && (
-                <HealthAction
-                  onClick={handleReembed}
-                  pending={reembedMutation.isPending}
-                  icon={RefreshCw}
-                  label="Retry indexing"
-                  pendingLabel="Queuing…"
-                  testId="health-remedy-retry-index"
-                />
-              )}
-              {overallHealth.remedy === 'requality' && (
-                <HealthAction
-                  onClick={handleRequality}
-                  pending={requalityMutation.isPending}
-                  icon={Gauge}
-                  label="Re-check quality"
-                  pendingLabel="Queuing…"
-                  testId="health-remedy-requality"
-                />
-              )}
-              {overallHealth.remedy === 'assistant' && (
-                <HealthAction
-                  onClick={openAssistantTab}
-                  icon={Sparkles}
-                  label="Open Assistant"
-                  testId="health-open-assistant"
-                />
-              )}
-              <HealthAction
-                onClick={() => { void handleVerify(); }}
-                pending={verifyMutation.isPending}
-                icon={CheckCircle2}
-                label="Record verification"
-                pendingLabel="Recording…"
-                testId="verify-btn"
-                title="Record that this article has been reviewed and verified for accuracy"
-              />
-              {overallHealth.remedy !== 'index' && overallHealth.remedy !== 'retry-index' && (
-                <HealthAction
-                  onClick={handleReembed}
-                  pending={reembedMutation.isPending}
-                  icon={Cpu}
-                  label="Re-index for search"
-                  pendingLabel="Queuing…"
-                  testId="article-reembed-btn"
-                  blocked={reembedBlocked}
-                  describedBy={healthPolicyReasonId}
-                />
-              )}
-              {overallHealth.remedy !== 'requality' && (
-                <HealthAction
-                  onClick={handleRequality}
-                  pending={requalityMutation.isPending}
-                  icon={Gauge}
-                  label="Re-check quality"
-                  pendingLabel="Queuing…"
-                  testId="article-requality-btn"
-                  blocked={requalityBlocked}
-                  describedBy={healthPolicyReasonId}
-                />
-              )}
-            </div>
+
             {/* Mounted permanently: a live region inserted together with its
                 text is the case assistive tech is least reliable about. */}
             <span className="sr-only" role="status" aria-live="polite" data-testid="verify-announcer">
               {verifyStatusMsg}
             </span>
-            <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
-              <span
-                className={statusChipClass}
-                data-testid="verification-chip"
-                title={verifiedDateStr ? `Human-verified on ${verifiedDateStr}` : 'Not yet verified by a reviewer'}
-              >
-                <ShieldCheck size={12} className="shrink-0" aria-hidden="true" />
-                <span>{verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}</span>
-              </span>
-              {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
-              <EmbeddingStatusBadge
-                embeddingStatus={page.embeddingStatus}
-                embeddingDirty={page.embeddingDirty}
-                embeddedAt={page.embeddedAt}
-                embeddingError={page.embeddingError}
-                onRetry={handleReembed}
-              />
-              {(page.qualityScore !== undefined && page.qualityScore !== null || page.qualityStatus) && (
-                <QualityScoreBadge
-                  showDetails={activeInspectorView === 'details'}
-                  qualityScore={page.qualityScore ?? null}
-                  qualityStatus={page.qualityStatus ?? null}
-                  qualityCompleteness={page.qualityCompleteness}
-                  qualityClarity={page.qualityClarity}
-                  qualityStructure={page.qualityStructure}
-                  qualityAccuracy={page.qualityAccuracy}
-                  qualityReadability={page.qualityReadability}
-                  qualitySummary={page.qualitySummary}
-                  qualityAnalyzedAt={page.qualityAnalyzedAt}
-                  qualityError={page.qualityError}
-                />
+
+            <dl className="mt-2 divide-y divide-border/40 text-xs" data-testid="document-health-rows">
+              <div className="flex items-center justify-between gap-2 py-1.5" data-testid="health-row-quality">
+                <dt className="shrink-0 text-muted-foreground">Quality</dt>
+                <dd className="flex min-w-0 items-center justify-end gap-1">
+                  {(page.qualityScore !== undefined && page.qualityScore !== null) || page.qualityStatus ? (
+                    <QualityScoreBadge
+                      showDetails={activeInspectorView === 'details'}
+                      qualityScore={page.qualityScore ?? null}
+                      qualityStatus={page.qualityStatus ?? null}
+                      qualityCompleteness={page.qualityCompleteness}
+                      qualityClarity={page.qualityClarity}
+                      qualityStructure={page.qualityStructure}
+                      qualityAccuracy={page.qualityAccuracy}
+                      qualityReadability={page.qualityReadability}
+                      qualitySummary={page.qualitySummary}
+                      qualityAnalyzedAt={page.qualityAnalyzedAt}
+                      qualityError={page.qualityError}
+                    />
+                  ) : (
+                    <span className="text-muted-foreground">Not scored</span>
+                  )}
+                  {overallHealth.remedy !== 'requality' && (
+                    <HealthIconAction
+                      onClick={handleRequality}
+                      pending={requalityMutation.isPending}
+                      icon={RefreshCw}
+                      label="Re-check quality"
+                      pendingLabel="Queuing quality check…"
+                      testId="article-requality-btn"
+                      blocked={requalityBlocked}
+                      describedBy={healthPolicyReasonId}
+                    />
+                  )}
+                </dd>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 py-1.5" data-testid="health-row-indexing">
+                <dt className="shrink-0 text-muted-foreground">Search index</dt>
+                <dd className="flex min-w-0 items-center justify-end gap-1">
+                  <EmbeddingStatusBadge
+                    embeddingStatus={page.embeddingStatus}
+                    embeddingDirty={page.embeddingDirty}
+                    embeddedAt={page.embeddedAt}
+                    embeddingError={page.embeddingError}
+                  />
+                  {overallHealth.remedy !== 'index' && overallHealth.remedy !== 'retry-index' && (
+                    <HealthIconAction
+                      onClick={handleReembed}
+                      pending={reembedMutation.isPending}
+                      icon={RefreshCw}
+                      label="Re-index for search"
+                      pendingLabel="Queuing re-index…"
+                      testId="article-reembed-btn"
+                      blocked={reembedBlocked}
+                      describedBy={healthPolicyReasonId}
+                    />
+                  )}
+                </dd>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 py-1.5" data-testid="health-row-verification">
+                <dt className="shrink-0 text-muted-foreground">Verification</dt>
+                <dd className="flex min-w-0 items-center justify-end gap-1.5">
+                  <span
+                    className="truncate font-medium text-foreground/85"
+                    data-testid="verification-chip"
+                    title={verifiedDateStr ? `Human-verified on ${verifiedDateStr}` : 'Not yet verified by a reviewer'}
+                  >
+                    {verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { void handleVerify(); }}
+                    disabled={verifyMutation.isPending}
+                    aria-busy={verifyMutation.isPending}
+                    data-testid="verify-btn"
+                    title="Record that this article has been reviewed and verified for accuracy"
+                    className="nm-button-ghost h-8 shrink-0 px-2.5 text-xs"
+                  >
+                    {verifyMutation.isPending ? (
+                      <Loader2 size={12} className="shrink-0 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <ShieldCheck size={12} className="shrink-0 opacity-70" aria-hidden="true" />
+                    )}
+                    <span>{verifyMutation.isPending ? 'Recording…' : verifiedDateStr ? 'Re-verify' : 'Verify'}</span>
+                  </button>
+                </dd>
+              </div>
+
+              {page.lastModifiedAt && (
+                <div className="flex items-center justify-between gap-2 py-1.5" data-testid="health-row-freshness">
+                  <dt className="shrink-0 text-muted-foreground">Freshness</dt>
+                  <dd className="min-w-0 text-right">
+                    <FreshnessBadge lastModified={page.lastModifiedAt} />
+                  </dd>
+                </div>
               )}
-            </div>
+            </dl>
           </section>
         </div>
       ) : (

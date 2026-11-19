@@ -483,12 +483,12 @@ describe('ArticleRightPane', () => {
     expect(screen.getByLabelText('Version history')).toBeInTheDocument();
   });
 
-  it('wires onRetry on EmbeddingStatusBadge to trigger reembed', () => {
+  it('does not render a duplicate retry button inside EmbeddingStatusBadge', () => {
+    currentMockPage = { ...mockPage, embeddingStatus: 'failed' };
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    const retryBtn = screen.getByTestId('mock-embedding-retry-btn');
-    expect(retryBtn).toBeInTheDocument();
-    fireEvent.click(retryBtn);
+    expect(screen.queryByTestId('mock-embedding-retry-btn')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('health-remedy-retry-index'));
 
     expect(mockReembedPage).toHaveBeenCalledTimes(1);
     expect(mockReembedPage.mock.calls[0]![0]).toBe('page-1');
@@ -640,14 +640,16 @@ describe('ArticleRightPane', () => {
   });
 
   describe('document health remedies', () => {
-    it('names quality with its band in the healthy sentence and offers no remedy', () => {
+    it('renders structured health rows without a redundant summary callout when healthy', () => {
       render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-      expect(screen.getByTestId('document-health-summary')).toHaveTextContent('Indexed for AI search · Quality 85 Good');
-      const actions = screen.getByTestId('document-health-actions');
-      expect(actions.querySelector('[data-testid^="health-"]')).toBeNull();
-      expect(screen.getByTestId('article-reembed-btn')).toBeInTheDocument();
-      expect(screen.getByTestId('article-requality-btn')).toBeInTheDocument();
+      expect(screen.queryByTestId('document-health-callout')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('document-health-summary')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('document-health-actions')).not.toBeInTheDocument();
+      expect(screen.getByTestId('health-row-quality')).toContainElement(screen.getByTestId('article-requality-btn'));
+      expect(screen.getByTestId('health-row-indexing')).toContainElement(screen.getByTestId('article-reembed-btn'));
+      expect(screen.getByTestId('health-row-verification')).toContainElement(screen.getByTestId('verify-btn'));
+      expect(screen.getByTestId('health-row-freshness')).toBeInTheDocument();
     });
 
     it('offers Index now first for an unindexed page and drops the duplicate re-index', () => {
@@ -850,13 +852,12 @@ describe('ArticleRightPane', () => {
       expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
     });
 
-    it('holds the collapsed rail on the expanded toolbar row’s 48px, unlined', () => {
+    it('holds the collapsed rail on the expanded toolbar row’s 48px with the shared bottom hairline', () => {
       renderRail();
       const chrome = screen.getByTestId('article-right-pane-rail').querySelector('.h-12');
       expect(chrome).toHaveClass('h-12');
-      // ADR-010 v1.1 took the 48px rule off every pane; the height is the
-      // alignment now, so a border-b here would be one line starting mid-width.
-      expect(chrome?.className).not.toMatch(/\bborder-b\b/);
+      expect(chrome?.className).toMatch(/\bborder-b\b/);
+      expect(chrome?.className).toMatch(/\bborder-border\b/);
     });
 
     it('keeps Assistant above Outline and parks pin and maintenance behind More', () => {
@@ -1438,7 +1439,7 @@ describe('ArticleRightPane', () => {
       expect(screen.getByTestId('verification-chip')).toHaveTextContent('Not verified');
       const verifyBtn = screen.getByTestId('verify-btn');
       expect(verifyBtn).toHaveAttribute('aria-busy', 'false');
-      expect(verifyBtn).toHaveTextContent('Record verification');
+      expect(verifyBtn).toHaveTextContent('Verify');
 
       fireEvent.click(verifyBtn);
 
@@ -1463,6 +1464,7 @@ describe('ArticleRightPane', () => {
         day: 'numeric',
       });
       expect(screen.getByTestId('verification-chip')).toHaveTextContent(`Verified ${expected}`);
+      expect(screen.getByTestId('verify-btn')).toHaveTextContent('Re-verify');
     });
   });
 

@@ -97,4 +97,16 @@ describe('LibraryFilterDropdown', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
   });
+
+  it('uses 32px height, interactive border, and highlights active selections', () => {
+    render(<SourceFilter />);
+    const trigger = screen.getByRole('button', { name: 'Filter by source, current: All sources' });
+    expect(trigger.className).toContain('h-8');
+    expect(trigger.className).toContain('border-border-interactive');
+    expect(trigger.className).not.toContain('border-action/60');
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('option', { name: 'Local' }));
+    expect(trigger.className).toContain('border-action/60');
+  });
 });

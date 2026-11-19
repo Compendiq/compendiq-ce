@@ -68,6 +68,17 @@ describe('NotesInspectorPanel', () => {
     });
   });
 
+  it('applies horizontal inset padding to the Notes header and thread list', async () => {
+    renderNotesPanel();
+
+    const panel = await screen.findByTestId('notes-inspector-panel');
+    const header = panel.firstElementChild as HTMLElement;
+    const list = document.getElementById('notes-threads-list')!;
+
+    expect(header).toHaveClass('px-3', 'py-3');
+    expect(list).toHaveClass('px-3');
+  });
+
   it('renders open note threads by default', async () => {
     renderNotesPanel();
     await waitFor(() => {

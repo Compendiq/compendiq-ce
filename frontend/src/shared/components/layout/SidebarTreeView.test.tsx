@@ -608,8 +608,20 @@ describe('SidebarTreeView', () => {
     expect(handle).toHaveAttribute('tabindex', '0');
   });
 
-  it('renders New Page button in sidebar section header and navigates to /pages/new', () => {
+  it('renders New Page primary button in the expanded sidebar and navigates to /pages/new', () => {
     mockNavigate.mockClear();
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const newPageBtn = screen.getByTestId('sidebar-new-page-btn');
+    expect(newPageBtn).toBeInTheDocument();
+    expect(newPageBtn).toHaveAccessibleName('New Page');
+    expect(newPageBtn.className).toContain('nm-button-primary');
+    fireEvent.click(newPageBtn);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
+  });
+
+  it('keeps New Page reachable when the sidebar is collapsed', () => {
+    mockNavigate.mockClear();
+    useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const newPageBtn = screen.getByTestId('sidebar-new-page-btn');
     expect(newPageBtn).toBeInTheDocument();
@@ -881,11 +893,11 @@ describe('SidebarTreeView', () => {
     expect(toolbar).not.toBeNull();
     expect(toolbar!.className).toMatch(/\bh-12\b/);
 
-    // The toggle sits above the space selector in its own band, and that band
-    // carries the hairline the article toolbar draws under its chrome.
+    // The toggle sits above the space selector in its own 48px band, and that
+    // band carries the hairline the article toolbar and inspector draw at y=48.
     const band = collapse.parentElement!;
     expect(band.className).toContain('border-b');
-    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('px-2');
     expect(band.compareDocumentPosition(toolbar!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -898,7 +910,7 @@ describe('SidebarTreeView', () => {
     const band = expand.parentElement!;
     // Same height, inset and hairline as the expanded pane's band, at the top
     // of the rail — collapsing must not move the control the user just pressed.
-    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('h-12');
     expect(band.className).toContain('px-2');
     expect(band.className).toContain('border-b');
     expect(screen.getByRole('complementary', { name: 'Page tree' }).firstElementChild).toBe(band);
@@ -1968,7 +1980,7 @@ describe('SidebarTreeNode memoization', () => {
       expect(screen.queryByText(/Confluence/i)).not.toBeInTheDocument();
       expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
 
-      fireEvent.click(screen.getByText('New Page'));
+      fireEvent.click(within(screen.getByTestId('tree-scroll')).getByText('New Page'));
       expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
     });
 

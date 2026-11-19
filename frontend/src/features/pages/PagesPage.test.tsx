@@ -316,9 +316,16 @@ describe('PagesPage', () => {
     restoreRects();
   });
 
-  it('renders ambient corpus KPIs in the Library header alongside New Page', () => {
+  it('renders ambient corpus KPIs in a fixed bottom status bar outside the Library scroller', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
+    const statusBar = screen.getByTestId('library-status-bar');
+    const scrollContainer = screen.getByTestId('library-scroll');
+    const kpiCards = screen.getByTestId('kpi-cards');
+
+    expect(statusBar.tagName).toBe('FOOTER');
+    expect(statusBar).toHaveClass('shrink-0', 'border-t', 'border-[var(--rail-divider)]');
+    expect(statusBar).toContainElement(kpiCards);
+    expect(scrollContainer).not.toContainElement(statusBar);
     expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-embedded-pages')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-spaces-synced')).toBeInTheDocument();
@@ -326,12 +333,11 @@ describe('PagesPage', () => {
     expect(screen.getByTestId('kpi-embedding-coverage')).toBeInTheDocument();
   });
 
-  it('keeps New Page out of the 48px header slot and moves Trash out of the title row', () => {
+  it('leaves New Page and Trash to the Pages rail instead of rendering a top button row', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('new-page-button').closest('#app-header-slot')).toBeNull();
-    expect(screen.getByTestId('new-page-button').closest('header')).toBeNull();
+    expect(screen.queryByTestId('new-page-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('trash-link')).not.toBeInTheDocument();
-    expect(screen.getByText('Library').parentElement).toContainElement(screen.getByTestId('new-page-button'));
+    expect(screen.getByRole('heading', { name: 'Library', level: 1 })).toHaveClass('sr-only');
   });
 
   it('renders the page title, search input, and filter controls', () => {
@@ -375,22 +381,10 @@ describe('PagesPage', () => {
     ).toBeTruthy();
   });
 
-  it('makes New Page the filled primary action on this route', () => {
+  it('does not render an Import from Notion button in the Library header (lives under New Page)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const newPage = screen.getByTestId('new-page-button');
-    expect(newPage.className).toContain('nm-button-primary');
-    expect(newPage.className).not.toContain('nm-button-ghost');
-  });
-
-  it('opens the Notion import wizard from a ghost control beside New Page', async () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-    const importBtn = screen.getByTestId('import-notion-button');
-    expect(importBtn.className).toContain('nm-button-ghost');
-    expect(importBtn.className).not.toContain('nm-button-primary');
-    expect(screen.queryByTestId('notion-import-dialog')).not.toBeInTheDocument();
-    fireEvent.click(importBtn);
-    expect(await screen.findByTestId('notion-import-dialog')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Connect Notion' })).toBeInTheDocument();
+    expect(screen.queryByTestId('import-notion-button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /import from notion/i })).not.toBeInTheDocument();
   });
 
   it('renders the advanced filters toggle button', () => {
@@ -1890,14 +1884,53 @@ describe('PagesPage', () => {
 
   // --- Grid layout test ---
 
-  it('groups advanced filters into a compact, named refinement tray', () => {
+  it('groups advanced filters into three aligned 3-column groups without duplicate clear chrome', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const panel = screen.getByTestId('advanced-filters-panel');
     expect(screen.getByRole('heading', { name: 'Refine results' })).toBeInTheDocument();
     expect(panel.querySelector('.grid')).not.toBeNull();
     expect(screen.getByRole('group', { name: 'Content' })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Status & date' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Pipeline & AI' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Modified' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
+  });
+
+  it('counts AI policy in the Filters toggle badge as active without pausing it in Hybrid/Semantic search', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    chooseFilter('filter-ai-policy', 'local_only');
+
+    expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 active');
+    expect(screen.queryByTestId('filters-keyword-preview-note')).not.toBeInTheDocument();
+
+    // Clearing paused filters during semantic search keeps AI policy intact alongside Space.
+    chooseFilter('filter-freshness', 'stale');
+    fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
+    fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+    fireEvent.click(await screen.findByTestId('clear-paused-filters'));
+
+    expect(screen.getByTestId('filter-pill-aiPolicy')).toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 active');
+  });
+
+  it('hides the Source filter in standalone mode when Confluence is disabled', async () => {
+    mockFetchWithPages(mockPagesResponse, {
+      confluenceEnabled: false,
+      hasConfluencePat: false,
+      selectedSpaces: [],
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('filter-source-control')).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('filter-author-control')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-labels-control')).toBeInTheDocument();
   });
 
   // --- Accessibility: filter pills as focusable buttons ---
@@ -2967,7 +3000,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const result = (await screen.findByText('Page 1')).closest('button')!;
       const input = screen.getByRole('textbox', { name: FIND_LABEL });
-      const scroller = document.querySelector<HTMLElement>('[data-scroll-container]')!;
+      const scroller = screen.getByTestId('library-scroll');
       input.focus();
       fireEvent.keyDown(input, { key: 'Enter' });
       expect(result).toHaveFocus();
@@ -3497,14 +3530,14 @@ describe('PagesPage — Getting Started checklist (#1402)', () => {
     restoreRects();
   });
 
-  it('sits between the Library header and the search toolbar', async () => {
+  it('sits between the Library heading and the search toolbar', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
 
     const card = await screen.findByTestId('onboarding-checklist');
     const toolbar = screen.getByTestId('library-filter-panel');
     expect(card.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
-      screen.getByTestId('new-page-button').compareDocumentPosition(card) &
+      screen.getByRole('heading', { name: 'Library', level: 1 }).compareDocumentPosition(card) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });

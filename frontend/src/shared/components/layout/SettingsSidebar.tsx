@@ -64,10 +64,10 @@ export function SettingsSidebar({
         transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
         className="app-sidebar relative flex flex-col items-center overflow-hidden"
       >
-        {/* The same 36px band as the expanded rail: same height, inset,
-            control and hairline, so the toggle never moves. The 12px spacer
-            restores the 48px chrome height the rest of the rail aligns on. */}
-        <div className="flex h-9 w-full shrink-0 items-center border-b border-border px-2">
+        {/* The same 48px band as the expanded rail: same height, inset,
+            control and hairline, so the toggle never moves and the hairline
+            aligns with the workspace top chrome. */}
+        <div className="flex h-12 w-full shrink-0 items-center border-b border-border px-2">
           <button
             type="button"
             onClick={toggleTreeSidebar}
@@ -78,7 +78,6 @@ export function SettingsSidebar({
             <PanelLeft size={15} aria-hidden="true" />
           </button>
         </div>
-        <div className="h-3 w-full shrink-0" aria-hidden="true" />
 
         <span
           data-rail-hairline
@@ -119,7 +118,7 @@ export function SettingsSidebar({
           inside SettingsLayout adds the active panel ("Settings · Retrieval");
           this is the room's name, the same way the other rails carry Library /
           AI / Graph. */}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2">
         <button
           type="button"
           onClick={toggleTreeSidebar}

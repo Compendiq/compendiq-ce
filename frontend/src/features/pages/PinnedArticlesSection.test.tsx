@@ -412,8 +412,8 @@ describe('PinnedArticlesSection', () => {
     expect(section.tagName).toBe('SECTION');
     expect(section).toHaveAttribute('aria-labelledby', 'pinned-pages-heading');
     expect(document.getElementById('pinned-pages-heading')).toHaveTextContent('Pinned');
-    expect(section).toHaveClass('border-y', 'border-border', 'py-2');
-    expect(section).not.toHaveClass('rounded-lg', 'bg-background');
+    expect(section).toHaveClass('border-b', 'border-border', 'pb-2');
+    expect(section).not.toHaveClass('border-t', 'border-y', 'rounded-lg', 'bg-background');
   });
 
   // Unpinning unmounts the card that owns the focused button. Without a

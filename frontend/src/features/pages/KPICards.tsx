@@ -96,7 +96,7 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 // ---------- KPICards ----------
 
 /**
- * Corpus status strip for the Pages body — not the 48px header.
+ * Corpus status strip rendered in the Library's fixed bottom status bar.
  *
  * Three facts: total pages, embedded count / coverage, and last sync timestamp.
  */
