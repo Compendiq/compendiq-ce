@@ -300,7 +300,10 @@ export function AiAssistantPage() {
           enforces. */}
       <HeaderHost fallbackClassName="mb-1">
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">AI</h1>
+          {/* The room's name is in the sidebar's panel band now (owner,
+              2026-11-19); the heading stays for screen readers and the
+              document outline. */}
+          <h1 className="sr-only">AI</h1>
         </div>
       </HeaderHost>
 

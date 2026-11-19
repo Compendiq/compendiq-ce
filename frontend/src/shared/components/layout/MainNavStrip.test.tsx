@@ -5,6 +5,7 @@ import {
   MainNavStripExpanded,
   MainNavStripCollapsed,
   MainNavChassisRail,
+  currentDestinationTitle,
 } from './MainNavStrip';
 
 function renderWithRouter(ui: React.ReactElement, route = '/') {
@@ -110,5 +111,21 @@ describe('MainNavChassisRail', () => {
     renderWithRouter(<MainNavChassisRail onNavigate={onNavigate} />, '/');
     fireEvent.click(screen.getByRole('link', { name: 'Graph' }));
     expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('currentDestinationTitle', () => {
+  it('maps the route to the destination page title', () => {
+    expect(currentDestinationTitle('/')).toBe('Library');
+    expect(currentDestinationTitle('/pages/abc')).toBe('Library');
+    expect(currentDestinationTitle('/pages/new')).toBe('Library');
+    expect(currentDestinationTitle('/ai')).toBe('AI');
+    expect(currentDestinationTitle('/ai/c/conv-1')).toBe('AI');
+    expect(currentDestinationTitle('/graph')).toBe('Graph');
+  });
+
+  it('returns null where the sidebar does not name a destination', () => {
+    expect(currentDestinationTitle('/trash')).toBeNull();
+    expect(currentDestinationTitle('/settings/ai')).toBeNull();
   });
 });

@@ -28,6 +28,17 @@
 /** Just the fill + ink pair, for chips that carry their own geometry. */
 export const neutralChipInk = 'bg-foreground/10 text-secondary-foreground';
 
+/**
+ * The UNTINTED pill for a single category in the inspector's section headers —
+ * AI policy and Document lifecycle. Same shape as `neutralChipClass` without
+ * the tint or the 11px medium ink: these sit on a section heading's baseline
+ * beside a summary chevron, so they stay quiet, 13px, and carry one leading
+ * 12px glyph (the channel that survives `forced-colors` and colour blindness).
+ * Stated once so the two readouts cannot drift apart.
+ */
+export const pillChipClass =
+  'inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground';
+
 /** The full row-chip class, as worn by the PagesPage / PageViewPage badges. */
 export const neutralChipClass = `inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] font-medium ${neutralChipInk}`;
 

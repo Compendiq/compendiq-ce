@@ -22,7 +22,7 @@ import {
   PANEL_COLLAPSE_TRANSITION,
   usePanelCollapseInitial,
 } from '../../hooks/use-panel-collapse-motion';
-import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
+import { MainNavStripExpanded, MainNavStripCollapsed, currentDestinationTitle } from './MainNavStrip';
 
 import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
@@ -754,6 +754,10 @@ export function SidebarTreeView({
     selectedSpaceOption?.source === 'local'
       ? getSpaceIcon(selectedSpaceOption.icon)
       : Globe;
+  // The band's title is the destination's own page title (`Library`, `AI`,
+  // `Graph`). It is text, never a link: the destinations are the chassis
+  // rail's icons / the mobile drawer's pills.
+  const destinationTitle = currentDestinationTitle(location.pathname);
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
   const { collapsedInitial, expandedInitial } = usePanelCollapseInitial(
@@ -780,9 +784,28 @@ export function SidebarTreeView({
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          {/* Keep the collapsed spacer at the same 48px chrome height as the
-              expanded toolbar, so both panes start their content on one baseline. */}
-          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center" aria-hidden="true" />
+          {/* The toggle's band, identical to the expanded pane's: same 36px
+              height, same 8px inset, same hairline. The toggle must not move
+              when the panel closes. The 12px spacer below restores the 48px
+              chrome height the rest of this rail aligns on. */}
+          <div className="flex h-9 w-full shrink-0 items-center border-b border-border px-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (forceCollapsed && !treeSidebarCollapsed) {
+                  onForceExpand?.();
+                } else {
+                  toggleTreeSidebar();
+                }
+              }}
+              className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Expand sidebar"
+              title="Expand sidebar (,)"
+            >
+              <PanelLeft size={15} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="h-3 w-full shrink-0" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -801,22 +824,6 @@ export function SidebarTreeView({
             testid="sidebar-trash-collapsed"
             icon={<Trash2 size={15} aria-hidden="true" />}
           />
-
-          <button
-            type="button"
-            onClick={() => {
-              if (forceCollapsed && !treeSidebarCollapsed) {
-                onForceExpand?.();
-              } else {
-                toggleTreeSidebar();
-              }
-            }}
-            className="mb-1.5 ml-1.5 flex size-7 shrink-0 items-center justify-center self-start rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            <PanelLeft size={15} aria-hidden="true" />
-          </button>
 
           <span
             data-rail-hairline
@@ -866,12 +873,47 @@ export function SidebarTreeView({
       </div>
       )}
 
-      {/* Space selector + collapse sit in the 48px chrome row the article
-          strip and the inspector tab row also hold. The row draws no line:
-          the selector carries a Workspace fill instead, so the one operable
-          thing in the row is what you see rather than a rule under it.
-          Scope lives on the chip; source/key stay in the title. New Space
-          stays at the foot of the dropdown. */}
+      {/* Panel toggle band, above the space selector (owner, 2026-11-19).
+          The collapse control used to sit in the footer beside the page count;
+          it now lives at the top where the pane's own edge is, and the band
+          carries the same thin hairline the article toolbar draws below its
+          chrome. It is deliberately NOT a `panel-toolbar` row: that band owns
+          the pane's 48px seam and is unlined by ADR-010 v1.1, while this row
+          states its own boundary and sits above the seam.
+
+          The page's title sits to the toggle's right, so where you are is
+          legible without the outer rail's icons and the destination pages no
+          longer need a title row saying it again. It is a LABEL, not a menu:
+          the three destinations stay on the chassis rail (and the mobile
+          drawer's pill strip, which already carries their names, so the band
+          shows the title only when it is not embedded). */}
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+        <button
+          type="button"
+          onClick={toggleTreeSidebar}
+          data-testid="sidebar-collapse"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
+        {!embedMainNav && destinationTitle && (
+          <span
+            className="min-w-0 truncate text-xs font-semibold text-foreground"
+            data-testid="sidebar-destination-title"
+          >
+            {destinationTitle}
+          </span>
+        )}
+      </div>
+
+      {/* Space selector sits in the 48px chrome row the article strip and the
+          inspector tab row also hold. The row draws no line: the selector
+          carries a Workspace fill instead, so the one operable thing in the
+          row is what you see rather than a rule under it. Scope lives on the
+          chip; source/key stay in the title. New Space stays at the foot of
+          the dropdown. */}
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         <div ref={spaceDropdownRef} className="relative min-w-0 flex-1">
           <button
@@ -1322,15 +1364,6 @@ export function SidebarTreeView({
           so both stay visible under a long tree. Trash belongs with the page
           corpus, but not beside the Library's primary New Page action. */}
       <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] py-1.5 pl-1.5 pr-2">
-        <button
-          type="button"
-          onClick={toggleTreeSidebar}
-          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={15} aria-hidden="true" />
-        </button>
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {treeData
             ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`

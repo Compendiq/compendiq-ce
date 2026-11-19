@@ -2,6 +2,7 @@ import { useId } from 'react';
 import { Ban, Cloud, Cpu, HardDrive, Sparkles, type LucideIcon } from 'lucide-react';
 import type { AiPolicy, ProviderLocality, AiPolicyBlockReason } from '@compendiq/contracts';
 import { cn } from '../../lib/cn';
+import { pillChipClass } from './neutral-chip';
 import {
   AI_POLICY_CHIP_LABEL,
   LOCALITY_CHIP_LABEL,
@@ -16,8 +17,6 @@ import {
  * blindness, the same argument as `FrozenBadge`. No Steel fill, no green
  * seal, no amber — those stay interaction/brand and attention signals.
  */
-const NEUTRAL = 'inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground';
-
 const POLICY_GLYPH: Record<AiPolicy, LucideIcon> = {
   all: Sparkles,
   local_only: HardDrive,
@@ -48,7 +47,7 @@ export function AiPolicyChip({ policy, compact = false, className }: AiPolicyChi
     );
   }
   return (
-    <span className={cn(NEUTRAL, className)} data-testid="ai-policy-chip" data-policy={policy}>
+    <span className={cn(pillChipClass, className)} data-testid="ai-policy-chip" data-policy={policy}>
       <Glyph size={12} aria-hidden="true" />
       <span>{label}</span>
     </span>
@@ -63,7 +62,7 @@ const LOCALITY_GLYPH: Record<ProviderLocality, LucideIcon> = {
 export function LocalityChip({ locality }: { locality: ProviderLocality | null }) {
   const Glyph = locality ? LOCALITY_GLYPH[locality] : Cpu;
   return (
-    <span className={NEUTRAL} data-testid="locality-chip" data-locality={locality ?? 'undeclared'}>
+    <span className={pillChipClass} data-testid="locality-chip" data-locality={locality ?? 'undeclared'}>
       <Glyph size={12} aria-hidden="true" />
       <span>{locality ? LOCALITY_CHIP_LABEL[locality] : 'Locality not declared'}</span>
     </span>

@@ -24,21 +24,29 @@ import { cn } from '../../lib/cn';
 export const MAIN_NAV_ITEMS: readonly {
   icon: LucideIcon;
   label: string;
+  /**
+   * The destination's own page title, read by `currentDestinationTitle` and
+   * printed as plain text in the sidebar's panel band. The Library route is
+   * `/` and its page title is "Library"; the compact pill keeps "Pages"
+   * because that is the corpus it shows and the name operators navigate by.
+   */
+  pageTitle: string;
   path: string;
   shortcut: string;
   ariaLabel?: string;
 }[] = [
-  { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
+  { icon: BookOpen, label: 'Pages', pageTitle: 'Library', path: '/', shortcut: 'G then P' },
   {
     icon: Bot,
     label: 'AI',
+    pageTitle: 'AI',
     path: '/ai',
     shortcut: 'G then A',
     // Visible label stays "AI" (WCAG 2.5.3). The longer name tells it apart
     // from the page inspector's Assistant tab, which is a different room.
     ariaLabel: 'AI chat, full page',
   },
-  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
+  { icon: Share2, label: 'Graph', pageTitle: 'Graph', path: '/graph', shortcut: 'G then G' },
 ] as const;
 
 function isActive(pathname: string, path: string): boolean {
@@ -101,6 +109,18 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
       })}
     </nav>
   );
+}
+
+/**
+ * The destination page's title for the current route — `Library`, `AI` or
+ * `Graph`. The sidebar's panel band prints it as plain text beside the pane
+ * toggle; it is a LABEL, not navigation (the destinations are the chassis
+ * rail's icons, or the mobile drawer's pills), so nothing here renders a
+ * second menu.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function currentDestinationTitle(pathname: string): string | null {
+  return MAIN_NAV_ITEMS.find(({ path }) => isActive(pathname, path))?.pageTitle ?? null;
 }
 
 /**

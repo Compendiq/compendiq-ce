@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
 import { PanelLeft, PanelLeftClose, SquarePen } from 'lucide-react';
-import { MainNavStripExpanded, MainNavStripCollapsed } from '../../../shared/components/layout/MainNavStrip';
+import { MainNavStripExpanded, MainNavStripCollapsed, currentDestinationTitle } from '../../../shared/components/layout/MainNavStrip';
 import {
   PANEL_COLLAPSE_TRANSITION,
   usePanelCollapseInitial,
@@ -32,8 +33,9 @@ export const CONVERSATION_FILTER_THRESHOLD = 8;
  * `embedMainNav` mirrors SidebarTreeView / SettingsSidebar exactly. On desktop
  * the outer chassis icon rail (`MainNavChassisRail`) owns Pages / AI / Graph,
  * so AppLayout passes `false`; the mobile drawer has no rail and takes the
- * default. When it is false there is no nav row at all, so the collapse button
- * moves into the row below — the tree's own two-branch treatment.
+ * default. In both cases the pane's first row is the 36px panel band —
+ * open/close toggle plus the page title — the Pages tree's band (2026-11-19),
+ * and closing the rail repeats that same band so the toggle does not move.
  */
 export function AiConversationsSidebar({
   onNavigate,
@@ -45,6 +47,10 @@ export function AiConversationsSidebar({
   const setTreeSidebarWidth = useUiStore((s) => s.setTreeSidebarWidth);
   const reduceEffects = useReducedMotion();
   const { startNewConversation } = useAiContext();
+  const location = useLocation();
+  // `AI` on this route; the same helper the Pages tree reads, so the rail's
+  // band cannot disagree with the destination's name.
+  const destinationTitle = currentDestinationTitle(location.pathname);
 
   const list = useConversationList();
   const [filter, setFilter] = useState('');
@@ -143,7 +149,22 @@ export function AiConversationsSidebar({
           transition={reduceEffects ? { duration: 0 } : PANEL_COLLAPSE_TRANSITION}
           className="app-sidebar relative flex flex-col items-center overflow-hidden"
         >
-          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center" aria-hidden="true" />
+          {/* Same 36px band as the Pages tree's: same height, inset and
+              hairline, at the top of the rail, so the toggle does not move when
+              the pane closes. The 12px spacer restores the 48px chrome height
+              the rest of the rail aligns on. */}
+          <div className="flex h-9 w-full shrink-0 items-center border-b border-border px-2">
+            <button
+              type="button"
+              onClick={toggleTreeSidebar}
+              className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Expand sidebar"
+              title="Expand sidebar (,)"
+            >
+              <PanelLeft size={15} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="h-3 w-full shrink-0" aria-hidden="true" />
 
           {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
@@ -161,16 +182,6 @@ export function AiConversationsSidebar({
             title="New chat"
           >
             <SquarePen size={16} />
-          </button>
-
-          <button
-            type="button"
-            onClick={toggleTreeSidebar}
-            className="mb-1.5 ml-1.5 mt-auto flex size-7 shrink-0 items-center justify-center self-start rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            <PanelLeft size={15} aria-hidden="true" />
           </button>
 
           <span
@@ -203,31 +214,45 @@ export function AiConversationsSidebar({
         isResizing && 'select-none',
       )}
     >
-      {/* The 48px chrome row every pane holds: h-12, never py-*, so the panes
-          start their content on one y. The hairline that used to run under it
-          came off with the rest of the 48px rule (2026-08-31) — the height is
-          the alignment now, and toolbar-rule-alignment.test.ts still loops
-          over EVERY panel-toolbar row in this file, not just the first.
+      {/* The 48px chrome row this rail owns only when it also carries the
+          destination strip (mobile drawer). On desktop the chassis rail has
+          those destinations, so this row does not exist and the band below is
+          the pane's first row instead.
 
-          Rendered only when this rail owns the destination strip. On desktop
-          the chassis rail does (embedMainNav={false}), and then this row does
-          not exist — so the collapse button moves into the New chat row below,
-          exactly as SidebarTreeView.tsx:1087-1096 moves its own, and that row
-          becomes the pane's 48px chrome row instead. Both class branches keep
-          the guard honest: the branch that IS the chrome row carries h-12 and
-          no py-*. */}
+          The hairline that used to run under it came off with the rest of the
+          48px rule (2026-08-31) — the height is the alignment now, and
+          toolbar-rule-alignment.test.ts still loops over EVERY panel-toolbar
+          row in this file, not just the first. */}
       {embedMainNav && (
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
       </div>
       )}
 
-      <div
-        className={cn(
-          'flex shrink-0 items-center gap-1 px-2',
-          embedMainNav ? 'py-2' : 'panel-toolbar h-12',
+      {/* Panel toggle band + page title — the Pages tree's band, same height,
+          inset, control and hairline, so the toggle is in one place across the
+          two rails and the page no longer needs a title row. */}
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+        <button
+          type="button"
+          onClick={toggleTreeSidebar}
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
+        {!embedMainNav && destinationTitle && (
+          <span
+            className="min-w-0 truncate text-xs font-semibold text-foreground"
+            data-testid="sidebar-destination-title"
+          >
+            {destinationTitle}
+          </span>
         )}
-      >
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1 px-2 py-2">
         <button
           type="button"
           onClick={handleNewChat}
@@ -271,16 +296,7 @@ export function AiConversationsSidebar({
           row's TOP edge, not its bottom — a second bordered nav-style row
           here would have to carry h-12 and would draw a line where there is
           no chrome. */}
-      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] py-1.5 pl-1.5 pr-2">
-        <button
-          type="button"
-          onClick={toggleTreeSidebar}
-          className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={15} aria-hidden="true" />
-        </button>
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t border-[var(--rail-divider)] py-1.5 pl-2 pr-2">
         <span
           data-testid="conversations-footer-count"
           className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"

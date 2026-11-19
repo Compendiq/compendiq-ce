@@ -870,19 +870,61 @@ describe('SidebarTreeView', () => {
     expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
   });
 
-  it('sits the space selector in the h-12 toolbar and places collapse in the bottom footer', () => {
+  it('sits the collapse control in a hairline band above the h-12 space-selector toolbar', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
     const selector = screen.getByTestId('space-selector-toggle');
     const collapse = screen.getByLabelText('Collapse sidebar');
-    const trash = screen.getByTestId('sidebar-trash');
     expect(selector.className).toMatch(/\bh-8\b/);
     expect(selector).not.toHaveTextContent('Every connected space');
     const toolbar = selector.closest('.panel-toolbar');
     expect(toolbar).not.toBeNull();
     expect(toolbar!.className).toMatch(/\bh-12\b/);
-    expect(collapse.parentElement).toContainElement(trash);
-    expect(collapse.parentElement!.className).toContain('border-t');
+
+    // The toggle sits above the space selector in its own band, and that band
+    // carries the hairline the article toolbar draws under its chrome.
+    const band = collapse.parentElement!;
+    expect(band.className).toContain('border-b');
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('px-2');
+    expect(band.compareDocumentPosition(toolbar!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the toggle in the same band when the tree is collapsed', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+
+    const expand = screen.getByLabelText('Expand sidebar');
+    const band = expand.parentElement!;
+    // Same height, inset and hairline as the expanded pane's band, at the top
+    // of the rail — collapsing must not move the control the user just pressed.
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('px-2');
+    expect(band.className).toContain('border-b');
+    expect(screen.getByRole('complementary', { name: 'Page tree' }).firstElementChild).toBe(band);
+  });
+
+  it('prints the destination title to the right of the panel toggle, not a menu', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    const { unmount } = render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/pages/abc') });
+
+    const band = screen.getByLabelText('Collapse sidebar').parentElement!;
+    const title = screen.getByTestId('sidebar-destination-title');
+    expect(title).toHaveTextContent('Library');
+    expect(band).toContainElement(title);
+    // It is a label, not navigation: no links, no second nav landmark.
+    expect(band.querySelector('a')).toBeNull();
+    expect(screen.queryByRole('navigation', { name: 'Destinations' })).not.toBeInTheDocument();
+    unmount();
+
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/graph') });
+    expect(screen.getByTestId('sidebar-destination-title')).toHaveTextContent('Graph');
+  });
+
+  it('omits the band title where there is no destination page name', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper('/trash') });
+    expect(screen.queryByTestId('sidebar-destination-title')).not.toBeInTheDocument();
   });
 
   it('omits embedded main nav when embedMainNav is false in both expanded and collapsed states while preserving app-sidebar and collapse/expand', () => {

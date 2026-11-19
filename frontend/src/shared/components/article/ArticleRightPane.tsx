@@ -574,21 +574,7 @@ export function ArticleRightPane({
   const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
   // Keep local note/reply drafts across tab switches; the page key resets them on navigation.
   const [detailsMounted, setDetailsMounted] = useState(() => activeInspectorView === 'details');
-
-  const notesScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (notesScrollTimer.current !== null) clearTimeout(notesScrollTimer.current);
-    notesScrollTimer.current = null;
-  }, [id]);
-
-  const scrollToNotesSection = useCallback(() => {
-    if (notesScrollTimer.current !== null) clearTimeout(notesScrollTimer.current);
-    notesScrollTimer.current = setTimeout(() => {
-      notesScrollTimer.current = null;
-      const el = document.getElementById('details-notes-section');
-      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 100);
-  }, []);
+  const [notesMounted, setNotesMounted] = useState(() => activeInspectorView === 'notes');
 
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
@@ -596,6 +582,9 @@ export function ArticleRightPane({
     }
     if (activeInspectorView === 'details') {
       setDetailsMounted(true);
+    }
+    if (activeInspectorView === 'notes') {
+      setNotesMounted(true);
     }
   }, [activeInspectorView]);
 
@@ -675,13 +664,8 @@ export function ArticleRightPane({
   useEffect(() => {
     if (!inspectorViewRequest) return;
     inspectorViewTouchedRef.current = true;
-    setActiveInspectorView('details');
-    if (inspectorViewRequest.view === 'notes') {
-      scrollToNotesSection();
-    } else {
-      setActiveInspectorView(inspectorViewRequest.view);
-    }
-  }, [inspectorViewRequest, scrollToNotesSection]);
+    setActiveInspectorView(inspectorViewRequest.view);
+  }, [inspectorViewRequest]);
 
   const { data: pageNotes } = usePageNotes(id);
   const openNotesCount = useMemo(
@@ -716,28 +700,26 @@ export function ArticleRightPane({
         } else if (key === 'n') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
-          setActiveInspectorView('details');
+          setActiveInspectorView('notes');
           handleExpandSidebar();
-          scrollToNotesSection();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleExpandSidebar, scrollToNotesSection]);
+  }, [handleExpandSidebar]);
 
   // Listen to open-sidebar requests from inline comment popovers
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handleOpenNotes = () => {
       inspectorViewTouchedRef.current = true;
-      setActiveInspectorView('details');
+      setActiveInspectorView('notes');
       handleExpandSidebar();
-      scrollToNotesSection();
     };
     window.addEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
     return () => window.removeEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
-  }, [handleExpandSidebar, scrollToNotesSection]);
+  }, [handleExpandSidebar]);
 
   // Persist collapsed section IDs
   useEffect(() => {
@@ -1200,7 +1182,20 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-center rounded-none border-none shadow-none" aria-hidden="true" />
+          {/* Same 48px band, same right inset and same 28px control as the
+              expanded tab row's toggle, so closing the inspector does not move
+              it. The rest of the rail keeps starting on the 48px seam. */}
+          <div className="panel-toolbar nm-popover-glass flex h-12 w-full shrink-0 items-center justify-end rounded-none border-none px-2 shadow-none">
+            <button
+              type="button"
+              onClick={handleExpandSidebar}
+              className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Expand inspector"
+              title="Expand inspector (.)"
+            >
+              <PanelRight size={15} aria-hidden="true" />
+            </button>
+          </div>
 
           <div className="my-1 h-px w-6 bg-border" />
           <div className="group relative flex w-full justify-center">
@@ -1284,9 +1279,8 @@ export function ArticleRightPane({
                   type="button"
                   onClick={() => {
                     inspectorViewTouchedRef.current = true;
-                    setActiveInspectorView('details');
+                    setActiveInspectorView('notes');
                     handleExpandSidebar();
-                    scrollToNotesSection();
                   }}
                   className={cn(
                     railIconBtn,
@@ -1379,17 +1373,6 @@ export function ArticleRightPane({
                 </span>
               </div>
             )}
-          </div>
-          <div className="mb-1.5 mt-auto flex w-full shrink-0 justify-end pr-1.5">
-            <button
-              type="button"
-              onClick={handleExpandSidebar}
-              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="Expand inspector"
-              title="Expand inspector (.)"
-            >
-              <PanelRight size={15} aria-hidden="true" />
-            </button>
           </div>
           <span
             data-rail-hairline
@@ -1701,12 +1684,12 @@ export function ArticleRightPane({
             white chip rather than a grey well on the glass toolbar; Graphite
             keeps muted. The active chip's elevation is `panel-tab-active`. */}
         <div
-          className="panel-tab-track grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md p-0.5"
+          className="panel-tab-track grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
-            const tabs: ('assistant' | 'outline' | 'details')[] = ['assistant', 'outline', 'details'];
-            const currentIndex = tabs.indexOf(activeInspectorView as 'assistant' | 'outline' | 'details');
+            const tabs: InspectorView[] = ['assistant', 'outline', 'details', 'notes'];
+            const currentIndex = tabs.indexOf(activeInspectorView);
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
               e.preventDefault();
               const nextView = tabs[(currentIndex + 1) % tabs.length]!;
@@ -1793,6 +1776,29 @@ export function ArticleRightPane({
         >
           <FileText size={13} />
           Details
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="page-context-tab-notes"
+          aria-controls="page-context-panel-notes"
+          aria-selected={activeInspectorView === 'notes'}
+          tabIndex={activeInspectorView === 'notes' ? 0 : -1}
+          title="Notes (Alt+N)"
+          onClick={() => {
+            inspectorViewTouchedRef.current = true;
+            setActiveInspectorView('notes');
+          }}
+          className={cn(
+            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            activeInspectorView === 'notes'
+              ? 'panel-tab-active'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          data-testid="page-context-tab-notes"
+        >
+          <MessageSquare size={13} />
+          Notes
           {openNotesCount > 0 && (
             <span className="tabular-nums text-xs text-muted-foreground">
               {openNotesCount}<span className="sr-only"> open {openNotesCount === 1 ? 'note' : 'notes'}</span>
@@ -1800,6 +1806,22 @@ export function ArticleRightPane({
           )}
         </button>
         </div>
+
+        {!isSheet && (
+          /* The pane's own width control, inside the tab row and at its right
+             edge (owner, 2026-11-19). It used to sit in a footer strip below
+             the scroller, which put it as far as possible from the tabs it
+             belongs with and made collapsing the pane a scroll away. */
+          <button
+            type="button"
+            onClick={handleCollapseSidebar}
+            className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Collapse page sidebar"
+            title="Collapse sidebar (.)"
+          >
+            <PanelRightClose size={15} aria-hidden="true" />
+          </button>
+        )}
 
         {isSheet && (
           <button
@@ -1851,7 +1873,6 @@ export function ArticleRightPane({
           activeInspectorView !== 'details' && 'hidden',
         )}
       >
-      {id && <ArticleAiPolicySection key={id} pageId={id} defaultOpen={false} />}
       {isNewPage ? (
         <div className="px-3 py-4">
           <h3 className="text-xs font-semibold text-foreground">New page draft</h3>
@@ -1898,24 +1919,12 @@ export function ArticleRightPane({
                       )}
                     </dd>
                   </div>
-                  <div className={detailRowClass}>
-                    <dt className="text-muted-foreground">Type</dt>
-                    <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                      {page.pageType === 'folder'
-                        ? <><FolderOpen size={13} className="text-muted-foreground" aria-hidden="true" /> Folder</>
-                        : <><FileText size={13} className="text-muted-foreground" aria-hidden="true" /> Article</>}
-                    </dd>
-                  </div>
                   {page.author && (
                     <div className={detailRowClass}>
                       <dt className="text-muted-foreground">Author</dt>
                       <dd className="min-w-0 break-words text-right font-medium text-foreground/85">{page.author}</dd>
                     </div>
                   )}
-                  <div className={detailRowClass}>
-                    <dt className="text-muted-foreground">Version</dt>
-                    <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
-                  </div>
                   {page.hasDraft && (
                     <div className={detailRowClass}>
                       <dt className="text-muted-foreground">Draft</dt>
@@ -1940,18 +1949,6 @@ export function ArticleRightPane({
                       </dd>
                     </div>
                   )}
-                  <div className={detailRowClass}>
-                    <dt className="text-muted-foreground">Version</dt>
-                    <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
-                  </div>
-                  <div className={detailRowClass}>
-                    <dt className="text-muted-foreground">Type</dt>
-                    <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                      {page.pageType === 'folder'
-                        ? <><FolderOpen size={13} className="text-muted-foreground" aria-hidden="true" /> Folder</>
-                        : <><FileText size={13} className="text-muted-foreground" aria-hidden="true" /> Article</>}
-                    </dd>
-                  </div>
                   {page.author && (
                     <div className={detailRowClass}>
                       <dt className="text-muted-foreground">Author</dt>
@@ -1963,7 +1960,20 @@ export function ArticleRightPane({
             </dl>
           </section>
 
-          <section className="mt-5" data-testid="document-health">
+          {/* Order is Source -> AI policy -> Document lifecycle -> Document
+              health (owner, 2026-11-19). Provenance leads, then the two
+              collapsible policy/state sections, then the readouts. AI policy
+              is mounted on capability rather than on the page read, so it
+              still reports its own permission loss when `page` is absent. */}
+          {id && (
+            <ArticleAiPolicySection key={id} pageId={id} defaultOpen={false} inset="none" />
+          )}
+
+          {id && (
+            <PageLifecycleSection pageId={id} page={page} defaultOpen={false} />
+          )}
+
+          <section className="border-t border-border/60 pt-3" data-testid="document-health">
             <h3 className="text-xs font-semibold text-foreground">Document health</h3>
             <div className="mt-1.5 flex items-start gap-2 text-xs font-medium text-foreground/85">
               {overallHealth.tone === 'active' ? (
@@ -2105,24 +2115,11 @@ export function ArticleRightPane({
               )}
             </div>
           </section>
-
-          {id && (
-            <PageLifecycleSection pageId={id} page={page} defaultOpen={frozen} />
-          )}
         </div>
-      ) : null}
-      {id && page && (
-        <div id="details-notes-section" className="px-3 pb-4" data-testid="details-notes-section">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-xs font-semibold text-foreground">Notes</h3>
-            {openNotesCount > 0 && (
-              <span className="text-xs font-medium text-muted-foreground tabular-nums">
-                {openNotesCount} open
-              </span>
-            )}
-          </div>
-          <NotesInspectorPanel pageId={id} className="max-h-[420px]" />
-        </div>
+      ) : (
+        // No page data yet (loading, or the read was denied). AI policy is the
+        // one Details section that reports its own state without the page row.
+        id ? <ArticleAiPolicySection key={id} pageId={id} defaultOpen={false} inset="none" /> : null
       )}
 
 
@@ -2203,20 +2200,29 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {/* Footer collapse toggle & resize handle — pinned to the right edge so the icon stays fixed when toggling */}
-      {!isSheet && (
-        <div className="panel-toolbar flex shrink-0 items-center justify-end border-t border-[var(--rail-divider)] py-1.5 pl-2 pr-1.5">
-          <button
-            type="button"
-            onClick={handleCollapseSidebar}
-            className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Collapse page sidebar"
-            title="Collapse sidebar (.)"
-          >
-            <PanelRightClose size={15} aria-hidden="true" />
-          </button>
-        </div>
+      {(notesMounted || activeInspectorView === 'notes') && (
+      <div
+        key={`notes-${id ?? 'new'}`}
+        id="page-context-panel-notes"
+        role="tabpanel"
+        aria-label="Notes"
+        hidden={activeInspectorView !== 'notes'}
+        className={cn(
+          'flex min-h-0 flex-1 flex-col overflow-hidden',
+          activeInspectorView !== 'notes' && 'hidden',
+        )}
+      >
+        {/* Notes are their own tab (owner, 2026-11-19) instead of the bottom of
+            a long Details column. The panel keeps its own filter header and
+            list scroller; the tab label and its open count are the heading, so
+            nothing repeats it above. Mounted lazily on first open and kept
+            mounted afterwards so a half-typed note or reply survives a tab
+            switch. */}
+        <NotesInspectorPanel pageId={id} className="h-full" />
+      </div>
       )}
+
+      {/* Resize handle — pinned to the left edge so the icon stays fixed when toggling. */}
       {!isSheet && (
         <div
           role="separator"

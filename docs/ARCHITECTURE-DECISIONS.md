@@ -1430,12 +1430,13 @@ load-bearing and were left alone:
   contrast, measured from the token file, and the only boundary that survives
   `forced-colors: active`.
 
-Two lines are kept for a mechanical reason rather than a compositional one, and
-both are **sticky headers over their own scroller**: `SettingsLayout`'s title
-strip and `Editor`'s fallback toolbar. Content passes *under* those, and both
-sides of the boundary are `bg-card`, so removing the line would let paragraphs
-slide into the chrome. `SettingsLayout` is why one `min-h-[calc(3rem-1px)]`
-remains in the codebase. The sidebar and conversation-pane **footers** keep their
+One line is kept for a mechanical reason rather than a compositional one, and
+it is **a sticky header over its own scroller**: `Editor`'s fallback toolbar.
+Content passes *under* it, and both sides of the boundary are `bg-card`, so
+removing the line would let paragraphs slide into the chrome. (`SettingsLayout`'s
+title strip was the second until 2026-11-19, when the settings page title moved
+into the left rail's panel band and the strip — and its `min-h-[calc(3rem-1px)]`
+— went with it.) The sidebar and conversation-pane **footers** keep their
 `border-t` for the same reason in the other direction: a scrolling list ends
 against them.
 

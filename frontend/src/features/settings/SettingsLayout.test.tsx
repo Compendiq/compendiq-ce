@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { SettingsLayout, SettingsIndexRedirect } from './SettingsLayout';
@@ -74,7 +74,7 @@ vi.mock('../../shared/lib/api', () => ({
  * Mounts the sidebar nav + the route shell so tests can assert on both
  * rail visibility (sidebar) and panel resolution (panel route).
  */
-function renderLayoutAt(url: string) {
+function renderLayoutAt(url: string, sidebarProps: { embedMainNav?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -82,7 +82,7 @@ function renderLayoutAt(url: string) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[url]}>
         <div className="flex">
-          <SettingsSidebar />
+          <SettingsSidebar {...sidebarProps} />
           <Routes>
             <Route path="/settings" element={<SettingsLayout />}>
               <Route index element={<SettingsIndexRedirect />} />
@@ -168,29 +168,32 @@ describe('SettingsSidebar — rail visibility', () => {
   });
 });
 
-describe('SettingsSidebar — always open on settings pages', () => {
-  it('does not render a collapse or expand control', async () => {
-    renderLayoutAt('/settings/personal/confluence');
+describe('SettingsSidebar — panel band and collapse', () => {
+  it('carries the panel band with the page title', async () => {
+    renderLayoutAt('/settings/personal/confluence', { embedMainNav: false });
 
     await waitFor(() => {
       expect(screen.getByRole('navigation', { name: /settings/i })).toBeInTheDocument();
     });
 
-    expect(screen.queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Expand sidebar' })).not.toBeInTheDocument();
+    const band = screen.getByRole('button', { name: 'Collapse sidebar' }).parentElement!;
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('border-b');
+    expect(within(band).getByTestId('sidebar-destination-title')).toHaveTextContent('Settings');
   });
 
-  it('stays open even when the shared collapsed flag is true', async () => {
+  it('follows the shared collapsed flag and keeps the toggle in the same band', async () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
 
     renderLayoutAt('/settings/personal/confluence');
 
-    await waitFor(() => {
-      expect(screen.getByRole('navigation', { name: /settings/i })).toBeInTheDocument();
-    });
-
-    expect(screen.getByTestId('nav-settings-confluence')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Expand sidebar' })).not.toBeInTheDocument();
+    const expand = await screen.findByRole('button', { name: 'Expand sidebar' });
+    const band = expand.parentElement!;
+    expect(band.className).toContain('h-9');
+    expect(band.className).toContain('px-2');
+    expect(band.className).toContain('border-b');
+    expect(screen.getByTestId('settings-sidebar').firstElementChild).toBe(band);
+    expect(screen.queryByRole('navigation', { name: /settings/i })).not.toBeInTheDocument();
   });
 });
 

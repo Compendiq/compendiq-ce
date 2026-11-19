@@ -4,12 +4,26 @@ import { useQueryClient } from '@tanstack/react-query';
 import { PageAiPolicyDetailFieldsSchema, PageAiPolicyResponseSchema, type AiPolicy } from '@compendiq/contracts';
 import { usePage } from '../../hooks/use-pages';
 import { apiFetch, ApiError } from '../../lib/api';
+import { cn } from '../../lib/cn';
 import { AI_POLICY_CHIP_LABEL, AI_POLICY_EXPLANATION, canShowPolicySelector, NO_AI_CONFIRMATION } from '../../lib/article-ai-policy';
 import { AiPolicyChip } from '../badges/AiPolicyChips';
 import { ConfirmDialog } from '../ConfirmDialog';
 
 /** Mounted in Details, independently of whether the article read has succeeded. */
-export function ArticleAiPolicySection({ pageId, defaultOpen = true }: { pageId: string; defaultOpen?: boolean }) {
+export function ArticleAiPolicySection({
+  pageId,
+  defaultOpen = true,
+  inset = 'pane',
+}: {
+  pageId: string;
+  defaultOpen?: boolean;
+  /**
+   * `pane` carries its own horizontal inset (standalone use); `none` is for a
+   * parent that already applies `px-3`, so the section's heading lines up with
+   * the Source section above it instead of sitting 12px further in.
+   */
+  inset?: 'pane' | 'none';
+}) {
   const query = usePage(pageId);
   const qc = useQueryClient();
   const [draft, setDraft] = useState<AiPolicy | null>(null);
@@ -65,7 +79,7 @@ export function ArticleAiPolicySection({ pageId, defaultOpen = true }: { pageId:
     if (!result.isError) { setConflict(false); setDenied(false); setNotice('Current policy refreshed. Review your selection before saving.'); }
   }
 
-  return <details open={defaultOpen} className="group border-b border-border/60 px-3 py-2.5 text-xs" aria-label="Article AI policy" aria-busy={pending || query.isFetching}>
+  return <details open={defaultOpen} className={cn('group border-t border-border/60 py-2.5 text-xs', inset === 'pane' && 'px-3')} aria-label="Article AI policy" aria-busy={pending || query.isFetching}>
     <summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-0.5 font-semibold text-foreground marker:content-none [&::-webkit-details-marker]:hidden">
       <span className="inline-flex items-center gap-1.5">
         <ChevronRight size={13} className="shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
