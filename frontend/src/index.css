@@ -1846,6 +1846,22 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   &:focus-visible {
     outline-color: var(--color-ring);
   }
+
+  /* In Windows High Contrast / forced colors the UA paints a transparent
+     outline in a system colour, so the resting `2px solid transparent` above
+     draws a permanent box around every target — including non-interactive
+     programmatic focus targets such as the article title and section regions
+     (#2047). Drop the resting outline there, and paint the real ring only for
+     keyboard focus, using the system colour that tracks the forced palette. */
+  @media (forced-colors: active) {
+    &:not(:focus-visible) {
+      outline: none;
+    }
+
+    &:focus-visible {
+      outline: 2px solid CanvasText;
+    }
+  }
 }
 
 @utility nm-icon-button {

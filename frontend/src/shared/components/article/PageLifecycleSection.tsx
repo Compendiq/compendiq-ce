@@ -113,9 +113,9 @@ export function PageLifecycleSection({ pageId, page, defaultOpen = true }: PageL
 
   return (
     <details open={defaultOpen} className="group border-t border-border/60 py-3" data-testid="document-lifecycle">
-      {/* A programmatic focus target, not a control: no outline at rest. The
-          shared `nm-focus-ring` keeps a transparent outline at rest, which
-          forced-colors mode paints as a permanent box around this heading. */}
+      {/* A programmatic focus target, not a control: no outline at rest.
+          `nm-focus-ring` now removes its resting outline under forced colors
+          and keeps the ring for :focus-visible (#2047). */}
       <summary
         className="flex cursor-pointer list-none items-center justify-between gap-2 py-0.5 text-xs font-semibold text-foreground marker:content-none [&::-webkit-details-marker]:hidden"
       >

@@ -644,6 +644,89 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     expect(runtimeA!.getRoom(pageId)?.sockets.get('active-editor')?.writable).toBe(true);
   });
 
+  it('refuses a freeze while writers are admitted in two runtimes, then publishes once they leave', async () => {
+    const pageId = nextPageId();
+    await setPageBaselineCreationEnabled(SYSTEM_ADMIN, true);
+    const prepared = await previewPageBaseline(pageId, SYSTEM_ADMIN);
+    await runtimeA!.attachSocket(pageId, {
+      id: 'pod-a-editor',
+      ws: stubWs(),
+      userId: USER_A,
+      writable: true,
+    });
+    await runtimeB!.attachSocket(pageId, {
+      id: 'pod-b-editor',
+      ws: stubWs(),
+      userId: USER_B,
+      writable: true,
+    });
+    const roomA = runtimeA!.getRoom(pageId)!;
+    roomA.doc.getText('unsaved').insert(0, 'two pods, one page');
+    // Both runtimes hold their own durable admission: runtimeB's join is not
+    // inferred from runtimeA's.
+    const admitted = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM page_runtime_admissions
+        WHERE page_id = $1 AND released_at IS NULL`,
+      [pageId],
+    );
+    expect(admitted.rows[0]?.count).toBe('2');
+
+    // Two writable room admissions — the state the #277 browser run had — are
+    // not a reason to commit over them. The freeze refuses and nothing is
+    // published (#325, enforcing the #279 shared decision).
+    await expect(freezePage({
+      pageId,
+      actorId: SYSTEM_ADMIN,
+      reason: 'This publication must wait for both admitted editors',
+      expectedContentRevision: prepared.contentRevision,
+      expectedManifestDigest: prepared.manifestDigest,
+    })).rejects.toMatchObject({ statusCode: 409, reason: 'freeze_busy' });
+    const refused = await query<{ baseline_id: string | null; freeze_provenance: string | null }>(
+      'SELECT baseline_id::text AS baseline_id, freeze_provenance FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(refused.rows[0]).toEqual({ baseline_id: null, freeze_provenance: null });
+    expect(roomA.doc.getText('unsaved').toString()).toBe('two pods, one page');
+    expect(runtimeA!.getRoom(pageId)?.sockets.get('pod-a-editor')?.writable).toBe(true);
+    expect(runtimeB!.getRoom(pageId)?.sockets.get('pod-b-editor')?.writable).toBe(true);
+
+    // One writer leaving does not release the other's admission: the second
+    // pod alone still refuses the freeze.
+    await runtimeA!.detachSocket(pageId, 'pod-a-editor');
+    await expect(freezePage({
+      pageId,
+      actorId: SYSTEM_ADMIN,
+      reason: 'The second pod still has an admitted editor',
+      expectedContentRevision: prepared.contentRevision,
+      expectedManifestDigest: prepared.manifestDigest,
+    })).rejects.toMatchObject({ statusCode: 409, reason: 'freeze_busy' });
+    const stillOpen = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM page_runtime_admissions
+        WHERE page_id = $1 AND released_at IS NULL`,
+      [pageId],
+    );
+    expect(stillOpen.rows[0]?.count).toBe('1');
+
+    // The admission, not a transient failure, was the blocker: once both
+    // writers leave and their final flush releases the admissions, the same
+    // freeze succeeds.
+    await runtimeB!.detachSocket(pageId, 'pod-b-editor');
+    const afterLeave = await previewPageBaseline(pageId, SYSTEM_ADMIN);
+    await freezePage({
+      pageId,
+      actorId: SYSTEM_ADMIN,
+      reason: 'Both editors saved and closed',
+      expectedContentRevision: afterLeave.contentRevision,
+      expectedManifestDigest: afterLeave.manifestDigest,
+    });
+    const frozen = await query<{ baseline_id: string | null; freeze_provenance: string | null }>(
+      'SELECT baseline_id::text AS baseline_id, freeze_provenance FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(frozen.rows[0]!.baseline_id).not.toBeNull();
+    expect(frozen.rows[0]!.freeze_provenance).toBe('manual_assertion');
+  });
+
   it('missing expected lifecycle revision keeps an otherwise editable join read-only', async () => {
     const pageId = nextPageId();
     const sent: Uint8Array[] = [];
