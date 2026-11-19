@@ -145,9 +145,9 @@ export function LibraryFilterDropdown({
             aria-expanded={open}
             aria-controls={open && testId ? `${testId}-options` : undefined}
             className={cn(
-              'flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-[var(--surface-input)] px-3 py-1.5 text-xs text-foreground outline-none transition-colors hover:border-border-interactive hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring',
-              isSelected && 'font-medium text-foreground',
-              open && 'border-border-interactive bg-accent/30',
+              'nm-focus-ring flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-border-interactive bg-[var(--workspace-card-bg)] px-2.5 py-1 text-[0.8125rem] leading-none text-foreground outline-none transition-colors hover:bg-accent/40',
+              isSelected && 'border-action/60 font-medium text-foreground',
+              open && 'border-action bg-accent/30',
             )}
           >
             <span className={cn('truncate text-left', !isSelected && 'text-muted-foreground')}>

@@ -809,7 +809,13 @@ export function PagesPage() {
     () => activeFilters.filter((f) => f.key !== 'space' && f.key !== 'aiPolicy'),
     [activeFilters],
   );
-  const advancedFilterCount = ignoredFilters.length;
+  const pausedFilterCount = ignoredFilters.length;
+  // Every active filter that lives inside the collapsible Filters panel
+  // (everything except Space, which has its own trigger on the search bar).
+  const panelFilterCount = useMemo(
+    () => activeFilters.filter((f) => f.key !== 'space').length,
+    [activeFilters],
+  );
 
   // Single source of truth for the #945 honesty notice, read by both the
   // visible <p> and the sr-only live-region announcer below it — computed
@@ -825,16 +831,16 @@ export function PagesPage() {
     setFilters({ mode: 'keyword', page: 1 });
   }, [setFilters]);
 
-  const filterStatus = advancedFilterCount === 0
+  const filterStatus = panelFilterCount === 0
     ? ''
-    : (searchMode === 'keyword'
-        ? `${advancedFilterCount} active`
-        : (hasActiveQuery ? `${advancedFilterCount} paused` : `${advancedFilterCount} Keyword-only`));
+    : (searchMode === 'keyword' || pausedFilterCount === 0
+        ? `${panelFilterCount} active`
+        : (hasActiveQuery ? `${pausedFilterCount} paused` : `${pausedFilterCount} Keyword-only`));
 
   const clearIgnoredFilters = useCallback(() => {
     setFilters({
       author: '', labels: '', freshness: '', embedding: '', quality: '',
-      from: '', to: '', source: '', aiPolicy: '', page: 1,
+      from: '', to: '', source: '', page: 1,
     });
   }, [setFilters]);
 
@@ -1395,8 +1401,8 @@ export function PagesPage() {
               onClick={() => setShowAdvancedFilters((v) => !v)}
               className={cn(
                 'library-search-select flex h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2.5 sm:text-xs',
-                (showAdvancedFilters || advancedFilterCount > 0) && 'bg-accent text-foreground',
-                hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && 'text-warning',
+                (showAdvancedFilters || panelFilterCount > 0) && 'bg-accent text-foreground',
+                hasActiveQuery && searchMode !== 'keyword' && pausedFilterCount > 0 && 'text-warning',
               )}
               data-testid="advanced-filters-toggle"
               aria-label={filterStatus ? `Filters, ${filterStatus}` : 'Filters'}
@@ -1454,33 +1460,19 @@ export function PagesPage() {
           </div>
         )}
 
-        {/* Advanced filters panel */}
+        {/* Advanced filters panel — aligned 3-column grid across three
+            semantic groups (Content, Pipeline & AI, Modified) so every column
+            edge lines up and the date range stays paired on one row. */}
         {showAdvancedFilters && (
           <div
             id="advanced-filters-panel"
-            className="rounded-xl border border-border bg-card p-4 sm:p-5"
+            className="rounded-xl border border-border bg-card p-3.5"
             data-testid="advanced-filters-panel"
           >
-            <div className="mb-4 flex min-h-8 flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">Refine results</h3>
-                <p className="text-xs text-muted-foreground">
-                  {advancedFilterCount > 0
-                    ? (searchMode === 'keyword' || !hasActiveQuery
-                        ? `${advancedFilterCount} active`
-                        : `${advancedFilterCount} paused`)
-                    : 'Advanced filters apply to Keyword search'}
-                </p>
-              </div>
-              {advancedFilterCount > 0 && (
-                <button type="button" onClick={clearIgnoredFilters} className="nm-button-ghost h-7 px-2.5 text-xs">
-                  Clear filters
-                </button>
-              )}
-            </div>
+            <h3 className="sr-only">Refine results</h3>
 
-            {!hasActiveQuery && searchMode !== 'keyword' && advancedFilterCount > 0 && (
-              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
+            {!hasActiveQuery && searchMode !== 'keyword' && pausedFilterCount > 0 && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-2.5 py-1.5 text-xs text-muted-foreground" data-testid="filters-keyword-preview-note">
                 <span>These filters apply while browsing and will pause when {SEARCH_MODE_LABELS[searchMode]} search starts.</span>
                 <button type="button" onClick={useKeywordWithFilters} className="nm-button-ghost h-7 px-2 text-xs">
                   Keep them active with Keyword
@@ -1488,32 +1480,35 @@ export function PagesPage() {
               </div>
             )}
 
-            {/* 2-row spacious filter grid with generous horizontal padding & space */}
-            <div className="space-y-4">
-              <fieldset className="space-y-2">
+            <div className="space-y-3">
+              <fieldset className="space-y-1.5">
                 <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   Content
                 </legend>
-                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-3">
-                  {/* Row 1: Source, Author, Label */}
-                  <div className="min-w-0">
-                    <label htmlFor="filter-source-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                      Source
-                    </label>
-                    <LibraryFilterDropdown
-                      id="filter-source-select"
-                      label="Source"
-                      ariaLabel="Filter by source"
-                      value={sourceFilter}
-                      options={SOURCE_OPTIONS}
-                      onChange={(val) => setFilters({ source: val as PageSource | '', page: 1 })}
-                      placeholder="All sources"
-                      testId="filter-source"
-                    />
-                  </div>
+                <div className={cn(
+                  'grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2',
+                  !confluenceOff && 'lg:grid-cols-3',
+                )}>
+                  {!confluenceOff && (
+                    <div className="min-w-0">
+                      <label htmlFor="filter-source-select" className="mb-1 block text-xs font-medium text-muted-foreground">
+                        Source
+                      </label>
+                      <LibraryFilterDropdown
+                        id="filter-source-select"
+                        label="Source"
+                        ariaLabel="Filter by source"
+                        value={sourceFilter}
+                        options={SOURCE_OPTIONS}
+                        onChange={(val) => setFilters({ source: val as PageSource | '', page: 1 })}
+                        placeholder="All sources"
+                        testId="filter-source"
+                      />
+                    </div>
+                  )}
 
                   <div className="min-w-0">
-                    <label htmlFor="filter-author-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                    <label htmlFor="filter-author-select" className="mb-1 block text-xs font-medium text-muted-foreground">
                       Author
                     </label>
                     <LibraryFilterDropdown
@@ -1529,7 +1524,7 @@ export function PagesPage() {
                   </div>
 
                   <div className="min-w-0">
-                    <label htmlFor="filter-labels-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                    <label htmlFor="filter-labels-select" className="mb-1 block text-xs font-medium text-muted-foreground">
                       Label
                     </label>
                     <LibraryFilterDropdown
@@ -1546,29 +1541,13 @@ export function PagesPage() {
                 </div>
               </fieldset>
 
-              <fieldset className="space-y-2">
+              <fieldset className="space-y-1.5">
                 <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Status &amp; date
+                  Pipeline &amp; AI
                 </legend>
-                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-5">
-                  {/* Row 2: Freshness, Quality, Embedding, From, To */}
+                <div className="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3">
                   <div className="min-w-0">
-                    <label htmlFor="filter-freshness-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                      Freshness
-                    </label>
-                    <LibraryFilterDropdown
-                      id="filter-freshness-select"
-                      label="Freshness"
-                      value={freshness}
-                      options={FRESHNESS_OPTIONS}
-                      onChange={(val) => setFilters({ freshness: val, page: 1 })}
-                      placeholder="Any"
-                      testId="filter-freshness"
-                    />
-                  </div>
-
-                  <div className="min-w-0">
-                    <label htmlFor="filter-quality-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                    <label htmlFor="filter-quality-select" className="mb-1 block text-xs font-medium text-muted-foreground">
                       Quality
                     </label>
                     <LibraryFilterDropdown
@@ -1583,7 +1562,7 @@ export function PagesPage() {
                   </div>
 
                   <div className="min-w-0">
-                    <label htmlFor="filter-embedding-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                    <label htmlFor="filter-embedding-select" className="mb-1 block text-xs font-medium text-muted-foreground">
                       Embedding
                     </label>
                     <LibraryFilterDropdown
@@ -1598,7 +1577,7 @@ export function PagesPage() {
                   </div>
 
                   <div className="min-w-0">
-                    <label htmlFor="filter-ai-policy-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                    <label htmlFor="filter-ai-policy-select" className="mb-1 block text-xs font-medium text-muted-foreground">
                       AI policy
                     </label>
                     {/* #283. "All articles" is no filter. The policy restricts
@@ -1616,9 +1595,31 @@ export function PagesPage() {
                       testId="filter-ai-policy"
                     />
                   </div>
+                </div>
+              </fieldset>
+
+              <fieldset className="space-y-1.5">
+                <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Modified
+                </legend>
+                <div className="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="min-w-0">
+                    <label htmlFor="filter-freshness-select" className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Freshness
+                    </label>
+                    <LibraryFilterDropdown
+                      id="filter-freshness-select"
+                      label="Freshness"
+                      value={freshness}
+                      options={FRESHNESS_OPTIONS}
+                      onChange={(val) => setFilters({ freshness: val, page: 1 })}
+                      placeholder="Any"
+                      testId="filter-freshness"
+                    />
+                  </div>
 
                   <div className="min-w-0">
-                    <label htmlFor="filter-date-from-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                    <label htmlFor="filter-date-from-input" className="mb-1 block text-xs font-medium text-muted-foreground">
                       Modified from
                     </label>
                     <input
@@ -1627,14 +1628,17 @@ export function PagesPage() {
                       value={dateFromInput}
                       max={dateToInput || undefined}
                       onChange={(e) => setDateFromInput(e.target.value)}
-                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      className={cn(
+                        'nm-input h-8 w-full px-2.5 py-1 text-[0.8125rem]',
+                        dateFromInput && 'border-action/60 font-medium',
+                      )}
                       data-testid="filter-date-from"
                       aria-label="Modified from"
                     />
                   </div>
 
                   <div className="min-w-0">
-                    <label htmlFor="filter-date-to-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                    <label htmlFor="filter-date-to-input" className="mb-1 block text-xs font-medium text-muted-foreground">
                       Modified to
                     </label>
                     <input
@@ -1643,7 +1647,10 @@ export function PagesPage() {
                       value={dateToInput}
                       min={dateFromInput || undefined}
                       onChange={(e) => setDateToInput(e.target.value)}
-                      className="nm-input h-9 w-full px-3 py-1.5 text-xs"
+                      className={cn(
+                        'nm-input h-8 w-full px-2.5 py-1 text-[0.8125rem]',
+                        dateToInput && 'border-action/60 font-medium',
+                      )}
                       data-testid="filter-date-to"
                       aria-label="Modified to"
                     />

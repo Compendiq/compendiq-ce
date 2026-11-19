@@ -1884,14 +1884,53 @@ describe('PagesPage', () => {
 
   // --- Grid layout test ---
 
-  it('groups advanced filters into a compact, named refinement tray', () => {
+  it('groups advanced filters into three aligned 3-column groups without duplicate clear chrome', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const panel = screen.getByTestId('advanced-filters-panel');
     expect(screen.getByRole('heading', { name: 'Refine results' })).toBeInTheDocument();
     expect(panel.querySelector('.grid')).not.toBeNull();
     expect(screen.getByRole('group', { name: 'Content' })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Status & date' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Pipeline & AI' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Modified' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
+  });
+
+  it('counts AI policy in the Filters toggle badge as active without pausing it in Hybrid/Semantic search', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    chooseFilter('filter-ai-policy', 'local_only');
+
+    expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 active');
+    expect(screen.queryByTestId('filters-keyword-preview-note')).not.toBeInTheDocument();
+
+    // Clearing paused filters during semantic search keeps AI policy intact alongside Space.
+    chooseFilter('filter-freshness', 'stale');
+    fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
+    fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+    fireEvent.click(await screen.findByTestId('clear-paused-filters'));
+
+    expect(screen.getByTestId('filter-pill-aiPolicy')).toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 active');
+  });
+
+  it('hides the Source filter in standalone mode when Confluence is disabled', async () => {
+    mockFetchWithPages(mockPagesResponse, {
+      confluenceEnabled: false,
+      hasConfluencePat: false,
+      selectedSpaces: [],
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('filter-source-control')).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('filter-author-control')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-labels-control')).toBeInTheDocument();
   });
 
   // --- Accessibility: filter pills as focusable buttons ---
