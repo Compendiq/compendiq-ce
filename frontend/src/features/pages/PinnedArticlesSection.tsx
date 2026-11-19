@@ -77,7 +77,7 @@ export function PinnedArticlesSection() {
       tabIndex={-1}
       aria-labelledby="pinned-pages-heading"
       data-testid="pinned-articles-section"
-      className="border-y border-border py-2"
+      className="border-b border-border pb-2"
     >
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 px-1">
         <span className="flex size-6 items-center justify-center text-muted-foreground">
