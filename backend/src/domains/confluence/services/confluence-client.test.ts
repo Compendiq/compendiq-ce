@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock undici request
-vi.mock('undici', () => ({
+vi.mock('undici', async (importOriginal) => ({
+  ...await importOriginal<typeof import('undici')>(),
   request: vi.fn(),
 }));
 
@@ -26,13 +27,17 @@ vi.mock('../../../core/utils/tls-config.js', () => ({
   isVerifySslEnabled: vi.fn().mockReturnValue(true),
 }));
 
-import { request } from 'undici';
+import { errors, request } from 'undici';
 import { ConfluenceClient, ConfluenceError, isTransientError, parseRetryAfter, withRetry, buildDownloadUrl, buildDownloadUrlCandidates } from './confluence-client.js';
 import * as tlsConfig from '../../../core/utils/tls-config.js';
 import { logger } from '../../../core/utils/logger.js';
 import { resetRateLimiter } from './confluence-rate-limiter.js';
 
 const mockRequest = vi.mocked(request);
+
+function connectTimeout() {
+  return new errors.ConnectTimeoutError('Connect Timeout Error (attempted address: confluence.example:443, timeout: 10000ms)');
+}
 
 describe('ConfluenceClient', () => {
   const baseUrl = 'https://confluence.example.com';
@@ -987,7 +992,7 @@ describe('ConfluenceClient', () => {
       mockRequest.mockImplementation(async () => {
         callCount++;
         if (callCount === 1) {
-          throw new Error('UND_ERR_CONNECT_TIMEOUT');
+          throw connectTimeout();
         }
         return {
           statusCode: 200,
@@ -1088,7 +1093,7 @@ describe('ConfluenceClient', () => {
     /** How the fake answers a failing request; `landed` = it applied the request first. */
     type Failure = { label: string; landed: boolean } & (
       | { statusCode: number }
-      | { code: string; message: string }
+      | { error: Error }
     );
     const RATE_LIMITED: Failure = { label: 'HTTP 429', statusCode: 429, landed: false };
     /** Failures after which a mutation's outcome is unknown. */
@@ -1096,10 +1101,13 @@ describe('ConfluenceClient', () => {
       { label: 'HTTP 502', statusCode: 502, landed: true },
       { label: 'HTTP 503', statusCode: 503, landed: true },
       { label: 'HTTP 504', statusCode: 504, landed: true },
-      { label: 'ECONNRESET', code: 'ECONNRESET', message: 'read ECONNRESET', landed: true },
-      { label: 'ETIMEDOUT', code: 'ETIMEDOUT', message: 'read ETIMEDOUT', landed: true },
-      // Message is synthetic: undici's ConnectTimeoutError carries this code but message 'Connect Timeout Error …'; see isTransientError message match
-      { label: 'UND_ERR_CONNECT_TIMEOUT', code: 'UND_ERR_CONNECT_TIMEOUT', message: 'UND_ERR_CONNECT_TIMEOUT', landed: false },
+      { label: 'ECONNRESET', error: Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }), landed: true },
+      { label: 'ETIMEDOUT', error: Object.assign(new Error('operation timed out'), { code: 'ETIMEDOUT' }), landed: true },
+      { label: 'UND_ERR_CONNECT_TIMEOUT', error: connectTimeout(), landed: false },
+      { label: 'UND_ERR_SOCKET', error: new errors.SocketError('other side closed'), landed: true },
+      { label: 'ECONNREFUSED', error: new TypeError('fetch failed', {
+        cause: new AggregateError([Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' })]),
+      }), landed: false },
     ];
 
     const MUTATIONS = [
@@ -1205,8 +1213,8 @@ describe('ConfluenceClient', () => {
           answer = apply(method, path, body);
         } else {
           if (failure.landed) apply(method, path, body);
-          if ('code' in failure) {
-            const error = Object.assign(new Error(failure.message), { code: failure.code });
+          if ('error' in failure) {
+            const error = failure.error;
             thrown.push(error);
             throw error;
           }
@@ -1316,12 +1324,12 @@ describe('ConfluenceClient', () => {
       ];
       const RETRIED_FOR_SAFE_METHODS = {
         'HTTP 429': true, 'HTTP 502': true, 'HTTP 503': true, 'HTTP 504': true,
-        ECONNRESET: true, ETIMEDOUT: true, UND_ERR_CONNECT_TIMEOUT: true,
+        ECONNRESET: true, ETIMEDOUT: true, UND_ERR_CONNECT_TIMEOUT: true, UND_ERR_SOCKET: true, ECONNREFUSED: true,
         'HTTP 400': false, 'HTTP 500': false,
       };
       const RETRIED_FOR_MUTATIONS = {
         'HTTP 429': true, 'HTTP 502': false, 'HTTP 503': false, 'HTTP 504': false,
-        ECONNRESET: false, ETIMEDOUT: false, UND_ERR_CONNECT_TIMEOUT: false,
+        ECONNRESET: false, ETIMEDOUT: false, UND_ERR_CONNECT_TIMEOUT: false, UND_ERR_SOCKET: false, ECONNREFUSED: false,
         'HTTP 400': false, 'HTTP 500': false,
       };
 
@@ -1337,7 +1345,7 @@ describe('ConfluenceClient', () => {
           isTransientError(
             'statusCode' in failure
               ? new ConfluenceError(`HTTP ${failure.statusCode}`, failure.statusCode)
-              : Object.assign(new Error(failure.message), { code: failure.code }),
+              : failure.error,
             method,
           ),
         ]);
@@ -1789,7 +1797,7 @@ describe('isTransientError', () => {
   });
 
   it('should return true for UND_ERR_CONNECT_TIMEOUT error', () => {
-    expect(isTransientError(new Error('UND_ERR_CONNECT_TIMEOUT'))).toBe(true);
+    expect(isTransientError(connectTimeout())).toBe(true);
   });
 
   it('should return false for generic Error', () => {

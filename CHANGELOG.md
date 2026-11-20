@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Confluence reader removals propagate without a page edit (#1919).** With Enterprise per-page RAG permission enforcement enabled, sync periodically re-reads restrictions on already restricted pages. Successful reads remove stale grants from page views, search and RAG, and failed reads preserve the last mirror. The default interval is 24 hours, configurable with `RESTRICTION_REFRESH_INTERVAL_HOURS`.
 
+- Manual-review sync conflicts now retain the incoming Confluence title with each queued version (#1917). Displaying and applying that title requires Enterprise resolver support (Compendiq/compendiq-ee#315).
+
 - **Forced-colors mode no longer draws a permanent focus box on non-interactive targets (#2047).** `nm-focus-ring` set `outline: 2px solid transparent` at rest and coloured it only on `:focus-visible`; Windows High Contrast / `forced-colors: active` repaints transparent outlines in a system colour, so headings, regions and paragraphs that receive programmatic focus (`tabIndex={-1}`, e.g. the article title) showed a stray outline at rest. The utility now removes its resting outline under `forced-colors` and paints a `2px` `CanvasText` ring on `:focus-visible`, so keyboard focus stays visible on every target while nothing is outlined at rest. Paper and Graphite are unchanged.
 
 ## [0.10.0] - 2026-11-19

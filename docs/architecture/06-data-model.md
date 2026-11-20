@@ -27,6 +27,7 @@ erDiagram
     users o|--o{ page_baseline_feature_state : "activates; SET NULL"
     users o|--o{ page_governance_policies : "updates; SET NULL"
 
+    pages ||--o{ pending_sync_versions : "queues incoming versions for manual review"
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
     pages ||--o{ page_image_analyses : "#1615 (ADR-027, migration 115): one analysis row per referenced image; its text becomes derived page_embeddings rows (writer: #1616)"
@@ -148,6 +149,18 @@ erDiagram
         int version "persistence generation NOT pages.version"
         timestamptz created_at
         timestamptz updated_at
+    }
+
+    pending_sync_versions {
+        uuid id PK
+        int page_id FK
+        int confluence_version
+        text title "incoming Confluence title, NULL for rows predating migration 155"
+        text body_storage
+        text body_html
+        text body_text
+        uuid sync_run_id
+        timestamptz detected_at
     }
 
     page_versions {

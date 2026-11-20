@@ -146,8 +146,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
   }
 
   async function pendingOf(id: number) {
-    return (await query<{ confluence_version: number; body_storage: string; body_html: string; sync_run_id: string }>(
-      `SELECT confluence_version, body_storage, body_html, sync_run_id FROM pending_sync_versions
+    return (await query<{ title: string | null; confluence_version: number; body_storage: string; body_html: string; sync_run_id: string }>(
+      `SELECT title, confluence_version, body_storage, body_html, sync_run_id FROM pending_sync_versions
         WHERE page_id = $1 ORDER BY detected_at, id`,
       [id],
     )).rows;
@@ -272,8 +272,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     const yQueue = await pendingOf(yId);
     // The scheduler queues an upstream-unchanged page with a local edit too;
     // the route reproduces that decision rather than inventing a second rule.
-    expect(xQueue).toEqual([expect.objectContaining({ confluence_version: 5, body_storage: X.base, body_html: X.base })]);
-    expect(yQueue).toEqual([expect.objectContaining({ confluence_version: 7, body_storage: Y.upstream, body_html: Y.upstream })]);
+    expect(xQueue).toEqual([expect.objectContaining({ title: X.title, confluence_version: 5, body_storage: X.base, body_html: X.base })]);
+    expect(yQueue).toEqual([expect.objectContaining({ title: Y.title, confluence_version: 7, body_storage: Y.upstream, body_html: Y.upstream })]);
     const runId = xQueue[0]!.sync_run_id;
     expect(yQueue[0]!.sync_run_id).toBe(runId);
     for (const id of [xId, yId]) {
