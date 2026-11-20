@@ -703,16 +703,6 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     strictProviderVersion = 5;
     if (lazy) historicalStorage = storage;
 
-    if (!lazy) {
-      const stale = await app.inject({
-        method: 'POST',
-        url: `/api/pages/${pageId}/versions/4/restore`,
-        headers: { 'x-test-user': userId },
-        payload: { version: 5 },
-      });
-      expect(stale.statusCode).toBe(409);
-      expect(confluenceRequests).toEqual([]);
-    }
     const response = await app.inject({
       method: 'POST',
       url: `/api/pages/${pageId}/versions/4/restore`,
@@ -742,6 +732,28 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       status: 'completed',
       digest: confluencePagePutDigest({ pageId, confluenceId, title, bodyStorage: storage, expectedRemoteVersion: 5 }),
     }]);
+  });
+
+  it('uses the local revision to reject a stale Confluence restore before the provider PUT', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence', confluenceId: 'restore-stale-local', spaceKey: 'OPS', visibility: 'shared',
+      ownerId: null, version: 6, title: 'Current roadmap',
+    });
+    await query('UPDATE pages SET remote_version = 5 WHERE id = $1', [pageId]);
+    await seedVersion(pageId, 4, 'Earlier roadmap', '<p>Historical body</p>', 'Historical body');
+
+    const stale = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/4/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 5 },
+    });
+
+    expect(stale.statusCode).toBe(409);
+    expect(confluenceRequests).toEqual([]);
+    expect((await query('SELECT version, remote_version FROM pages WHERE id = $1', [pageId])).rows)
+      .toEqual([{ version: 6, remote_version: 5 }]);
   });
 
   it('refuses a history row that changed while a placeholder restore waited for admission', async () => {
