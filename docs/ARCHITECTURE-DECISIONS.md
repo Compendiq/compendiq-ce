@@ -2878,29 +2878,25 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 - If the page has its own non-empty `read` restriction: its user + group lists are the effective set. Ancestors are NOT consulted (own overrides inherited — matches Confluence's own precedence).
 - If the page has no own `read` restriction: walk `getPageAncestors(pageId)` immediate-parent-first; the first ancestor with a non-empty `read` restriction contributes its list as the effective set. Cache ancestor restrictions within the sync run to avoid refetching a shared ancestor across sibling pages.
 - Persist the effective set as `(resource_type='page', principal_type='user'|'group', permission='read', source='confluence', synced_at=<run start>)` rows. UPSERT on the existing uniqueness constraint so re-syncs refresh `synced_at`.
-- After all pages are processed, sweep: `DELETE FROM access_control_entries WHERE source='confluence' AND synced_at < <run start>`. Rows that were not refreshed are gone (restriction removed in Confluence, or a specific user was de-listed). `source='local'` rows are never touched.
+- At the end of the run, sweep Confluence ACEs omitted by a confirmed restriction mirror. Local ACEs are outside the sweep.
 - A Confluence `userKey` that has no matching Compendiq user (no OIDC login yet) is skipped with an `ACE_SYNC_SKIPPED_UNMAPPED_USER` audit event. Safe default: implicit deny — the ACE never materialises, so `userCanAccessPage` will not grant read.
 
-> **Amended (#859, #1771):** the sweep is scoped to the spaces the run
-> synced (#859) and, within them, to pages whose restrictions the run
-> re-read — `pages.restrictions_synced_at >= <run start>`, stamped by the
-> write that mirrors the page. An incremental run walks only modified pages,
-> so the unscoped sweep deleted every unmodified restricted page's entries
-> (#1771). Rows on pages a run does not re-read keep their last mirror; a
-> de-listed principal is removed on the next run that re-reads the page —
-> the sweep also runs when the run's walk throws, so only a process crash,
-> or a failure of the sweep itself, between the re-read and the sweep defers
-> it to the next re-read.
+> **Amended (#859, #1771):** the sweep is scoped to the run's spaces, and
+> keeps ACEs from each page's last confirmed mirror. An incremental content
+> walk visits only modified pages, so using the run start to age out ACEs
+> indiscriminately deleted the grants on unchanged restricted pages. The
+> sweep still runs when a space walk throws.
 
-> **Amended (#1919):** after the content walk, each flagged sync selects at
-> most 100 overdue, live Confluence pages already marked restricted across
-> its spaces. The periodic pass bypasses the audit fast path and requires a
-> successful restriction response, including for ancestors. A failed read
-> preserves the mirror and advances only the retry clock in
-> `pages.restrictions_refresh_failed_at` (migration 158). The pass stamps
-> successful mirrors with a cutoff later than the content walk, so any ACEs
-> bumped by an earlier audit skip can still be swept. The sweep compares
-> each ACE to its page's mirror stamp within the existing run and space scope.
+> **Amended (#1919):** each flagged sync selects at most 100 overdue, live
+> Confluence pages already marked restricted across its successfully walked
+> spaces. The periodic pass bypasses the audit fast path and requires a
+> successful restriction response, including for ancestors. Migration 156
+> records retry delays by sync user and page. A failed read preserves the
+> mirror and defers that user's next attempt. The sweep compares Confluence
+> ACEs against each page's last confirmed mirror within the run's spaces.
+> A later sweep can finish an incomplete one without another restriction
+> fetch. An audit skip or a failed read only touches confirmed ACEs, leaving
+> any omitted entries eligible for cleanup.
 
 **Query-time contract (`backend/src/domains/llm/services/rag-service.ts`):**
 - Overfetch compensation: when the flag is on, both the vector-search and keyword-search stages pull `ceil(topK * 1.5)` candidates instead of `topK`. The post-filter needs headroom because any given page can be filtered out.
@@ -2969,7 +2965,7 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 **Consequences:**
 - EE deployments with the flag on: sync runs take longer (proportional to restricted-page count), and RAG respects Confluence's per-page visibility.
 - CE deployments and EE without the flag: zero behaviour change. The Confluence client methods, the post-filter branch, and the 1.5x overfetch bump are all gated by `isFeatureEnabled('rag_permission_enforcement')`.
-- Changes on already restricted pages propagate on the next successful mirror and sweep, including when the page is unedited. *(Amended #1919.)* With readable restrictions and enough capacity under the cap, the bound is `RESTRICTION_REFRESH_INTERVAL_HOURS` (default 24 h) plus `SYNC_INTERVAL_MIN` (default 15 min), including recovery from an earlier failed sweep. New restrictions on previously unrestricted pages still depend on the normal content walk. See the ADMIN-GUIDE for backlog and fetch-failure behavior.
+- Changes on already restricted pages propagate on the next successful mirror and sweep, including when the page is unedited. *(Amended #1919.)* With readable restrictions and enough capacity under the cap, the bound is `RESTRICTION_REFRESH_INTERVAL_HOURS` (default 24 h) plus `SYNC_INTERVAL_MIN` (default 15 min). If the mirror succeeds and the sweep fails, the next successful sweep for the space completes cleanup. New restrictions on previously unrestricted pages still depend on the normal content walk. See the ADMIN-GUIDE for backlog and fetch-failure behavior.
 - Integration tests in `backend/src/domains/confluence/services/sync-service.integration.test.ts`, `backend/src/domains/confluence/services/sync-service-incremental-ace-sweep.integration.test.ts` + `backend/src/domains/llm/services/rag-service.integration.test.ts` are the regression guard.
 
 ---

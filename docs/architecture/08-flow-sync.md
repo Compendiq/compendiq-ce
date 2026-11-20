@@ -93,14 +93,14 @@ sequenceDiagram
                 Note over S: leave row in place (shared-space safe)
             end
         end
-        opt EE rag_permission_enforcement after a successful space walk (#35;1919)
-            S->>DB: SELECT up to 100 overdue restricted Confluence pages in the run's spaces
+        opt EE rag_permission_enforcement with successfully walked spaces (#35;1919)
+            S->>DB: SELECT up to 100 overdue restricted Confluence pages<br/>in those spaces, applying the sync user's retry delays
             S->>CL: Re-read restrictions and required ancestors, bypassing audit skip
             CL->>CF: GET page restrictions via rate limiter
-            S->>DB: Mirror successful reads with pass start stamp, or record failed refresh
+            S->>DB: Mirror successful reads with pass start stamp, or record failed refresh for user and page
         end
         opt EE rag_permission_enforcement — once per run, including failed walks (#35;859, #35;1771)
-            S->>DB: DELETE source='confluence' page ACEs older than their page mirror stamp<br/>only on pages with restrictions_synced_at at/after run start, in the run's spaces
+            S->>DB: DELETE source='confluence' page ACEs older than their last successful mirror stamp<br/>in the run's spaces, including unfinished sweeps from earlier runs
         end
 
         S->>R: DEL sync:worker:lock if still owned, in finally (API: the finally of the detached run)
@@ -617,21 +617,20 @@ EE skip all of it (`syncPageRestrictions` and the sweep both short-circuit).
   `inherit_perms = TRUE` and the same stamp.
 - **Walked is not always re-read.** The audit-log fast path (no `Permissions`
   event for the page in the covered window) and a failed restriction fetch
-  leave `restrictions_synced_at` alone and only bump the page's existing rows'
-  `synced_at`.
+  leave `restrictions_synced_at` alone and only bump `synced_at` on entries
+  belonging to the last confirmed mirror.
 - **Sweep set (#1771).** Once at the end of the run,
   `sweepStaleConfluenceAces` deletes `source='confluence'` page rows whose
-  `synced_at` is older than its page's successful mirror — only on pages whose
-  `restrictions_synced_at` is at or after the run start, i.e. the pages this
-  run re-read. There a de-listed principal, or every row of a page that is no
-  longer restricted, goes.
+  `synced_at` is older than their page's last successful mirror. This removes
+  de-listed principals and the Confluence ACEs of pages that returned to
+  inherited space permissions.
 - **A failed walk still sweeps.** When the walk throws (a revoked PAT, a
   failed listing, in the same space or a later one), `syncUser` runs the
   sweep before rethrowing, so the de-listings of the pages the run already
   re-read are applied; a sweep error after a failed walk is logged and the
-  walk error stays the run's outcome. A process that dies between a re-read
-  and the sweep, or a sweep that itself fails, loses them: such a page is only
-  swept again by the next run that re-reads it.
+  walk error stays the run's outcome. The next successful sweep for the space
+  uses the stored mirror stamp to recover from an interrupted or failed sweep
+  without another restriction read.
 - **Everything else keeps its last mirror:** pages whose fetch failed or was
   deferred, pages outside the content walk and refresh pass, and pages removed
   upstream (soft-deleted, so hidden
@@ -642,16 +641,16 @@ EE skip all of it (`syncPageRestrictions` and the sweep both short-circuit).
   one user's run cannot touch another user's spaces.
 - **Mode per space, scope per page.** One run can walk one space fully and
   another incrementally; eligibility follows each page, never a run-level flag.
-- **Periodic refresh and latency.** A successful content walk is followed by
-  a restriction-only pass over at most 100 due restricted pages across the
-  run's spaces. It selects oldest first using the later of the last successful
-  mirror and last failed periodic attempt (migration 158), bypasses the audit
-  skip, and requires a successful restrictions response. Failed reads preserve
-  the last mirror and retry after the interval. With readable restrictions
+- **Periodic refresh and latency.** The restriction-only pass attempts at
+  most 100 due restricted pages across successfully walked spaces. It selects
+  oldest first using the later of the last successful mirror and that sync
+  user's last failed attempt for the page (migration 156). It bypasses the
+  audit skip and requires a successful restrictions response. Failed ancestor
+  reads are shared across the batch. With readable restrictions
   and capacity under the cap, changes on these pages propagate within
   `RESTRICTION_REFRESH_INTERVAL_HOURS` (default 24 h) plus `SYNC_INTERVAL_MIN`
-  (default 15 min), including after a sweep failure. New restrictions on
-  previously unrestricted pages still depend on the content walk.
+  (default 15 min). New restrictions on previously unrestricted pages still
+  depend on the content walk.
 - **No cache code.** ACE inserts and deletes are fenced in the database by the
   migration-129 trigger (page cache invalidation queue).
 

@@ -353,8 +353,10 @@ Readability first. Explicit over clever. ESLint flat config per workspace; TS st
 With Enterprise `rag_permission_enforcement`, sync rechecks already
 restricted Confluence pages on `RESTRICTION_REFRESH_INTERVAL_HOURS` (default
 24), independent of content edits or the audit window. Keep selection scoped
-to the run's spaces and preserve the last successful mirror on a failed
-fetch. Sweep against each re-read page's own successful mirror stamp.
+to successfully walked spaces. A failed fetch preserves the successful
+mirror and delays the retry for that sync user only. Sweep against each
+page's last successful mirror stamp so a later run can finish an incomplete
+sweep without a new read.
 
 Full reference is `.env.example`. Keys you must set:
 

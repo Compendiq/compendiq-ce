@@ -1,6 +1,6 @@
 /**
- * #1771 — the end-of-run stale-ACE sweep may only age out Confluence access
- * entries of pages whose restrictions the run re-read.
+ * #1771 / #1919 — the end-of-run stale-ACE sweep keeps confirmed grants and
+ * removes grants omitted by a successful restriction mirror.
  *
  * Drives real `syncUser` runs through a real `ConfluenceClient` against the
  * in-process HTTP fixture below (pattern: sync-service-webhooks.test.ts), real
@@ -72,6 +72,7 @@ const hiddenFrom = new Map<string, Set<string>>();
 const bodyFetches: string[] = [];
 const restrictionFetches: string[] = [];
 const restrictionFailures = new Map<string, 403 | 404>();
+const failedSpaceListings = new Set<string>();
 let auditReadable = false;
 /**
  * When on, a run lists one space; every other space's listing answers 500
@@ -82,9 +83,9 @@ const listedSpaces = new Set<string>();
 
 const TEN_DAYS_AGO = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
 
-function putPage(spaceKey: string, id: string, title: string, version = 1, when = TEN_DAYS_AGO): void {
+function putPage(spaceKey: string, id: string, title: string, version = 1, when = TEN_DAYS_AGO): RemotePage {
   spaceOf.set(id, spaceKey);
-  remotePages.set(id, {
+  const page: RemotePage = {
     id,
     title,
     status: 'current',
@@ -93,7 +94,9 @@ function putPage(spaceKey: string, id: string, title: string, version = 1, when 
     body: { storage: { value: `<p>${title} body v${version}</p>` } },
     ancestors: [],
     metadata: { labels: { results: [] } },
-  });
+  };
+  remotePages.set(id, page);
+  return page;
 }
 
 function json(response: ServerResponse, statusCode: number, body: unknown): void {
@@ -113,7 +116,9 @@ const fixture: Server = createServer((request, response) => {
   const visibleIn = (spaceKey: string | null) =>
     [...remotePages.values()].filter((p) => !hidden.has(p.id) && spaceOf.get(p.id) === spaceKey);
   const listingRefused = (spaceKey: string | null): boolean => {
-    if (!failListingsAfterFirstSpace || spaceKey === null) return false;
+    if (spaceKey === null) return false;
+    if (failedSpaceListings.has(spaceKey)) return true;
+    if (!failListingsAfterFirstSpace) return false;
     if (listedSpaces.size > 0 && !listedSpaces.has(spaceKey)) return true;
     listedSpaces.add(spaceKey);
     return false;
@@ -141,19 +146,20 @@ const fixture: Server = createServer((request, response) => {
   }
   const experimental = /^\/rest\/experimental\/content\/([^/]+)\/restriction$/.exec(url.pathname);
   if (experimental) {
-    const failure = restrictionFailures.get(experimental[1]!) ?? 404;
+    const id = experimental[1]!;
+    const failure = hidden.has(id) ? 403 : restrictionFailures.get(id) ?? 404;
     return json(response, failure, { message: 'Restrictions unavailable' });
   }
   const match = /^\/rest\/api\/content\/([^/]+)(\/.*)?$/.exec(url.pathname);
   if (match) {
     const id = decodeURIComponent(match[1]!);
     const sub = match[2] ?? '';
+    if (sub === '/restriction') restrictionFetches.push(id);
     const remote = remotePages.get(id);
     if (!remote) return json(response, 404, { message: 'Page not found' });
     if (hidden.has(id)) return json(response, 403, { message: 'Forbidden' });
     if (sub === '/child/attachment') return json(response, 200, paged([]));
     if (sub === '/restriction') {
-      restrictionFetches.push(id);
       const failure = restrictionFailures.get(id);
       if (failure) return json(response, failure, { message: 'Restrictions unavailable' });
       const users = readers.get(id);
@@ -346,6 +352,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     bodyFetches.length = 0;
     restrictionFetches.length = 0;
     restrictionFailures.clear();
+    failedSpaceListings.clear();
     auditReadable = false;
     resetRateLimiter();
     await truncateAllTables();
@@ -518,7 +525,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     expect(await pageStatus(bobId, p.id)).toBe(404);
   });
 
-  it('retries a de-listing after a failed periodic sweep with the space cursor still current', async () => {
+  it('finishes a failed sweep on the next run without re-reading restrictions, even after an audit skip', async () => {
     const aliceId = await seedUser('alice');
     const bobId = await seedUser('bob');
     const syncerId = await seedUser('syncer', { pat: 'syncer-pat' });
@@ -535,13 +542,14 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
       await expect(syncUser(syncerId)).rejects.toThrow('injected sweep fault');
     });
     expect(restrictionFetches).toEqual(['7001']);
+    expect(bodyFetches).toEqual([]);
     expect(await aceRows(p.id)).toEqual(userAces(aliceId, bobId));
     expect(await pageStatus(bobId, p.id)).toBe(200);
 
-    await ageRestrictionMirror(p.id);
+    auditReadable = true;
+    modifiedIds.add('7001');
     await runSync(syncerId);
-    expect(bodyFetches).toEqual([]);
-    expect(restrictionFetches).toEqual(['7001', '7001']);
+    expect(restrictionFetches).toEqual(['7001']);
     expect(await aceRows(p.id)).toEqual(userAces(aliceId));
     expect(await pageStatus(bobId, p.id)).toBe(404);
     expect(await pageStatus(aliceId, p.id)).toBe(200);
@@ -571,8 +579,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     // A readable response after the retry interval confirms the flip to public.
     restrictionFailures.delete('7001');
     await query(
-      "UPDATE pages SET restrictions_refresh_failed_at = NOW() - INTERVAL '61 minutes' WHERE id = $1",
-      [p.id],
+      "UPDATE confluence_restriction_refresh_failures SET failed_at = NOW() - INTERVAL '61 minutes' WHERE user_id = $1 AND page_id = $2",
+      [syncerId, p.id],
     );
     await runSync(syncerId);
     expect(restrictionFetches).toEqual(['7001', '7001']);
@@ -581,10 +589,77 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     expect(await pageStatus(bobId, p.id)).toBe(200);
   });
 
+  it('lets a readable PAT refresh immediately after a different PAT is denied', async () => {
+    const aliceId = await seedUser('alice', { pat: 'alice-pat' });
+    const bobId = await seedUser('bob');
+    const xavierId = await seedUser('xavier', { pat: 'xavier-pat' });
+    putPage('DOCS', '7001', 'Restricted');
+    readers.set('7001', ['alice', 'bob']);
+    hiddenFrom.set('xavier-pat', new Set(['7001']));
+    await runSync(aliceId);
+    const p = await localPage('7001');
+    readers.set('7001', ['alice']);
+    await ageRestrictionMirror(p.id);
+    restrictionFetches.length = 0;
+
+    await runSync(xavierId);
+    expect(restrictionFetches).toEqual(['7001']);
+    expect(await pageStatus(bobId, p.id)).toBe(200);
+    await runSync(xavierId);
+    expect(restrictionFetches).toEqual(['7001']);
+
+    await runSync(aliceId);
+    expect(restrictionFetches).toEqual(['7001', '7001']);
+    expect(await aceRows(p.id)).toEqual(userAces(aliceId));
+    expect(await pageStatus(bobId, p.id)).toBe(404);
+  });
+
+  it('refreshes a healthy space when another space listing fails', async () => {
+    const aliceId = await seedUser('alice', { spaces: SPACES });
+    const bobId = await seedUser('bob', { spaces: SPACES });
+    const syncerId = await seedUser('syncer', { pat: 'syncer-pat', spaces: SPACES });
+    putPage('DOCS', '7101', 'Restricted DOCS');
+    putPage('TEAM', '7201', 'Restricted TEAM');
+    for (const id of ['7101', '7201']) readers.set(id, ['alice', 'bob']);
+    await runSync(syncerId);
+    for (const id of ['7101', '7201']) {
+      await ageRestrictionMirror((await localPage(id)).id);
+      readers.set(id, ['alice']);
+    }
+    failedSpaceListings.add('DOCS');
+    restrictionFetches.length = 0;
+
+    await expect(syncUser(syncerId)).rejects.toThrow('Confluence API error: HTTP 500');
+    expect(restrictionFetches).toEqual(['7201']);
+    expect(await pageStatus(bobId, (await localPage('7201')).id)).toBe(404);
+    expect(await pageStatus(aliceId, (await localPage('7201')).id)).toBe(200);
+    expect(await pageStatus(bobId, (await localPage('7101')).id)).toBe(200);
+  });
+
+  it('shares a failed ancestor restriction read across descendants in a batch', async () => {
+    const aliceId = await seedUser('alice');
+    const syncerId = await seedUser('syncer', { pat: 'syncer-pat' });
+    putPage('DOCS', '7001', 'Parent');
+    readers.set('7001', ['alice']);
+    for (const id of ['7002', '7003']) {
+      putPage('DOCS', id, 'Child').ancestors = [{ id: '7001', title: 'Parent' }];
+    }
+    await runSync(syncerId);
+    for (const id of ['7002', '7003']) await ageRestrictionMirror((await localPage(id)).id);
+    restrictionFailures.set('7001', 403);
+    restrictionFetches.length = 0;
+
+    await runSync(syncerId);
+    expect(restrictionFetches).toEqual(['7002', '7001', '7003']);
+    for (const id of ['7002', '7003']) {
+      expect(await aceRows((await localPage(id)).id)).toEqual(userAces(aliceId));
+    }
+  });
+
   it('refreshes at most 100 overdue pages across the run, oldest first and within its spaces', async () => {
     setRateLimit(600);
     resetRateLimiter();
-    await seedUser('alice', { spaces: ['DOCS', 'TEAM'] });
+    const aliceId = await seedUser('alice', { spaces: ['DOCS', 'TEAM'] });
     const syncerId = await seedUser('syncer', { pat: 'syncer-pat', spaces: ['DOCS', 'TEAM'] });
     const docsSyncerId = await seedUser('docs-syncer', { pat: 'docs-pat' });
     await runSync(syncerId); // establish current content cursors with empty walks
@@ -601,20 +676,27 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
         [id, spaceKey, index],
       );
     }
-    restrictionFailures.set(ids[0]!, 403);
-
     await runSync(docsSyncerId);
     expect(restrictionFetches).toEqual(ids.slice(0, 50));
     await query(
-      "UPDATE pages SET restrictions_synced_at = NOW() - INTERVAL '3 hours', restrictions_refresh_failed_at = NULL WHERE space_key = 'DOCS'",
+      "UPDATE pages SET restrictions_synced_at = NOW() - INTERVAL '3 hours' WHERE space_key = 'DOCS'",
     );
     restrictionFetches.length = 0;
 
+    for (const id of ids.slice(0, 100)) restrictionFailures.set(id, 403);
     await runSync(syncerId);
     expect(restrictionFetches).toEqual(ids.slice(0, 100));
     restrictionFetches.length = 0;
+    // Even after the failed pages become eligible again, the unattempted
+    // readable pages must get their turn ahead of them.
+    await query(
+      "UPDATE confluence_restriction_refresh_failures SET failed_at = NOW() - INTERVAL '61 minutes' WHERE user_id = $1",
+      [syncerId],
+    );
     await runSync(syncerId);
-    expect(restrictionFetches).toEqual([ids[100], outOfScopeId]);
+    expect(restrictionFetches).toHaveLength(100);
+    expect(restrictionFetches.slice(0, 2)).toEqual([ids[100], outOfScopeId]);
+    expect(await aceRows((await localPage(outOfScopeId)).id)).toEqual(userAces(aliceId));
     expect(bodyFetches).toEqual([]);
   });
 
@@ -774,7 +856,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     };
   }
 
-  it('sweep ages out entries only on pages whose restrictions this run re-read', async () => {
+  it('sweep removes entries omitted from the last confirmed mirror of each page', async () => {
     const aliceId = await seedUser('alice');
     await seedUser('bob');
     const ids: number[] = [];
@@ -797,7 +879,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     // The second run re-reads only c-reread, where bob was de-listed upstream.
     const second = restrictionClient({ 'c-reread': ['alice'] });
     await __internal.syncPageRestrictions(second as never, seamPage('c-reread'), secondRun, new Map());
-    await __internal.sweepStaleConfluenceAces(secondRun, ['DOCS']);
+    await __internal.sweepStaleConfluenceAces(['DOCS']);
 
     expect(await aceRows(unread)).toEqual(userAces(aliceId));
     expect(await aceRows(reread)).toEqual(userAces(aliceId));

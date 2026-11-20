@@ -1606,6 +1606,24 @@ describe('getPageRestrictions', () => {
     expect(mockRequest).toHaveBeenCalledTimes(2);
   });
 
+  it('tries the experimental path on a primary 404 when a successful restriction read is required', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    mockRequest.mockResolvedValue({
+      statusCode: 404,
+      headers: {},
+      body: { text: async () => 'Not Found' },
+    } as never);
+
+    const failure: unknown = await client.getPageRestrictions('12345', { requireSuccessfulResponse: true })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConfluenceError);
+    expect(failure).toMatchObject({ statusCode: 404 });
+    expect(mockRequest.mock.calls.map(([url]) => url)).toEqual([
+      expect.stringContaining('/rest/api/content/12345/restriction'),
+      expect.stringContaining('/rest/experimental/content/12345/restriction'),
+    ]);
+  });
+
   it('returns [] on 404 from the experimental fallback path (older DC)', async () => {
     const client = new ConfluenceClient(baseUrl, pat, retryOpts);
     let callCount = 0;

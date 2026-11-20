@@ -1,9 +1,23 @@
-import { describe, it, expect, vi } from 'vitest';
-import { getRestrictionChangeSet, RETENTION_SAFETY_MARGIN_MS } from './restriction-change-tracker.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { getRestrictionChangeSet, restrictionRefreshIntervalMs, RETENTION_SAFETY_MARGIN_MS } from './restriction-change-tracker.js';
 import { AuditUnavailableError } from './confluence-client.js';
 
 const NOW = 1_700_000_000_000;
 const HOUR = 3_600_000;
+
+describe('restrictionRefreshIntervalMs', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([undefined, '0', '-1', 'invalid', '0.0000001'])('defaults to 24 hours for %s', (value) => {
+    vi.stubEnv('RESTRICTION_REFRESH_INTERVAL_HOURS', value);
+    expect(restrictionRefreshIntervalMs()).toBe(24 * HOUR);
+  });
+
+  it.each(['2', '0.5'])('converts %s hours to milliseconds', (value) => {
+    vi.stubEnv('RESTRICTION_REFRESH_INTERVAL_HOURS', value);
+    expect(restrictionRefreshIntervalMs()).toBe(Number(value) * HOUR);
+  });
+});
 
 function makeClient(over?: Partial<{ getAuditRetention: ReturnType<typeof vi.fn>; getAuditRecords: ReturnType<typeof vi.fn> }>) {
   return {

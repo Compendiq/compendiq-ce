@@ -58,6 +58,7 @@ import {
 import { lockAiPolicyForPages, applyCanonicalAiPolicyLabel, policyFromLabels, purgeDerivedAiState, type AiPolicy } from '../../../core/services/ai-policy-service.js';
 import { isAiPolicyRuntimeGuardError } from '../../../core/services/ai-policy-runtime-guard.js';
 
+type AncestorRestrictionCache = Map<string, Promise<ConfluenceRestriction[]>>;
 
 interface SyncStatus {
   userId: string;
@@ -407,14 +408,14 @@ export async function syncUser(userId: string): Promise<void> {
 
   // Per-run state for the per-page restriction sync (EE #112 Phase C). Shared
   // across every space/page processed in this sync run so:
-  //   - the stale-ACE sweep can identify rows that weren't re-written by
-  //     comparing their `synced_at` to `syncRunStartedAt`;
+  //   - each successful mirror can stamp its page and ACEs with
+  //     `syncRunStartedAt` so the sweep can detect omitted ACEs;
   //   - repeated restriction fetches against the same ancestor page (common
   //     when siblings share a parent) collapse into a single HTTP call.
   // Both are inert when `RAG_PERMISSION_ENFORCEMENT` is disabled — the
   // restriction branch short-circuits before writing to the cache or the DB.
   const syncRunStartedAt = new Date();
-  const ancestorCache = new Map<string, ConfluenceRestriction[]>();
+  const ancestorCache: AncestorRestrictionCache = new Map();
 
   // Audit-log-driven restriction-change detection (perf). When RAG permission
   // enforcement is on, ask the Confluence audit log which pages' restrictions
@@ -441,13 +442,13 @@ export async function syncUser(userId: string): Promise<void> {
     const allSpaces = await client.getAllSpaces();
     const spacesByKey = new Map(allSpaces.map((s) => [s.key, s]));
 
-    // A space walk that throws (a revoked PAT, a failed listing) must not
-    // discard the restriction re-reads the walk already mirrored: the sweep
-    // below touches only pages this run re-read, so it is safe after a
-    // partial walk. The walk error is rethrown once the sweep has run (#1771).
+    // A space-specific upstream failure must not block refresh in other
+    // spaces. Keep the first failure as the outcome, and still sweep confirmed
+    // stale ACEs before reporting it (#1771).
+    const walkedSpaces: string[] = [];
     let walkFailure: { error: unknown } | undefined;
-    try {
-      for (const spaceKey of spaces) {
+    for (const spaceKey of spaces) {
+      try {
         await syncSpace(
           client,
           userId,
@@ -458,26 +459,27 @@ export async function syncUser(userId: string): Promise<void> {
           syncRunId,
           restrictionChangeSet,
         );
+        walkedSpaces.push(spaceKey);
+      } catch (error) {
+        if (walkFailure) logger.warn({ err: error, userId, spaceKey }, 'Additional Confluence space walk failed');
+        walkFailure ??= { error };
+        if (!mirrorRestrictions || !(error instanceof ConfluenceError) || error.statusCode === 401) break;
       }
-      if (mirrorRestrictions) {
-        await refreshDuePageRestrictions(client, spaces, syncRunStartedAt);
+    }
+    if (mirrorRestrictions && walkedSpaces.length > 0) {
+      try {
+        await refreshDuePageRestrictions(client, userId, walkedSpaces, syncRunStartedAt);
+      } catch (error) {
+        if (!walkFailure) walkFailure = { error };
+        else logger.error({ err: error, userId }, 'Confluence restriction refresh failed after a failed space walk');
       }
-    } catch (error) {
-      walkFailure = { error };
     }
 
-    // Sweep stale Confluence-sourced ACEs on the pages whose restrictions
-    // this run re-read (`syncPageRestrictions` stamps their
-    // `restrictions_synced_at` at or after `syncRunStartedAt`). On those pages
-    // an ACE older than the page's successful mirror was not refreshed:
-    // the page no longer has restrictions or the principal was removed from
-    // the Confluence restriction list, so the row is no longer authoritative.
-    // Pages this run did not re-read — an incremental walk visits only
-    // modified pages — keep their last mirror (#1771). Admin-authored rows
-    // have `source='local'` and never appear in this sweep.
+    // The persisted mirror stamp is enough to finish a sweep left incomplete
+    // by a failed run without waiting for another restriction read.
     if (mirrorRestrictions) {
       try {
-        await sweepStaleConfluenceAces(syncRunStartedAt, spaces);
+        await sweepStaleConfluenceAces(spaces);
       } catch (sweepError) {
         // After a failed walk the walk error is the run's outcome; a sweep
         // failure on top of it is logged rather than allowed to mask it.
@@ -550,7 +552,7 @@ async function syncSpace(
   spaceKey: string,
   space: ConfluenceSpace | undefined,
   syncRunStartedAt: Date,
-  ancestorCache: Map<string, ConfluenceRestriction[]>,
+  ancestorCache: AncestorRestrictionCache,
   syncRunId: string,
   changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
@@ -763,7 +765,7 @@ async function syncPage(
   spaceKey: string,
   pageSummary: Pick<ConfluencePage, 'id'>,
   syncRunStartedAt: Date,
-  ancestorCache: Map<string, ConfluenceRestriction[]>,
+  ancestorCache: AncestorRestrictionCache,
   counts: SyncSpaceCounts,
   syncRunId: string,
   changeSet: RestrictionChangeSet = { mode: 'full' },
@@ -1703,7 +1705,7 @@ async function gateVersionJumpByConflictPolicy(
 async function computeEffectivePageReadRestrictions(
   page: Pick<ConfluencePage, 'id'>,
   client: ConfluenceClient,
-  ancestorCache: Map<string, ConfluenceRestriction[]>,
+  ancestorCache: AncestorRestrictionCache,
   requireSuccessfulResponse = false,
 ): Promise<{
   users: Array<{ userKey: string; username: string }>;
@@ -1711,7 +1713,21 @@ async function computeEffectivePageReadRestrictions(
   inheritedFromAncestor: string | null;
 } | null> {
   const options = { requireSuccessfulResponse };
-  const own = await client.getPageRestrictions(page.id, options);
+  const readCached = async (id: string) => {
+    let read = ancestorCache.get(id);
+    if (!read) {
+      read = client.getPageRestrictions(id, options);
+      ancestorCache.set(id, read);
+    }
+    return read.catch((error: unknown) => {
+      // Share failed reads within the periodic batch as well as successes.
+      if (!requireSuccessfulResponse) ancestorCache.delete(id);
+      throw error;
+    });
+  };
+  const own = requireSuccessfulResponse
+    ? await readCached(page.id)
+    : await client.getPageRestrictions(page.id, options);
   const ownRead = own.find((r) => r.operation === 'read');
   if (
     ownRead &&
@@ -1728,11 +1744,7 @@ async function computeEffectivePageReadRestrictions(
   // ancestors root-first, so reverse to put the immediate parent at index 0.
   const ancestors = await client.getPageAncestors(page.id);
   for (const a of [...ancestors].reverse()) {
-    let arestr = ancestorCache.get(a.id);
-    if (!arestr) {
-      arestr = await client.getPageRestrictions(a.id, options);
-      ancestorCache.set(a.id, arestr);
-    }
+    const arestr = await readCached(a.id);
     const aread = arestr.find((r) => r.operation === 'read');
     if (aread && aread.restrictions.users.length + aread.restrictions.groups.length > 0) {
       return {
@@ -1790,7 +1802,7 @@ async function syncPageRestrictions(
   client: ConfluenceClient,
   page: Pick<ConfluencePage, 'id'>,
   syncRunStartedAt: Date,
-  ancestorCache: Map<string, ConfluenceRestriction[]>,
+  ancestorCache: AncestorRestrictionCache,
   changeSet: RestrictionChangeSet = { mode: 'full' },
   restrictionOnly = false,
 ): Promise<'failed' | void> {
@@ -1815,25 +1827,25 @@ async function syncPageRestrictions(
   }
   const pageDbId = pageRow.rows[0]!.id;
   const restrictionsSyncedAt = pageRow.rows[0]!.restrictions_synced_at;
+  const touchConfirmedAces = () => query(
+    `UPDATE access_control_entries
+        SET synced_at = $1
+      WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'
+        AND ($3::timestamptz IS NULL OR synced_at >= $3)`,
+    [syncRunStartedAt, pageDbId, restrictionsSyncedAt],
+  );
 
   // Audit-log-driven skip (perf): when the audit window confirms no restriction
   // change for this page since we last mirrored it (within the covered window),
-  // skip the rate-limited Confluence fetch. `restrictions_synced_at` is left
-  // alone, so the page stays out of this run's stale-ACE sweep (#1771) — the
-  // optimization is sweep-neutral; its Confluence ACE synced_at is still bumped
-  // to the run that confirmed the rows. Any uncertainty falls through to a fetch.
+  // skip the rate-limited Confluence fetch. Only touch ACEs that belong to the
+  // last confirmed mirror so leftovers from an incomplete sweep stay stale.
   if (
     changeSet.mode === 'incremental' &&
     restrictionsSyncedAt !== null &&
     restrictionsSyncedAt.getTime() >= changeSet.windowStartMs &&
     !changeSet.changedPageIds.has(page.id)
   ) {
-    await query(
-      `UPDATE access_control_entries
-          SET synced_at = $1
-        WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'`,
-      [syncRunStartedAt, pageDbId],
-    );
+    await touchConfirmedAces();
     return;
   }
 
@@ -1851,16 +1863,8 @@ async function syncPageRestrictions(
         },
         'Failed to fetch Confluence restrictions for page — skipping this round; pre-existing ACEs untouched',
       );
-      // The page stays out of this run's sweep set (`restrictions_synced_at`
-      // is not advanced, #1771), so its existing Confluence ACEs stay
-      // authoritative until a later successful sync rewrites them (#859).
-      // Same synced_at bump as the incremental-skip fast path above.
-      await query(
-        `UPDATE access_control_entries
-            SET synced_at = $1
-          WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'`,
-        [syncRunStartedAt, pageDbId],
-      );
+      // The last successful mirror remains authoritative (#859, #1771).
+      await touchConfirmedAces();
       return restrictionOnly ? 'failed' : undefined;
     }
     throw err;
@@ -1970,19 +1974,21 @@ const RESTRICTION_REFRESH_LIMIT = 100;
 
 async function refreshDuePageRestrictions(
   client: ConfluenceClient,
+  userId: string,
   spaceKeys: string[],
   syncRunStartedAt: Date,
 ): Promise<void> {
   const cutoff = new Date(Math.max(0, syncRunStartedAt.getTime() - restrictionRefreshIntervalMs()));
-  const due = await query<{ id: number; confluence_id: string }>(
-    `SELECT id, confluence_id FROM pages
-      WHERE space_key = ANY($1) AND source = 'confluence' AND inherit_perms = FALSE
-        AND deleted_at IS NULL AND confluence_id IS NOT NULL
-        AND (GREATEST(restrictions_synced_at, restrictions_refresh_failed_at) <= $2
-             OR (restrictions_synced_at IS NULL AND restrictions_refresh_failed_at IS NULL))
-      ORDER BY GREATEST(restrictions_synced_at, restrictions_refresh_failed_at) NULLS FIRST, id
-      LIMIT $3`,
-    [spaceKeys, cutoff, RESTRICTION_REFRESH_LIMIT],
+  const due = await query<{ id: number; confluence_id: string; failed_at: Date | null }>(
+    `SELECT p.id, p.confluence_id, f.failed_at
+       FROM pages p
+       LEFT JOIN confluence_restriction_refresh_failures f ON f.page_id = p.id AND f.user_id = $2
+      WHERE p.space_key = ANY($1) AND p.source = 'confluence' AND p.inherit_perms = FALSE
+        AND p.deleted_at IS NULL AND p.confluence_id IS NOT NULL
+        AND COALESCE(GREATEST(p.restrictions_synced_at, f.failed_at), '-infinity') <= $3
+      ORDER BY GREATEST(p.restrictions_synced_at, f.failed_at) NULLS FIRST, p.id
+      LIMIT $4`,
+    [spaceKeys, userId, cutoff, RESTRICTION_REFRESH_LIMIT],
   );
   if (due.rows.length === 0) return;
 
@@ -1990,7 +1996,7 @@ async function refreshDuePageRestrictions(
   // page's existing ACEs to the run start without confirming its mirror.
   const refreshStartedAt = new Date(Math.max(Date.now(), syncRunStartedAt.getTime() + 1));
   // Keep ambiguous 404 responses from the content walk out of this cache.
-  const ancestorCache = new Map<string, ConfluenceRestriction[]>();
+  const ancestorCache: AncestorRestrictionCache = new Map();
   let failed = 0;
   for (const page of due.rows) {
     const result = await syncPageRestrictions(
@@ -1999,8 +2005,15 @@ async function refreshDuePageRestrictions(
     if (result === 'failed') {
       failed++;
       await query(
-        'UPDATE pages SET restrictions_refresh_failed_at = $2 WHERE id = $1',
-        [page.id, refreshStartedAt],
+        `INSERT INTO confluence_restriction_refresh_failures (user_id, page_id, failed_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, page_id) DO UPDATE SET failed_at = EXCLUDED.failed_at`,
+        [userId, page.id, refreshStartedAt],
+      );
+    } else if (page.failed_at !== null) {
+      await query(
+        'DELETE FROM confluence_restriction_refresh_failures WHERE user_id = $1 AND page_id = $2',
+        [userId, page.id],
       );
     }
   }
@@ -2040,44 +2053,26 @@ async function resolveConfluenceGroup(name: string): Promise<number | null> {
 }
 
 /**
- * Delete Confluence-sourced ACEs that this run's restriction re-read did not
- * refresh.
- *
- * Sweep set: pages in `spaceKeys` whose `restrictions_synced_at` is at or
- * after `syncRunStartedAt` — the pages `syncPageRestrictions` re-read in this
- * run (it stamps the start of the content walk or periodic pass). On them "page no
- * longer restricted" and "a specific principal was removed from a
- * restriction list" collapse to the same condition: the ACE's `synced_at`
- * stays behind the page's successful mirror because nothing re-UPSERTed it. A page the
- * run did not re-read keeps the entries of its last mirror (#1771): an
- * incremental walk visits only modified pages, a principal may be unable to
- * list a page, a fetch may fail. A de-listed principal is removed on the next
- * run that re-reads the page. Runs once per `syncUser` run, outside
- * any per-page transaction, after the walk — also after a failed walk
- * (#1771): pages the run never reached carry no stamp from it, so they are
- * outside the set.
- *
- * Also scoped to `spaceKeys` — the run's spaces (#859) — so one user's run
- * never ages out the ACEs of pages in another user's spaces.
+ * Delete Confluence ACEs omitted by a successful mirror in the run's spaces.
+ * The page stamp is durable, so a later run can finish the sweep. A skipped
+ * or failed read keeps the confirmed mirror (#1771), and pages outside
+ * `spaceKeys` are out of scope (#859).
  */
-async function sweepStaleConfluenceAces(
-  syncRunStartedAt: Date,
-  spaceKeys: string[],
-): Promise<void> {
+async function sweepStaleConfluenceAces(spaceKeys: string[]): Promise<void> {
   if (spaceKeys.length === 0) return;
   const res = await query(
     `DELETE FROM access_control_entries ace USING pages p
      WHERE ace.resource_type = 'page'
        AND ace.source = 'confluence'
        AND ace.resource_id = p.id
-       AND p.space_key = ANY($2) AND p.source = 'confluence'
-       AND p.restrictions_synced_at >= $1
+       AND p.space_key = ANY($1) AND p.source = 'confluence'
+       AND p.restrictions_synced_at IS NOT NULL
        AND (ace.synced_at IS NULL OR ace.synced_at < p.restrictions_synced_at)`,
-    [syncRunStartedAt, spaceKeys],
+    [spaceKeys],
   );
   if (res.rowCount && res.rowCount > 0) {
     logger.info(
-      { deleted: res.rowCount, cutoff: syncRunStartedAt.toISOString() },
+      { deleted: res.rowCount },
       'Stale Confluence ACEs swept',
     );
   }
@@ -2097,7 +2092,7 @@ async function syncMissingAttachments(
   userId: string,
   spaceKey: string,
   syncRunStartedAt: Date = new Date(),
-  ancestorCache: Map<string, ConfluenceRestriction[]> = new Map(),
+  ancestorCache: AncestorRestrictionCache = new Map(),
   counts: SyncSpaceCounts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 },
   syncRunId: string = 'attachment-repair',
   changeSet: RestrictionChangeSet = { mode: 'full' },
