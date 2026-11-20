@@ -290,6 +290,11 @@ Compendiq tracks version history for all pages:
 3. View diffs between versions.
 4. Restore a previous version if needed.
 
+After editing with the integration off, you can publish again once it is on.
+Compendiq keeps the local revision shown in the editor and uses Confluence's
+version for the publish. If another person has edited the page in Confluence,
+re-sync to fetch their changes before publishing.
+
 With Confluence enabled, opening **Version History** imports missing
 Confluence versions and preserves the titles and bodies Compendiq has
 already recorded. In standalone mode, the panel shows Compendiq's local

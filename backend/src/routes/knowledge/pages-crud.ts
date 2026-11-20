@@ -13,6 +13,7 @@ import {
   decideConflictPolicyOnClient,
   getClientForUser,
   reconcileCollabAfterInboundBodyWrite,
+  recordConfluenceVersionObservation,
   recordConflictPolicyAudit,
 } from '../../domains/confluence/services/sync-service.js';
 import {
@@ -309,6 +310,8 @@ async function loadAuthorizedContentWriteState(
   allowDeleted = false,
 ): Promise<PageRevision & {
   source: string;
+  version: number;
+  remoteVersion: number;
   confluenceId: string | null;
   spaceKey: string | null;
   visibility: string;
@@ -322,12 +325,14 @@ async function loadAuthorizedContentWriteState(
   }
   const result = await client.query<PageRevision & {
     source: string;
+    version: number;
+    remoteVersion: number;
     confluenceId: string | null;
     created_by_user_id: string | null;
     visibility: string;
     spaceKey: string | null;
   }>(
-    `SELECT source, confluence_id AS "confluenceId", created_by_user_id, visibility,
+    `SELECT source, version, COALESCE(remote_version, version) AS "remoteVersion", confluence_id AS "confluenceId", created_by_user_id, visibility,
             space_key AS "spaceKey", content_revision::text AS "contentRevision",
             lifecycle_revision::text AS "lifecycleRevision"
        FROM pages WHERE id = $1 AND ($2::boolean OR deleted_at IS NULL) FOR UPDATE`,
@@ -363,12 +368,18 @@ async function loadCurrentConfluenceWriteClient(
   userId: string,
   confluenceId: string,
   allowDeleted = false,
+  expectedVersions?: { local: number; remote: number },
 ): Promise<ConfluenceClient> {
   const current = await loadAuthorizedContentWriteState(
     client, pageId, userId, intent.revisions[pageId]!, allowDeleted,
   );
   if (current.source !== 'confluence' || current.confluenceId !== confluenceId) {
     throw new PageWriteError(409, 'page_source_changed', 'The page source changed before the remote write');
+  }
+  if (expectedVersions && (
+    current.version !== expectedVersions.local || current.remoteVersion !== expectedVersions.remote
+  )) {
+    throw new PageWriteError(409, 'stale_content_revision', 'The page revision changed before the remote write');
   }
   if (!(await isConfluenceEnabled(userId, client))) {
     throw new PageWriteError(
@@ -2538,14 +2549,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Load the page to determine source
     const existing = await query<{
-      id: number; version: number; space_key: string | null;
+      id: number; version: number; remote_version: number | null; space_key: string | null;
       source: string; created_by_user_id: string | null;
       visibility: string; confluence_id: string | null; deleted_at: Date | null;
       page_type: string;
       content_revision: string; lifecycle_revision: string;
       body_storage: string | null; body_html: string | null;
     }>(
-      `SELECT id, version, space_key, source, created_by_user_id, visibility,
+      `SELECT id, version, remote_version, space_key, source, created_by_user_id, visibility,
               confluence_id, deleted_at, page_type, content_revision::text,
               lifecycle_revision::text, body_storage, body_html
          FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
@@ -2813,6 +2824,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
+    const remoteVersion = existingPage.remote_version ?? existingPage.version;
+    const expectedVersions = { local: existingPage.version, remote: remoteVersion };
     // Upload locally-pasted images to Confluence before converting HTML.
     // Pasted images have src="/api/attachments/{pageId}/{filename}" but lack
     // data-confluence-filename, meaning they only exist locally and Confluence
@@ -2838,7 +2851,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         effect: {
           effectClass: 'remote',
           confluenceId: existingPage.confluence_id,
-          expectedVersion: existingPage.version,
+          expectedRemoteVersion: remoteVersion,
+          expectedLocalVersion: existingPage.version,
           targetTitle: body.title,
           targetBodyHtmlSha256: createHash('sha256').update(body.bodyHtml).digest('hex'),
         },
@@ -2856,7 +2870,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       admittedClient = await withPageWriteTransaction(
         [existingPage.id],
         (writeClient) => loadCurrentConfluenceWriteClient(
-          writeClient, writeIntent, existingPage.id, userId, existingPage.confluence_id!,
+          writeClient, writeIntent, existingPage.id, userId, existingPage.confluence_id!, false, expectedVersions,
         ),
         { intent: writeIntent },
       );
@@ -2883,16 +2897,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           previousStorage: existingPage.body_storage,
           legacyTasks: hasOnlyUncarriedTasks(existingPage.body_html),
         });
-        const currentVersion = existingPage.version ?? body.version ?? 1;
         const nextPage = await admittedClient.updatePage(
           existingPage.confluence_id!,
           body.title,
           nextStorageBody,
-          currentVersion,
+          remoteVersion,
         );
         return {
           confPage: nextPage,
-          receipt: pagePublicationReceipt(existingPage.confluence_id!, currentVersion + 1, nextPage),
+          receipt: pagePublicationReceipt(existingPage.confluence_id!, remoteVersion + 1, nextPage),
         };
       },
     );
@@ -2936,7 +2949,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // page). The post-commit work — collab invalidation, cache, audit,
     // `page.updated` webhook — runs ONCE on every settled path.
     const settlement: { refusal: AiPolicyRefusalError | PageWriteError | null } = { refusal: null };
-    await completePageWriteIntent(writeIntent, async (writeClient) => {
+    const publishedVersion = await completePageWriteIntent(writeIntent, async (writeClient) => {
       // Policy lock precedes the row lock `loadAuthorizedContentWriteState` takes.
       if (body.aiPolicy !== undefined) await lockAiPolicyForPages(writeClient, [existingPage.id]);
       let authorityLost: PageWriteError | null = null;
@@ -2957,10 +2970,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           ? new PageWriteError(404, 'page_not_found', 'Page not found')
           : err;
       }
-      await writeClient.query(
+      const updated = await writeClient.query<{ version: number }>(
         `UPDATE pages SET
            title = $2, body_storage = $3, body_html = $4, body_text = $5,
-           version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+           version = GREATEST(version + 1, $6), remote_version = $6, last_synced = NOW(), embedding_dirty = TRUE,
            image_analysis_dirty = CASE
              WHEN body_html IS DISTINCT FROM $4 THEN TRUE
              ELSE image_analysis_dirty
@@ -2970,31 +2983,37 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
            summary_status = 'pending', summary_retry_count = 0,
            quality_status = 'pending', quality_retry_count = 0,
            local_modified_at = NULL, local_modified_by = NULL
-         WHERE id = $1`,
+         WHERE id = $1 AND version = $7 AND COALESCE(remote_version, version) = $8
+         RETURNING version`,
         [existingPage.id, confPage.title, confPage.body.storage.value,
-         bodyHtml, bodyText, confPage.version.number],
+         bodyHtml, bodyText, confPage.version.number, expectedVersions.local, expectedVersions.remote],
       );
+      if (!updated.rows[0]) {
+        throw new PageWriteError(409, 'stale_content_revision', 'The page revision changed before publication');
+      }
+      const version = updated.rows[0].version;
       await enqueuePageWriteInvalidation(writeClient, writeIntent.id);
       if (authorityLost !== null) {
         settlement.refusal = authorityLost;
-        return [] as AiPolicyChangeRecord[];
+        return version;
       }
-      if (body.aiPolicy === undefined) return [] as AiPolicyChangeRecord[];
+      if (body.aiPolicy === undefined) return version;
       // Same transaction as the content cache write (#280) when it succeeds;
       // a refusal is captured, not thrown, so the content commit stands.
       // `aiPolicyRefusalFromResult` answers a page the caller can no longer
       // SEE as a `PageWriteError` 404 — settled the same way (concealed).
       try {
-        return await applyRequestedAiPolicyOnClient(writeClient, {
+        await applyRequestedAiPolicyOnClient(writeClient, {
           userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedRevision!,
         });
       } catch (err) {
         if (err instanceof AiPolicyRefusalError || (err instanceof PageWriteError && err.statusCode === 404)) {
           settlement.refusal = err;
-          return [] as AiPolicyChangeRecord[];
+          return version;
         }
         throw err;
       }
+      return version;
     });
 
     // Post-commit work, exactly once, on every settled path.
@@ -3026,7 +3045,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       return reply.status(refusal.statusCode).send({
         ...refusal.body,
         message: `${refusal.message}. The page content was published; the AI policy was not changed.`,
-        published: { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' },
+        published: { id: existingPage.id, title: body.title, version: publishedVersion, source: 'confluence' },
       });
     }
     if (refusal !== null) {
@@ -3043,11 +3062,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         error: refusal.reason,
         reason: refusal.reason,
         message: `${refusal.message}. The page content was published; the AI policy was not changed.`,
-        published: { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' },
+        published: { id: existingPage.id, title: body.title, version: publishedVersion, source: 'confluence' },
       });
     }
 
-    return { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' };
+    return { id: existingPage.id, title: body.title, version: publishedVersion, source: 'confluence' };
   }));
 
   // DELETE /api/pages/:id
@@ -3576,14 +3595,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     const existing = await query<{
-      id: number; version: number; title: string;
+      id: number; version: number; remote_version: number | null; title: string;
       body_html: string | null; body_text: string | null; body_storage: string | null;
       source: string; created_by_user_id: string | null;
       visibility: string; confluence_id: string | null; space_key: string | null;
       draft_body_html: string | null; draft_body_storage: string | null;
       content_revision: string; lifecycle_revision: string;
     }>(
-      `SELECT id, version, title, body_html, body_text, body_storage, source,
+      `SELECT id, version, remote_version, title, body_html, body_text, body_storage, source,
               created_by_user_id, visibility, confluence_id, space_key,
               draft_body_html, draft_body_storage, content_revision::text,
               lifecycle_revision::text
@@ -3625,8 +3644,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         legacyTasks: hasOnlyUncarriedTasks(page.body_html),
       }).html
       : page.draft_body_html;
+    let remoteVersion = page.remote_version ?? page.version;
     const publishDraft = async (writeClient: PoolClient): Promise<void> => {
       const current = await loadAuthorizedContentWriteState(writeClient, page.id, userId, expectedRevision);
+      remoteVersion = current.remoteVersion;
       await invalidateCollabDocAfterBodyWrite(page.id, writeClient);
       publishedVisibility = current.visibility;
       await writeClient.query(
@@ -3639,7 +3660,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
           body_html = $2, body_text = draft_body_text,
           body_storage = COALESCE(draft_body_storage, body_storage),
-          version = version + 1, embedding_dirty = TRUE,
+          version = version + 1,
+          remote_version = CASE WHEN $3 THEN COALESCE(remote_version, version) ELSE remote_version END,
+          embedding_dirty = TRUE,
           image_analysis_dirty = CASE
             WHEN body_html IS DISTINCT FROM $2 THEN TRUE
             ELSE image_analysis_dirty
@@ -3651,7 +3674,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL,
           draft_updated_at = NULL, draft_updated_by = NULL
          WHERE id = $1`,
-        [page.id, publishedHtml],
+        [page.id, publishedHtml, remotePublicationRequired],
       );
     };
 
@@ -3673,7 +3696,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           effect: {
             effectClass: 'remote',
             confluenceId: page.confluence_id,
-            expectedVersion: page.version,
+            expectedRemoteVersion: remoteVersion,
+            expectedLocalVersion: page.version + 1,
             targetBodyHtmlSha256: createHash('sha256').update(publishedHtml).digest('hex'),
           },
         });
@@ -3694,6 +3718,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     let publishedVersion = page.version + 1;
     if (publishIntent && page.confluence_id) {
       const admittedIntent = publishIntent;
+      const expectedVersions = { local: publishedVersion, remote: remoteVersion };
       let storageBody: string;
       let admittedClient: ConfluenceClient;
       try {
@@ -3701,7 +3726,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         admittedClient = await withPageWriteTransaction(
           [page.id],
           (writeClient) => loadCurrentConfluenceWriteClient(
-            writeClient, admittedIntent, page.id, userId, page.confluence_id!,
+            writeClient, admittedIntent, page.id, userId, page.confluence_id!, false, expectedVersions,
           ),
           { intent: admittedIntent },
         );
@@ -3726,32 +3751,36 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         },
         async () => {
           const confPage = await admittedClient.updatePage(
-            page.confluence_id!, page.title, storageBody, page.version,
+            page.confluence_id!, page.title, storageBody, remoteVersion,
           );
           return {
             confPage,
-            receipt: pagePublicationReceipt(page.confluence_id!, page.version + 1, confPage),
+            receipt: pagePublicationReceipt(page.confluence_id!, remoteVersion + 1, confPage),
           };
         },
       );
       const confPage = await withPageWriteTransaction([page.id], async (writeClient) => {
         const currentClient = await loadCurrentConfluenceWriteClient(
-          writeClient, admittedIntent, page.id, userId, page.confluence_id!,
+          writeClient, admittedIntent, page.id, userId, page.confluence_id!, false, expectedVersions,
         );
         return confirmPagePublication(currentClient, publication.receipt, publication.confPage);
       }, { intent: admittedIntent });
-      publishedVersion = confPage.version.number;
-      await completePageWriteIntent(admittedIntent, async (writeClient) => {
+      publishedVersion = await completePageWriteIntent(admittedIntent, async (writeClient) => {
         await loadAuthorizedContentWriteState(
           writeClient, page.id, userId, admittedIntent.revisions[page.id]!,
         );
-        await writeClient.query(
-          `UPDATE pages SET body_storage = $2, version = $3, last_synced = NOW(),
+        const updated = await writeClient.query<{ version: number }>(
+          `UPDATE pages SET body_storage = $2, version = GREATEST(version, $3), remote_version = $3, last_synced = NOW(),
              local_modified_at = NULL, local_modified_by = NULL
-           WHERE id = $1`,
-          [page.id, confPage.body.storage.value, publishedVersion],
+           WHERE id = $1 AND version = $4 AND remote_version = $5
+           RETURNING version`,
+          [page.id, confPage.body.storage.value, confPage.version.number, expectedVersions.local, expectedVersions.remote],
         );
+        if (!updated.rows[0]) {
+          throw new PageWriteError(409, 'stale_content_revision', 'The page revision changed before publication');
+        }
         await enqueuePageWriteInvalidation(writeClient, admittedIntent.id);
+        return updated.rows[0].version;
       });
     }
 
@@ -4210,7 +4239,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         bulkLimit(async () => {
           const numericPageId = numericIdsByConfluenceId.get(id);
           if (numericPageId === undefined) throw new Error(`Missing local page identity for ${id}`);
-          const observed = await withPageWriteTransaction([numericPageId], async (writeClient) => {
+          const withResyncTransaction = <T>(operation: (writeClient: PoolClient) => Promise<T>) =>
+            withPageWriteTransaction([], async (writeClient) => {
+              await lockPageLifecycle(writeClient, [numericPageId]);
+              const { rows } = await writeClient.query<{ baseline_id: string | null }>(
+                'SELECT baseline_id FROM pages WHERE id = $1', [numericPageId],
+              );
+              if (rows[0]?.baseline_id == null) await lockPageWrites(writeClient, [numericPageId]);
+              return operation(writeClient);
+            });
+          const observed = await withResyncTransaction(async (writeClient) => {
             const state = await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, null);
             if (state.source !== 'confluence' || state.confluenceId !== id) {
               throw new PageWriteError(409, 'page_source_changed', 'The page source changed before synchronization');
@@ -4238,9 +4276,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           // The scheduled sync's local-edit check and policy, on THIS
           // transaction: the helper never opens a second connection, so it
           // cannot wait on the row lock loadAuthorizedContentWriteState holds.
-          const decision = await withPageWriteTransaction([numericPageId], async (writeClient) => {
+          const decision = await withResyncTransaction(async (writeClient) => {
             await lockAiPolicyForPages(writeClient, [numericPageId]);
-            await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, observed);
+            const current = await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, observed);
+            if (current.remoteVersion !== observed.remoteVersion) {
+              throw new PageWriteError(409, 'stale_content_revision', 'The Confluence revision changed after synchronization began');
+            }
             const decided = await decideConflictPolicyOnClient(writeClient, {
               confluenceId: id, confluenceVersion: page.version.number, title: page.title,
               bodyStorage, bodyHtml, bodyText,
@@ -4259,20 +4300,23 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             // rename), as in the scheduled sync's version-unchanged branch.
             const refresh = decided.kind === 'apply_incoming'
               || (decided.kind === 'unchanged' && !decided.hasLocalEdits);
-            if (!refresh) return decided;
+            if (!refresh) {
+              if (decided.kind !== 'stale_observation') {
+                await recordConfluenceVersionObservation(writeClient, numericPageId, page.version.number);
+              }
+              return decided;
+            }
             // A local edit is overwritten only after its snapshot is stored on
             // this transaction. The version never decreases; with Confluence
-            // not ahead, the snapshot shares the live number and Version
-            // History does not list it until the version moves on (user
-            // decision on #1779 review r2; a separate upstream-version column
-            // is the deferred follow-up).
+            // not ahead, this still shares the live number until the history
+            // namespace switches to source-qualified identities (#1918).
             if (decided.kind === 'apply_incoming' && decided.hasLocalEdits) {
               await snapshotLocalVersionBeforeOverwrite(writeClient, decided.row, 'confluence');
             }
             await writeClient.query(
               `UPDATE pages SET
                  title = $2, body_storage = $3, body_html = $4, body_text = $5,
-                 version = GREATEST(version, $6), last_synced = NOW(), embedding_dirty = TRUE,
+                 version = GREATEST(version, $6), remote_version = $6, last_synced = NOW(), embedding_dirty = TRUE,
                  image_analysis_dirty = CASE
                    WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                    ELSE image_analysis_dirty

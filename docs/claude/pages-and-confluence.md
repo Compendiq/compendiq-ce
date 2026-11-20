@@ -422,7 +422,13 @@ model: the divergence a standalone stretch produced is handled by the existing
 conflict path on the next sync (the `local_modified_at` marker, and a
 locally-deleted page re-imported by the sync upsert). `POST /pages/bulk/sync`
 takes the same path: it runs the scheduler's `decideConflictPolicyOnClient` on
-its own `withPageWriteTransaction` and never lowers `version` (#1779).
+its own page-write transaction and never lowers `version` (#1779).
+
+Sync and Re-sync record the observed provider `remote_version` in either
+direction. Outbound page PUTs send its successor and keep optimistic edit
+fences on `pages.version`. Held edits keep their title, body and local-edit
+markers. A frozen page defers an observation ahead of its local counter
+until the next fetch after thaw.
 
 Restoring a version titled exactly `vN` at version `N` keeps the live title (#2038).
 Confluence restore and recovery complete a body-less placeholder at the superseded live version with its title and body.

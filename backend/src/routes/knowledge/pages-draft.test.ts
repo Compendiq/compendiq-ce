@@ -55,6 +55,7 @@ let attachmentsDir: string;
 let originalAttachmentsDir: string | undefined;
 let confluenceRequests: ConfluenceRequest[] = [];
 let remoteVersion = 4;
+let strictProviderVersion: number | null = null;
 let compactPutReply = false;
 let readbackCount = 0;
 let publishedPage: (ConfluencePayload & { id: string }) | null = null;
@@ -219,6 +220,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       }
       const body = await readRequestBody(request);
       confluenceRequests.push({ url: request.url, body });
+      if (strictProviderVersion !== null && body.version.number !== strictProviderVersion + 1) {
+        response.writeHead(409).end(JSON.stringify({ message: 'Confluence requires its next version' }));
+        return;
+      }
       publishedPage = {
         id: 'conf-123',
         title: body.title,
@@ -264,6 +269,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
     await redis.flushDb();
     confluenceRequests = [];
     remoteVersion = 4;
+    strictProviderVersion = null;
     compactPutReply = false;
     readbackCount = 0;
     publishedPage = null;
@@ -411,26 +417,37 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       });
     });
 
-    it('publishes a Confluence draft over real HTTP using the previous live version and persists the returned version', async () => {
+    it.each([false, true])('publishes a draft with divergent counters: %s', async (diverged) => {
       const pageId = await seedConfluencePage();
 
+      const localVersion = diverged ? 6 : 3;
+      const providerVersion = diverged ? 5 : 3;
+      remoteVersion = providerVersion + 1;
+      strictProviderVersion = providerVersion;
+      if (diverged) {
+        await query('UPDATE pages SET version = $2, remote_version = $3 WHERE id = $1', [pageId, localVersion, providerVersion]);
+      }
       const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
 
       expect(response.statusCode, response.body).toBe(200);
-      expect(response.json()).toMatchObject({ id: pageId, version: 4, published: true });
+      expect(response.json()).toMatchObject({ id: pageId, version: localVersion + 1, published: true });
       expect(confluenceRequests).toHaveLength(1);
       expect(confluenceRequests[0]!.body).toMatchObject({
         title: 'Confluence Article',
-        version: { number: 4 },
+        version: { number: providerVersion + 1 },
       });
       expect(confluenceRequests[0]!.body.body.storage.value).toContain('draft');
       expect(await storedPage(pageId)).toMatchObject({
         body_html: '<p>draft</p>',
         body_storage: expect.stringContaining('draft'),
-        version: 4,
+        version: localVersion + 1,
         draft_body_html: null,
         local_modified_by: null,
       });
+      expect((await query('SELECT remote_version FROM pages WHERE id = $1', [pageId])).rows)
+        .toEqual([{ remote_version: providerVersion + 1 }]);
+      expect((await query('SELECT status FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId])).rows)
+        .toEqual([{ status: 'completed' }]);
     });
 
     it('publishes a Confluence draft\'s tasks with the ids Confluence has, and the live body keeps them (#1751)', async () => {

@@ -394,6 +394,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
         effectClass: 'remote',
         pageId,
         confluenceId: '780restore',
+        expectedLocalVersion: 5,
         expectedRemoteVersion: '5',
         intendedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         targetVersion: 2,

@@ -111,7 +111,7 @@ erDiagram
         text body_html
         text body_text
         int version "local revision counter"
-        int remote_version "nullable; backfilled by migration 157"
+        int remote_version "last observed Confluence version; null for standalone"
         text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
         text notion_page_id "live standalone import binding; successful relocation clears; legacy CF compensation metadata is ignored"
@@ -282,6 +282,8 @@ erDiagram
         text original_body_storage
         text original_body_text
         int original_version
+        int original_remote_version "nullable; provider rollback counter"
+        int published_local_version "nullable; post-publication recovery fence"
         text original_visibility
         uuid original_created_by_user_id
         boolean original_inherit_perms
@@ -1485,7 +1487,10 @@ together, which matters most for #1114's query-side prefix.
   `(page_id, source, version_number)`). Migration 157 labels existing history
   by its page's current provenance and backfills `pages.remote_version`
   from `version` for Confluence pages. Snapshot UUIDs and baseline links are
-  preserved. `remote_version` is outside the protected content columns.
+  preserved. `remote_version` is outside the protected content columns and never exceeds
+  the local `version`. Migration 158 fills intervening Confluence rows and adds
+  `original_remote_version` and `published_local_version` to
+  `page_relocation_preparations` for recovery.
   The insert trigger derives an omitted or NULL snapshot source from the
   page's provenance. Retention ranks both sources together by edit time or
   sync time. Undated body-less Confluence imports sort last.

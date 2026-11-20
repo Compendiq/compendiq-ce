@@ -223,9 +223,9 @@ async function seedPage(options: {
   const id = (await query<{ id: number }>(
     `INSERT INTO pages (title,source,confluence_id,space_key,created_by_user_id,visibility,
        notion_page_id,parent_id,deleted_at,body_html,body_storage,body_text,version,ai_policy,ai_policy_revision,
-       expected_image_files,expected_drawio_files)
+       expected_image_files,expected_drawio_files,remote_version)
      VALUES ($1,$2,$3,$4,$5,'shared',$6,$7,$8::timestamptz,$9,$9,'fixture body',1,'none',7,
-       NULL,NULL) RETURNING id`,
+       NULL,NULL,CASE WHEN $2 = 'confluence' THEN 1 END) RETURNING id`,
     [options.title, options.source, options.confluenceId ?? null,
       options.source === 'confluence' ? 'CONF' : 'LOCAL', options.owner === undefined ? ownerA : options.owner, options.token ?? null,
       options.parent ?? null, options.deleted ? OLD_STAMP : null, STORAGE],

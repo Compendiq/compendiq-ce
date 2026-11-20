@@ -899,6 +899,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
     it('flips the same row in place and keeps dependent rows on the universal page_id', async () => {
       const id = await createPage({ title: 'Article', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       await addVersions(id, 3);
+      await query('UPDATE pages SET version = 6 WHERE id = $1', [id]);
       await query(
         `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding)
          VALUES ($1, 0, 'chunk', $2)`,
@@ -914,6 +915,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       expect(row.source).toBe('confluence');
       expect(row.confluence_id).toBe('900001');
       expect(row.space_key).toBe('CONF');
+      expect((await query('SELECT version, remote_version FROM pages WHERE id = $1', [id])).rows)
+        .toEqual([{ version: 6, remote_version: 1 }]);
 
       // page_embeddings is keyed on the integer page_id (migration 030) and
       // must survive untouched; page_versions is discarded by decision 3.
@@ -1926,12 +1929,15 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         title: 'Synced', source: 'confluence', confluenceId: '700001', spaceKey: 'CONF',
       });
 
+      await query('UPDATE pages SET version = 6, remote_version = 5 WHERE id = $1', [id]);
       const res = await toLocal(id, '700001', { visibility: 'private' });
       expect(res.statusCode).toBe(200);
 
       const row = await getRow(id);
       expect(row.source).toBe('standalone');
       expect(row.confluence_id).toBeNull();
+      expect((await query('SELECT version, remote_version FROM pages WHERE id = $1', [id])).rows)
+        .toEqual([{ version: 6, remote_version: null }]);
       expect(row.space_key).toBe('LOCAL');
       expect(row.visibility).toBe('private');
       // A private page with a NULL owner would be invisible to everyone,
@@ -2248,6 +2254,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       const child = await createPage({
         title: 'Child', source: 'confluence', confluenceId: '700008', spaceKey: 'CONF', parentRef: '700007',
       });
+      await query('UPDATE pages SET version = 6, remote_version = 5 WHERE id = $1', [parent]);
       await writeStoreA('700007', 'pic.png', 'bytes');
       h.client.deletePage.mockRejectedValue(new ConfluenceError('server error', 500));
       // The confirmation probe finds the page alive and current.
@@ -2259,6 +2266,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       const row = await getRow(parent);
       expect(row.source).toBe('confluence');
       expect(row.confluence_id).toBe('700007');
+      expect((await query('SELECT version, remote_version FROM pages WHERE id = $1', [parent])).rows)
+        .toEqual([{ version: 6, remote_version: 5 }]);
       expect(row.space_key).toBe('CONF');
       expect(row.body_html).toContain('/api/attachments/700007/pic.png');
       expect((await getRow(child)).parent_id).toBe('700007');

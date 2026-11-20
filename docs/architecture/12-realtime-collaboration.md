@@ -165,7 +165,7 @@ client-claimed identity. Color is deterministic from `userId`.
 | In-memory `Y.Doc` + Redis **incremental** `doc.on('update')` | Every keystroke | Live truth. `Y.applyUpdate(..., 'redis')` on receive so the handler does not loop. |
 | `page_collaborative_docs.doc_state` / `state_vector` | Debounced **2 s** after last applied update, and immediately when the last editor disconnects | Increments **this table's** `version` (persistence generation). Always. |
 | `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty`, and `image_analysis_dirty` when `body_html` actually changed (#1618 stage 2 retired the `image_embedding_dirty` write that used to sit beside it). **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. **Does** advance `pages.content_revision` (migration 120 trigger), so a Confluence commit pins lifecycle and version, not that revision, across its provider read (#1762). |
-| `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence from `confPage.version.number` **after** `updatePage` succeeds). It also resets `pages.body_html` / `body_text` to the committed snapshot: edits typed after that snapshot stay in the room; a persist that falls inside the Save's intent waits for it (#1763), so they reach `page_collaborative_docs` and `body_html` on the flush that the Save's `pages_version` control starts, the next edit's 2 s debounce, or the last-writer flush (#1762). |
+| `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence takes `GREATEST(version + 1, acknowledged)` **after** `updatePage` succeeds and records the acknowledgment in `remote_version`). It also resets `pages.body_html` / `body_text` to the committed snapshot: edits typed after that snapshot stay in the room; a persist that falls inside the Save's intent waits for it (#1763), so they reach `page_collaborative_docs` and `body_html` on the flush that the Save's `pages_version` control starts, the next edit's 2 s debounce, or the last-writer flush (#1762). |
 | Confluence DC | Collab commit for `source = 'confluence'` | Remote write **first**, same order as today's PUT |
 
 Stamping `local_modified_*` on the 2 s path is forbidden:
@@ -240,8 +240,10 @@ The no-row init path is how the next join recovers — not first-ever join
 only. A live room still 409s those HTTP writers; it does not DELETE.
 
 **While the page's own collaborative Save is pending (#1763).** A Confluence
-commit reserves a `collab.commit.confluence[.media]` intent after its provider
-read and keeps it pending until its local publication settles. That intent
+commit compares its provider read with `pages.remote_version`. If they
+differ, the 409 `confluence_modified` payload's `localVersion` field reports
+the expected provider number. It otherwise reserves a
+`collab.commit.confluence[.media]` intent with both expected counters and keeps it pending until its local publication settles. That intent
 fences every writer of the page; for its own room it is transient. Writable
 frames and peer-pod updates keep applying to the in-memory `Y.Doc` on every
 pod, state dumps are still answered, and writable and read-only joins are still

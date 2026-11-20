@@ -1790,7 +1790,8 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
   });
 
   it('remote version moved → 409 confluence_modified, no updatePage, local version unchanged, room live', async () => {
-    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 7 });
+    await query('UPDATE pages SET remote_version = 4 WHERE id = $1', [pageId]);
     const getPage = vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
       id: confluenceId,
       title: 'Conf page',
@@ -1818,65 +1819,78 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     expect(getPage).toHaveBeenCalledWith(confluenceId);
     expect(updatePage).not.toHaveBeenCalled();
     const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
-    expect(page.rows[0]!.version).toBe(4);
+    expect(page.rows[0]!.version).toBe(7);
     expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
     expect(ws.readyState).toBe(WebSocket.OPEN);
     ws.close();
   });
 
-  it('remote unchanged → updatePage first with current local version, then local row from confPage.version.number', async () => {
-    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
-    const order: string[] = [];
-    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
-      order.push('getPage');
-      return {
-        id: confluenceId,
-        title: 'Conf page',
-        status: 'current',
-        type: 'page',
-        version: { number: 4, when: '2026-08-24T00:00:00Z' },
-      } as never;
+  it('publishes a collaborative commit with diverged local and Confluence revisions', async () => {
+    const { token, userId, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 6 });
+    await query('UPDATE pages SET remote_version = 5 WHERE id = $1', [pageId]);
+    const requests: string[] = [];
+    let localVersionAtDispatch = 0;
+    const upstream = createServer(async (request, response) => {
+      if (new URL(request.url ?? '/', 'http://fixture.test').pathname !== `/rest/api/content/${confluenceId}`) {
+        response.writeHead(404).end();
+        return;
+      }
+      response.setHeader('content-type', 'application/json');
+      requests.push(request.method ?? '');
+      if (request.method === 'GET') {
+        response.end(JSON.stringify({
+          id: confluenceId, status: 'current', version: { number: 5 },
+        }));
+        return;
+      }
+      if (request.method !== 'PUT') {
+        response.writeHead(405).end();
+        return;
+      }
+      let bytes = '';
+      for await (const chunk of request) bytes += String(chunk);
+      const sent = JSON.parse(bytes);
+      if (sent.version.number !== 6) {
+        response.writeHead(409).end(JSON.stringify({ message: 'Confluence requires its next version' }));
+        return;
+      }
+      localVersionAtDispatch = (await query<{ version: number }>(
+        'SELECT version FROM pages WHERE id = $1', [pageId],
+      )).rows[0]!.version;
+      response.end(JSON.stringify({ ...sent, id: confluenceId, status: 'current' }));
     });
-    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
-      order.push('updatePage');
-      const still = await query<{ version: number; last_synced: Date | null }>(
-        'SELECT version, last_synced FROM pages WHERE id = $1',
-        [pageId],
-      );
-      expect(still.rows[0]!.version).toBe(4);
-      return {
-        id: confluenceId,
-        title,
-        status: 'current',
-        type: 'page',
-        version: { number: 5, when: '2026-08-24T00:01:00Z' },
-        body: { storage: { value: storage } },
-      } as never;
-    });
-
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/pages/${pageId}/collab/commit`,
-      headers: { authorization: `Bearer ${token}` },
-      payload: commitPayload(ws, 'Pushed'),
-    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const res = await (async () => {
+      try {
+        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1', [
+          userId, `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`,
+        ]);
+        return await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: commitPayload(ws, 'Pushed'),
+        });
+      } finally {
+        upstream.closeAllConnections();
+        await new Promise<void>((resolve, reject) => upstream.close((err) => err ? reject(err) : resolve()));
+      }
+    })();
 
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json()).toMatchObject({
       id: pageId,
       title: 'Pushed',
-      version: 5,
+      version: 7,
       source: 'confluence',
       pushedToConfluence: true,
     });
-    expect(updatePage).toHaveBeenCalledTimes(1);
-    expect(updatePage.mock.calls[0]![0]).toBe(confluenceId);
-    expect(updatePage.mock.calls[0]![1]).toBe('Pushed');
-    expect(updatePage.mock.calls[0]![3]).toBe(4);
-    expect(order.indexOf('updatePage')).toBeGreaterThanOrEqual(0);
+    expect(requests).toEqual(['GET', 'PUT']);
+    expect(localVersionAtDispatch).toBe(6);
 
     const page = await query<{
       version: number;
+      remote_version: number;
       title: string;
       body_storage: string | null;
       last_synced: Date | null;
@@ -1884,11 +1898,13 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       summary_status: string;
       quality_status: string;
     }>(
-      `SELECT version, title, body_storage, last_synced, local_modified_at, summary_status, quality_status
+      `SELECT version, remote_version, title, body_storage, last_synced, local_modified_at, summary_status, quality_status
          FROM pages WHERE id = $1`,
       [pageId],
     );
-    expect(page.rows[0]!.version).toBe(5);
+    expect(page.rows[0]).toMatchObject({ version: 7, remote_version: 6 });
+    expect((await query('SELECT status FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId])).rows)
+      .toEqual([{ status: 'completed' }]);
     expect(page.rows[0]!.title).toBe('Pushed');
     expect(page.rows[0]!.body_storage).toBe('<p>commit-seed</p>');
     expect(page.rows[0]!.last_synced).not.toBeNull();
@@ -1952,8 +1968,9 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
    * enqueuePersist → persistAndSnapshot path the debounce timer runs) instead
    * of sleeping past the timer.
    */
-  async function saveWhileAutosaveLands(change: 'none' | 'lifecycle' | 'remote') {
-    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+  async function saveWhileAutosaveLands(change: 'none' | 'lifecycle' | 'local' | 'remote') {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: change === 'local' ? 5 : 4 });
+    await query('UPDATE pages SET remote_version = 4 WHERE id = $1', [pageId]);
     const doc = await typeIntoLiveRoom(ws, 'typed right before Save');
     const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
     expect(room.persistTimer, 'the debounced autosave is still pending at Save').not.toBeNull();
@@ -1967,6 +1984,9 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
           'UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1',
           [pageId],
         );
+      }
+      if (change === 'local') {
+        await query('UPDATE pages SET version = version + 1 WHERE id = $1', [pageId]);
       }
       return {
         id: confluenceId,
@@ -2009,20 +2029,23 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     }
   });
 
-  it.each(['lifecycle', 'remote'] as const)(
+  it.each(['lifecycle', 'local', 'remote'] as const)(
     'a %s change in the same autosave window still refuses before any intent (#1762)',
     async (change) => {
       const { res, pageId, ws, doc, updatePage, before, during } = await saveWhileAutosaveLands(change);
       try {
         expect(res.statusCode).toBe(409);
-        expect(res.json()).toMatchObject(change === 'lifecycle'
-          ? { reason: 'stale_lifecycle' }
-          : { code: 'confluence_modified', remoteVersion: 7, localVersion: 4 });
+        const expectedError = {
+          lifecycle: { reason: 'stale_lifecycle' },
+          local: { reason: 'collab_commit_identity_changed' },
+          remote: { code: 'confluence_modified', remoteVersion: 7, localVersion: 4 },
+        };
+        expect(res.json()).toMatchObject(expectedError[change]);
         expect(during).toBeGreaterThan(before);
         expect(updatePage).not.toHaveBeenCalled();
         expect(await commitIntents(pageId)).toEqual([]);
         const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
-        expect(page.rows[0]!.version).toBe(4);
+        expect(page.rows[0]!.version).toBe(change === 'local' ? 6 : 4);
       } finally {
         ws.close();
         doc.destroy();

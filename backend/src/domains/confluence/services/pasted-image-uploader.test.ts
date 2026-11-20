@@ -196,6 +196,7 @@ describe('uploadLocalImagesToConfluence', () => {
       title: 'Boundary commit',
       bodyStorage: '<p>bounded effect</p>',
       expectedRemoteVersion: 1,
+      expectedLocalVersion: 1,
       expectedLifecycleRevision: '1',
       images,
     };
@@ -247,6 +248,7 @@ describe('uploadLocalImagesToConfluence', () => {
         title: 'Duplicate plan',
         bodyStorage: '<p>duplicate plan</p>',
         expectedRemoteVersion: 1,
+        expectedLocalVersion: 1,
         expectedLifecycleRevision: '1',
         images: [image, { ...image }],
       });

@@ -107,29 +107,30 @@ describe.skipIf(!dbAvailable)('sync-service missing-attachment repair (#1799)', 
   });
 
   it('repairs live pages only: trashed rows cause no attachment-list request and no error log; a restored page is discovered again', async () => {
-    await insertPage('live-1', 'DEV');
-    await insertPage('trashed-1', 'DEV');
+    const spaceKey = `repair-${crypto.randomUUID()}`;
+    await insertPage('live-1', spaceKey);
+    await insertPage('trashed-1', spaceKey);
     await query(
       `UPDATE pages SET deleted_at = NOW() - INTERVAL '1 day' WHERE confluence_id = 'trashed-1'`,
     );
     const errorSpy = vi.spyOn(logger, 'error');
 
     const client = makeClient();
-    await syncMissingAttachments(client as never, 'user-1', 'DEV');
+    await syncMissingAttachments(client as never, 'user-1', spaceKey);
 
     expect(client.attachmentListCalls).toEqual(['live-1']);
     expect(errorSpy).not.toHaveBeenCalled();
 
     // Revival cross-check: trashed-1 is live upstream again → soft-delete cleared.
     const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
-    await detectDeletedPages(client as never, 'DEV', counts);
+    await detectDeletedPages(client as never, spaceKey, counts);
     const restored = await query<{ deleted_at: Date | null }>(
       `SELECT deleted_at FROM pages WHERE confluence_id = 'trashed-1'`,
     );
     expect(restored.rows[0]!.deleted_at).toBeNull();
 
     client.attachmentListCalls.length = 0;
-    await syncMissingAttachments(client as never, 'user-1', 'DEV');
+    await syncMissingAttachments(client as never, 'user-1', spaceKey);
     expect(client.attachmentListCalls.sort()).toEqual(['live-1', 'trashed-1']);
   });
 

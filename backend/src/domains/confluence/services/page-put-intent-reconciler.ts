@@ -42,6 +42,7 @@ export type ConfluencePagePutPublication = PublicationKindState & {
   pageId: number;
   confluenceId: string;
   expectedRemoteVersion: number;
+  expectedLocalVersion: number;
   intendedStateDigest: string;
   effect: Record<string, unknown>;
 };
@@ -87,7 +88,7 @@ export function confluencePagePutDigest(state: PagePutState): string {
  * are deliberately absent from the persisted effect.
  */
 export function describeConfluencePagePut(
-  input: PagePutState & { actorId: string } & PublicationKindState,
+  input: PagePutState & { actorId: string; expectedLocalVersion: number } & PublicationKindState,
 ): ConfluencePagePutPublication {
   const intendedStateDigest = confluencePagePutDigest(input);
   const common = {
@@ -95,6 +96,7 @@ export function describeConfluencePagePut(
     pageId: input.pageId,
     confluenceId: input.confluenceId,
     expectedRemoteVersion: input.expectedRemoteVersion,
+    expectedLocalVersion: input.expectedLocalVersion,
     intendedStateDigest,
   };
   const effectCommon = {
@@ -102,6 +104,7 @@ export function describeConfluencePagePut(
     pageId: input.pageId,
     confluenceId: input.confluenceId,
     expectedRemoteVersion: String(input.expectedRemoteVersion),
+    expectedLocalVersion: input.expectedLocalVersion,
     intendedStateDigest,
   };
   if (input.kind === 'page.ai_apply') {
@@ -132,6 +135,8 @@ function publicationFromRecoveryIntent(
     typeof expectedRemoteVersionText === 'string' && /^[1-9]\d*$/.test(expectedRemoteVersionText)
       ? Number(expectedRemoteVersionText)
       : Number.NaN;
+  const hasLocalVersion = Object.hasOwn(effect, 'expectedLocalVersion');
+  const expectedLocalVersion = hasLocalVersion ? effect.expectedLocalVersion : expectedRemoteVersion;
   const commonValid =
     effect.effectClass === 'remote'
     && typeof pageId === 'number' && Number.isSafeInteger(pageId) && pageId > 0
@@ -139,6 +144,9 @@ function publicationFromRecoveryIntent(
     && Number.isSafeInteger(expectedRemoteVersion)
     && expectedRemoteVersion >= 1
     && expectedRemoteVersion < Number.MAX_SAFE_INTEGER
+    && typeof expectedLocalVersion === 'number'
+    && Number.isSafeInteger(expectedLocalVersion)
+    && expectedLocalVersion >= expectedRemoteVersion
     && typeof intendedStateDigest === 'string'
     && /^[a-f0-9]{64}$/.test(intendedStateDigest)
     && intent.pageIds.length === 1
@@ -157,12 +165,13 @@ function publicationFromRecoveryIntent(
     pageId: pageId as number,
     confluenceId: confluenceId as string,
     expectedRemoteVersion,
+    expectedLocalVersion,
     intendedStateDigest: intendedStateDigest as string,
     effect,
   };
   if (
     intent.kind === 'page.ai_apply'
-    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1
+    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1 + Number(hasLocalVersion)
     && COMMON_EFFECT_KEYS.every((key) => Object.hasOwn(effect, key))
     && Object.hasOwn(effect, 'improvementId')
     && (effect.improvementId === null
@@ -173,9 +182,9 @@ function publicationFromRecoveryIntent(
   if (
     intent.kind === 'page.version_restore'
     && typeof effect.targetVersion === 'number'
-    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1
+    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1 + Number(hasLocalVersion)
     && COMMON_EFFECT_KEYS.every((key) => Object.hasOwn(effect, key))
-    && effect.targetVersion !== expectedRemoteVersion
+    && effect.targetVersion !== expectedLocalVersion
     && Number.isSafeInteger(effect.targetVersion)
     && effect.targetVersion > 0
   ) {
@@ -231,6 +240,7 @@ export async function publishConfluencePagePut(
 
   const pageResult = await dbClient.query<{
     version: number;
+    remote_version: number | null;
     title: string;
     body_html: string | null;
     body_text: string | null;
@@ -239,7 +249,7 @@ export async function publishConfluencePagePut(
     confluence_id: string | null;
     space_key: string | null;
   }>(
-    `SELECT version, title, body_html, body_text, body_storage, source, confluence_id, space_key
+    `SELECT version, remote_version, title, body_html, body_text, body_storage, source, confluence_id, space_key
        FROM pages
       WHERE id = $1 AND deleted_at IS NULL
       FOR UPDATE`,
@@ -250,7 +260,8 @@ export async function publishConfluencePagePut(
     !page
     || page.source !== 'confluence'
     || page.confluence_id !== publication.confluenceId
-    || page.version !== publication.expectedRemoteVersion
+    || page.version !== publication.expectedLocalVersion
+    || (page.remote_version ?? page.version) !== publication.expectedRemoteVersion
   ) {
     throw new PageWriteError(
       409,
@@ -401,10 +412,10 @@ export async function publishConfluencePagePut(
     );
   }
 
-  const updated = await dbClient.query(
+  const updated = await dbClient.query<{ version: number }>(
     `UPDATE pages SET
        title = $2, body_storage = $3, body_html = $4, body_text = $5,
-       version = $6, last_modified_at = NOW(), last_synced = NOW(),
+       version = GREATEST(version + 1, $6), remote_version = $6, last_modified_at = NOW(), last_synced = NOW(),
        embedding_dirty = TRUE,
        image_analysis_dirty = CASE
          WHEN body_html IS DISTINCT FROM $4 THEN TRUE
@@ -415,7 +426,8 @@ export async function publishConfluencePagePut(
      WHERE id = $1
        AND version = $7
        AND source = 'confluence'
-       AND confluence_id = $8`,
+       AND confluence_id = $8
+     RETURNING version`,
     [
       publication.pageId,
       observed.title,
@@ -423,7 +435,7 @@ export async function publishConfluencePagePut(
       bodyHtml,
       bodyText,
       acceptedVersion,
-      publication.expectedRemoteVersion,
+      publication.expectedLocalVersion,
       publication.confluenceId,
     ],
   );
@@ -458,7 +470,7 @@ export async function publishConfluencePagePut(
   return {
     pageId: publication.pageId,
     title: observed.title,
-    newVersion: acceptedVersion,
+    newVersion: updated.rows[0]!.version,
     bodyHtml,
     bodyText,
   };

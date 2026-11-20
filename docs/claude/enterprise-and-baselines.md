@@ -131,6 +131,11 @@ Ordinary, Apply and restore PUT replies retain bounded acknowledgment before rea
 never invent returned body fingerprints from the request or lose known success
 because a later GET failed. Current authority, source identity, integration mode
 and credentials are re-read at each admitted remote phase.
+Publishing intents carry expected local and provider versions. Recovery
+accepts the legacy single-counter form. On a frozen Confluence page, a fetch
+may heal `remote_version` at or below the local revision without advancing
+`content_revision`. The Enterprise resolver must maintain `remote_version`
+(Compendiq/compendiq-ee#315) before deploying the new CE publishers.
 Version restore checks its optional optimistic version against the live page row
 held by `FOR UPDATE`, before adding the superseded snapshot or mutating content.
 Omitting the version remains an unconditional restore; protected-page admission

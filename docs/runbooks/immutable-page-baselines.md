@@ -1044,7 +1044,8 @@ cleanup even if the original writer is no longer active.
 Conditional recovery is read-only **at the provider**. The registered reconciler
 reads the exact historical result version `E+1` and compares its canonical state
 digest with the durable intended digest. An exact match publishes the verified
-title, storage body, converted local bodies and version in the same transaction
+title, storage body, converted local bodies, local revision and the acknowledged
+provider version in the same transaction
 that settles the intent. Ordinary completion uses that same publisher. AI Apply
 updates only its originally bound improvement record; restore preserves the
 pre-restore snapshot and verifies the original history target. Missing or

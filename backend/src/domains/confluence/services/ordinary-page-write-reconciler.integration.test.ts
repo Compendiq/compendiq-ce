@@ -170,6 +170,7 @@ async function seedPendingLabelIntent(input: {
 
 async function seedPendingPublicationIntent(
   kind: 'pages.update.confluence' | 'pages.draft.publish.confluence',
+  diverged = false,
 ): Promise<{
   actorId: string;
   recoveryAdminId: string;
@@ -181,6 +182,9 @@ async function seedPendingPublicationIntent(
   const actorId = await seedRecoveryActor('publication-recovery');
   const recoveryAdminId = await seedRecoveryAdmin('publication-recovery');
   const confluenceId = `publication-${randomUUID()}`;
+  const providerVersion = diverged ? 5 : 1;
+  const isDraft = kind === 'pages.draft.publish.confluence';
+  const localVersion = providerVersion + Number(diverged) + Number(isDraft);
   const page = await query<{
     id: number;
     content_revision: string;
@@ -188,12 +192,12 @@ async function seedPendingPublicationIntent(
   }>(
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
-        version, source, visibility, created_by_user_id,
+        version, remote_version, source, visibility, created_by_user_id,
         summary_status, summary_retry_count, quality_status, quality_retry_count)
      VALUES ($1, 'REC', 'Old title', '<p>Old</p>', '<p>Old</p>', 'Old',
-             1, 'confluence', 'private', $2, 'summarized', 4, 'analyzed', 5)
+             $3, $4, 'confluence', 'private', $2, 'summarized', 4, 'analyzed', 5)
      RETURNING id, content_revision::text, lifecycle_revision::text`,
-    [confluenceId, actorId],
+    [confluenceId, actorId, localVersion, providerVersion],
   );
   const pageRow = page.rows[0]!;
   const runtimeId = await seedFencedRuntime(recoveryAdminId);
@@ -201,7 +205,7 @@ async function seedPendingPublicationIntent(
   const remote = {
     title: 'Recovered title',
     storage: '<p>Recovered body</p>',
-    version: 2,
+    version: providerVersion + 1,
   };
   await query(
     `INSERT INTO page_write_intents
@@ -222,7 +226,12 @@ async function seedPendingPublicationIntent(
           lifecycleRevision: pageRow.lifecycle_revision,
         },
       }),
-      JSON.stringify({ effectClass: 'remote', confluenceId }),
+      JSON.stringify({
+        effectClass: 'remote', confluenceId,
+        ...(diverged
+          ? { expectedLocalVersion: localVersion, expectedRemoteVersion: providerVersion }
+          : { expectedVersion: providerVersion }),
+      }),
       JSON.stringify({
         accepted: true,
         expectedVersion: remote.version,
@@ -758,8 +767,8 @@ describeDb('ordinary page-write reconciliation', () => {
     expect(String(mockRequest.mock.calls[0]?.[1]?.method ?? 'GET')).toBe('GET');
   });
 
-  it('resets derived work when recovering an ordinary body publication', async () => {
-    const seeded = await seedPendingPublicationIntent('pages.update.confluence');
+  it.each([false, true])('resets derived work when recovering an ordinary body publication (diverged: %s)', async (diverged) => {
+    const seeded = await seedPendingPublicationIntent('pages.update.confluence', diverged);
     mockRequest.mockResolvedValueOnce(jsonResponse({
       id: seeded.confluenceId,
       title: seeded.remote.title,
@@ -776,12 +785,14 @@ describeDb('ordinary page-write reconciliation', () => {
     const page = await query<{
       title: string;
       body_storage: string;
+      version: number;
+      remote_version: number;
       summary_status: string;
       summary_retry_count: number;
       quality_status: string;
       quality_retry_count: number;
     }>(
-      `SELECT title, body_storage, summary_status, summary_retry_count,
+      `SELECT title, body_storage, version, remote_version, summary_status, summary_retry_count,
               quality_status, quality_retry_count
          FROM pages WHERE id = $1`,
       [seeded.pageId],
@@ -789,6 +800,8 @@ describeDb('ordinary page-write reconciliation', () => {
     expect(page.rows[0]).toEqual({
       title: seeded.remote.title,
       body_storage: seeded.remote.storage,
+      version: diverged ? 7 : 2,
+      remote_version: seeded.remote.version,
       summary_status: 'pending',
       summary_retry_count: 0,
       quality_status: 'pending',
@@ -796,8 +809,8 @@ describeDb('ordinary page-write reconciliation', () => {
     });
   });
 
-  it('does not reset derived work when recovering draft publication mirroring', async () => {
-    const seeded = await seedPendingPublicationIntent('pages.draft.publish.confluence');
+  it.each([false, true])('retains derived work when recovering draft publication mirroring (diverged: %s)', async (diverged) => {
+    const seeded = await seedPendingPublicationIntent('pages.draft.publish.confluence', diverged);
     mockRequest.mockResolvedValueOnce(jsonResponse({
       id: seeded.confluenceId,
       title: seeded.remote.title,
@@ -812,16 +825,20 @@ describeDb('ordinary page-write reconciliation', () => {
     })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
 
     const page = await query<{
+      version: number;
+      remote_version: number;
       summary_status: string;
       summary_retry_count: number;
       quality_status: string;
       quality_retry_count: number;
     }>(
-      `SELECT summary_status, summary_retry_count, quality_status, quality_retry_count
+      `SELECT version, remote_version, summary_status, summary_retry_count, quality_status, quality_retry_count
          FROM pages WHERE id = $1`,
       [seeded.pageId],
     );
     expect(page.rows[0]).toEqual({
+      version: diverged ? 7 : 2,
+      remote_version: seeded.remote.version,
       summary_status: 'summarized',
       summary_retry_count: 4,
       quality_status: 'analyzed',

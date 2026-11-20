@@ -114,6 +114,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
   let compactPutReply = false;
   let readbackStatus = 200;
   let historicalStorage: string | null = null;
+  let strictProviderVersion: number | null = null;
   let providerPage: {
     id: string;
     type: string;
@@ -151,6 +152,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
           authorization: request.headers.authorization,
           body,
         });
+        if (strictProviderVersion !== null && body.version.number !== strictProviderVersion + 1) {
+          sendJson(response, 409, { message: 'Confluence requires its next version' });
+          return;
+        }
         providerPage = {
           id,
           type: 'page',
@@ -227,6 +232,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     readbackStatus = 200;
     historicalStorage = null;
     providerPage = null;
+    strictProviderVersion = null;
     afterConfluencePut = null;
     ownedRedisKeys.clear();
     ownedUserIds.clear();
@@ -680,37 +686,49 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
   it.each([
     ['a real title', 'Earlier roadmap', false, 'Earlier roadmap'],
-    ['a placeholder with a local body', 'v6', false, 'Current roadmap'],
-    ['a placeholder with a lazy body', 'v6', true, 'Current roadmap'],
+    ['a placeholder with a local body', 'v4', false, 'Current roadmap'],
+    ['a placeholder with a lazy body', 'v4', true, 'Current roadmap'],
   ] as const)('publishes the correct title through the durable intent for %s', async (_label, historyTitle, lazy, title) => {
     await configureConfluence('OPS');
     const confluenceId = 'restore-title';
     const pageId = await seedPage({
       source: 'confluence', confluenceId, spaceKey: 'OPS', visibility: 'shared',
-      ownerId: null, version: 7, title: 'Current roadmap',
+      ownerId: null, version: 6, title: 'Current roadmap',
       bodyHtml: '<p>Live body</p>', bodyText: 'Live body',
     });
     const storage = '<p>Historical body</p>';
-    await seedVersion(pageId, 6, historyTitle, lazy ? null : storage, lazy ? null : 'Historical body');
-    await seedVersion(pageId, 7, 'v7', null, null, { author: 'Confluence author' });
+    await seedVersion(pageId, 4, historyTitle, lazy ? null : storage, lazy ? null : 'Historical body');
+    await seedVersion(pageId, 6, 'v6', null, null, { author: 'Confluence author' });
+    await query('UPDATE pages SET remote_version = 5 WHERE id = $1', [pageId]);
+    strictProviderVersion = 5;
     if (lazy) historicalStorage = storage;
 
+    if (!lazy) {
+      const stale = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/versions/4/restore`,
+        headers: { 'x-test-user': userId },
+        payload: { version: 5 },
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(confluenceRequests).toEqual([]);
+    }
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/6/restore`,
+      url: `/api/pages/${pageId}/versions/4/restore`,
       headers: { 'x-test-user': userId },
-      payload: { version: 7 },
+      payload: { version: 6 },
     });
 
     expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toMatchObject({ title, version: 8, pushedToConfluence: true });
+    expect(response.json()).toMatchObject({ title, version: 7, pushedToConfluence: true });
     expect(confluenceRequests.map(({ method }) => method)).toEqual(lazy ? ['GET', 'PUT'] : ['PUT']);
-    expect(confluenceRequests.at(-1)?.body).toMatchObject({ title, body: { storage: { value: storage } } });
-    expect((await query('SELECT title, body_html FROM pages WHERE id = $1', [pageId])).rows)
-      .toEqual([{ title, body_html: storage }]);
+    expect(confluenceRequests.at(-1)?.body).toMatchObject({ title, version: { number: 6 }, body: { storage: { value: storage } } });
+    expect((await query('SELECT title, body_html, version, remote_version FROM pages WHERE id = $1', [pageId])).rows)
+      .toEqual([{ title, body_html: storage, version: 7, remote_version: 6 }]);
     expect((await query(
       `SELECT title, body_html, body_text, author FROM page_versions
-        WHERE page_id = $1 AND version_number = 7`,
+        WHERE page_id = $1 AND version_number = 6`,
       [pageId],
     )).rows).toEqual([{
       title: 'Current roadmap', body_html: '<p>Live body</p>', body_text: 'Live body', author: 'Confluence author',
@@ -722,7 +740,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     );
     expect(intent.rows).toEqual([{
       status: 'completed',
-      digest: confluencePagePutDigest({ pageId, confluenceId, title, bodyStorage: storage, expectedRemoteVersion: 7 }),
+      digest: confluencePagePutDigest({ pageId, confluenceId, title, bodyStorage: storage, expectedRemoteVersion: 5 }),
     }]);
   });
 
@@ -997,6 +1015,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       bodyText: 'Live compact body',
     });
     await seedVersion(pageId, 1, 'Compact historical', '<p>Compact restored body</p>', 'Compact restored body');
+    await query('UPDATE pages SET remote_version = 2 WHERE id = $1', [pageId]);
     compactPutReply = true;
     readbackStatus = 403;
 
@@ -1008,12 +1027,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     });
     expect(response.statusCode).toBe(403);
     expect((await query(
-      'SELECT title, body_text, version FROM pages WHERE id = $1',
+      'SELECT title, body_text, version, remote_version FROM pages WHERE id = $1',
       [pageId],
     )).rows).toEqual([{
       title: 'Live compact title',
       body_text: 'Live compact body',
       version: 3,
+      remote_version: 2,
     }]);
     const pending = await query<{
       id: string;
@@ -1050,12 +1070,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       status: 'reconciled_applied',
     });
     expect((await query(
-      'SELECT title, body_text, version FROM pages WHERE id = $1',
+      'SELECT title, body_text, version, remote_version FROM pages WHERE id = $1',
       [pageId],
     )).rows).toEqual([{
       title: 'Compact historical',
       body_text: 'Compact restored body',
       version: 4,
+      remote_version: 3,
     }]);
     expect((await query(
       `SELECT title, body_html, body_text

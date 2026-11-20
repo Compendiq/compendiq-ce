@@ -537,8 +537,13 @@ describe.skipIf(!dbAvailable)('embedPage settle path clears derived vector state
 
   it.each([
     { write: 'draft autosave', sql: "UPDATE pages SET draft_body_html = '<p>Unpublished draft</p>', draft_updated_at = NOW() WHERE id = $1" },
+    {
+      write: 'Confluence counter advance',
+      prepare: "UPDATE pages SET source = 'confluence', remote_version = version WHERE id = $1",
+      sql: 'UPDATE pages SET version = version + 1, remote_version = version + 1 WHERE id = $1',
+    },
     { write: 'label edit', sql: "UPDATE pages SET labels = ARRAY['ops'] WHERE id = $1" },
-  ] as const)('still clears after a $write moved content_revision past the snapshot without touching title or body', async ({ sql }) => {
+  ] as const)('still clears after a $write moved content_revision past the snapshot without touching title or body', async (write) => {
     // processDirtyPages hands each page the revision its batch SELECT read; a
     // non-text protected write can move it before the page's turn. The fence
     // rejects a moved revision only when the title or body_html differ.
@@ -547,8 +552,9 @@ describe.skipIf(!dbAvailable)('embedPage settle path clears derived vector state
     const revisionOf = async () => (await query<{ content_revision: string }>(
       'SELECT content_revision::text FROM pages WHERE id = $1', [x],
     )).rows[0]!.content_revision;
+    if ('prepare' in write) await query(write.prepare, [x]);
     const snapshotRevision = await revisionOf();
-    await query(sql, [x]);
+    await query(write.sql, [x]);
     expect(BigInt(await revisionOf())).toBeGreaterThan(BigInt(snapshotRevision));
 
     expect(await embedPage('user-1', x, 'Ops notes', 'DEV', SHORT_BODY, { contentRevision: snapshotRevision })).toBe(0);
