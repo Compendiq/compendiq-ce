@@ -123,12 +123,16 @@ describe.skipIf(!available)('embedding HTTP publication policy guards', () => {
         else if (change.startsWith('context_')) expect(current.embedding_status).not.toBe('failed');
       }
     } finally {
+      // Close the handler first: a request still in flight must not observe a
+      // dropped shadow column and turn cleanup into a flaky failure.
+      server.closeAllConnections();
+      const { promise: closed, resolve: onClosed } = Promise.withResolvers<void>();
+      server.close(() => onClosed());
+      await closed;
       if (change.startsWith('shadow_')) {
         await query('ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next');
         await query('ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next');
       }
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });
