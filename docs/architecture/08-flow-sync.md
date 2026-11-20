@@ -56,7 +56,7 @@ sequenceDiagram
             opt existing row behind the upstream version (#35;1772)
                 S->>DB: BEGIN#59; AI-policy lock + SELECT … FOR UPDATE (source = 'confluence')<br/>conflict policy + local_modified_at > last_synced
                 alt local edit under compendiq-wins / manual-review
-                    S->>DB: manual-review only: INSERT pending_sync_versions,<br/>SET conflict_pending#59; COMMIT
+                    S->>DB: manual-review only: INSERT pending_sync_versions (title and bodies),<br/>SET conflict_pending#59; COMMIT
                     S->>DB: audit SYNC_CONFLICT_DETECTED (kept_local / queued_for_review)
                     Note over S,DB: no attachment cleanup, download, snapshot or upsert#59;<br/>restriction sync still runs
                 else incoming wins (confluence-wins, or no local edit)
@@ -194,11 +194,12 @@ sequenceDiagram
   Confluence's new version is routine. With a local edit, `compendiq-wins` keeps
   the row (`SYNC_CONFLICT_DETECTED`, `kept_local`) and `manual-review` queues
   the incoming version (`pending_sync_versions`, `conflict_pending`,
-  `queued_for_review`). The queue stores bodies, not titles, so a rename-only
-  conflict is an entry with an empty body diff: *Keep local* keeps the local
-  title, and *Take Confluence* applies the (equal) body, Confluence's version
-  number and cleared markers but not Confluence's title, which reaches the page
-  only with Confluence's next edit of it; nothing is lost. Neither policy
+  `queued_for_review`). Each queued row records the incoming title and bodies. A
+  rename-only conflict has an empty body diff. Showing the title difference
+  requires the Enterprise API to return the queued title. Applying it with
+  *Take Confluence* requires the Enterprise resolver to write the title in the
+  admitted page-write transaction (Compendiq/compendiq-ee#315). Older resolvers
+  and rows with a NULL title preserve the local title. Neither policy
   cleans, downloads, snapshots, upserts or resets collaborative state, and
   restriction sync still runs. Otherwise (`confluence-wins`, or no local edit,
   which is a routine update with no audit) the cache is cleaned and
