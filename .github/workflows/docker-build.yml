@@ -161,11 +161,12 @@ jobs:
       # historically-hoisted four (`p-limit`, `ipaddr.js`, two OpenTelemetry
       # packages) are not sufficient: collab TipTap packages demote and
       # `collab-schema.js` imports them on boot. The PDF render reads every
-      # vendored font from dist (#1729): an image built without the backend's
-      # build script has none, and every export would fail.
+      # vendored font from dist (#1729) and startup migrations read every SQL
+      # file from dist/core/db/migrations (#2012): an image built without the
+      # backend's build script would fail PDF export or boot migrations.
       smoke_test: |
         docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
-          "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/auto-instrumentations-node'); await import('@opentelemetry/instrumentation-http'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); const { generatePdf } = await import('./dist/core/services/pdf-service.js'); await generatePdf('<p>Установка 手順 한국어</p>', {}); console.log('runtime require smoke ok');"
+          "const fs = await import('node:fs'); await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/auto-instrumentations-node'); await import('@opentelemetry/instrumentation-http'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); const { generatePdf } = await import('./dist/core/services/pdf-service.js'); await generatePdf('<p>Установка 手順 한국어</p>', {}); const migs = fs.readdirSync('./dist/core/db/migrations', { withFileTypes: true }); if (!migs.some((d) => d.isFile() && d.name.endsWith('.sql')) || migs.some((d) => d.name === 'migrations' || d.name.endsWith('.ts') || d.name.endsWith('.map') || /\.test\./.test(d.name))) { throw new Error('invalid dist/core/db/migrations'); } console.log('runtime require smoke ok');"
 
   docker-frontend:
     name: Frontend Image

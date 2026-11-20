@@ -276,9 +276,18 @@ jobs:
       - name: Build contracts, backend and frontend
         run: npm run build
 
-      # Match backend/Dockerfile: tsc does not emit the SQL runtime assets.
-      - name: Install backend migrations
-        run: cp -R backend/src/core/db/migrations backend/dist/core/db/migrations
+      # `npm run build -w backend` copies SQL migrations into dist (#2012);
+      # verify the built tree matches src 1:1 with no nested copy or test files.
+      - name: Verify backend build includes SQL migrations
+        run: |
+          set -euo pipefail
+          test -d backend/dist/core/db/migrations
+          test ! -d backend/dist/core/db/migrations/migrations
+          src_sql=$(cd backend/src/core/db/migrations && find . -maxdepth 1 -type f -name '*.sql' | LC_ALL=C sort)
+          dist_sql=$(cd backend/dist/core/db/migrations && find . -maxdepth 1 -type f -name '*.sql' | LC_ALL=C sort)
+          test -n "$src_sql"
+          test "$src_sql" = "$dist_sql"
+          test -z "$(find backend/dist/core/db/migrations \( -name '*.ts' -o -name '*.map' -o -name '*.test.*' \))"
 
       - name: Install Chromium and system dependencies
         run: |
