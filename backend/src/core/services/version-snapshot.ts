@@ -5,9 +5,9 @@ import { logger } from '../utils/logger.js';
 
 /**
  * Upsert Confluence version metadata (editedAt, author, message) for a page
- * version. Inserts a new metadata-only row when none exists; updates the
- * metadata columns on conflict, using COALESCE so existing values are never
- * overwritten with NULL. Idempotent.
+ * version. Inserts a new metadata-only row when none exists and fills
+ * missing metadata on conflict. Keep the title and body of every existing
+ * snapshot. Idempotent.
  *
  * Lives in core so version-backfill (confluence domain) can call it without
  * crossing the domain boundary into knowledge.
@@ -22,12 +22,16 @@ export async function upsertVersionMetadata(
     `INSERT INTO page_versions (page_id, version_number, title, edited_at, author, message)
      VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (page_id, version_number) DO UPDATE SET
-       edited_at = COALESCE(EXCLUDED.edited_at, page_versions.edited_at),
-       author    = COALESCE(EXCLUDED.author, page_versions.author),
-       message   = COALESCE(EXCLUDED.message, page_versions.message),
-       title     = EXCLUDED.title`,
+       edited_at = COALESCE(page_versions.edited_at, EXCLUDED.edited_at),
+       author    = COALESCE(page_versions.author, EXCLUDED.author),
+       message   = COALESCE(page_versions.message, EXCLUDED.message)`,
     [pageId, versionNumber, title, meta.editedAt, meta.author, meta.message],
   );
+}
+
+/** Version-list imports label title-less history with the row's own version number. */
+export function isVersionPlaceholderTitle(title: string, versionNumber: number): boolean {
+  return title === `v${versionNumber}`;
 }
 
 /**

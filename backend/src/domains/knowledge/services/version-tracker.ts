@@ -11,6 +11,7 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { getHistoricalBody } from '../../confluence/services/version-backfill.js';
 import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
 import { PageWriteError } from '../../../core/services/page-write-admission.js';
+import { isVersionPlaceholderTitle } from '../../../core/services/version-snapshot.js';
 
 // Re-export from core so existing consumers keep working
 export { saveVersionSnapshot, saveVersionSnapshotByPageId } from '../../../core/services/version-snapshot.js';
@@ -241,6 +242,7 @@ export async function restoreVersion(
     );
 
     const newVersion = live.version + 1;
+    const restoredTitle = isVersionPlaceholderTitle(target.title, targetVersion) ? live.title : target.title;
     const restoredBodyText = target.body_text ?? htmlToText(target.body_html);
     await txClient.query(
       `UPDATE pages SET
@@ -258,7 +260,7 @@ export async function restoreVersion(
        WHERE id = $1`,
       [
         pageId,
-        target.title,
+        restoredTitle,
         target.body_html,
         restoredBodyText,
         newVersion,
@@ -269,7 +271,7 @@ export async function restoreVersion(
     if (ownsTransaction) await txClient.query('COMMIT');
     return {
       pageId,
-      title: target.title,
+      title: restoredTitle,
       newVersion,
       bodyHtml: target.body_html,
       bodyText: restoredBodyText,

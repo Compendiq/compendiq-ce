@@ -209,6 +209,49 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
     expect(Number(db.rows[0]!.count)).toBe(total);
   });
 
+  it('preserves authored titles and bodies while filling missing metadata on repeated history import', async () => {
+    const pageId = await seedConfluencePage('2038-import', 6);
+    await query(
+      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, edited_at, author, message)
+       VALUES ($1, 5, 'Original roadmap', '<p>Original body</p>', 'Original body', NULL, 'Local author', NULL),
+              ($1, 4, 'Earlier roadmap', '<p>Earlier body</p>', 'Earlier body', '2025-01-01T00:00:00Z', NULL, 'Local message')`,
+      [pageId],
+    );
+    mockDataCenter('2038-import', 6);
+    const readImportedRows = async () => (await query(
+      `SELECT version_number, title, body_html, body_text, edited_at, author, message FROM page_versions
+        WHERE page_id = $1 AND version_number IN (3, 4, 5) ORDER BY version_number DESC`,
+      [pageId],
+    )).rows;
+
+    const first = await app.inject({ url: `/api/pages/${pageId}/versions` });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ backfillStatus: 'ok' });
+    expect(first.json().versions).toContainEqual(expect.objectContaining({
+      versionNumber: 5, title: 'Original roadmap', isCurrent: false,
+    }));
+    const history = await readImportedRows();
+    expect(history).toEqual([
+      {
+        version_number: 5, title: 'Original roadmap', body_html: '<p>Original body</p>', body_text: 'Original body',
+        edited_at: new Date('2026-01-01T00:00:05Z'), author: 'Local author', message: 'edit 5',
+      },
+      {
+        version_number: 4, title: 'Earlier roadmap', body_html: '<p>Earlier body</p>', body_text: 'Earlier body',
+        edited_at: new Date('2025-01-01T00:00:00Z'), author: 'author-4', message: 'Local message',
+      },
+      {
+        version_number: 3, title: 'v3', body_html: null, body_text: null,
+        edited_at: new Date('2026-01-01T00:00:03Z'), author: 'author-3', message: 'edit 3',
+      },
+    ]);
+
+    const second = await app.inject({ url: `/api/pages/${pageId}/versions` });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ backfillStatus: 'ok' });
+    expect(await readImportedRows()).toEqual(history);
+  });
+
   it('confirms a sparse restore response with exact provider readback before publishing', async () => {
     const pageId = await seedConfluencePage('780restore', 5);
     await query(

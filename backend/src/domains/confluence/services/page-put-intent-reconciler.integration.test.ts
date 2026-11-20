@@ -310,11 +310,15 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
     await rm(attachmentsDir, { recursive: true, force: true });
   });
 
-  it.each(['page.ai_apply', 'page.version_restore'] as const)(
-    'settles %s as applied only when current E+1 has the intended digest',
-    async (kind) => {
+  it.each([
+    ['page.ai_apply', false],
+    ['page.version_restore', false],
+    ['page.version_restore', true],
+  ] as const)(
+    'settles %s when current E+1 has the intended digest (placeholder history: %s)',
+    async (kind, placeholderHistory) => {
       const expectedRemoteVersion = 5;
-      const intendedTitle = 'Intended title';
+      const intendedTitle = placeholderHistory ? 'Local title' : 'Intended title';
       const intendedStorage = '<p>intended storage</p>';
       const intent = await seedPendingIntent({
         kind,
@@ -335,10 +339,16 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
         );
         unrelatedImprovementId = unrelated.rows[0]!.id;
       } else {
+        if (placeholderHistory) {
+          await query(
+            "UPDATE page_versions SET title = 'v2' WHERE page_id = $1 AND version_number = 2",
+            [intent.pageId],
+          );
+        }
         await query(
           `INSERT INTO page_versions (page_id, version_number, title)
-           VALUES ($1, 5, 'Local title')`,
-          [intent.pageId],
+           VALUES ($1, 5, $2)`,
+          [intent.pageId, placeholderHistory ? 'v5' : 'Local title'],
         );
       }
       const pageCacheKey = `kb:${originalActorId}:pages:article:${intent.pageId}`;
