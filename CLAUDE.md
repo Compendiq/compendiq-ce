@@ -95,6 +95,8 @@ returns `false`, it applies the body again), audits, then fires
 `publish('smtp:config:changed', {})` without awaiting it (#1757); every replica
 re-reads the rows on that signal. Never put a setting on the bus.
 
+Confluence retries transport failures only for GET and HEAD. Check undici and OS error codes through causes and aggregate connection attempts (#1916).
+
 ## Build
 
 ```bash
