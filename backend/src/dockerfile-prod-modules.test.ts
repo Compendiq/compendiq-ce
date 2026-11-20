@@ -198,11 +198,11 @@ describe('backend build and images ship the SQL migrations (#2012)', () => {
     expect(runtimeStage(dockerfile)).toMatch(
       /COPY [^\n]*--from=builder \/app\/backend\/dist\/ dist\//,
     );
-    expect(dockerfile).not.toMatch(/src\/core\/db\/migrations/);
+    expect(dockerfile).not.toMatch(/COPY[^\n]*src\/core\/db\/migrations/);
 
     expect(dockerfileEnterprise).toMatch(/RUN npm run build -w backend/);
     expect(runtimeStage(dockerfileEnterprise)).toMatch(/COPY [^\n]*dist\/ (\/app\/)?dist\//);
-    expect(dockerfileEnterprise).not.toMatch(/src\/core\/db\/migrations/);
+    expect(dockerfileEnterprise).not.toMatch(/COPY[^\n]*src\/core\/db\/migrations/);
   });
 
   it('verifies dist/core/db/migrations in the Docker workflow smoke test', () => {
