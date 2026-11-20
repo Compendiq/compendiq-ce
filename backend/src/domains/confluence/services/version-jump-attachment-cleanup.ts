@@ -10,7 +10,7 @@
  * edit. So the cleanup is selective, per page:
  *
  *  - **incoming**: what the new upstream `body_storage` references, i.e.
- *    `getExpectedAttachmentFilenames` (image refs, draw.io `<name>.png`) plus
+ *    every image ref regardless of extension, draw.io `<name>.png`, plus
  *    each diagram's `<name>.drawio` source and `<name>.drawio.png` preview.
  *    These are removed ON PURPOSE: the downloaders skip a file already on
  *    disk and cached names carry no version, so a same-name attachment
@@ -46,7 +46,8 @@ import {
 } from '../../../core/services/attachment-store.js';
 import { clearAttachmentFailures, getRedisClient } from '../../../core/services/redis-cache.js';
 import { markPageImagesDirtyByAttachmentKey } from '../../../core/services/image-analysis-dirty.js';
-import { getExpectedAttachmentParts } from './attachment-handler.js';
+import { extractImageReferences } from '../../../core/services/image-references.js';
+import { extractDrawioDiagramNames, getExpectedAttachmentParts } from './attachment-handler.js';
 import { collectAttachmentUrlReferences, type AttachmentKeepSets } from './attachment-sweep-service.js';
 
 /** The URL prefix of this cache. The collector matches no other spelling of it. */
@@ -117,7 +118,10 @@ function addStorageReferences(into: Set<string>, storage: string, spaceKey: stri
 export function selectVersionJumpCacheDeletions(input: VersionJumpSelectionInput): string[] {
   const { local } = input;
   const incoming = new Set<string>();
-  addStorageReferences(incoming, input.incomingStorage, input.spaceKey);
+  for (const ref of extractImageReferences(input.incomingStorage, input.spaceKey)) {
+    incoming.add(path.basename(ref.localFilename));
+  }
+  for (const name of extractDrawioDiagramNames(input.incomingStorage)) addDiagramFiles(incoming, name);
 
   // Storage columns get the URL pass too: storage can carry `/api/attachments/…`
   // URLs verbatim (the sweep's keep-set reads them the same way).

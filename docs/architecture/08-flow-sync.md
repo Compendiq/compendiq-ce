@@ -1178,7 +1178,7 @@ selective:
 
 | Set | Read from | Effect |
 |---|---|---|
-| **incoming** | the new upstream `body_storage`: `getExpectedAttachmentFilenames` (image refs, draw.io `<name>.png`) plus `<name>.drawio` and `<name>.drawio.png` for every diagram | removed **on purpose**: the downloaders skip a file already on disk and cached names carry no version, so a same-name attachment changed upstream would otherwise be served stale |
+| **incoming** | the new upstream `body_storage`: all `<ac:image>` references regardless of extension, draw.io `<name>.png` plus `<name>.drawio` and `<name>.drawio.png` for every diagram | removed **on purpose**: the downloaders skip a file already on disk and cached names carry no version, so a same-name attachment changed upstream would otherwise be served stale |
 | **localKeep** | this page's `body_html`, `draft_body_html`, `body_storage`, `draft_body_storage` and its `page_versions.body_html` rows: `/api/attachments/…` URLs (`collectAttachmentUrlReferences`), draw.io wrappers' `data-diagram-name` (HTML written before 2026-10-28 has no `<name>.drawio` locator, Markdown-converted HTML no URL at all) and storage refs (`getExpectedAttachmentFilenames`); a diagram any of them names keeps all three files | kept, unless also incoming |
 
 A cached file is removed when it is in *incoming* or not in *localKeep*; every
