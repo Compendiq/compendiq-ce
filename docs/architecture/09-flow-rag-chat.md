@@ -601,9 +601,10 @@ replacing them; ordering is unchanged.
 On the wire, `/llm/ask` sources and `/api/search` items expose the cosine as
 **`similarity`** (`null` when none was measured). Final citation and result
 order comes from the retrieval pipeline and array position (after fusion,
-ranking prior, rerank, MMR, identifier pins, and `/llm/ask` section placement;
-see ADR-027 D12); `score` is retained only as an informational/legacy field and
-must never be rendered or used to re-sort. A `null` similarity
+ranking prior, rerank, MMR, identifier pins, the deep-search merge, and
+`/llm/ask` section placement; see ADR-027 D12); `score` is retained only as an
+informational/legacy field and must never be rendered or used to re-sort. A
+`null` similarity
 renders **no** badge and **no** percentage, because a keyword-only hit has no
 similarity rather than a similarity of zero.
 
