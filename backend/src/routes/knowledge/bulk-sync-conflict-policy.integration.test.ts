@@ -28,6 +28,9 @@ import {
   type SyncConflictPolicy,
 } from '../../core/services/sync-conflict-policy-service.js';
 import { encryptPat } from '../../core/utils/crypto.js';
+import { ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
+import { setRateLimit } from '../../domains/confluence/services/confluence-rate-limiter.js';
+import { __internal as sync } from '../../domains/confluence/services/sync-service.js';
 import {
   insertTestRuntime,
   isDbAvailable,
@@ -43,8 +46,7 @@ const dbAvailable = await isDbAvailable();
 
 interface UpstreamPage { title: string; version: number; storage: string }
 const upstream = new Map<string, UpstreamPage>();
-const server = createServer((request, response) => {
-  request.resume();
+const server = createServer(async (request, response) => {
   const segments = new URL(request.url ?? '/', 'http://confluence.test').pathname.split('/');
   response.setHeader('content-type', 'application/json');
   // Version list (`…/content/{id}/version`), imported when Version History opens.
@@ -57,7 +59,25 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ results, size: results.length, _links: {} }));
     return;
   }
+  if (request.method === 'GET' && segments.at(-1) === 'attachment') {
+    response.end(JSON.stringify({ results: [], size: 0, _links: {} }));
+    return;
+  }
   const page = upstream.get(segments.at(-1) ?? '');
+  if (request.method === 'PUT' && page) {
+    let bytes = '';
+    for await (const chunk of request) bytes += String(chunk);
+    const sent = JSON.parse(bytes);
+    if (sent.version.number !== page.version + 1) {
+      response.writeHead(409).end(JSON.stringify({ message: 'Confluence requires its next version' }));
+      return;
+    }
+    page.title = sent.title;
+    page.storage = sent.body.storage.value;
+    page.version = sent.version.number;
+    response.end(JSON.stringify({ ...sent, id: segments.at(-1), status: 'current' }));
+    return;
+  }
   if (request.method !== 'GET' || !page) {
     response.statusCode = 404;
     response.end('{}');
@@ -90,6 +110,7 @@ interface PageRow {
 
 describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', () => {
   let app: FastifyInstance;
+  let client: ConfluenceClient;
   let userId: string;
   let xId: number;
   let yId: number;
@@ -139,9 +160,9 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
   }
 
   async function versionsOf(id: number) {
-    return (await query<{ version_number: number; title: string; body_html: string | null; body_text: string | null }>(
-      `SELECT version_number, title, body_html, body_text FROM page_versions
-        WHERE page_id = $1 ORDER BY version_number`,
+    return (await query<{ source: string; version_number: number; title: string; body_html: string | null; body_text: string | null }>(
+      `SELECT source, version_number, title, body_html, body_text FROM page_versions
+        WHERE page_id = $1 ORDER BY version_number, source`,
       [id],
     )).rows;
   }
@@ -170,8 +191,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
       .map((entry) => `${entry.versionNumber}${entry.isCurrent ? ' (current)' : ''}`);
   }
 
-  async function historyEntry(id: number, versionNumber: number) {
-    const fetched = await app.inject({ method: 'GET', url: `/api/pages/${id}/versions/${versionNumber}?source=confluence` });
+  async function historyEntry(id: number, versionNumber: number, source: 'local' | 'confluence') {
+    const fetched = await app.inject({ method: 'GET', url: `/api/pages/${id}/versions/${versionNumber}?source=${source}` });
     expect(fetched.statusCode, fetched.body).toBe(200);
     return PageVersionDetailSchema.parse(fetched.json());
   }
@@ -182,6 +203,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     server.once('error', listening.reject);
     server.listen(0, '127.0.0.1', listening.resolve);
     await listening.promise;
+    client = new ConfluenceClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, 'test-pat');
+    setRateLimit(600);
     app = await buildKnowledgeTestApp(() => userId, async (instance) => {
       await instance.register(pagesCrudRoutes, { prefix: '/api' });
       await instance.register(pagesVersionRoutes, { prefix: '/api' });
@@ -222,6 +245,7 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     const closed = Promise.withResolvers<void>();
     server.close((error) => (error ? closed.reject(error) : closed.resolve()));
     await closed.promise;
+    setRateLimit(60);
     await teardownTestDb();
   });
 
@@ -305,16 +329,15 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
 
     expect(response.json()).toEqual({ succeeded: 2, failed: 0, errors: [] });
     const x = await pageRow(xId);
-    // Confluence is behind X (5 < 6): Confluence's text becomes live and the
-    // version stays 6, never lower (no bump: user decision on review r2).
-    expect(x.version).toBe(6);
+    // The live number moves above the saved edit even with Confluence behind.
+    expect(x).toMatchObject({ version: 7, remote_version: 5 });
     expect(x).toMatchObject({ body_html: X.base, local_modified_at: null, local_modified_by: null });
     expect(await pageRow(yId)).toMatchObject({ body_html: Y.upstream, version: 7, local_modified_at: null });
     expect(await versionsOf(xId)).toEqual([
-      { version_number: 6, title: X.title, body_html: X.edit, body_text: htmlToText(X.edit) },
+      { source: 'local', version_number: 6, title: X.title, body_html: X.edit, body_text: htmlToText(X.edit) },
     ]);
     expect(await versionsOf(yId)).toEqual([
-      { version_number: 6, title: Y.title, body_html: Y.edit, body_text: htmlToText(Y.edit) },
+      { source: 'local', version_number: 6, title: Y.title, body_html: Y.edit, body_text: htmlToText(Y.edit) },
     ]);
     for (const [id, confluenceId, before] of [[xId, X.confluenceId, xBefore], [yId, Y.confluenceId, yBefore]] as const) {
       expect(await syncAuditsOf(id)).toEqual([{
@@ -331,7 +354,7 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     expect([...await pendingOf(xId), ...await pendingOf(yId)]).toEqual([]);
   });
 
-  it('keeps the snapshot row and the version when Confluence edited the page to the same number', async () => {
+  it('advances the live revision when Confluence edited the page to the same number', async () => {
     // Both sides moved 5 → 6: Bob locally, Carol in Confluence.
     upstream.set(X.confluenceId, { title: X.title, version: 6, storage: '<p>X carol upstream v6</p>' });
     await standaloneEdit(xId, X.title, X.edit);
@@ -339,12 +362,12 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
 
     expect((await bulkSync([X.confluenceId])).json()).toEqual({ succeeded: 1, failed: 0, errors: [] });
 
-    // Carol's text is live at the same number; Bob's v6 is kept in page_versions.
+    // Carol's text is live at v7 and Bob's v6 is kept in page_versions.
     expect(await pageRow(xId)).toMatchObject({
-      body_html: '<p>X carol upstream v6</p>', version: 6, local_modified_at: null,
+      body_html: '<p>X carol upstream v6</p>', version: 7, remote_version: 6, local_modified_at: null,
     });
     expect(await versionsOf(xId)).toEqual([
-      { version_number: 6, title: X.title, body_html: X.edit, body_text: htmlToText(X.edit) },
+      { source: 'local', version_number: 6, title: X.title, body_html: X.edit, body_text: htmlToText(X.edit) },
     ]);
     expect(await syncAuditsOf(xId)).toEqual([expect.objectContaining({ action: 'SYNC_OVERWROTE_LOCAL_EDITS' })]);
   });
@@ -409,7 +432,7 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     await setPolicy('confluence-wins');
     await query(
       `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
-       VALUES ($1, 'confluence', 6, $2, $3, $4)`,
+       VALUES ($1, 'local', 6, $2, $3, $4)`,
       [xId, title, html, htmlToText(html)],
     );
 
@@ -425,12 +448,12 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     ]);
     expect(await pageRow(xId)).toMatchObject({ title: X.title, body_html: X.edit, version: 6 });
     expect(await versionsOf(xId)).toEqual([
-      { version_number: 6, title, body_html: html, body_text: htmlToText(html) },
+      { source: 'local', version_number: 6, title, body_html: html, body_text: htmlToText(html) },
     ]);
     expect(await syncAuditsOf(xId)).toEqual([]);
   });
 
-  it('stores the local edit in the body-less history row that opening Version History imported', async () => {
+  it('stores the local edit alongside the Confluence row that Version History imported', async () => {
     // Opening Version History imports one metadata-only row per Confluence version.
     expect(await historyOf(yId)).toContain('5 (current)');
     expect((await versionsOf(yId)).map((entry) => [entry.version_number, entry.body_html]))
@@ -442,11 +465,79 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
 
     expect(response.json()).toEqual({ succeeded: 1, failed: 0, errors: [] });
     expect(await pageRow(yId)).toMatchObject({ body_html: Y.upstream, version: 7, local_modified_at: null });
-    expect((await versionsOf(yId)).find((entry) => entry.version_number === 6))
-      .toEqual({ version_number: 6, title: Y.title, body_html: Y.edit, body_text: htmlToText(Y.edit) });
+    expect((await versionsOf(yId)).filter((entry) => entry.version_number === 6)).toEqual([
+      { source: 'confluence', version_number: 6, title: 'v6', body_html: null, body_text: null },
+      { source: 'local', version_number: 6, title: Y.title, body_html: Y.edit, body_text: htmlToText(Y.edit) },
+    ]);
     expect(await syncAuditsOf(yId)).toEqual([expect.objectContaining({ action: 'SYNC_OVERWROTE_LOCAL_EDITS' })]);
     // Confluence is ahead (7 > 6), so the stored edit is history below the live number.
-    expect(await historyEntry(yId, 6)).toMatchObject({ bodyHtml: Y.edit, isCurrent: false });
+    expect(await historyEntry(yId, 6, 'local')).toMatchObject({ bodyHtml: Y.edit, isCurrent: false });
+  });
+
+  describe.each(['bulk Re-sync', 'scheduled version jump'] as const)('%s history', (path) => {
+    it.each([
+      [5, false], [5, true],
+      [6, false], [6, true],
+      [7, false], [7, true],
+    ] as const)('restores the overwritten edit after provider v%i (integration enabled: %s)', async (incoming, enabled) => {
+      const editTitle = 'Bob’s local title';
+      await standaloneEdit(xId, editTitle, X.edit);
+      await setPolicy('confluence-wins');
+      const fetched = { title: 'Upstream title', version: incoming, storage: '<p>Upstream document</p>' };
+      upstream.set(X.confluenceId, fetched);
+
+      if (path === 'bulk Re-sync') {
+        expect((await bulkSync([X.confluenceId])).json()).toEqual({ succeeded: 1, failed: 0, errors: [] });
+      } else {
+        if (incoming === 5) {
+          // Upstream advanced 4 → 5 while the local edit is already at 6.
+          await query('UPDATE pages SET remote_version = 4 WHERE id = $1', [xId]);
+        }
+        const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+        await sync.syncPage(client, userId, 'DEV', { id: X.confluenceId }, new Date(), new Map(), counts,
+          crypto.randomUUID());
+        expect(counts.pagesUpdated).toBe(1);
+      }
+      expect(await pageRow(xId)).toMatchObject({
+        title: fetched.title, body_html: fetched.storage, version: 7, remote_version: incoming,
+      });
+
+      await query('UPDATE user_settings SET confluence_enabled = $2 WHERE user_id = $1', [userId, enabled]);
+      const list = await app.inject({ url: `/api/pages/${xId}/versions` });
+      expect(list.statusCode, list.body).toBe(200);
+      expect(PageVersionsResponseSchema.parse(list.json()).versions).toContainEqual(expect.objectContaining({
+        source: 'local', versionNumber: 6, isCurrent: false, title: editTitle,
+      }));
+      expect(await historyEntry(xId, 6, 'local')).toMatchObject({
+        source: 'local', versionNumber: 6, isCurrent: false, title: editTitle, bodyHtml: X.edit,
+      });
+      const restored = await app.inject({
+        method: 'POST', url: `/api/pages/${xId}/versions/6/restore?source=local`, payload: { version: 7 },
+      });
+      expect(restored.statusCode, restored.body).toBe(200);
+      expect(await pageRow(xId)).toMatchObject({
+        title: editTitle, body_html: X.edit, version: 8, remote_version: incoming + Number(enabled),
+      });
+      expect(upstream.get(X.confluenceId)).toEqual(enabled
+        ? { title: editTitle, version: incoming + 1, storage: X.edit }
+        : { title: 'Upstream title', version: incoming, storage: '<p>Upstream document</p>' });
+      expect((await query("SELECT id FROM page_write_intents WHERE $1 = ANY(page_ids) AND status = 'pending'", [xId])).rows)
+        .toEqual([]);
+    });
+  });
+
+  it('publishes an editor save after overwriting a local edit while Confluence is behind', async () => {
+    await standaloneEdit(xId, X.title, X.edit);
+    await setPolicy('confluence-wins');
+    expect((await bulkSync([X.confluenceId])).json()).toEqual({ succeeded: 1, failed: 0, errors: [] });
+    const published = await app.inject({
+      method: 'PUT', url: `/api/pages/${xId}`, payload: { title: 'Published', bodyHtml: '<p>New edit</p>', version: 7 },
+    });
+    expect(published.statusCode, published.body).toBe(200);
+    expect(await pageRow(xId)).toMatchObject({ title: 'Published', version: 8, remote_version: 6 });
+    expect(upstream.get(X.confluenceId)).toEqual({ title: 'Published', version: 6, storage: '<p>New edit</p>' });
+    expect((await query("SELECT id FROM page_write_intents WHERE $1 = ANY(page_ids) AND status = 'pending'", [xId])).rows)
+      .toEqual([]);
   });
 
   it('leaves a live collaborative session alone when the upstream version is not newer', async () => {

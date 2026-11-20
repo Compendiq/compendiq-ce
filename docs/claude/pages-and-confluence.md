@@ -433,6 +433,11 @@ upstream edit brings it into the incremental walk or during a full walk.
 A queued manual-review conflict blocks all Confluence content publication and
 leaves local-mode saves available.
 
+Bulk Re-sync and scheduled version jumps save overwritten edits in Local
+history under the same transaction and page row lock. Advance the live
+revision past a stored snapshot even when the provider version is lower.
+Scheduled version-unchanged sync retains its existing overwrite behavior.
+
 Version History identifies rows by `(source, versionNumber)` (#1918). A synced
 live row is Confluence history only when both counters agree and there is no
 local edit marker. Otherwise the live identity is Local. Hide only the exact

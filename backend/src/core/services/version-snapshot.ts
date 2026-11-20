@@ -82,6 +82,8 @@ export async function fillVersionBody(
  * This is ordinary best-effort history, never baseline evidence. A baseline
  * protects only the exact snapshot it explicitly links through
  * `page_baselines.version_snapshot_id`; inserting here creates no such link.
+ * Returns true only when a new snapshot was inserted. With a transaction
+ * client, a savepoint allows the caller to proceed after a history error.
  *
  * Lives in core so both the confluence and knowledge domains can use it
  * without violating domain boundary rules.
@@ -93,19 +95,25 @@ export async function saveVersionSnapshotByPageId(
   bodyHtml: string | null,
   bodyText: string | null,
   source?: PageVersionSource,
-): Promise<void> {
+  client?: PoolClient,
+): Promise<boolean> {
+  if (client) await client.query('SAVEPOINT routine_version_snapshot');
   try {
-    await query(
+    const sql =
       `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
        SELECT id, COALESCE($6::text, CASE WHEN pages.source = 'confluence' THEN 'confluence' ELSE 'local' END),
               $2, $3, $4, $5
          FROM pages WHERE id = $1
-       ON CONFLICT (page_id, source, version_number) DO NOTHING`,
-      [pageId, versionNumber, title, bodyHtml, bodyText, source ?? null],
-    );
+       ON CONFLICT (page_id, source, version_number) DO NOTHING`;
+    const params = [pageId, versionNumber, title, bodyHtml, bodyText, source ?? null];
+    const result = client ? await client.query(sql, params) : await query(sql, params);
+    return result.rowCount === 1;
   } catch (err) {
-    // Never let version tracking break the sync flow
+    if (client) await client.query('ROLLBACK TO SAVEPOINT routine_version_snapshot');
     logger.error({ err, pageId, versionNumber }, 'Failed to save version snapshot');
+    return false;
+  } finally {
+    if (client) await client.query('RELEASE SAVEPOINT routine_version_snapshot');
   }
 }
 

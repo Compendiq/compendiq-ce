@@ -601,7 +601,11 @@ describe('VersionHistory', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview version 6 (Confluence)' }));
     await screen.findByText('Version 6 Preview · Confluence');
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI semantic diff for version 6 (Local)' }));
+    expect(screen.getByRole('button', { name: 'Compare version 6 (Local) with version 6 (Confluence)' }))
+      .toHaveAttribute('title', 'Compare with version 6 (Confluence)');
+    const semanticDiff = screen.getByRole('button', { name: 'AI semantic diff for version 6 (Local) and version 6 (Confluence)' });
+    expect(semanticDiff).toHaveAttribute('title', 'AI semantic diff with version 6 (Confluence)');
+    fireEvent.click(semanticDiff);
     await screen.findByText('Version comparison');
     const request = fetchSpy.mock.calls.find(([url]) => String(url).includes('/semantic-diff'));
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({
@@ -648,7 +652,7 @@ describe('VersionHistory', () => {
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
 
     // Sparkles = AI semantic diff (present on non-oldest versions).
-    fireEvent.click(screen.getAllByTitle('AI semantic diff with previous version')[0]!);
+    fireEvent.click(screen.getByTitle('AI semantic diff with version 2 (Local)'));
 
     await waitFor(() => {
       const diffCall = fetchSpy.mock.calls.find(
@@ -702,7 +706,7 @@ describe('VersionHistory', () => {
     await waitFor(() => expect(screen.getByText('v3')).toBeInTheDocument());
 
     // First compare button = compare current (v3) with previous (v2).
-    fireEvent.click(screen.getAllByTitle('Compare with previous version')[0]!);
+    fireEvent.click(screen.getByTitle('Compare with version 2 (Local)'));
 
     // Wait for the unified diff (both version details resolved).
     const unified = await screen.findByTestId('unified-diff');
@@ -750,7 +754,7 @@ describe('VersionHistory', () => {
     fireEvent.click(screen.getByText('History'));
     await waitFor(() => expect(screen.getByText('v3')).toBeInTheDocument());
 
-    fireEvent.click(screen.getAllByTitle('Compare with previous version')[0]!);
+    fireEvent.click(screen.getByTitle('Compare with version 2 (Local)'));
     await screen.findByTestId('unified-diff');
 
     expect(screen.getByRole('button', { name: 'Close comparison' })).toBeInTheDocument();

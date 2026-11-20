@@ -1125,7 +1125,8 @@ the backend side.
 - Each row displays **Local** or **Confluence**. Detail cache keys, selection,
   comparison and restore include the source and version number, so two rows at
   the same number stay distinct. Restore sends the current local version as its
-  optimistic guard.
+  optimistic guard. Text and AI comparison controls name the adjacent
+  entry's source and number in their tooltips and accessible names.
 - **Rich Document Preview**: Renders formatted HTML using `ArticleViewer` inside a `FeatureErrorBoundary` fallback wrapper, preserving headings, tables, panels, diagrams, and image attachments.
 - **View Mode Toggle**: Users can toggle between **Formatted View** (rich TipTap rendering) and **Raw Text View** (monospaced `<pre>` view).
 - **Graceful Fallback**: Automatically falls back to plain `bodyText` if `bodyHtml` is absent or fails to parse.

@@ -70,9 +70,10 @@ standalone are reconciled by the normal sync conflict handling, exactly as a
 local edit between two syncs always was. A page's **Re-sync** follows the same
 conflict policy: depending on your administrator's setting it keeps your edit,
 queues the Confluence version for review, or replaces your edit after storing a
-copy of it. That copy appears in **Version history** once the page has a newer
-version than your edit; until then an administrator can retrieve it. Entering
-credentials in the setup wizard turns the integration back on for you.
+copy of it. That copy appears immediately as **Local** in **Version history**,
+even when Confluence's version number is equal or lower. Restore it locally
+with the integration off, or publish the restore with the integration on.
+Entering credentials in the setup wizard turns the integration back on for you.
 
 ### The Getting Started checklist
 
@@ -293,6 +294,8 @@ Compendiq tracks version history for all pages:
 After editing with the integration off, you can publish again once it is on.
 Compendiq keeps the local revision shown in the editor and uses Confluence's
 version for the publish. A re-sync applies your site's conflict policy.
+When **Confluence wins** replaces your edit during **Re-sync** or an upstream
+version jump, look for your saved edit under **Local** in Version history.
 With **Compendiq wins**, the next publish sends the kept local content to
 Confluence and can replace changes made there. With **Manual review**, a queued
 conflict blocks publishing until a reviewer resolves it. You can keep editing

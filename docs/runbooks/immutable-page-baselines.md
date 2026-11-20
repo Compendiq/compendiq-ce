@@ -84,7 +84,9 @@ the retained descriptor, containment, size, and SHA-256 before streaming.
 
 The database trigger is the final guard for protected page fields and deletion.
 Application writers also take the runtime epoch and sorted lifecycle locks
-before subsystem/page locks. Standalone delete, restore, and bulk cascades
+before subsystem/page locks. Bulk Re-sync and scheduled version jumps store
+the overwritten Local snapshot and advance the live revision in the same
+transaction. Standalone delete, restore, and bulk cascades
 expand the exact source-and-owner-authorized mutation component under the
 hierarchy fence. A frozen root returns `423 page_is_frozen`; an authorized
 frozen descendant returns `409 subtree_contains_frozen_page` with only
@@ -209,7 +211,10 @@ Deleting a page or user nulls only designated live foreign keys. The baseline's
 and retained files remain. Deleting an ordinary `page_versions` row may null
 `version_snapshot_id`; the baseline remains the authoritative snapshot. New
 freeze snapshots use the `local` namespace. Migration 157 preserves existing
-snapshot UUIDs and baseline links.
+snapshot UUIDs and baseline links. Bulk Re-sync and scheduled version jumps
+also store overwritten edits in Local history. Their shared snapshot helper
+refuses to claim a baseline-linked row. If that prevents recording the local
+edit, the overwrite fails and the edit stays live.
 
 Migration 120 and migration 121 commit separately. The protected-write trigger
 is installed by 121 only after `baseline_id` exists; legacy updates and deletes

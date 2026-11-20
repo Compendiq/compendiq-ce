@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
+
+- **Upgrade note for #1918.** Reload any open Compendiq tabs after upgrading. A tab still running the old frontend bundle receives HTTP 400 on Confluence version preview and restore, and on semantic diff, until it reloads.
+
 - Version History distinguishes Local and Confluence versions that share a number. Preview, comparison, and restore use the source shown next to the version (#1918).
 
 - Confluence publishing uses the last observed provider version even after local edits advanced the Compendiq revision (#1918). A fetch heals legacy counters in either direction.

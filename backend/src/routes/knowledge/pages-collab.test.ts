@@ -56,6 +56,7 @@ import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { __internal as sync } from '../../domains/confluence/services/sync-service.js';
 import { isCollabCommitPending, withPageWriteTransaction } from '../../core/services/page-write-admission.js';
 import { seedRestrictionFixture } from './page-restriction.test-helpers.js';
 
@@ -1700,14 +1701,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     vi.restoreAllMocks();
   });
 
-  async function seedLiveConfluencePage(opts?: { version?: number; bodyHtml?: string }): Promise<{
-    token: string;
-    userId: string;
-    pageId: number;
-    confluenceId: string;
-    spaceKey: string;
-    ws: WebSocket;
-  }> {
+  async function seedConfluencePage(opts?: { version?: number; bodyHtml?: string }) {
     const { token, userId } = await createUser(`collab_cf_${pageIdEntropy()}`);
     const spaceKey = `CF${pageIdEntropy().slice(0, 6).toUpperCase()}`;
     const confluenceId = `cf-${pageIdEntropy()}`;
@@ -1720,8 +1714,13 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     await grantSpaceRead(userId, spaceKey);
     await seedConfluenceCredentials(userId);
     await enableCollabFlag();
-    const ws = await openAndSync(pageId, token);
-    return { token, userId, pageId, confluenceId, spaceKey, ws };
+    return { token, userId, pageId, confluenceId, spaceKey };
+  }
+
+  async function seedLiveConfluencePage(opts?: { version?: number; bodyHtml?: string }) {
+    const page = await seedConfluencePage(opts);
+    const ws = await openAndSync(page.pageId, page.token);
+    return { ...page, ws };
   }
 
   async function createPastedImageRoot(filename = 'pasted.png'): Promise<{
@@ -1849,13 +1848,21 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     }
   });
 
-  it('publishes a collaborative commit with diverged local and Confluence revisions', async () => {
-    const { token, userId, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 6 });
-    await query('UPDATE pages SET remote_version = 5 WHERE id = $1', [pageId]);
+  it('publishes a collaborative commit after an upstream overwrite leaves diverged revisions', async () => {
+    const { token, userId, pageId, confluenceId, spaceKey } = await seedConfluencePage({
+      version: 6, bodyHtml: '<p>Unpublished edit</p>',
+    });
+    await query(`UPDATE pages SET remote_version = 4, local_modified_at = last_synced + INTERVAL '1 second',
+                                  local_modified_by = $2 WHERE id = $1`, [pageId, userId]);
     const requests: string[] = [];
     let localVersionAtDispatch = 0;
     const upstream = createServer(async (request, response) => {
-      if (new URL(request.url ?? '/', 'http://fixture.test').pathname !== `/rest/api/content/${confluenceId}`) {
+      const path = new URL(request.url ?? '/', 'http://fixture.test').pathname;
+      if (request.method === 'GET' && path.endsWith('/child/attachment')) {
+        response.end(JSON.stringify({ results: [], size: 0, _links: {} }));
+        return;
+      }
+      if (path !== `/rest/api/content/${confluenceId}`) {
         response.writeHead(404).end();
         return;
       }
@@ -1863,7 +1870,8 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       requests.push(request.method ?? '');
       if (request.method === 'GET') {
         response.end(JSON.stringify({
-          id: confluenceId, status: 'current', version: { number: 5 },
+          id: confluenceId, title: 'Conf page', type: 'page', status: 'current', version: { number: 5 },
+          body: { storage: { value: '<p>commit-seed</p>' } },
         }));
         return;
       }
@@ -1886,15 +1894,24 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     const res = await (async () => {
       try {
-        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1', [
-          userId, `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`,
-        ]);
-        return await app.inject({
+        const baseUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1', [userId, baseUrl]);
+        const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+        await sync.syncPage(new ConfluenceClient(baseUrl, 'test-pat'), userId, spaceKey, { id: confluenceId },
+          new Date(), new Map(), counts, crypto.randomUUID());
+        expect(counts.pagesUpdated).toBe(1);
+        expect((await query('SELECT version, remote_version FROM pages WHERE id = $1', [pageId])).rows)
+          .toEqual([{ version: 7, remote_version: 5 }]);
+        const ws = await openAndSync(pageId, token);
+        const response = await app.inject({
           method: 'POST',
           url: `/api/pages/${pageId}/collab/commit`,
           headers: { authorization: `Bearer ${token}` },
           payload: commitPayload(ws, 'Pushed'),
         });
+        expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
+        ws.close();
+        return response;
       } finally {
         upstream.closeAllConnections();
         await new Promise<void>((resolve, reject) => upstream.close((err) => err ? reject(err) : resolve()));
@@ -1905,12 +1922,12 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     expect(res.json()).toMatchObject({
       id: pageId,
       title: 'Pushed',
-      version: 7,
+      version: 8,
       source: 'confluence',
       pushedToConfluence: true,
     });
-    expect(requests).toEqual(['GET', 'PUT']);
-    expect(localVersionAtDispatch).toBe(6);
+    expect(requests).toEqual(['GET', 'GET', 'PUT']);
+    expect(localVersionAtDispatch).toBe(7);
 
     const page = await query<{
       version: number;
@@ -1926,7 +1943,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
          FROM pages WHERE id = $1`,
       [pageId],
     );
-    expect(page.rows[0]).toMatchObject({ version: 7, remote_version: 6 });
+    expect(page.rows[0]).toMatchObject({ version: 8, remote_version: 6 });
     expect((await query('SELECT status FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId])).rows)
       .toEqual([{ status: 'completed' }]);
     expect(page.rows[0]!.title).toBe('Pushed');
@@ -1935,8 +1952,6 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     expect(page.rows[0]!.local_modified_at).toBeNull();
     expect(page.rows[0]!.summary_status).toBe('pending');
     expect(page.rows[0]!.quality_status).toBe('pending');
-    expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
-    ws.close();
   });
 
   // #1762 — the room's own debounced autosave lands while the provider read

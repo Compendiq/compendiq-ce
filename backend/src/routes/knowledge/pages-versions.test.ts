@@ -204,11 +204,11 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
     app = Fastify({ logger: false });
     await app.register(sensible);
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+    app.setErrorHandler((error: Error & { statusCode?: number; reason?: string }, _request, reply) => {
       if (error instanceof ZodError) {
         return reply.status(400).send({ error: 'Validation failed' });
       }
-      return reply.status(error.statusCode ?? 500).send({ error: error.message });
+      return reply.status(error.statusCode ?? 500).send({ error: error.message, reason: error.reason });
     });
     app.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
       const identity = request.headers['x-test-user'];
@@ -595,6 +595,20 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     )).rows).toEqual([]);
   });
 
+  it('returns version_not_found when semantic diff names the wrong source for an existing number', async () => {
+    const pageId = await seedPage({ version: 3 });
+    await seedVersion(pageId, 1, 'Local history', '<p>Local history</p>', 'Local history');
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/semantic-diff`,
+      headers: { 'x-test-user': userId },
+      payload: { v1: { versionNumber: 1, source: 'confluence' }, v2: { versionNumber: 3, source: 'local' } },
+    });
+    expect(response.statusCode, response.body).toBe(404);
+    expect(response.json()).toMatchObject({ reason: 'version_not_found' });
+    expect(llmRequests).toHaveLength(0);
+  });
+
   it('restores a standalone snapshot transactionally and records the superseded state and audit', async () => {
     const pageId = await seedPage({
       version: 3,
@@ -881,7 +895,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
       const response = await pending;
       expect(response.statusCode).toBe(409);
-      expect(response.json()).toEqual({ error: 'Historical version changed before restore could begin' });
+      expect(response.json()).toEqual({
+        error: 'Historical version changed before restore could begin',
+        reason: 'restore_target_changed',
+      });
       expect(confluenceRequests).toEqual([]);
       expect((await query(
         `SELECT status, remote_effect_started_at FROM page_write_intents
