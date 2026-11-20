@@ -3,6 +3,13 @@ import { PageWriteError } from './page-write-admission.js';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
+export type PageVersionSource = 'local' | 'confluence';
+
+/** Until version counters are decoupled, live snapshots follow page provenance. */
+export function snapshotSourceForPage(source: string): PageVersionSource {
+  return source === 'confluence' ? 'confluence' : 'local';
+}
+
 /**
  * Upsert Confluence version metadata (editedAt, author, message) for a page
  * version. Inserts a new metadata-only row when none exists and fills
@@ -19,9 +26,9 @@ export async function upsertVersionMetadata(
   meta: { editedAt: string | Date | null; author: string | null; message: string | null },
 ): Promise<void> {
   await query(
-    `INSERT INTO page_versions (page_id, version_number, title, edited_at, author, message)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (page_id, version_number) DO UPDATE SET
+    `INSERT INTO page_versions (page_id, source, version_number, title, edited_at, author, message)
+     VALUES ($1, 'confluence', $2, $3, $4, $5, $6)
+     ON CONFLICT (page_id, source, version_number) DO UPDATE SET
        edited_at = COALESCE(page_versions.edited_at, EXCLUDED.edited_at),
        author    = COALESCE(page_versions.author, EXCLUDED.author),
        message   = COALESCE(page_versions.message, EXCLUDED.message)`,
@@ -47,7 +54,7 @@ export async function fillVersionBody(
 ): Promise<void> {
   await query(
     `UPDATE page_versions SET body_html = $3, body_text = $4
-       WHERE page_id = $1 AND version_number = $2 AND body_html IS NULL`,
+       WHERE page_id = $1 AND source = 'confluence' AND version_number = $2 AND body_html IS NULL`,
     [pageId, versionNumber, bodyHtml, bodyText],
   );
 }
@@ -57,7 +64,7 @@ export async function fillVersionBody(
  *
  * `page_id` is the universal FK in `page_versions` (migration 030), so this
  * works for both Confluence-synced and standalone/local pages. Idempotent —
- * re-inserting an existing (page_id, version_number) is a no-op.
+ * re-inserting an existing (page_id, source, version_number) is a no-op.
  *
  * This is ordinary best-effort history, never baseline evidence. A baseline
  * protects only the exact snapshot it explicitly links through
@@ -72,13 +79,16 @@ export async function saveVersionSnapshotByPageId(
   title: string,
   bodyHtml: string | null,
   bodyText: string | null,
+  source?: PageVersionSource,
 ): Promise<void> {
   try {
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (page_id, version_number) DO NOTHING`,
-      [pageId, versionNumber, title, bodyHtml, bodyText],
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+       SELECT id, COALESCE($6::text, CASE WHEN pages.source = 'confluence' THEN 'confluence' ELSE 'local' END),
+              $2, $3, $4, $5
+         FROM pages WHERE id = $1
+       ON CONFLICT (page_id, source, version_number) DO NOTHING`,
+      [pageId, versionNumber, title, bodyHtml, bodyText, source ?? null],
     );
   } catch (err) {
     // Never let version tracking break the sync flow
@@ -134,23 +144,24 @@ export async function saveVersionSnapshot(
 export async function snapshotLocalVersionBeforeOverwrite(
   client: PoolClient,
   row: { id: number; version: number; title: string; body_html: string | null; body_text: string | null },
+  source: PageVersionSource,
 ): Promise<void> {
   const stored = await client.query(
-    `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (page_id, version_number) DO UPDATE
+    `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+     VALUES ($1, $6, $2, $3, $4, $5)
+     ON CONFLICT (page_id, source, version_number) DO UPDATE
        SET title = EXCLUDED.title, body_html = EXCLUDED.body_html,
            body_text = EXCLUDED.body_text, synced_at = NOW()
        WHERE page_versions.body_html IS NULL
          AND NOT EXISTS (SELECT 1 FROM page_baselines b WHERE b.version_snapshot_id = page_versions.id)`,
-    [row.id, row.version, row.title, row.body_html, row.body_text],
+    [row.id, row.version, row.title, row.body_html, row.body_text, source],
   );
   if ((stored.rowCount ?? 0) > 0) return;
   const preserved = await client.query(
     `SELECT 1 FROM page_versions
-      WHERE page_id = $1 AND version_number = $2 AND title IS NOT DISTINCT FROM $3
+      WHERE page_id = $1 AND source = $6 AND version_number = $2 AND title IS NOT DISTINCT FROM $3
         AND body_html IS NOT DISTINCT FROM $4 AND body_text IS NOT DISTINCT FROM $5`,
-    [row.id, row.version, row.title, row.body_html, row.body_text],
+    [row.id, row.version, row.title, row.body_html, row.body_text, source],
   );
   if (preserved.rowCount === 0) {
     throw new PageWriteError(

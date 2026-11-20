@@ -153,8 +153,8 @@ async function seedPendingIntent(input: {
     targetVersion = 2;
     await query(
       `INSERT INTO page_versions
-         (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, $2, $3, $4, 'intended storage')`,
+         (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'confluence', $2, $3, $4, 'intended storage')`,
       [pageRow.id, targetVersion, input.intendedTitle, input.intendedStorage],
     );
     publicationEffect = { targetVersion };
@@ -346,8 +346,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
           );
         }
         await query(
-          `INSERT INTO page_versions (page_id, version_number, title)
-           VALUES ($1, 5, $2)`,
+          `INSERT INTO page_versions (page_id, source, version_number, title)
+           VALUES ($1, 'confluence', 5, $2)`,
           [intent.pageId, placeholderHistory ? 'v5' : 'Local title'],
         );
       }
@@ -979,8 +979,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
     });
     await query(
       `INSERT INTO page_versions
-         (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 5, 'Unrelated snapshot', '<p>unrelated</p>', 'unrelated')`,
+         (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'confluence', 5, 'Unrelated snapshot', '<p>unrelated</p>', 'unrelated')`,
       [intent.pageId],
     );
     mockRequest.mockResolvedValueOnce(jsonResponse({

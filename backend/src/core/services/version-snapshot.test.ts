@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, teardownTestDb, truncateAllTables, isDbAvailable } from '../../test-db-helper.js';
-import { query } from '../db/postgres.js';
-import { upsertVersionMetadata, fillVersionBody, isVersionPlaceholderTitle } from './version-snapshot.js';
+import { getPool, query } from '../db/postgres.js';
+import { upsertVersionMetadata, fillVersionBody, isVersionPlaceholderTitle, saveVersionSnapshotByPageId, snapshotLocalVersionBeforeOverwrite } from './version-snapshot.js';
 import { runRetentionCleanup } from './data-retention-service.js';
 
 describe('isVersionPlaceholderTitle', () => {
@@ -86,14 +86,50 @@ describe.skipIf(!dbAvailable)('upsertVersionMetadata + fillVersionBody (#722)', 
     expect(r.rows[0]!.body_html).toBe('<p>hi</p>');
   });
 
-  it('retention prunes excess ordinary snapshots but keeps a baseline-linked snapshot', async () => {
+  it('stores and fills each namespace independently at the same number', async () => {
+    const id = await seedPage();
+    await saveVersionSnapshotByPageId(id, 6, 'Local draft', null, null, 'local');
+    await upsertVersionMetadata(id, 6, 'v6', { editedAt: null, author: 'Remote author', message: null });
+    await fillVersionBody(id, 6, '<p>Remote history</p>', 'Remote history');
+
+    expect((await query(
+      'SELECT source, title, body_html FROM page_versions WHERE page_id = $1 AND version_number = 6 ORDER BY source',
+      [id],
+    )).rows).toEqual([
+      { source: 'confluence', title: 'v6', body_html: '<p>Remote history</p>' },
+      { source: 'local', title: 'Local draft', body_html: null },
+    ]);
+
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM pages WHERE id = $1 FOR UPDATE', [id]);
+      await snapshotLocalVersionBeforeOverwrite(client, {
+        id, version: 6, title: 'Local draft', body_html: '<p>Local draft</p>', body_text: 'Local draft',
+      }, 'local');
+      await client.query('COMMIT');
+    } finally {
+      await client.query('ROLLBACK').catch(() => undefined);
+      client.release();
+    }
+    expect((await query(
+      'SELECT source, title, body_html FROM page_versions WHERE page_id = $1 AND version_number = 6 ORDER BY source',
+      [id],
+    )).rows).toEqual([
+      { source: 'confluence', title: 'v6', body_html: '<p>Remote history</p>' },
+      { source: 'local', title: 'Local draft', body_html: '<p>Local draft</p>' },
+    ]);
+  });
+
+  it('retention keeps the newest snapshot across both sources and preserves baseline-linked evidence', async () => {
     const id = await seedPage();
     const versions = await query<{ id: string; version_number: number }>(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at, edited_at)
        VALUES
-         ($1, 1, 'v1', '<p>v1</p>', 'v1'),
-         ($1, 2, 'v2', '<p>v2</p>', 'v2'),
-         ($1, 3, 'v3', '<p>v3</p>', 'v3')
+         ($1, 'local', 1, 'v1', '<p>v1</p>', 'v1', '2025-01-01', NULL),
+         ($1, 'confluence', 10, 'v10', '<p>v10</p>', 'v10', '2025-05-01', '2025-02-01'),
+         ($1, 'local', 3, 'v3', '<p>v3</p>', 'v3', '2025-03-01', NULL),
+         ($1, 'confluence', 11, 'v11', NULL, NULL, '2025-06-01', NULL)
        RETURNING id, version_number`,
       [id],
     );

@@ -323,8 +323,8 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
 
   it('serializes repeated freeze/thaw requests without duplicate transitions or rewriting a same-version snapshot', async () => {
     const existing = await query<{ id: string }>(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 1, 'Earlier snapshot', '<p>Earlier text</p>', 'Earlier text') RETURNING id`, [pageId],
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'local', 1, 'Earlier snapshot', '<p>Earlier text</p>', 'Earlier text') RETURNING id`, [pageId],
     );
     const prepared = await preview();
     expect(await preview()).toEqual(prepared);
@@ -359,6 +359,21 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
     const next = await preview();
     expect(next.baselineId).not.toBe(prepared.baselineId);
     expect((await thaw(state)).statusCode).toBe(409);
+  });
+
+  it('allows remote-version bookkeeping on a frozen row without changing protected revisions', async () => {
+    expect((await freeze(await preview())).statusCode).toBe(200);
+    const before = (await query(
+      'SELECT version, content_revision, lifecycle_revision, frozen_at, baseline_id FROM pages WHERE id = $1',
+      [pageId],
+    )).rows[0];
+
+    const updated = await query(
+      `UPDATE pages SET remote_version = version WHERE id = $1
+       RETURNING version, remote_version, content_revision, lifecycle_revision, frozen_at, baseline_id`,
+      [pageId],
+    );
+    expect(updated.rows).toEqual([{ ...before, remote_version: before.version }]);
   });
 
   it('rejects completed freeze replays without claiming new evidence was recorded', async () => {
@@ -551,8 +566,8 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
   ] as const)('a winning freeze refuses a concurrent $writer before authored or file effects', async (writer) => {
     await query('UPDATE pages SET version = 2 WHERE id = $1', [pageId]);
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 1, 'Historical title', '<p>Historical text</p>', 'Historical text')`, [pageId],
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'local', 1, 'Historical title', '<p>Historical text</p>', 'Historical text')`, [pageId],
     );
     const prepared = await preview();
     await query(`

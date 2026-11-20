@@ -207,7 +207,9 @@ Migration 121 records:
 Deleting a page or user nulls only designated live foreign keys. The baseline's
 `original_page_id`, page identity, actor display snapshots, manifest, history,
 and retained files remain. Deleting an ordinary `page_versions` row may null
-`version_snapshot_id`; the baseline remains the authoritative snapshot.
+`version_snapshot_id`; the baseline remains the authoritative snapshot. New
+freeze snapshots use the `local` namespace. Migration 157 preserves existing
+snapshot UUIDs and baseline links.
 
 Migration 120 and migration 121 commit separately. The protected-write trigger
 is installed by 121 only after `baseline_id` exists; legacy updates and deletes

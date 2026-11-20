@@ -113,6 +113,27 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       expect(versions[2].versionNumber).toBe(1);
     });
 
+    it('prefers the current namespace for numeric reads and retains history from before relocation', async () => {
+      await saveVersionSnapshotByPageId(pageId, 1, 'Confluence v1', null, null, 'confluence');
+      await saveVersionSnapshotByPageId(pageId, 2, 'Confluence v2', null, null, 'confluence');
+      await saveVersionSnapshotByPageId(pageId, 2, 'Local v2', null, null, 'local');
+
+      expect(await getVersion(pageId, 2)).toMatchObject({ source: 'confluence', title: 'Confluence v2' });
+      expect(await getVersion(pageId, 2, { source: 'local' })).toMatchObject({ source: 'local', title: 'Local v2' });
+      expect((await getVersionHistory(pageId)).map(({ source, title }) => ({ source, title }))).toEqual([
+        { source: 'confluence', title: 'Confluence v2' },
+        { source: 'confluence', title: 'Confluence v1' },
+      ]);
+
+      await query("UPDATE pages SET source = 'standalone', confluence_id = NULL WHERE id = $1", [pageId]);
+      expect(await getVersion(pageId, 2)).toMatchObject({ source: 'local', title: 'Local v2' });
+      expect(await getVersion(pageId, 1)).toMatchObject({ source: 'confluence', title: 'Confluence v1' });
+      expect((await getVersionHistory(pageId)).map(({ source, title }) => ({ source, title }))).toEqual([
+        { source: 'local', title: 'Local v2' },
+        { source: 'confluence', title: 'Confluence v1' },
+      ]);
+    });
+
     it('should not include bodyHtml or bodyText in list response', async () => {
       await saveVersionSnapshotByPageId(pageId, 1, 'V1', '<p>body</p>', 'body');
 

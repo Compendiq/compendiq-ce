@@ -41,7 +41,7 @@ async function seedSpace(spaceKey: string): Promise<{ pageId: number; templateId
   const pageId = p.rows[0]!.id;
   // Cascade children of pages (page_id FK ON DELETE CASCADE — migration 030).
   await query(
-    `INSERT INTO page_versions (page_id, version_number, title) VALUES ($1, 1, 'Page')`,
+    `INSERT INTO page_versions (page_id, source, version_number, title) VALUES ($1, 'confluence', 1, 'Page')`,
     [pageId],
   );
   await query(
@@ -108,7 +108,7 @@ describe('unsyncSpace', () => {
     );
     const pageId = p.rows[0]!.id;
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title) VALUES ($1, 1, 'Page')`,
+      `INSERT INTO page_versions (page_id, source, version_number, title) VALUES ($1, 'confluence', 1, 'Page')`,
       [pageId],
     );
     await query(

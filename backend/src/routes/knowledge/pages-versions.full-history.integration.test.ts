@@ -212,9 +212,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
   it('preserves authored titles and bodies while filling missing metadata on repeated history import', async () => {
     const pageId = await seedConfluencePage('2038-import', 6);
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, edited_at, author, message)
-       VALUES ($1, 5, 'Original roadmap', '<p>Original body</p>', 'Original body', NULL, 'Local author', NULL),
-              ($1, 4, 'Earlier roadmap', '<p>Earlier body</p>', 'Earlier body', '2025-01-01T00:00:00Z', NULL, 'Local message')`,
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, edited_at, author, message)
+       VALUES ($1, 'confluence', 5, 'Original roadmap', '<p>Original body</p>', 'Original body', NULL, 'Local author', NULL),
+              ($1, 'confluence', 4, 'Earlier roadmap', '<p>Earlier body</p>', 'Earlier body', '2025-01-01T00:00:00Z', NULL, 'Local message')`,
       [pageId],
     );
     mockDataCenter('2038-import', 6);
@@ -265,8 +265,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
     );
     await query(
       `INSERT INTO page_versions
-         (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 2, 'Restored title', '<p>restored</p>', 'restored')`,
+         (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'confluence', 2, 'Restored title', '<p>restored</p>', 'restored')`,
       [pageId],
     );
     const pageCacheKey = `kb:${userId}:pages:versions-route`;
@@ -415,8 +415,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
     const pageId = await seedConfluencePage('780detail', 5);
     await query(
       `INSERT INTO page_versions
-         (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 2, 'Historical detail', NULL, NULL)`,
+         (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'confluence', 2, 'Historical detail', NULL, NULL)`,
       [pageId],
     );
     mockRequest.mockImplementation(async (rawUrl, options) => {
@@ -473,8 +473,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
     );
     await query(
       `INSERT INTO page_versions
-         (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 2, 'Unpublished target', '<p>unpublished target</p>', 'unpublished target')`,
+         (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'confluence', 2, 'Unpublished target', '<p>unpublished target</p>', 'unpublished target')`,
       [pageId],
     );
     mockRequest.mockImplementation(async (rawUrl, options) => {

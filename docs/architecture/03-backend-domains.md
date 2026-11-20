@@ -629,7 +629,7 @@ or safely transferred intent state is eligible for guarded cleanup.
 
 Publication atomically changes the prepared row to `published`, links the live
 page, advances its lifecycle revision, reconciles (never overwrites) the
-same-version `page_versions` snapshot, appends freeze history/audit, and enqueues
+same-version `page_versions` snapshot in the `local` namespace, appends freeze history/audit, and enqueues
 the lifecycle event. Thaw clears only live freeze fields and appends history
 against the original baseline/version/digest; the baseline and retained bytes
 remain. Current-page reads apply current visibility/RBAC and chronological
