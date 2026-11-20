@@ -46,6 +46,10 @@ function sourceLabel(source: PageVersionSource): string {
   return source === 'confluence' ? 'Confluence' : 'Local';
 }
 
+function versionLabel(version: PageVersionRef): string {
+  return `version ${version.versionNumber} (${sourceLabel(version.source)})`;
+}
+
 function versionRef({ source, versionNumber }: PageVersionRef): PageVersionRef {
   return { source, versionNumber };
 }
@@ -435,16 +439,16 @@ export function VersionHistory({
                           <button
                             onClick={() => handleCompare(versions[i + 1]!, version)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            title="Compare with previous version"
-                            aria-label={`Compare version ${version.versionNumber} (${sourceLabel(version.source)}) with previous version`}
+                            title={`Compare with ${versionLabel(versions[i + 1]!)}`}
+                            aria-label={`Compare ${versionLabel(version)} with ${versionLabel(versions[i + 1]!)}`}
                           >
                             <GitCompare size={12} />
                           </button>
                           <button
                             onClick={() => handleSemanticDiff(versions[i + 1]!, version)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-action focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            title="AI semantic diff with previous version"
-                            aria-label={`AI semantic diff for version ${version.versionNumber} (${sourceLabel(version.source)})`}
+                            title={`AI semantic diff with ${versionLabel(versions[i + 1]!)}`}
+                            aria-label={`AI semantic diff for ${versionLabel(version)} and ${versionLabel(versions[i + 1]!)}`}
                           >
                             <Sparkles size={12} />
                           </button>

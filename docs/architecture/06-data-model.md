@@ -110,7 +110,7 @@ erDiagram
         text body_storage "XHTML"
         text body_html
         text body_text
-        int version "local revision counter"
+        int version "local revision counter, advances past a replaced snapshot"
         int remote_version "last observed Confluence version; null for standalone"
         text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
@@ -175,7 +175,7 @@ erDiagram
         uuid id PK
         int page_id FK "universal FK since migration 030"
         text source "local | confluence"
-        int version_number
+        int version_number "unique together with page_id and source"
         text title
         text body_html
         text body_text
@@ -1498,7 +1498,11 @@ together, which matters most for #1114's query-side prefix.
   are written on sync, on draft-publish, and before a restore — so both
   Confluence-synced and standalone/local pages accumulate history. The
   right-pane "Version history" UI displays source-qualified snapshots and the
-  current row. Only the exact current identity shadows a stored row.
+  current row. Only the exact current identity shadows a stored row. An edit
+  overwritten by a bulk Re-sync or scheduled version jump is saved with
+  `source = 'local'`. Storing a snapshot advances `pages.version` to at least
+  the saved revision plus one, while `pages.remote_version` records the
+  incoming provider number.
   `POST /api/pages/:id/versions/:version/restore?source=local|confluence`
   restores the selected snapshot. After locking the live row, it rejects a
   supplied stale optimistic version before writing history or live content (an omitted version deliberately remains unconditional), snapshots

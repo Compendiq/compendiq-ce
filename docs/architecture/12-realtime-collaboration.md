@@ -240,7 +240,9 @@ The no-row init path is how the next join recovers — not first-ever join
 only. A live room still 409s those HTTP writers; it does not DELETE.
 
 **While the page's own collaborative Save is pending (#1763).** A Confluence
-commit compares its provider read with `pages.remote_version`. If they
+commit compares its provider read with `pages.remote_version`, including
+after inbound sync advances the local revision to keep an overwritten edit
+visible in history. Its PUT sends `remote_version + 1`. If the provider numbers
 differ, the 409 `confluence_modified` payload's `localVersion` field reports
 the expected provider number. It otherwise reserves a
 `collab.commit.confluence[.media]` intent with both expected counters and keeps it pending until its local publication settles. That intent

@@ -4313,16 +4313,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               return decided;
             }
             // A local edit is overwritten only after its snapshot is stored on
-            // this transaction. The version never decreases; with Confluence
-            // not ahead, this still shares the live number until the history
-            // namespace switches to source-qualified identities (#1918).
-            if (decided.kind === 'apply_incoming' && decided.hasLocalEdits) {
-              await snapshotLocalVersionBeforeOverwrite(writeClient, decided.row, 'confluence');
+            // this transaction. Keep the saved revision below the new live
+            // revision even when Confluence's number is at or below it.
+            const overwritesLocalEdit = decided.kind === 'apply_incoming' && decided.hasLocalEdits;
+            if (overwritesLocalEdit) {
+              await snapshotLocalVersionBeforeOverwrite(writeClient, decided.row, 'local');
             }
             await writeClient.query(
               `UPDATE pages SET
                  title = $2, body_storage = $3, body_html = $4, body_text = $5,
-                 version = GREATEST(version, $6), remote_version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+                 version = GREATEST(version + $7::integer, $6), remote_version = $6,
+                 last_synced = NOW(), embedding_dirty = TRUE,
                  image_analysis_dirty = CASE
                    WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                    ELSE image_analysis_dirty
@@ -4332,7 +4333,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                  embedded_at = NULL,
                  local_modified_at = NULL, local_modified_by = NULL
                WHERE id = $1`,
-              [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number],
+              [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number, Number(overwritesLocalEdit)],
             );
             return decided;
           });

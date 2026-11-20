@@ -26,10 +26,12 @@ authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.
 
 Scheduled version jumps and bulk Re-sync use the same history snapshot
-helper before overwriting local edits (#2037). The helper and overwrite share
-the caller's transaction and page row lock. Refuse collisions with different
-history and preserve baseline-linked placeholders. A version jump whose title
-and body already match upstream saves history on a best-effort basis.
+helper before overwriting local edits (#2037, #1918). Store the edit in the
+Local namespace under the page row lock in the caller's transaction. If a
+snapshot is preserved, use `GREATEST(version + 1, incoming)` for the live
+revision. Refuse collisions with different history and preserve baseline-linked
+placeholders. A version jump whose title and body already match upstream
+saves history on a best-effort basis.
 
 A collaborative join that never synced is not a read-only draft (#1895):
 until the first sync the editor shows one message per close reason (4403

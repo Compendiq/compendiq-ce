@@ -79,12 +79,15 @@ sequenceDiagram
                 Note over S,DB: Count a page failure and retry on the next walk
             else publication proceeds
                 opt version jump overwrites a local edit
-                    S->>DB: Store local edit in page_versions on the same transaction
+                    S->>DB: Store local edit in page_versions with source=local
                 end
-                S->>DB: INSERT/UPDATE pages<br/>SET remote_version = incoming, version = GREATEST(version, incoming)<br/>SET embedding_dirty = true, image_analysis_dirty = true
+                opt routine version jump
+                    S->>DB: Try saving history within a savepoint
+                end
+                S->>DB: INSERT/UPDATE pages<br/>SET remote_version = incoming<br/>SET version = GREATEST(version + snapshot increment, incoming)<br/>SET embedding_dirty = true, image_analysis_dirty = true
                 S->>DB: COMMIT
-                opt version jump
-                    S->>DB: Audit SYNC_OVERWROTE_LOCAL_EDITS for a local edit,<br/>or save best-effort history for a routine update
+                opt local edit overwritten
+                    S->>DB: Audit SYNC_OVERWROTE_LOCAL_EDITS
                 end
             end
             S->>R: HSET sync:status:{user} progress
@@ -350,18 +353,12 @@ Callers:
     title-only rename) is left alone, as in the scheduled version-unchanged
     branch.
   - Before it overwrites a local edit (`confluence-wins`), the route stores the
-    local version as a `page_versions` snapshot on the same transaction. A
-    body-less row that opening Version History imported at that number is
-    claimed for the snapshot; a row that already holds other content (title or
-    body) refuses the page instead: it is reported in `errors` (HTTP 200,
-    `failed` + 1) and nothing is written.
-  - An applied refresh sets `remote_version = upstream` and
-    `version = GREATEST(version, upstream)`.
-    When Confluence is ahead of the local number the snapshot is ordinary
-    history below the live version. When Confluence is behind or at the same
-    number, the snapshot can share the live number. Version History hides it
-    when it also shares the live source. The final inbound snapshot namespace
-    and version advance are the remaining #1918 overwrite work.
+    local version in the Local namespace on the same transaction. It can
+    claim an unlinked body-less Local row. A collision with different content
+    refuses the page and appears in `errors` (HTTP 200, `failed` + 1).
+  - The replacement sets `remote_version = incoming` and uses
+    `GREATEST(version + 1, incoming)` when the edit was snapshotted.
+    Otherwise it uses `GREATEST(version, incoming)`.
   - One `sync_run_id` per request stamps queued rows and audit metadata, and
     the audits carry the requesting user. Every committed outcome — kept,
     queued and held included — counts as `succeeded`; the
@@ -379,14 +376,18 @@ Callers:
     sync only publishes the observed AI policy. To overwrite a local edit,
     sync calls `snapshotLocalVersionBeforeOverwrite` on that transaction.
     If it cannot store the edit, sync rolls back and reports a page failure.
-    The upsert records the provider version and keeps the local counter monotonic.
-    Routine version jumps save best-effort history after commit.
+    Routine version jumps save best-effort history with a savepoint inside the
+    transaction. A failed insert or history collision leaves that row untouched.
+    The upsert records the incoming provider version and advances the local
+    revision when a snapshot was preserved, using the same rule as bulk refresh.
   - The overwrite audit is written before the collab reconcile; counts change
     only after a committed upsert.
 
 **Local edit snapshots.** Bulk refresh and scheduled version jumps use
-the same transactional snapshot helper (#2037). A baseline-linked placeholder
-is ineligible for reuse. The scheduled version-unchanged branch can still
+the same transactional snapshot helper (#2037, #1918). A baseline-linked
+placeholder is ineligible for reuse. Local edits saved by this helper appear
+as non-current Local history immediately, even when Confluence is at or below
+the edit's version number. The scheduled version-unchanged branch can still
 overwrite a local edit without saving history.
 
 ### Counter-only observations for held and frozen pages (#1918)

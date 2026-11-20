@@ -979,6 +979,7 @@ async function syncPage(
   let seededLabels = labels;
   let admittedCurrentPolicy: AiPolicy | null = null;
   let automaticFreshPublication = false;
+  let snapshotPreserved = false;
   let movedSinceDecision: { lockedVersion: number | null } | null = null;
   const txClient = await getPool().connect();
   type UpsertRow = { id: number; ai_policy: string; was_update: boolean };
@@ -1033,7 +1034,8 @@ async function syncPage(
       } else if (locked) {
         if (overwritesLocalEdit) {
           try {
-            await snapshotLocalVersionBeforeOverwrite(txClient, locked, 'confluence');
+            await snapshotLocalVersionBeforeOverwrite(txClient, locked, 'local');
+            snapshotPreserved = true;
           } catch (err) {
             logger.warn(
               { err, pageId: page.id, localVersion: locked.version,
@@ -1042,6 +1044,11 @@ async function syncPage(
             );
             throw err;
           }
+        } else if (versionJumpDecision) {
+          snapshotPreserved = await saveVersionSnapshotByPageId(
+            locked.id, locked.version, locked.title, locked.body_html, locked.body_text,
+            livePageVersion(locked).source, txClient,
+          );
         }
         admittedCurrentPolicy = locked.ai_policy;
         creationPolicy = admitAutomaticIngestionPolicy({
@@ -1118,7 +1125,7 @@ async function syncPage(
            body_storage = EXCLUDED.body_storage,
            body_html = EXCLUDED.body_html,
            body_text = EXCLUDED.body_text,
-           version = GREATEST(pages.version, EXCLUDED.remote_version),
+           version = GREATEST(pages.version + $14::integer, EXCLUDED.remote_version),
            remote_version = EXCLUDED.remote_version,
            parent_id = EXCLUDED.parent_id,
            labels = ai_policy_apply_label(EXCLUDED.labels, pages.ai_policy),
@@ -1140,7 +1147,8 @@ async function syncPage(
         [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
          page.version.number, parentId,
          automaticFreshPublication ? applyCanonicalAiPolicyLabel(seededLabels, 'all') : seededLabels,
-         author, lastModified, automaticFreshPublication ? 'all' : creationPolicy, admittedCurrentPolicy],
+         author, lastModified, automaticFreshPublication ? 'all' : creationPolicy,
+         admittedCurrentPolicy, Number(snapshotPreserved)],
       );
       if ((upsert.rowCount ?? 0) === 0) {
         throw new FreshPublicationDeferredError(page.id, 'unbound_create');
@@ -1184,13 +1192,6 @@ async function syncPage(
     counts.pagesCreated++;
   } else {
     counts.pagesUpdated++;
-    // Routine history remains best effort. Wait for a successful upsert so a
-    // row that moved during attachment download leaves no spurious snapshot.
-    if (versionJumpDecision && !overwritesLocalEdit) {
-      const prior = versionJumpDecision.row;
-      await saveVersionSnapshotByPageId(prior.id, prior.version, prior.title, prior.body_html, prior.body_text,
-        livePageVersion({ ...prior, source: 'confluence' }).source);
-    }
     // #1772: SYNC_OVERWROTE_LOCAL_EDITS iff this upsert replaced a local edit
     // the policy let the incoming version win over. Written before the collab
     // reconcile, which can still throw after the commit (logAuditEvent never

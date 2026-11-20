@@ -245,11 +245,18 @@ async function snapshots(pageId: number) {
   return r.rows;
 }
 
-async function seedHistory(pageId: number, version: number, title: string, html: string | null, text: string | null) {
+async function seedHistory(
+  pageId: number,
+  version: number,
+  title: string,
+  html: string | null,
+  text: string | null,
+  source: 'confluence' | 'local' = 'local',
+) {
   const result = await query<{ id: string }>(
     `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
-     VALUES ($1, 'confluence', $2, $3, $4, $5, '2020-01-01T00:00:00Z') RETURNING id`,
-    [pageId, version, title, html, text],
+     VALUES ($1, $6, $2, $3, $4, $5, '2020-01-01T00:00:00Z') RETURNING id`,
+    [pageId, version, title, html, text, source],
   );
   return result.rows[0]!.id;
 }
@@ -471,7 +478,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(Date.parse(localAt)).toBeGreaterThan(Date.parse(syncedAt));
   });
 
-  it('claims an imported placeholder and exposes the local edit as non-current history', async () => {
+  it('claims a local placeholder and exposes the local edit as non-current history', async () => {
     await usePolicy('confluence-wins');
     const page = upstreamPage('vj-claim');
     const id = await seedSyncedV5(page.id);
@@ -497,8 +504,8 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
       await app.register(pagesVersionRoutes, { prefix: '/api' });
       const list = await app.inject({ url: `/api/pages/${id}/versions` });
       expect(list.statusCode).toBe(200);
-      expect(list.json().versions).toContainEqual(expect.objectContaining({ versionNumber: 6, isCurrent: false }));
-      const detail = await app.inject({ url: `/api/pages/${id}/versions/6?source=confluence` });
+      expect(list.json().versions).toContainEqual(expect.objectContaining({ versionNumber: 6, source: 'local', isCurrent: false }));
+      const detail = await app.inject({ url: `/api/pages/${id}/versions/6?source=local` });
       expect(detail.statusCode).toBe(200);
       expect(detail.json()).toMatchObject({ title: 'Runbook', bodyHtml: BOB_HTML, bodyText: BOB_TEXT, isCurrent: false });
     } finally {
@@ -595,7 +602,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     await usePolicy('confluence-wins');
     const page = upstreamPage('vj-routine-collision', 6);
     const id = await seedSyncedV5(page.id);
-    const snapshotId = await seedHistory(id, 5, 'Other title', '<p>Other body</p>', 'Other body');
+    const snapshotId = await seedHistory(id, 5, 'Other title', '<p>Other body</p>', 'Other body', 'confluence');
     const snapshot = await historyRow(snapshotId);
 
     expect((await runSync(page, RUN_1)).pagesUpdated).toBe(1);
@@ -603,6 +610,36 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(await historyRow(snapshotId)).toEqual(snapshot);
     expect(await syncAudits(id)).toEqual([]);
   });
+
+  it.each(['stored', 'collision', 'storage error'] as const)(
+    'advances an ahead local counter only when routine history is stored (%s)',
+    async (history) => {
+      const page = upstreamPage('vj-routine-diverged', 6);
+      const id = await seedSyncedV5(page.id);
+      await query('UPDATE pages SET version = 7 WHERE id = $1', [id]);
+      if (history === 'collision') {
+        await seedHistory(id, 7, 'Other title', '<p>Other body</p>', 'Other body');
+      }
+      if (history === 'storage error') {
+        await query('ALTER TABLE page_versions ADD CONSTRAINT reject_routine_snapshot CHECK (version_number <> 7) NOT VALID');
+      }
+      try {
+        expect((await runSync(page, RUN_1)).pagesUpdated).toBe(1);
+      } finally {
+        if (history === 'storage error') {
+          await query('ALTER TABLE page_versions DROP CONSTRAINT reject_routine_snapshot');
+        }
+      }
+
+      expect(await row(id)).toMatchObject({
+        version: history === 'stored' ? 8 : 7, remote_version: 6,
+      });
+      const expectedBody = history === 'stored' ? '<p>A v5</p>' : '<p>Other body</p>';
+      expect(await snapshots(id)).toEqual(history === 'storage error' ? [] : [
+        { version_number: 7, body_html: expectedBody },
+      ]);
+    },
+  );
 
   it.each(['confluence-wins', 'compendiq-wins', 'manual-review'] as const)(
     'without a local edit an upstream version jump stays a routine update with no audit (%s)',
@@ -695,7 +732,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
       await runSync(upstreamPage('vj-equal', 6), RUN_1);
 
       const after = await row(id);
-      expect(after).toMatchObject({ version: 6, remote_version: 6 });
+      expect(after).toMatchObject({ version: policy === 'confluence-wins' ? 7 : 6, remote_version: 6 });
       if (policy === 'confluence-wins') {
         expect(after.body_html).toContain('A upstream');
         expect(await snapshots(id)).toEqual([{ version_number: 6, body_html: BOB_HTML }]);

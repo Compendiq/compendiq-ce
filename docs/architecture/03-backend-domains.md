@@ -559,7 +559,11 @@ A fully failed attempt may retry on the same active process, never concurrently.
 
 Confluence publishers use the provider counter `pages.remote_version` for
 dispatch and record the local `pages.version` as the optimistic fence. Sync
-and relocation update each counter according to its source.
+and relocation update each counter according to its source. Bulk Re-sync
+and scheduled version jumps use the shared core snapshot helper to preserve
+overwritten edits as Local history in the same transaction as replacement.
+An inbound replacement with a snapshot advances the live revision past the
+saved one, even when the provider counter is lower.
 
 Version History resolves each target by source and number. The semantic diff
 passes historical row identities and digests to article admission. A live
