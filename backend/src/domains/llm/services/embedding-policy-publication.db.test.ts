@@ -9,9 +9,20 @@ import { captureEmbeddingArticle, claimEmbeddingArticle } from './embedding-arti
 
 const available = await isDbAvailable();
 describe.skipIf(!available)('embedding HTTP publication policy guards', () => {
-  beforeAll(async () => { await setupTestDb(); });
+  beforeAll(async () => {
+    await setupTestDb();
+    await query('ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next');
+    await query('ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next');
+  });
   beforeEach(async () => { await truncateAllTables(); });
-  afterAll(async () => { await teardownTestDb(); });
+  afterAll(async () => {
+    try {
+      await query('ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next');
+      await query('ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next');
+    } finally {
+      await teardownTestDb();
+    }
+  });
 
   it.each(['allowed', 'policy', 'content', 'provider', 'stale_input', 'later_batch', 'context_policy', 'context_content', 'context_provider', 'context_allowed', 'assignment', 'image', 'claim', 'shadow_model', 'shadow_provider', 'shadow_image', 'shadow_claim', 'draft', 'draft_batches', 'draft_claim', 'claim_draft', 'draft_reset', 'reset_draft'] as const)('%s', async (change) => {
     let mutate = async () => {};
@@ -112,8 +123,16 @@ describe.skipIf(!available)('embedding HTTP publication policy guards', () => {
         else if (change.startsWith('context_')) expect(current.embedding_status).not.toBe('failed');
       }
     } finally {
+      // Close the handler first: a request still in flight must not observe a
+      // dropped shadow column and turn cleanup into a flaky failure.
       server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      const { promise: closed, resolve: onClosed } = Promise.withResolvers<void>();
+      server.close(() => onClosed());
+      await closed;
+      if (change.startsWith('shadow_')) {
+        await query('ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next');
+        await query('ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next');
+      }
     }
   });
 });

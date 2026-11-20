@@ -222,14 +222,18 @@ same value; the installer auto-generates it into `.env` on first install and
 | `postgres-data` | `/var/lib/postgresql/data` (postgres)  | Primary data + embeddings |
 | `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR`. Operator-supplied client inference weights live at `/app/data/client-models` (`CLIENT_MODEL_ASSETS_DIR`). |
 
-## PDF export fonts
+## PDF export fonts and SQL migrations
 
 The backend runtime image carries the PDF export fonts (Noto Sans, Noto Sans
 Mono, Noto Sans SC and KR; about 17 MiB, SIL OFL 1.1) in
-`dist/core/services/fonts`. tsc emits no assets: `npm run build -w backend`
-copies them from `backend/src/core/services/fonts`, so both Dockerfiles, which
-copy the built `dist`, ship them without a step of their own. Without them every
-PDF export fails with `PDF export font missing`.
+`dist/core/services/fonts` and the startup SQL migrations in
+`dist/core/db/migrations`. `tsc` emits no assets: `npm run build -w backend`
+copies the fonts from `backend/src/core/services/fonts` (#1729) and the
+top-level `*.sql` files from `backend/src/core/db/migrations` (excluding
+`__tests__/`, #2012), so both Dockerfiles, which copy the built `dist`, ship
+them without a separate `COPY` step. Without the fonts every PDF export fails
+with `PDF export font missing`; without the migrations the compiled backend
+fails on startup with `ENOENT` reading `dist/core/db/migrations`.
 
 ## Backup process boundaries
 
@@ -326,7 +330,7 @@ fail open into running the job. It does not need external service secrets.
 
 ```mermaid
 flowchart LR
-    pr["Relevant PR or manual dispatch"] --> build["npm ci + build<br/>copy SQL migrations"]
+    pr["Relevant PR or manual dispatch"] --> build["npm ci + build"]
     build --> backend["Compiled backend<br/>:3051"]
     build --> preview["Vite preview<br/>:8081"]
     backend --> pg[("Job-local pgvector 17<br/>kb_e2e")]
@@ -372,7 +376,6 @@ stack, then run from the repository root:
 ```bash
 npm ci
 npm run build
-cp -R backend/src/core/db/migrations backend/dist/core/db/migrations
 npx playwright install chromium
 npx vitest run --config e2e/vitest.config.ts
 E2E_CI=1 E2E_BASE_URL=http://localhost:8081 \
@@ -390,9 +393,11 @@ normal mode neither provisions nor relaxes instance rate limits.
 
 `docker/Dockerfile.enterprise` is a multi-stage template that overlays the
 `@compendiq/enterprise` package onto the backend image. It builds the backend
-with the same `npm run build -w backend`, so the PDF export fonts arrive with
-`dist`; an overlay that compiles another way must copy
-`backend/src/core/services/fonts` to `dist/core/services/fonts`. It does **not**
+with the same `npm run build -w backend`, so both the PDF export fonts and the
+SQL migrations arrive with `dist`; an overlay that compiles another way must
+copy both `backend/src/core/services/fonts` to `dist/core/services/fonts` and
+`backend/src/core/db/migrations/*.sql` (excluding `__tests__/`) to
+`dist/core/db/migrations`. It does **not**
 modify the frontend image — the frontend is identical in CE and EE
 deployments and gates Enterprise UI at runtime (see
 [`04-frontend-structure.md`](./04-frontend-structure.md)).

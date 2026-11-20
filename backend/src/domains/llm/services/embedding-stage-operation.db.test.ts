@@ -26,7 +26,14 @@ describe.skipIf(!available)('durable shadow and explicit embedding attempts', ()
     await query('ALTER TABLE pages ADD COLUMN IF NOT EXISTS page_avg_embedding_next vector(1024)');
   });
   beforeEach(truncateAllTables);
-  afterAll(teardownTestDb);
+  afterAll(async () => {
+    try {
+      await query('ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next');
+      await query('ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next');
+    } finally {
+      await teardownTestDb();
+    }
+  });
 
   it('migrates idempotently, serializes concurrent allocations and survives reconstructed contexts', async () => {
     const sql = await readFile(new URL('../../../core/db/migrations/148_embedding_stage_attempts.sql', import.meta.url), 'utf8');

@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,6 +40,10 @@ const dockerfileEnterprise = readFileSync(
 );
 const dockerBuildWorkflow = readFileSync(
   join(repoRoot, '.github', 'workflows', 'docker-build.yml'),
+  'utf8',
+);
+const prCheckWorkflow = readFileSync(
+  join(repoRoot, '.github', 'workflows', 'pr-check.yml'),
   'utf8',
 );
 
@@ -119,5 +133,79 @@ describe('backend images ship the PDF export fonts (#1729)', () => {
 
   it('renders a CJK and Hangul PDF in the image smoke test, which reads every font file', () => {
     expect(smokeStep(dockerBuildWorkflow)).toMatch(/generatePdf\('<p>Установка 手順 한국어<\/p>'/);
+  });
+});
+
+describe('backend build and images ship the SQL migrations (#2012)', () => {
+  // postgres.ts reads dist/core/db/migrations at startup; tsc emits no SQL assets, so the backend
+  // build copies top-level *.sql files (excluding __tests__/*.test.ts) into dist/core/db/migrations.
+  const backendPackage: { scripts: { build: string } } = JSON.parse(
+    readFileSync(join(backendDir, 'package.json'), 'utf8'),
+  );
+
+  function extractAssetCopyScript(buildScript: string): string {
+    const match = buildScript.match(/^tsc -p tsconfig\.build\.json && node -e "(.+)"$/);
+    expect(match, 'expected node -e asset copy step in backend scripts.build').not.toBeNull();
+    return match![1];
+  }
+
+  it('copies top-level .sql migrations into dist/core/db/migrations in scripts.build', () => {
+    expect(backendPackage.scripts.build).toMatch(/dist\/core\/db\/migrations/);
+    expect(backendPackage.scripts.build).toMatch(/\.endsWith\('\.sql'\)/);
+  });
+
+  it('executes the build asset-copy step idempotently, copying only top-level .sql files and excluding tests', () => {
+    const script = extractAssetCopyScript(backendPackage.scripts.build);
+    const workDir = mkdtempSync(join(tmpdir(), 'compendiq-build-migrations-'));
+    try {
+      mkdirSync(join(workDir, 'src/core/services/fonts'), { recursive: true });
+      writeFileSync(join(workDir, 'src/core/services/fonts/NotoSans-Regular.ttf'), 'font');
+
+      mkdirSync(join(workDir, 'src/core/db/migrations/__tests__'), { recursive: true });
+      writeFileSync(join(workDir, 'src/core/db/migrations/001_init.sql'), 'SELECT 1;');
+      writeFileSync(join(workDir, 'src/core/db/migrations/002_next.sql'), 'SELECT 2;');
+      writeFileSync(join(workDir, 'src/core/db/migrations/README.md'), 'ignore');
+      writeFileSync(
+        join(workDir, 'src/core/db/migrations/__tests__/migration.test.ts'),
+        'test',
+      );
+
+      // Pre-seed a stale file and nested dir in dist to verify clean + idempotent rebuilds.
+      mkdirSync(join(workDir, 'dist/core/db/migrations/migrations'), { recursive: true });
+      writeFileSync(join(workDir, 'dist/core/db/migrations/999_stale.sql'), 'STALE');
+      writeFileSync(join(workDir, 'dist/core/db/migrations/leaked.test.ts'), 'LEAK');
+
+      execFileSync(process.execPath, ['-e', script], { cwd: workDir });
+      execFileSync(process.execPath, ['-e', script], { cwd: workDir });
+
+      const distEntries = readdirSync(join(workDir, 'dist/core/db/migrations')).sort();
+      expect(distEntries).toEqual(['001_init.sql', '002_next.sql']);
+      expect(existsSync(join(workDir, 'dist/core/db/migrations/__tests__'))).toBe(false);
+      expect(existsSync(join(workDir, 'dist/core/db/migrations/migrations'))).toBe(false);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('verifies SQL migrations in pr-check.yml instead of running a manual cp -R workaround', () => {
+    expect(prCheckWorkflow).not.toMatch(
+      /cp -R backend\/src\/core\/db\/migrations backend\/dist\/core\/db\/migrations/,
+    );
+    expect(prCheckWorkflow).toMatch(/Verify backend build includes SQL migrations/);
+  });
+
+  it('ships migrations via dist in both Dockerfiles without a redundant src/core/db/migrations COPY', () => {
+    expect(runtimeStage(dockerfile)).toMatch(
+      /COPY [^\n]*--from=builder \/app\/backend\/dist\/ dist\//,
+    );
+    expect(dockerfile).not.toMatch(/COPY[^\n]*src\/core\/db\/migrations/);
+
+    expect(dockerfileEnterprise).toMatch(/RUN npm run build -w backend/);
+    expect(runtimeStage(dockerfileEnterprise)).toMatch(/COPY [^\n]*dist\/ (\/app\/)?dist\//);
+    expect(dockerfileEnterprise).not.toMatch(/COPY[^\n]*src\/core\/db\/migrations/);
+  });
+
+  it('verifies dist/core/db/migrations in the Docker workflow smoke test', () => {
+    expect(smokeStep(dockerBuildWorkflow)).toMatch(/dist\/core\/db\/migrations/);
   });
 });

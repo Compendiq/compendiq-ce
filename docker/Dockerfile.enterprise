@@ -61,9 +61,10 @@ FROM node:24-alpine AS obfuscator
 RUN npm install -g javascript-obfuscator
 
 WORKDIR /app
-# dist includes the PDF export fonts, copied into dist/core/services/fonts by
-# `npm run build -w backend` (#1729): an overlay Dockerfile must ship dist from
-# that build to the runtime stage.
+# dist includes the PDF export fonts (#1729) and SQL migrations (#2012), copied
+# into dist/core/services/fonts and dist/core/db/migrations by
+# `npm run build -w backend` (without __tests__/*.test.ts): an overlay
+# Dockerfile must ship dist from that build to the runtime stage.
 COPY --from=builder /app/backend/dist/ ./dist/
 
 # Obfuscate only enterprise-specific files (the @compendiq/enterprise package
@@ -136,11 +137,12 @@ COPY --chown=node:node --from=prod-deps /app/backend/node_modules/. ./node_modul
 COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@compendiq/contracts/dist/
 COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@compendiq/contracts/package.json
 
-# Copy compiled (and optionally obfuscated) backend — NO .ts, NO .map, NO tests
+# Copy compiled (and optionally obfuscated) backend — includes PDF export fonts
+# (#1729) and SQL migrations (#2012) from `npm run build -w backend`. This stage
+# is expected to receive a dist without TypeScript sources or test files; the
+# stock tsc build still emits declarations and source maps, so the overlay build
+# is what strips them (see the guard below).
 COPY --chown=node:node --from=obfuscator /app/dist/ dist/
-
-# Copy SQL migrations (not emitted by tsc)
-COPY --chown=node:node --from=builder /app/backend/src/core/db/migrations/ dist/core/db/migrations/
 
 # Explicitly verify no source files leaked into the final image
 RUN test -z "$(find dist/ -name '*.ts' -o -name '*.map' -o -name '*.test.*' 2>/dev/null)" \

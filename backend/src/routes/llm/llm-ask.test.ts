@@ -1874,7 +1874,7 @@ describe('POST /api/llm/ask', () => {
 
     // The value a confidence badge reads must be the measured similarity.
     expect(sources[0].similarity).toBe(0.82);
-    // The fusion score still travels, for ordering and wire compatibility.
+    // The fusion score still travels as an informational field for wire compatibility (order comes from array position, ADR-027 D12).
     expect(sources[0].score).toBe(0.0328);
   });
 
@@ -1911,7 +1911,7 @@ describe('POST /api/llm/ask', () => {
   });
 
   it('emits a null similarity on web sources so they cannot inflate confidence', async () => {
-    // These carry `score: 1` as a sort key and never went through retrieval.
+    // These carry `score: 1` as an informational placeholder and never went through retrieval.
     // Before #1117 they were the only sources scoring 1.0, so a web-grounded
     // answer outranked one grounded in the knowledge base.
     mockHybridSearch.mockResolvedValue([]);

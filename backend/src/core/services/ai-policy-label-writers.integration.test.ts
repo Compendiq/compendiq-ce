@@ -248,12 +248,23 @@ async function advisoryWaiter(classid: number, objid: number): Promise<boolean> 
 describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)', () => {
   beforeAll(async () => {
     await setupTestDb();
+    await query('DROP TRIGGER IF EXISTS lw_settlement_hook ON page_write_intents');
+    await query('DROP FUNCTION IF EXISTS lw_hold_settlement()');
+    await query('DROP FUNCTION IF EXISTS lw_refuse_settlement()');
+    await query('DROP TABLE IF EXISTS lw_typed_evidence');
     await truncateAllTables();
     await query('CREATE TABLE lw_typed_evidence (payload jsonb NOT NULL)');
     registerOrdinaryPageWriteReconcilers();
   });
   afterAll(async () => {
-    await teardownTestDb();
+    try {
+      await query('DROP TRIGGER IF EXISTS lw_settlement_hook ON page_write_intents');
+      await query('DROP FUNCTION IF EXISTS lw_hold_settlement()');
+      await query('DROP FUNCTION IF EXISTS lw_refuse_settlement()');
+      await query('DROP TABLE IF EXISTS lw_typed_evidence');
+    } finally {
+      await teardownTestDb();
+    }
   });
   afterEach(async () => {
     await query('DELETE FROM lw_typed_evidence');

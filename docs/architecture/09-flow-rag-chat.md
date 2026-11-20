@@ -549,7 +549,7 @@ to a user.
 
 | Field | Unit | Produced by | Safe to show? |
 |---|---|---|---|
-| `score` | whatever the producer used | cosine from `vectorSearch`, `ts_rank` from `keywordSearch`, RRF fusion from `reciprocalRankFusion` | **No** — ordering only |
+| `score` | whatever the producer used | cosine from `vectorSearch`, `ts_rank` from `keywordSearch`, RRF fusion from `reciprocalRankFusion` | **No** — producer-specific, informational only (order comes from pipeline array position; ADR-027 D12) |
 | `vectorScore` | cosine similarity, `[-1,1]` | the vector leg; `null` when the page was matched only by full-text | **Yes**, with care |
 | `keywordRank` | raw `ts_rank`, unbounded | the keyword leg; `null` when matched only by vector | No — corpus-dependent |
 
@@ -590,16 +590,21 @@ medium). The chat-path maximum (~0.169 then, ~0.0328 since #1106's best-chunk-on
 **every** hybrid knowledge-base answer rendered "Low confidence" — and web
 sources, handed a flat `score: 1`, were the only ones that could raise the
 average. #1117 moved the badge onto the cosine (`similarity` on the wire); the
-fusion value stays ordering-only. `rrfWorstCase` in `rag-service.ts` computes
-these and a test pins them, because the prose version of this table has been
-wrong three times.
+fusion value is retained only as an informational/legacy producer field (not
+rendered; final order comes from the pipeline's array position). `rrfWorstCase`
+in `rag-service.ts` computes these and a test pins them, because the prose
+version of this table has been wrong three times.
 
 Fusion now carries the per-leg values alongside the fused score instead of
 replacing them; ordering is unchanged.
 
 On the wire, `/llm/ask` sources and `/api/search` items expose the cosine as
-**`similarity`** (`null` when none was measured). `score` is retained because it
-is what orders the array, and must never be rendered. A `null` similarity
+**`similarity`** (`null` when none was measured). Final citation and result
+order comes from the retrieval pipeline and array position (after fusion,
+ranking prior, rerank, MMR, identifier pins, the deep-search merge, and
+`/llm/ask` section placement; see ADR-027 D12); `score` is retained only as an
+informational/legacy field and must never be rendered or used to re-sort. A
+`null` similarity
 renders **no** badge and **no** percentage, because a keyword-only hit has no
 similarity rather than a similarity of zero.
 
