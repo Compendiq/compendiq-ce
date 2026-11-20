@@ -290,10 +290,15 @@ Compendiq tracks version history for all pages:
 3. View diffs between versions.
 4. Restore a previous version if needed.
 
-For a page that came from Confluence, opening the history also imports that
-page's older Confluence versions the first time you look. In standalone mode
-that import is not attempted — you see the versions Compendiq recorded itself,
-and the panel says so instead of asking you to connect Confluence.
+With Confluence enabled, opening **Version History** imports missing
+Confluence versions and preserves the titles and bodies Compendiq has
+already recorded. In standalone mode, the panel shows Compendiq's local
+history.
+
+A restore normally restores both title and body. If the title is exactly
+the version label, such as `v6` on version 6, the restore keeps the page's
+current title and restores the body. This applies in both modes, even if
+the version originally had that exact title.
 
 ### Tagging Pages
 

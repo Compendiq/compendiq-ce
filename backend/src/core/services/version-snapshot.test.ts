@@ -1,8 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, teardownTestDb, truncateAllTables, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../db/postgres.js';
-import { upsertVersionMetadata, fillVersionBody } from './version-snapshot.js';
+import { upsertVersionMetadata, fillVersionBody, isVersionPlaceholderTitle } from './version-snapshot.js';
 import { runRetentionCleanup } from './data-retention-service.js';
+
+describe('isVersionPlaceholderTitle', () => {
+  it.each([
+    ['v6', 6, true],
+    ['v6', 7, false],
+    ['Roadmap', 6, false],
+  ] as const)('recognizes %s at version %i as a placeholder only if its number matches', (title, version, expected) => {
+    expect(isVersionPlaceholderTitle(title, version)).toBe(expected);
+  });
+});
 
 const dbAvailable = await isDbAvailable();
 

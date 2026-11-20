@@ -658,8 +658,10 @@ during the regular sync — only the latest body and version number are written.
 Full version list import is **lazy-on-open**: when a user opens the Version History
 dialog, `GET /api/pages/:id/versions` calls `backfillVersionHistory` which hits
 `GET /rest/experimental/content/{id}/version?expand=by,message` and upserts each row
-into `page_versions` via `upsertVersionMetadata` (idempotent ON CONFLICT DO UPDATE
-with COALESCE). The experimental path is the only one Confluence **Data Center**
+into `page_versions` via `upsertVersionMetadata`. A new row has a `vN` title
+and no body. On conflict, the import fills missing edit time, author, and
+message fields while preserving the existing title and body (#2038).
+The experimental path is the only one Confluence **Data Center**
 serves for the version list — on DC, `/rest/api/content/{id}/version` has no GET
 collection (only DELETE of a single version), which used to 404 every backfill and
 collapse the dialog to just the current version (#780). A 404/405 on the
@@ -667,7 +669,7 @@ experimental path falls back to the Cloud-style stable path for forward
 compatibility; whichever path answers is reused for the remaining pagination pages,
 which follow `_links.next` and advance by the number of versions each page
 returned (see [Listing pagination](#listing-pagination-903-1777)). The historical body (`body_html`) for each old version is fetched even
-more lazily — only when a user previews or compares that specific version
+lazily when a user previews, compares, or restores that version
 (`GET /api/pages/:id/versions/:version` triggers `getHistoricalBody` when
 `body_html IS NULL`). Both calls are best-effort: failures never fail the request,
 so the dialog still opens. Since #763 the list endpoint additionally reports the
@@ -686,6 +688,14 @@ The `edited_at` column holds the real Confluence edit timestamp; the existing
 `synced_at` column records when Compendiq last ingested the row. The frontend
 shows `edited_at` directly when present, and falls back to "Synced <syncedAt>"
 to make clear the displayed time is a sync time, not the author's edit time (#724).
+
+A restore keeps the live title when the stored title is exactly `vN` for
+the target's version number `N`. This applies to local restores and to the
+title used for the Confluence PUT, its durable intent digest, and local
+publication. Restore checks the stored target title and body again before
+dispatch. Other snapshot titles are restored along with the body. Older
+rows already labeled `vN` use this same rule, since their original titles
+are unavailable.
 
 ## Page relocate across the boundary (#1123)
 

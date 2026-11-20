@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
+import { isVersionPlaceholderTitle } from '../../core/services/version-snapshot.js';
 import {
   getVersionHistory,
   getVersion,
@@ -93,6 +94,7 @@ interface PageContext {
   confluenceId: string | null;
   source: string;
   spaceKey: string | null;
+  title: string;
   version: number;
   contentRevision: string;
   lifecycleRevision: string;
@@ -193,12 +195,13 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       confluence_id: string | null;
       space_key: string | null;
       source: string;
+      title: string;
       version: number;
       contentRevision: string;
       lifecycleRevision: string;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source,
-              cp.version,
+              cp.version, cp.title,
               cp.content_revision::text AS "contentRevision",
               cp.lifecycle_revision::text AS "lifecycleRevision"
          FROM pages cp
@@ -215,6 +218,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       confluenceId: page.confluence_id,
       source: page.source,
       spaceKey: page.space_key,
+      title: page.title,
       version: page.version,
       contentRevision: page.contentRevision,
       lifecycleRevision: page.lifecycleRevision,
@@ -551,12 +555,17 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         previousStorage: current.rows[0]?.body_storage,
         legacyTasks: hasOnlyUncarriedTasks(current.rows[0]?.body_html),
       });
+      // The live title comes from the same read as the revision pinned by
+      // the intent. Placeholder restores keep that title through publication.
+      const restoredTitle = isVersionPlaceholderTitle(intendedHistorical.title, targetVersion)
+        ? ctx.title
+        : intendedHistorical.title;
       const publication = describeConfluencePagePut({
         kind: 'page.version_restore',
         actorId: userId,
         pageId: ctx.id,
         confluenceId: ctx.confluenceId,
-        title: intendedHistorical.title,
+        title: restoredTitle,
         bodyStorage: storageBody,
         expectedRemoteVersion: ctx.version,
         targetVersion,
@@ -593,6 +602,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
             [ctx.id, targetVersion],
           );
           const historical = target.rows[0];
+          // Compare both stored values even when two different titles would
+          // produce the same effective title.
           if (
             !historical ||
             historical.body_html !== intendedHistorical.body_html ||
@@ -624,7 +635,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         async () => {
           const page = await admittedClient.updatePage(
             ctx.confluenceId!,
-            intendedHistorical.title,
+            restoredTitle,
             storageBody,
             ctx.version,
           );

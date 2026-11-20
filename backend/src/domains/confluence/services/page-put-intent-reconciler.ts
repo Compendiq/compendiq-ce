@@ -10,6 +10,7 @@ import { materializeDrawioPreviews } from '../../../core/services/drawio-preview
 import { invalidateCollabDocAfterBodyWrite } from '../../../core/services/collab-guard.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { isVersionPlaceholderTitle } from '../../../core/services/version-snapshot.js';
 import {
   PageWriteError,
   registerPageWriteIntentReconciler,
@@ -304,7 +305,7 @@ export async function publishConfluencePagePut(
     const targetDigest = confluencePagePutDigest({
       pageId: publication.pageId,
       confluenceId: publication.confluenceId,
-      title: target.title,
+      title: isVersionPlaceholderTitle(target.title, publication.targetVersion) ? page.title : target.title,
       bodyStorage: targetStorage,
       expectedRemoteVersion: publication.expectedRemoteVersion,
     });

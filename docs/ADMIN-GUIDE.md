@@ -1298,6 +1298,19 @@ Saving a new policy publishes on the `sync:conflict:policy:changed` cache-bus ch
 
 The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes. When the Confluence version moved, the policy decision takes the same lock before the cached attachments are touched, and the later write re-reads the row under its own lock. If a local save landed while attachments were downloading, that run writes nothing and the next sync decides on the new edit.
 
+### Version History titles
+
+Opening **Version History** in Confluence mode imports missing versions and
+fills missing edit metadata. Existing snapshot titles and bodies are
+preserved. Imported versions start with a `vN` title, where `N` is the
+version number. Restoring a version with that title keeps the live title
+and restores the body, including when the restore publishes to Confluence.
+
+A genuine title that matches its own version label has the same behavior.
+For example, restoring version 6 titled `v6` keeps the live title. Older
+rows already labeled `vN` follow this rule too. Their original titles
+cannot be recovered from the import.
+
 ### AI Review Policy (Enterprise, v0.4+)
 
 When the AI review workflow is enabled, AI-generated output is queued in `ai_output_reviews` rather than being written straight to the page draft. A reviewer must explicitly approve, reject, or edit-and-approve each row before the proposed content is applied. Configure the policy at **Settings → AI → AI Safety → Review policy**.

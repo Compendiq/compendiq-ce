@@ -12,6 +12,7 @@ import {
 } from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import { encryptPat } from '../../core/utils/crypto.js';
+import { confluencePagePutDigest } from '../../domains/confluence/services/page-put-intent-reconciler.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import {
   isDbAvailable,
@@ -112,6 +113,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
   }> = [];
   let compactPutReply = false;
   let readbackStatus = 200;
+  let historicalStorage: string | null = null;
   let providerPage: {
     id: string;
     type: string;
@@ -169,7 +171,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
           url: request.url,
           authorization: request.headers.authorization,
         });
-        if (readbackStatus !== 200) {
+        if (historicalStorage !== null && request.url.includes('status=historical')) {
+          sendJson(response, 200, { body: { storage: { value: historicalStorage } } });
+        } else if (readbackStatus !== 200) {
           sendJson(response, readbackStatus, { message: 'readback refused by fixture' });
         } else if (providerPage) {
           sendJson(response, 200, providerPage);
@@ -221,6 +225,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     confluenceRequests = [];
     compactPutReply = false;
     readbackStatus = 200;
+    historicalStorage = null;
     providerPage = null;
     afterConfluencePut = null;
     ownedRedisKeys.clear();
@@ -652,6 +657,104 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       title: 'Restored without guard',
       body_text: 'restored',
     }]);
+  });
+
+  it('keeps the live title when restoring placeholder-titled history locally', async () => {
+    const title = 'Current roadmap';
+    const pageId = await seedPage({ version: 7, title });
+    await seedVersion(pageId, 6, 'v6', '<p>Historical body</p>', 'Historical body');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/6/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ title, version: 8, pushedToConfluence: false });
+    expect((await query('SELECT title, body_html FROM pages WHERE id = $1', [pageId])).rows)
+      .toEqual([{ title, body_html: '<p>Historical body</p>' }]);
+    expect(confluenceRequests).toEqual([]);
+  });
+
+  it.each([
+    ['a real title', 'Earlier roadmap', false, 'Earlier roadmap'],
+    ['a placeholder with a local body', 'v6', false, 'Current roadmap'],
+    ['a placeholder with a lazy body', 'v6', true, 'Current roadmap'],
+  ] as const)('publishes the correct title through the durable intent for %s', async (_label, historyTitle, lazy, title) => {
+    await configureConfluence('OPS');
+    const confluenceId = 'restore-title';
+    const pageId = await seedPage({
+      source: 'confluence', confluenceId, spaceKey: 'OPS', visibility: 'shared',
+      ownerId: null, version: 7, title: 'Current roadmap',
+    });
+    const storage = '<p>Historical body</p>';
+    await seedVersion(pageId, 6, historyTitle, lazy ? null : storage, lazy ? null : 'Historical body');
+    if (lazy) historicalStorage = storage;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/6/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ title, version: 8, pushedToConfluence: true });
+    expect(confluenceRequests.map(({ method }) => method)).toEqual(lazy ? ['GET', 'PUT'] : ['PUT']);
+    expect(confluenceRequests.at(-1)?.body).toMatchObject({ title, body: { storage: { value: storage } } });
+    expect((await query('SELECT title, body_html FROM pages WHERE id = $1', [pageId])).rows)
+      .toEqual([{ title, body_html: storage }]);
+    const intent = await query(
+      `SELECT status, effect->>'intendedStateDigest' AS digest FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+      [pageId],
+    );
+    expect(intent.rows).toEqual([{
+      status: 'completed',
+      digest: confluencePagePutDigest({ pageId, confluenceId, title, bodyStorage: storage, expectedRemoteVersion: 7 }),
+    }]);
+  });
+
+  it('refuses a history row that changed while a placeholder restore waited for admission', async () => {
+    await configureConfluence('OPS');
+    const title = 'Current roadmap';
+    const pageId = await seedPage({
+      source: 'confluence', confluenceId: 'restore-title-changed', spaceKey: 'OPS', visibility: 'shared',
+      ownerId: null, version: 7, title,
+    });
+    await seedVersion(pageId, 6, 'v6', '<p>Historical body</p>', 'Historical body');
+    const blocker = await getPool().connect();
+    try {
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      const pending = app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/versions/6/restore`,
+        headers: { 'x-test-user': userId },
+        payload: { version: 7 },
+      });
+      await waitForBlockedLifecycleLock();
+      // The changed stored title would give the same effective title.
+      await blocker.query('UPDATE page_versions SET title = $2 WHERE page_id = $1 AND version_number = 6', [pageId, title]);
+      await blocker.query('COMMIT');
+
+      const response = await pending;
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'Historical version changed before restore could begin' });
+      expect(confluenceRequests).toEqual([]);
+      expect((await query(
+        `SELECT status, remote_effect_started_at FROM page_write_intents
+          WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+        [pageId],
+      )).rows).toEqual([{ status: 'cancelled', remote_effect_started_at: null }]);
+    } catch (err) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      blocker.release();
+    }
   });
 
   it('publishes a large Confluence restore exactly, records history, and keeps terminal metadata bounded', async () => {

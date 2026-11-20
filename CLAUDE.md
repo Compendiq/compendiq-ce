@@ -133,6 +133,12 @@ Domain-based backend with ESLint-enforced import boundaries (`eslint-plugin-boun
 
 Layout: `backend/src/{core,domains/{confluence,llm,knowledge},routes/{foundation,confluence,llm,knowledge}}` + `frontend/src/{features,shared,stores,providers}` + `packages/contracts/`. Detailed structure → `docs/architecture/03-backend-domains.md` and `04-frontend-structure.md`.
 
+Version History import fills missing metadata and preserves existing
+snapshot titles and bodies (#2038). For the exact `vN` label of the
+target's version, restore uses the live title in both modes. Confluence
+restore must use that title for dispatch, the durable digest, and
+publication. Recheck the stored title and body before dispatch.
+
 The sidebar's space-home projection detaches the configured homepage from its
 actual parent before promoting its children to roots. Keep the original page
 IDs for keyboard navigation, and retain the sole-homepage fallback (#1815).
