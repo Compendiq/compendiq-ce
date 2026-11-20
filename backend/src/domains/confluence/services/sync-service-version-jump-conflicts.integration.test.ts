@@ -795,28 +795,41 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(await syncAudits(id)).toEqual([]);
   });
 
-  it('a local save that left body and title equal to upstream stays a routine version jump with no audit', async () => {
-    await usePolicy('compendiq-wins');
-    const id = await seedSyncedV5('vj-unchanged-save');
-    const v6 = upstreamPage('vj-unchanged-save', 6);
-    upstreamPages.set(v6.id, v6);
-    await runSync(v6, RUN_1);
-    // Bob saves without changing title or body (e.g. an edit he reverted).
-    await query(
-      `UPDATE pages SET version = version + 1,
-              local_modified_at = last_synced + INTERVAL '1 second', local_modified_by = $2
-        WHERE id = $1`,
-      [id, bobId],
-    );
-    const page = upstreamPage('vj-unchanged-save', 8);
-    upstreamPages.set(page.id, page);
+  it.each([false, true])(
+    'a local save unchanged from upstream stays routine (history collision: %s)',
+    async (historyCollision) => {
+      await usePolicy('compendiq-wins');
+      const id = await seedSyncedV5('vj-unchanged-save');
+      const v6 = upstreamPage('vj-unchanged-save', 6);
+      upstreamPages.set(v6.id, v6);
+      await runSync(v6, RUN_1);
+      // Bob saves without changing title or body (e.g. an edit he reverted).
+      await query(
+        `UPDATE pages SET version = version + 1,
+                local_modified_at = last_synced + INTERVAL '1 second', local_modified_by = $2
+          WHERE id = $1`,
+        [id, bobId],
+      );
+      const localBody = (await row(id)).body_html;
+      const snapshotId = historyCollision
+        ? await seedHistory(id, 7, 'Earlier content', '<p>Earlier content</p>', 'Earlier content')
+        : null;
+      const before = snapshotId ? await historyRow(snapshotId) : null;
+      const page = upstreamPage('vj-unchanged-save', 8);
+      upstreamPages.set(page.id, page);
 
-    const counts = await runSync(page, RUN_2);
+      const counts = await runSync(page, RUN_2);
 
-    expect(await row(id)).toMatchObject({ title: 'Runbook', version: 8, local_modified_at: null });
-    expect(await syncAudits(id)).toEqual([]);
-    expect(counts.pagesUpdated).toBe(1);
-  });
+      expect(await row(id)).toMatchObject({ title: 'Runbook', version: 8, local_modified_at: null });
+      if (snapshotId) {
+        expect(await historyRow(snapshotId)).toEqual(before);
+      } else {
+        expect(await snapshots(id)).toContainEqual({ version_number: 7, body_html: localBody });
+      }
+      expect(await syncAudits(id)).toEqual([]);
+      expect(counts.pagesUpdated).toBe(1);
+    },
+  );
 
   it('writes the overwrite audit before the collab reconcile, so a failing reconcile cannot drop it', async () => {
     await usePolicy('confluence-wins');

@@ -950,6 +950,7 @@ async function syncPage(
     }
     versionJumpDecision = gate.decision;
   }
+  const overwritesLocalEdit = versionJumpDecision?.kind === 'apply_incoming' && versionJumpDecision.hasLocalEdits;
 
   // Clear stale attachment cache when an existing page has a new version,
   // so updated diagrams/images are re-downloaded rather than served from cache.
@@ -1038,7 +1039,7 @@ async function syncPage(
           });
         }
       } else if (locked) {
-        if (versionJumpDecision?.hasLocalEdits) {
+        if (overwritesLocalEdit) {
           try {
             await snapshotLocalVersionBeforeOverwrite(txClient, locked);
           } catch (err) {
@@ -1192,7 +1193,7 @@ async function syncPage(
     counts.pagesUpdated++;
     // Routine history remains best effort. Wait for a successful upsert so a
     // row that moved during attachment download leaves no spurious snapshot.
-    if (versionJumpDecision && !versionJumpDecision.hasLocalEdits) {
+    if (versionJumpDecision && !overwritesLocalEdit) {
       const prior = versionJumpDecision.row;
       await saveVersionSnapshotByPageId(prior.id, prior.version, prior.title, prior.body_html, prior.body_text);
     }

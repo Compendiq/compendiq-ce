@@ -229,7 +229,8 @@ sequenceDiagram
   and leaves it for the next walk. `SYNC_OVERWROTE_LOCAL_EDITS` is written after
   commit and before collaborative reconciliation. The superseded version is
   below the new live version and appears in Version History. Routine updates
-  without a local edit still save history on a best-effort basis.
+  save history on a best-effort basis, including when a local save left the
+  title and body equal to the incoming version.
   A kept or queued row keeps its older version, so
   every walk of the page re-enters this branch: `compendiq-wins` audits again
   and `manual-review` queues another version on each such run. Incremental runs
