@@ -2892,6 +2892,16 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > or a failure of the sweep itself, between the re-read and the sweep defers
 > it to the next re-read.
 
+> **Amended (#1919):** after the content walk, each flagged sync selects at
+> most 100 overdue, live Confluence pages already marked restricted across
+> its spaces. The periodic pass bypasses the audit fast path and requires a
+> successful restriction response, including for ancestors. A failed read
+> preserves the mirror and advances only the retry clock in
+> `pages.restrictions_refresh_failed_at` (migration 158). The pass stamps
+> successful mirrors with a cutoff later than the content walk, so any ACEs
+> bumped by an earlier audit skip can still be swept. The sweep compares
+> each ACE to its page's mirror stamp within the existing run and space scope.
+
 **Query-time contract (`backend/src/domains/llm/services/rag-service.ts`):**
 - Overfetch compensation: when the flag is on, both the vector-search and keyword-search stages pull `ceil(topK * 1.5)` candidates instead of `topK`. The post-filter needs headroom because any given page can be filtered out.
 - After `reciprocalRankFusion`, iterate the merged list and keep only entries where `userCanAccessPage(userId, page.id)` is true. Slice to `topK` at the end to keep the response size stable.
@@ -2959,7 +2969,7 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 **Consequences:**
 - EE deployments with the flag on: sync runs take longer (proportional to restricted-page count), and RAG respects Confluence's per-page visibility.
 - CE deployments and EE without the flag: zero behaviour change. The Confluence client methods, the post-filter branch, and the 1.5x overfetch bump are all gated by `isFeatureEnabled('rag_permission_enforcement')`.
-- A Confluence admin removing a restriction or adding a user to an existing one takes effect when a Compendiq sync next re-reads the page (not instant). *(Amended #1771.)* Incremental runs (`SYNC_INTERVAL_MIN`, default 15 min) re-read only pages edited inside their modified-pages window, and a full walk runs only on a space's first sync or after it went ≥24 h without a successful sync — so a restriction-only change on an unedited page, a de-listing included, waits for the next full walk or edit; on a healthy schedule that means until the page is edited. A run that fails partway still sweeps the pages it re-read. Documented in the ADMIN-GUIDE.
+- Changes on already restricted pages propagate on the next successful mirror and sweep, including when the page is unedited. *(Amended #1919.)* With readable restrictions and enough capacity under the cap, the bound is `RESTRICTION_REFRESH_INTERVAL_HOURS` (default 24 h) plus `SYNC_INTERVAL_MIN` (default 15 min), including recovery from an earlier failed sweep. New restrictions on previously unrestricted pages still depend on the normal content walk. See the ADMIN-GUIDE for backlog and fetch-failure behavior.
 - Integration tests in `backend/src/domains/confluence/services/sync-service.integration.test.ts`, `backend/src/domains/confluence/services/sync-service-incremental-ace-sweep.integration.test.ts` + `backend/src/domains/llm/services/rag-service.integration.test.ts` are the regression guard.
 
 ---

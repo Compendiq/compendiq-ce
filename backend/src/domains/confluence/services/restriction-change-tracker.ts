@@ -1,8 +1,9 @@
 import type { AuditRetention, ConfluenceClient } from './confluence-client.js';
 import { logger } from '../../../core/utils/logger.js';
 
-/** Default "confirm window": re-confirm every page's restrictions at least this often. */
+/** Max age of the last successful mirror for the content walk's audit skip. */
 const DEFAULT_CONFIRM_WINDOW_HOURS = 168; // 7 days
+const DEFAULT_REFRESH_INTERVAL_HOURS = 24;
 
 /**
  * Margin subtracted from the retention horizon so we never rely on audit records
@@ -11,6 +12,13 @@ const DEFAULT_CONFIRM_WINDOW_HOURS = 168; // 7 days
 export const RETENTION_SAFETY_MARGIN_MS = 3_600_000; // 1 hour
 
 const HOUR_MS = 3_600_000;
+
+/** Interval for restriction-only refreshes, independent of the audit window. */
+export function restrictionRefreshIntervalMs(): number {
+  const hours = Number(process.env.RESTRICTION_REFRESH_INTERVAL_HOURS);
+  const interval = hours * HOUR_MS;
+  return hours > 0 && Number.isSafeInteger(interval) ? interval : DEFAULT_REFRESH_INTERVAL_HOURS * HOUR_MS;
+}
 
 /**
  * The outcome of asking "which pages' restrictions changed since we last looked?".

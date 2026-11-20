@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
 import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { query } from '../../../core/db/postgres.js';
@@ -23,12 +23,13 @@ import { setRedisClient } from '../../../core/services/redis-cache.js';
 import { filterAccessiblePages } from '../../../core/services/rbac-service.js';
 import { encryptPat } from '../../../core/utils/crypto.js';
 import { logger } from '../../../core/utils/logger.js';
+import { hybridSearch } from '../../llm/services/rag-service.js';
 import type * as EnterpriseFeatures from '../../../core/enterprise/features.js';
 import type * as EnterpriseLoader from '../../../core/enterprise/loader.js';
 import { buildKnowledgeTestApp } from '../../../routes/knowledge/pages.test-helpers.js';
 import { pagesCrudRoutes } from '../../../routes/knowledge/pages-crud.js';
 import type { ConfluencePage, ConfluenceRestriction } from './confluence-client.js';
-import { resetRateLimiter } from './confluence-rate-limiter.js';
+import { resetRateLimiter, setRateLimit } from './confluence-rate-limiter.js';
 import { __internal, getSyncStatus, syncUser } from './sync-service.js';
 
 // vitest hoists vi.mock above the imports, so sync-service binds this loader.
@@ -69,6 +70,9 @@ const modifiedIds = new Set<string>();
 const hiddenFrom = new Map<string, Set<string>>();
 /** Page ids whose BODY was fetched (`getPage`), i.e. the pages a run visited. */
 const bodyFetches: string[] = [];
+const restrictionFetches: string[] = [];
+const restrictionFailures = new Map<string, 403 | 404>();
+let auditReadable = false;
 /**
  * When on, a run lists one space; every other space's listing answers 500
  * (not retried), so the walk fails after its first space whatever the order.
@@ -119,6 +123,12 @@ const fixture: Server = createServer((request, response) => {
   if (url.pathname === '/rest/api/space') {
     return json(response, 200, paged(SPACES.map((key) => ({ key, name: key, type: 'global', status: 'current' }))));
   }
+  if (auditReadable && url.pathname === '/rest/api/audit/retention') {
+    return json(response, 200, { number: 30, units: 'DAYS' });
+  }
+  if (auditReadable && url.pathname === '/rest/api/audit') {
+    return json(response, 200, paged([]));
+  }
   if (url.pathname === '/rest/api/content') {
     const spaceKey = url.searchParams.get('spaceKey');
     if (listingRefused(spaceKey)) return json(response, 500, { message: 'listing failed' });
@@ -129,6 +139,11 @@ const fixture: Server = createServer((request, response) => {
     if (listingRefused(spaceKey)) return json(response, 500, { message: 'listing failed' });
     return json(response, 200, paged(visibleIn(spaceKey).filter((p) => modifiedIds.has(p.id))));
   }
+  const experimental = /^\/rest\/experimental\/content\/([^/]+)\/restriction$/.exec(url.pathname);
+  if (experimental) {
+    const failure = restrictionFailures.get(experimental[1]!) ?? 404;
+    return json(response, failure, { message: 'Restrictions unavailable' });
+  }
   const match = /^\/rest\/api\/content\/([^/]+)(\/.*)?$/.exec(url.pathname);
   if (match) {
     const id = decodeURIComponent(match[1]!);
@@ -138,8 +153,11 @@ const fixture: Server = createServer((request, response) => {
     if (hidden.has(id)) return json(response, 403, { message: 'Forbidden' });
     if (sub === '/child/attachment') return json(response, 200, paged([]));
     if (sub === '/restriction') {
+      restrictionFetches.push(id);
+      const failure = restrictionFailures.get(id);
+      if (failure) return json(response, failure, { message: 'Restrictions unavailable' });
       const users = readers.get(id);
-      if (!users) return json(response, 404, { message: 'No restrictions' });
+      if (!users) return json(response, 200, paged([]));
       return json(response, 200, paged([{
         operation: 'read',
         restrictions: {
@@ -153,7 +171,6 @@ const fixture: Server = createServer((request, response) => {
       return json(response, 200, remote);
     }
   }
-  // The audit log (/rest/api/audit/*) is absent → the restriction change-set is 'full'.
   return json(response, 404, { message: 'Fixture route not found' });
 });
 
@@ -192,8 +209,8 @@ async function seedUser(username: string, opts: { pat?: string; spaces?: string[
 }
 
 async function localPage(confluenceId: string) {
-  const res = await query<{ id: number; inherit_perms: boolean }>(
-    'SELECT id, inherit_perms FROM pages WHERE confluence_id = $1',
+  const res = await query<{ id: number; inherit_perms: boolean; restrictions_synced_at: Date | null }>(
+    'SELECT id, inherit_perms, restrictions_synced_at FROM pages WHERE confluence_id = $1',
     [confluenceId],
   );
   return res.rows[0]!;
@@ -231,6 +248,14 @@ async function runSync(userId: string): Promise<void> {
 async function ageSpaceCursor(spaceKey: string): Promise<void> {
   // Puts the next walk of this space on the >=24h full-sync branch.
   await query("UPDATE spaces SET last_synced = NOW() - INTERVAL '25 hours' WHERE space_key = $1", [spaceKey]);
+}
+
+async function ageRestrictionMirror(pageId: number): Promise<void> {
+  // Move only the restriction clock beyond the configured 1-hour interval.
+  await query(
+    "UPDATE pages SET restrictions_synced_at = NOW() - INTERVAL '61 minutes' WHERE id = $1",
+    [pageId],
+  );
 }
 
 /**
@@ -309,6 +334,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
   }, 30_000);
 
   beforeEach(async () => {
+    vi.stubEnv('RESTRICTION_REFRESH_INTERVAL_HOURS', '1');
+    vi.stubEnv('RESTRICTION_CONFIRM_WINDOW_HOURS', '168');
     remotePages.clear();
     spaceOf.clear();
     readers.clear();
@@ -317,6 +344,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     failListingsAfterFirstSpace = false;
     listedSpaces.clear();
     bodyFetches.length = 0;
+    restrictionFetches.length = 0;
+    restrictionFailures.clear();
+    auditReadable = false;
     resetRateLimiter();
     await truncateAllTables();
     await redis.flushDb();
@@ -328,6 +358,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
        VALUES ('editor', 'Editor', ARRAY['read', 'edit']) RETURNING id`,
     );
     editorRoleId = role.rows[0]!.id;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setRateLimit(60);
+    resetRateLimiter();
   });
 
   afterAll(async () => {
@@ -420,6 +456,166 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     expect([...bodyFetches].sort()).toEqual(['7001', '7002']);
     expect(await aceRows(p.id)).toEqual(userAces(aliceId));
     expect(await pageStatus(bobId, p.id)).toBe(404);
+  });
+
+  it('revokes a removed reader on an unedited page at the refresh interval, including RAG', async () => {
+    const aliceId = await seedUser('alice');
+    const bobId = await seedUser('bob');
+    const syncerId = await seedUser('syncer', { pat: 'syncer-pat' });
+    putPage('DOCS', '7001', 'Restricted Ledger');
+    readers.set('7001', ['alice', 'bob']);
+    auditReadable = true;
+
+    await runSync(syncerId);
+    const p = await localPage('7001');
+    const ragIds = async (userId: string) => (await hybridSearch(
+      userId, 'find "Restricted Ledger"', 5, null, { pinIdentifiers: true, recordAnalytics: false },
+    )).map((result) => result.pageId);
+    expect(await pageStatus(bobId, p.id)).toBe(200);
+    expect(await ragIds(bobId)).toContain(p.id);
+
+    readers.set('7001', ['alice']);
+    bodyFetches.length = 0;
+    restrictionFetches.length = 0;
+    await runSync(syncerId);
+    expect(restrictionFetches).toEqual([]);
+    expect(await pageStatus(bobId, p.id)).toBe(200);
+
+    await ageRestrictionMirror(p.id);
+    await runSync(syncerId);
+    expect(bodyFetches).toEqual([]);
+    expect(restrictionFetches).toEqual(['7001']);
+    expect(await aceRows(p.id)).toEqual(userAces(aliceId));
+    expect(await pageStatus(bobId, p.id)).toBe(404);
+    expect(await filterAccessiblePages(bobId, [p.id])).toEqual(new Set());
+    expect(await ragIds(bobId)).not.toContain(p.id);
+    expect(await pageStatus(aliceId, p.id)).toBe(200);
+    expect(await ragIds(aliceId)).toContain(p.id);
+
+    await runSync(syncerId);
+    expect(restrictionFetches).toEqual(['7001']);
+  });
+
+  it('sweeps an overdue page even if the audit fast path visited it earlier in the same run', async () => {
+    const aliceId = await seedUser('alice');
+    const bobId = await seedUser('bob');
+    const syncerId = await seedUser('syncer', { pat: 'syncer-pat' });
+    putPage('DOCS', '7001', 'Restricted');
+    readers.set('7001', ['alice', 'bob']);
+    auditReadable = true;
+    await runSync(syncerId);
+    const p = await localPage('7001');
+
+    // The overlap can list an unchanged page the content walk already processed.
+    modifiedIds.add('7001');
+    readers.set('7001', ['alice']);
+    await ageRestrictionMirror(p.id);
+    restrictionFetches.length = 0;
+    await runSync(syncerId);
+
+    expect(restrictionFetches).toEqual(['7001']);
+    expect(await aceRows(p.id)).toEqual(userAces(aliceId));
+    expect(await pageStatus(bobId, p.id)).toBe(404);
+  });
+
+  it('retries a de-listing after a failed periodic sweep with the space cursor still current', async () => {
+    const aliceId = await seedUser('alice');
+    const bobId = await seedUser('bob');
+    const syncerId = await seedUser('syncer', { pat: 'syncer-pat' });
+    putPage('DOCS', '7001', 'Restricted');
+    readers.set('7001', ['alice', 'bob']);
+    await runSync(syncerId);
+    const p = await localPage('7001');
+    readers.set('7001', ['alice']);
+    await ageRestrictionMirror(p.id);
+    bodyFetches.length = 0;
+    restrictionFetches.length = 0;
+
+    await withSweepFault(async () => {
+      await expect(syncUser(syncerId)).rejects.toThrow('injected sweep fault');
+    });
+    expect(restrictionFetches).toEqual(['7001']);
+    expect(await aceRows(p.id)).toEqual(userAces(aliceId, bobId));
+    expect(await pageStatus(bobId, p.id)).toBe(200);
+
+    await ageRestrictionMirror(p.id);
+    await runSync(syncerId);
+    expect(bodyFetches).toEqual([]);
+    expect(restrictionFetches).toEqual(['7001', '7001']);
+    expect(await aceRows(p.id)).toEqual(userAces(aliceId));
+    expect(await pageStatus(bobId, p.id)).toBe(404);
+    expect(await pageStatus(aliceId, p.id)).toBe(200);
+  });
+
+  it.each([403, 404] as const)('retains the last mirror when a periodic restriction read returns %i', async (status) => {
+    const aliceId = await seedUser('alice');
+    const bobId = await seedUser('bob');
+    const syncerId = await seedUser('syncer', { pat: 'syncer-pat' });
+    putPage('DOCS', '7001', 'Restricted');
+    readers.set('7001', ['alice']);
+    await runSync(syncerId);
+    const p = await localPage('7001');
+    await ageRestrictionMirror(p.id);
+    const previousStamp = (await localPage('7001')).restrictions_synced_at;
+    readers.delete('7001');
+    restrictionFailures.set('7001', status);
+    restrictionFetches.length = 0;
+    await runSync(syncerId);
+
+    expect(restrictionFetches).toEqual(['7001']);
+    expect(await localPage('7001')).toEqual({ ...p, restrictions_synced_at: previousStamp });
+    expect(await aceRows(p.id)).toEqual(userAces(aliceId));
+    expect(await pageStatus(aliceId, p.id)).toBe(200);
+    expect(await pageStatus(bobId, p.id)).toBe(404);
+
+    // A readable response after the retry interval confirms the flip to public.
+    restrictionFailures.delete('7001');
+    await query(
+      "UPDATE pages SET restrictions_refresh_failed_at = NOW() - INTERVAL '61 minutes' WHERE id = $1",
+      [p.id],
+    );
+    await runSync(syncerId);
+    expect(restrictionFetches).toEqual(['7001', '7001']);
+    expect((await localPage('7001')).inherit_perms).toBe(true);
+    expect(await aceRows(p.id)).toEqual([]);
+    expect(await pageStatus(bobId, p.id)).toBe(200);
+  });
+
+  it('refreshes at most 100 overdue pages across the run, oldest first and within its spaces', async () => {
+    setRateLimit(600);
+    resetRateLimiter();
+    await seedUser('alice', { spaces: ['DOCS', 'TEAM'] });
+    const syncerId = await seedUser('syncer', { pat: 'syncer-pat', spaces: ['DOCS', 'TEAM'] });
+    const docsSyncerId = await seedUser('docs-syncer', { pat: 'docs-pat' });
+    await runSync(syncerId); // establish current content cursors with empty walks
+
+    const ids = Array.from({ length: 101 }, (_, index) => String(8000 + index));
+    const outOfScopeId = '9000';
+    for (const [index, id] of [...ids, outOfScopeId].entries()) {
+      const spaceKey = index < 50 ? 'DOCS' : 'TEAM';
+      putPage(spaceKey, id, 'Restricted batch page');
+      readers.set(id, ['alice']);
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, source, title, inherit_perms, restrictions_synced_at)
+         VALUES ($1, $2, 'confluence', $1, FALSE, NOW() - INTERVAL '2 hours' + $3 * INTERVAL '1 second')`,
+        [id, spaceKey, index],
+      );
+    }
+    restrictionFailures.set(ids[0]!, 403);
+
+    await runSync(docsSyncerId);
+    expect(restrictionFetches).toEqual(ids.slice(0, 50));
+    await query(
+      "UPDATE pages SET restrictions_synced_at = NOW() - INTERVAL '3 hours', restrictions_refresh_failed_at = NULL WHERE space_key = 'DOCS'",
+    );
+    restrictionFetches.length = 0;
+
+    await runSync(syncerId);
+    expect(restrictionFetches).toEqual(ids.slice(0, 100));
+    restrictionFetches.length = 0;
+    await runSync(syncerId);
+    expect(restrictionFetches).toEqual([ids[100], outOfScopeId]);
+    expect(bodyFetches).toEqual([]);
   });
 
   it('one run, DOCS on the full walk and TEAM incremental: the sweep follows each page, not the run', async () => {

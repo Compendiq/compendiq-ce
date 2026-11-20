@@ -112,6 +112,9 @@ erDiagram
         text source "confluence | standalone"
         text notion_page_id "live standalone import binding; successful relocation clears; legacy CF compensation metadata is ignored"
         text visibility "private | shared"
+        bool inherit_perms "false activates the page ACL"
+        timestamptz restrictions_synced_at "last successful Confluence restriction mirror"
+        timestamptz restrictions_refresh_failed_at "last failed periodic refresh, migration 158"
         uuid created_by_user_id FK
         bool embedding_dirty
         bool image_analysis_dirty "migration 116, #1616 (ADR-027 D4): re-enumerate this page's images; raised by every attachment and body writer"

@@ -348,6 +348,12 @@ Readability first. Explicit over clever. ESLint flat config per workspace; TS st
 
 ## Environment
 
+With Enterprise `rag_permission_enforcement`, sync rechecks already
+restricted Confluence pages on `RESTRICTION_REFRESH_INTERVAL_HOURS` (default
+24), independent of content edits or the audit window. Keep selection scoped
+to the run's spaces and preserve the last successful mirror on a failed
+fetch. Sweep against each re-read page's own successful mirror stamp.
+
 Full reference is `.env.example`. Keys you must set:
 
 - `JWT_SECRET` — 32+ chars, required

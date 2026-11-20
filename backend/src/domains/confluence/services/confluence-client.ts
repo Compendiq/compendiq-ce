@@ -352,14 +352,19 @@ export class ConfluenceClient {
    * `404` on either path is treated as "no restrictions configured" and returns an
    * empty array — it is NOT an error. The caller (sync-service in Phase C) uses
    * the empty result to mean the page is not restricted and may fall back to
-   * ancestor-inherited restrictions.
+   * ancestor-inherited restrictions. A restriction-only refresh of an already
+   * restricted page requires a successful response because an HTTP 404 may
+   * also mean that the sync identity lost access.
    *
    * Returns a normalised list of `ConfluenceRestriction` entries (one per operation).
    * Handles the DC quirk where `restrictions.user` or `restrictions.group` may be
    * omitted entirely when empty, as well as the more common case where they are
    * present but with `results: []`.
    */
-  async getPageRestrictions(pageId: string): Promise<ConfluenceRestriction[]> {
+  async getPageRestrictions(
+    pageId: string,
+    { requireSuccessfulResponse = false }: { requireSuccessfulResponse?: boolean } = {},
+  ): Promise<ConfluenceRestriction[]> {
     const encodedId = encodeURIComponent(pageId);
     const primaryPath = `/rest/api/content/${encodedId}/restriction?expand=restrictions.user,restrictions.group`;
     const fallbackPath = `/rest/experimental/content/${encodedId}/restriction?expand=restrictions.user,restrictions.group`;
@@ -369,7 +374,7 @@ export class ConfluenceClient {
       const body = await this.fetch<PaginatedResponse<RawConfluenceRestriction>>(primaryPath);
       return parseRestrictionResponse(body);
     } catch (err) {
-      if (err instanceof ConfluenceError && err.statusCode === 404) {
+      if (!requireSuccessfulResponse && err instanceof ConfluenceError && err.statusCode === 404) {
         // Page exists but has no restrictions configured — not an error.
         return [];
       }
@@ -385,7 +390,7 @@ export class ConfluenceClient {
         const body = await this.fetch<PaginatedResponse<RawConfluenceRestriction>>(fallbackPath);
         return parseRestrictionResponse(body);
       } catch (fallbackErr) {
-        if (fallbackErr instanceof ConfluenceError && fallbackErr.statusCode === 404) {
+        if (!requireSuccessfulResponse && fallbackErr instanceof ConfluenceError && fallbackErr.statusCode === 404) {
           // Older DC without either path — treat as "no restrictions".
           return [];
         }
