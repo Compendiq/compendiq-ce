@@ -123,10 +123,15 @@ interface SearchResult {
   sectionTitle: string;
   spaceKey: string | null;
   /**
-   * Ranking quantity. **The unit depends on who produced it** — cosine
-   * similarity from `vectorSearch`, raw `ts_rank` from `keywordSearch`, and an
-   * RRF fusion score from `reciprocalRankFusion`. Use it to ORDER results.
-   * Never display it, never threshold it, never compare it across producers.
+   * Producer-specific ranking value. **The unit depends on who produced it** —
+   * cosine similarity from `vectorSearch`, raw `ts_rank` from `keywordSearch`,
+   * `0` for identifier pins, and an RRF fusion score from
+   * `reciprocalRankFusion`. Within a single producing stage (`vectorSearch`,
+   * `keywordSearch`, `reciprocalRankFusion`) it is that stage's ranking value,
+   * but across the full pipeline (fusion, rerank, MMR, identifier pins) final
+   * order is carried by array position (ADR-027 D12). Consumers must treat
+   * `score` as informational only and never display, threshold, compare across
+   * producers, or re-sort by it.
    *
    * The fusion value is ~0.016 for a single rank in one leg and ~0.033 for
    * the common two-leg case — and since #1106's best-chunk-only rule that
@@ -1723,7 +1728,7 @@ async function lookupIdentifier(
       pageTitle: row.title,
       sectionTitle: resolved.sectionTitle,
       spaceKey: row.space_key,
-      // Ordering-only, like every other producer's score; pinned rows lead
+      // Informational only, like every other producer's score; pinned rows lead
       // by ARRAY position and consumers never re-sort.
       score: 0,
       vectorScore: null,

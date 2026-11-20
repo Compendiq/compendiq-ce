@@ -44,15 +44,16 @@ export interface Source {
   unavailable?: true;
   sectionTitle?: string;
   /**
-   * Retrieval ORDERING value, in whichever unit produced it — an RRF fusion
-   * score for a hybrid answer (typically ~0.033, and since #1106's
-   * best-chunk-only fusion rule that is also the ceiling at every width; rows
-   * persisted before that deploy could reach ~0.17 on this path via per-chunk
-   * summing), or a flat `1` for web and external sources, which never went
-   * through retrieval. Kept because it orders the array. See
-   * `SearchResult.score` in `rag-service.ts` for the scale history.
+   * Informational/legacy producer-specific value, in whichever unit produced it
+   * — an RRF fusion score for a hybrid answer (typically ~0.033, and since
+   * #1106's best-chunk-only fusion rule that is also the ceiling at every
+   * width; rows persisted before that deploy could reach ~0.17 on this path via
+   * per-chunk summing), `0` for identifier pins, or a flat `1` for web and
+   * external sources, which never went through retrieval. Citation order comes
+   * from the pipeline and final array position (ADR-027 D12), not from this
+   * field. See `SearchResult.score` in `rag-service.ts` for the scale history.
    *
-   * @deprecated Never render or threshold this. Use {@link Source.similarity}.
+   * @deprecated Never render, threshold, or re-sort by this. Use {@link Source.similarity}.
    */
   score?: number;
   /**
