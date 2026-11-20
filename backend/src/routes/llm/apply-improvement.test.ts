@@ -499,6 +499,21 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(audit.rows[0]?.metadata.source).toBe('ai_improvement');
     });
 
+    it('blocks Confluence Apply while a manual-review sync conflict is pending', async () => {
+      const pageId = await insertConfluencePage('page-conflict-pending', 'Synced', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      await query('UPDATE pages SET conflict_pending = TRUE WHERE id = $1', [pageId]);
+
+      const response = await apply({ pageId: 'page-conflict-pending', improvedMarkdown: 'My edited body', version: 5 });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ reason: 'sync_conflict_pending' });
+      expect(lastConfluenceRequest).toBeNull();
+      expect((await query(
+        'SELECT id FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[] AND status = $2', [pageId, 'pending'],
+      )).rows).toEqual([]);
+    });
+
     it('keeps the Confluence id of a task whose text the improvement left unchanged (#1751)', async () => {
       const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
       await setPageContent(

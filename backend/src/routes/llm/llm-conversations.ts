@@ -39,6 +39,7 @@ import {
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
+  assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
   PageWriteError,
@@ -563,6 +564,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       if (!existingPage.confluence_id) {
         throw fastify.httpErrors.badRequest('Page is missing confluence_id');
       }
+      await assertNoPendingSyncConflict([existingPage.id]);
       // Preserve the existing early configuration error. The post-admission
       // resolver below is authoritative for dispatch.
       if (!await getClientForUser(userId)) {

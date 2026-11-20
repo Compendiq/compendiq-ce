@@ -520,6 +520,25 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       .toEqual([{ status: 'completed' }]);
   });
 
+  it('blocks a queued manual-review conflict before provider calls and allows local editing', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    await query('UPDATE pages SET conflict_pending = TRUE, remote_version = 6 WHERE id = $1', [pageId]);
+    const put = () => app.inject({
+      method: 'PUT', url: `/api/pages/${pageId}`,
+      payload: { title: 'Local edit', bodyHtml: '<p>Local edit</p>', version: 7 },
+    });
+
+    const refused = await put();
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json()).toMatchObject({ reason: 'sync_conflict_pending' });
+    expect((await query(
+      'SELECT id FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[] AND status = $2', [pageId, 'pending'],
+    )).rows).toEqual([]);
+    await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [currentUserId]);
+    expect((await put()).statusCode).toBe(200);
+    expect(confluenceRequests).toEqual([]);
+  });
+
   it.each([false, true])('refuses a stale editor revision (counter-only bump: %s)', async (bump) => {
     const pageId = await seedConfluencePage(currentUserId);
     await query('UPDATE pages SET remote_version = 6 WHERE id = $1', [pageId]);

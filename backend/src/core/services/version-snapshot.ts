@@ -5,6 +5,23 @@ import { logger } from '../utils/logger.js';
 
 export type PageVersionSource = 'local' | 'confluence';
 
+/** The live article and its superseded snapshot use the same identity. */
+export function livePageVersion(page: {
+  source: string;
+  version: number;
+  remote_version: number | null;
+  local_modified_at: Date | null;
+}): { versionNumber: number; source: PageVersionSource } {
+  return {
+    versionNumber: page.version,
+    source: page.source === 'confluence'
+      && page.version === page.remote_version
+      && page.local_modified_at === null
+      ? 'confluence'
+      : 'local',
+  };
+}
+
 /** Until version counters are decoupled, live snapshots follow page provenance. */
 export function snapshotSourceForPage(source: string): PageVersionSource {
   return source === 'confluence' ? 'confluence' : 'local';

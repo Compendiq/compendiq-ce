@@ -1825,6 +1825,30 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     ws.close();
   });
 
+  it('blocks a collaborative provider read and PUT while a manual-review sync conflict is pending', async () => {
+    const { token, pageId, ws } = await seedLiveConfluencePage({ version: 6 });
+    await query('UPDATE pages SET conflict_pending = TRUE, remote_version = 5 WHERE id = $1', [pageId]);
+    const getPage = vi.spyOn(ConfluenceClient.prototype, 'getPage');
+    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage');
+    try {
+      const response = await app.inject({
+        method: 'POST', url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: commitPayload(ws, 'Keep local until reviewed'),
+      });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ code: 'sync_conflict_pending', reason: 'sync_conflict_pending',
+        message: expect.stringContaining('Resolve the pending Confluence sync conflict') });
+      expect(getPage).not.toHaveBeenCalled();
+      expect(updatePage).not.toHaveBeenCalled();
+      expect((await query(
+        'SELECT id FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[] AND status = $2', [pageId, 'pending'],
+      )).rows).toEqual([]);
+    } finally {
+      ws.close();
+    }
+  });
+
   it('publishes a collaborative commit with diverged local and Confluence revisions', async () => {
     const { token, userId, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 6 });
     await query('UPDATE pages SET remote_version = 5 WHERE id = $1', [pageId]);

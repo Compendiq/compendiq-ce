@@ -424,9 +424,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       const providerVersion = diverged ? 5 : 3;
       remoteVersion = providerVersion + 1;
       strictProviderVersion = providerVersion;
-      if (diverged) {
-        await query('UPDATE pages SET version = $2, remote_version = $3 WHERE id = $1', [pageId, localVersion, providerVersion]);
-      }
+      await query('UPDATE pages SET version = $2, remote_version = $3 WHERE id = $1', [pageId, localVersion, providerVersion]);
       const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
 
       expect(response.statusCode, response.body).toBe(200);
@@ -446,8 +444,24 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       });
       expect((await query('SELECT remote_version FROM pages WHERE id = $1', [pageId])).rows)
         .toEqual([{ remote_version: providerVersion + 1 }]);
+      expect((await query('SELECT source, version_number FROM page_versions WHERE page_id = $1', [pageId])).rows)
+        .toEqual([{ source: diverged ? 'local' : 'confluence', version_number: localVersion }]);
       expect((await query('SELECT status FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId])).rows)
         .toEqual([{ status: 'completed' }]);
+    });
+
+    it('blocks provider draft publication while manual review is pending without consuming the draft', async () => {
+      const pageId = await seedConfluencePage();
+      await query('UPDATE pages SET conflict_pending = TRUE WHERE id = $1', [pageId]);
+      const before = await storedPage(pageId);
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ reason: 'sync_conflict_pending' });
+      expect(await storedPage(pageId)).toEqual(before);
+      expect(confluenceRequests).toEqual([]);
+      expect((await query(
+        'SELECT id FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[] AND status = $2', [pageId, 'pending'],
+      )).rows).toEqual([]);
     });
 
     it('publishes a Confluence draft\'s tasks with the ids Confluence has, and the live body keeps them (#1751)', async () => {

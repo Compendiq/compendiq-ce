@@ -63,7 +63,7 @@ async function waitForRowLockWaiter(blockerPid: number): Promise<void> {
           WHERE datname = current_database()
             AND wait_event_type = 'Lock'
             AND $1 = ANY(pg_blocking_pids(pid))
-            AND query LIKE '%SELECT version, title, body_html, body_text%'
+            AND query LIKE '%FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE%'
        ) AS waiting`,
       [blockerPid],
     );
@@ -279,9 +279,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     const result = await query<{ id: number }>(
       `INSERT INTO pages
          (confluence_id, source, space_key, title, body_storage, body_html, body_text,
-          version, visibility, created_by_user_id, last_modified_at,
+          version, remote_version, visibility, created_by_user_id, last_modified_at,
           embedding_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, 'not_embedded')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $12, $9, $10, $11, FALSE, 'not_embedded')
        RETURNING id`,
       [
         options.confluenceId ?? null,
@@ -295,6 +295,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
         options.visibility ?? 'private',
         options.ownerId === undefined ? userId : options.ownerId,
         options.lastModifiedAt === undefined ? new Date('2026-03-01T12:00:00Z') : options.lastModifiedAt,
+        source === 'confluence' ? (options.version ?? 3) : null,
       ],
     );
     return result.rows[0]!.id;
@@ -718,10 +719,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       .toEqual([{ title, body_html: storage, version: 7, remote_version: 6 }]);
     expect((await query(
       `SELECT title, body_html, body_text, author FROM page_versions
-        WHERE page_id = $1 AND version_number = 6`,
+        WHERE page_id = $1 AND version_number = 6 AND source = 'local'`,
       [pageId],
     )).rows).toEqual([{
-      title: 'Current roadmap', body_html: '<p>Live body</p>', body_text: 'Live body', author: 'Confluence author',
+      title: 'Current roadmap', body_html: '<p>Live body</p>', body_text: 'Live body', author: null,
     }]);
     const intent = await query(
       `SELECT status, effect->>'intendedStateDigest' AS digest FROM page_write_intents
@@ -732,6 +733,27 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       status: 'completed',
       digest: confluencePagePutDigest({ pageId, confluenceId, title, bodyStorage: storage, expectedRemoteVersion: 5 }),
     }]);
+  });
+
+  it('blocks a queued manual-review conflict before lazy restore reads or a provider PUT', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence', confluenceId: 'restore-conflict-pending', spaceKey: 'OPS', visibility: 'shared',
+      ownerId: null, version: 6,
+    });
+    await query('UPDATE pages SET conflict_pending = TRUE WHERE id = $1', [pageId]);
+    await seedVersion(pageId, 4, 'v4', null, null);
+    historicalStorage = '<p>Can be fetched</p>';
+    const response = await app.inject({
+      method: 'POST', url: `/api/pages/${pageId}/versions/4/restore`,
+      headers: { 'x-test-user': userId }, payload: { version: 6 },
+    });
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json().error).toContain('Resolve the pending Confluence sync conflict');
+    expect(confluenceRequests).toEqual([]);
+    expect((await query(
+      'SELECT id FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[] AND status = $2', [pageId, 'pending'],
+    )).rows).toEqual([]);
   });
 
   it('uses the local revision to reject a stale Confluence restore before the provider PUT', async () => {

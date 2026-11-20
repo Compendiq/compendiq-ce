@@ -10,7 +10,7 @@ import { materializeDrawioPreviews } from '../../../core/services/drawio-preview
 import { invalidateCollabDocAfterBodyWrite } from '../../../core/services/collab-guard.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
-import { isVersionPlaceholderTitle } from '../../../core/services/version-snapshot.js';
+import { isVersionPlaceholderTitle, livePageVersion } from '../../../core/services/version-snapshot.js';
 import {
   PageWriteError,
   registerPageWriteIntentReconciler,
@@ -241,6 +241,7 @@ export async function publishConfluencePagePut(
   const pageResult = await dbClient.query<{
     version: number;
     remote_version: number | null;
+    local_modified_at: Date | null;
     title: string;
     body_html: string | null;
     body_text: string | null;
@@ -249,7 +250,7 @@ export async function publishConfluencePagePut(
     confluence_id: string | null;
     space_key: string | null;
   }>(
-    `SELECT version, remote_version, title, body_html, body_text, body_storage, source, confluence_id, space_key
+    `SELECT version, remote_version, local_modified_at, title, body_html, body_text, body_storage, source, confluence_id, space_key
        FROM pages
       WHERE id = $1 AND deleted_at IS NULL
       FOR UPDATE`,
@@ -329,23 +330,25 @@ export async function publishConfluencePagePut(
       );
     }
 
+    const snapshotSource = livePageVersion(page).source;
     const inserted = await dbClient.query(
       `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
-       VALUES ($1, 'confluence', $2, $3, $4, $5, NOW())
+       VALUES ($1, $6, $2, $3, $4, $5, NOW())
        ON CONFLICT (page_id, source, version_number) DO NOTHING
        RETURNING id`,
-      [publication.pageId, page.version, page.title, page.body_html, page.body_text],
+      [publication.pageId, page.version, page.title, page.body_html, page.body_text, snapshotSource],
     );
     if (inserted.rowCount !== 1) {
       // Backfill can reserve the live version number with a placeholder.
       // Lock the history row before checking its title so a concurrent body
       // fill or snapshot write cannot change which row we are completing.
       const existing = await dbClient.query<{ title: string }>(
-        `SELECT title FROM page_versions WHERE page_id = $1 AND source = 'confluence' AND version_number = $2 FOR UPDATE`,
-        [publication.pageId, page.version],
+        `SELECT title FROM page_versions WHERE page_id = $1 AND source = $3 AND version_number = $2 FOR UPDATE`,
+        [publication.pageId, page.version, snapshotSource],
       );
       const existingTitle = existing.rows[0]?.title;
-      const hasPlaceholderTitle = existingTitle !== undefined && isVersionPlaceholderTitle(existingTitle, page.version);
+      const hasPlaceholderTitle = snapshotSource === 'confluence'
+        && existingTitle !== undefined && isVersionPlaceholderTitle(existingTitle, page.version);
       const completed = await dbClient.query(
         `UPDATE page_versions
             SET title = $3,
@@ -353,13 +356,13 @@ export async function publishConfluencePagePut(
                 body_text = COALESCE(body_text, $5),
                 synced_at = COALESCE(synced_at, NOW())
           WHERE page_id = $1
-            AND source = 'confluence'
+            AND source = $7
             AND version_number = $2
             AND (title = $3 OR ($6::boolean AND body_html IS NULL))
             AND (body_html IS NULL OR body_html = $4)
             AND (body_text IS NULL OR body_text = $5)
         RETURNING id`,
-        [publication.pageId, page.version, page.title, page.body_html, page.body_text, hasPlaceholderTitle],
+        [publication.pageId, page.version, page.title, page.body_html, page.body_text, hasPlaceholderTitle, snapshotSource],
       );
       if (completed.rowCount !== 1) {
         throw new PageWriteError(

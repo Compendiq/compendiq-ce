@@ -49,6 +49,7 @@ import {
 import { pageWriteStaysLocal } from '../../domains/confluence/services/standalone-mode.js';
 import {
   completePageWriteIntent,
+  assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   deferPageRequestAdmissionRelease,
   PageWriteError,
@@ -165,6 +166,7 @@ async function currentConfluenceCommitClient(
   userId: string,
 ): Promise<ConfluenceClient> {
   await assertCurrentCollabMutationAuthority(dbClient, expected, userId);
+  await assertNoPendingSyncConflict([expected.id], dbClient);
   const client = await getClientForUser(userId, dbClient);
   if (!client) {
     throw new PageWriteError(

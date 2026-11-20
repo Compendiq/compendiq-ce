@@ -11,7 +11,7 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { getHistoricalBody } from '../../confluence/services/version-backfill.js';
 import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
 import { PageWriteError } from '../../../core/services/page-write-admission.js';
-import { isVersionPlaceholderTitle, snapshotSourceForPage, type PageVersionSource } from '../../../core/services/version-snapshot.js';
+import { isVersionPlaceholderTitle, livePageVersion, type PageVersionSource } from '../../../core/services/version-snapshot.js';
 
 // Re-export from core so existing consumers keep working
 export { saveVersionSnapshot, saveVersionSnapshotByPageId } from '../../../core/services/version-snapshot.js';
@@ -200,12 +200,14 @@ export async function restoreVersion(
     // this row lock; the locally-owned form remains for focused service tests.
     const liveRes = await txClient.query<{
       version: number;
+      remote_version: number | null;
+      local_modified_at: Date | null;
       title: string;
       body_html: string | null;
       body_text: string | null;
       source: string;
     }>(
-      `SELECT version, title, body_html, body_text, source
+      `SELECT version, remote_version, local_modified_at, title, body_html, body_text, source
        FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
       [pageId],
     );
@@ -244,7 +246,7 @@ export async function restoreVersion(
       `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
        VALUES ($1, $6, $2, $3, $4, $5, NOW())
        ON CONFLICT (page_id, source, version_number) DO NOTHING`,
-      [pageId, live.version, live.title, live.body_html, live.body_text, snapshotSourceForPage(live.source)],
+      [pageId, live.version, live.title, live.body_html, live.body_text, livePageVersion(live).source],
     );
 
     const newVersion = live.version + 1;

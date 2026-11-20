@@ -18,7 +18,7 @@ import {
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { pruneVersionJumpAttachmentCache } from './version-jump-attachment-cleanup.js';
-import { saveVersionSnapshotByPageId, snapshotLocalVersionBeforeOverwrite } from '../../../core/services/version-snapshot.js';
+import { livePageVersion, saveVersionSnapshotByPageId, snapshotLocalVersionBeforeOverwrite } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
@@ -42,6 +42,7 @@ import {
 } from '../../../core/services/redis-cache.js';
 import { isConfluenceEnabled } from '../../../core/services/confluence-integration.js';
 import {
+  CONFLUENCE_CONTENT_PUBLICATION_KINDS,
   getPageWriterRuntimeId,
   PageWriteError,
   lockPageWriterRuntime,
@@ -1008,7 +1009,7 @@ async function syncPage(
       // a restrictive label removed upstream before that walk is not lost.
       const locked = current.rows[0];
       const decided = versionJumpDecision?.row;
-      const pending = locked && await hasPendingConfluencePublication(txClient, locked.id);
+      const pending = locked && await pendingConfluencePublication(txClient, locked.id);
       if ((locked && (locked.baseline_id || pending)) || (!observed && locked) || (decided && (
         !locked
         || locked.id !== decided.id
@@ -1187,7 +1188,8 @@ async function syncPage(
     // row that moved during attachment download leaves no spurious snapshot.
     if (versionJumpDecision && !overwritesLocalEdit) {
       const prior = versionJumpDecision.row;
-      await saveVersionSnapshotByPageId(prior.id, prior.version, prior.title, prior.body_html, prior.body_text, 'confluence');
+      await saveVersionSnapshotByPageId(prior.id, prior.version, prior.title, prior.body_html, prior.body_text,
+        livePageVersion({ ...prior, source: 'confluence' }).source);
     }
     // #1772: SYNC_OVERWROTE_LOCAL_EDITS iff this upsert replaced a local edit
     // the policy let the incoming version win over. Written before the collab
@@ -1305,17 +1307,19 @@ export async function recordConfluenceVersionObservation(
 
 // During an outbound PUT, the ordinary/conditional reconciler owns the
 // provider counter. A walk that sees its still-unsettled receipt must defer.
-async function hasPendingConfluencePublication(client: PoolClient, pageId: number): Promise<boolean> {
-  const result = await client.query(
-    `SELECT 1 FROM page_write_intents
+async function pendingConfluencePublication(client: PoolClient, pageId: number): Promise<string | null> {
+  const result = await client.query<{ id: string }>(
+    `SELECT id FROM page_write_intents
       WHERE status = 'pending' AND page_ids @> ARRAY[$1]::integer[]
-        AND kind IN ('pages.update.confluence', 'pages.draft.publish.confluence',
-                     'page.version_restore', 'page.ai_apply', 'collab.commit.confluence',
-                     'collab.commit.confluence.media')
+        AND kind = ANY($2::text[])
       LIMIT 1`,
-    [pageId],
+    [pageId, CONFLUENCE_CONTENT_PUBLICATION_KINDS],
   );
-  return result.rows.length > 0;
+  const intentId = result.rows[0]?.id ?? null;
+  if (intentId !== null) {
+    logger.info({ pageId, intentId }, 'Scheduled Confluence sync deferred while publication is pending');
+  }
+  return intentId;
 }
 
 /** Each observation stacks a snapshot until an administrator resolves the conflict. */
@@ -1427,7 +1431,7 @@ export async function decideConflictPolicyOnClient(
   if (input.observed && (
     row.id !== input.observed.id || row.remote_version !== input.observed.remote_version
   )) return decided('stale_observation');
-  if (await hasPendingConfluencePublication(client, row.id)) return decided('stale_observation');
+  if (await pendingConfluencePublication(client, row.id)) return decided('stale_observation');
   if (row.baseline_id != null) return decided('frozen_hold');
 
   // Re-test htmlChanged inside the lock. A concurrent syncPage on the

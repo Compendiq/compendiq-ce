@@ -5,7 +5,7 @@ import { query, getPool } from '../../core/db/postgres.js';
 import { withEmbeddingDraftContinuity } from '../../core/services/embedding-draft-continuity.js';
 import { observeIngestionAdmission, publishIngestionPolicyOnClient } from '../../core/services/ai-policy-deferred-ingestion.js';
 import { admitAutomaticIngestionPolicy } from '../../core/services/ai-policy-ingestion.js';
-import { snapshotLocalVersionBeforeOverwrite, snapshotSourceForPage } from '../../core/services/version-snapshot.js';
+import { livePageVersion, snapshotLocalVersionBeforeOverwrite } from '../../core/services/version-snapshot.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
@@ -103,6 +103,7 @@ import {
   advancePageWriteIntentInTransaction,
   assertPageHierarchyParentsAvailable,
   completePageWriteIntent,
+  assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   getPageWriterRuntimeId,
   lockPageLifecycle,
@@ -312,6 +313,8 @@ async function loadAuthorizedContentWriteState(
   source: string;
   version: number;
   remoteVersion: number;
+  remote_version: number | null;
+  local_modified_at: Date | null;
   confluenceId: string | null;
   spaceKey: string | null;
   visibility: string;
@@ -327,12 +330,14 @@ async function loadAuthorizedContentWriteState(
     source: string;
     version: number;
     remoteVersion: number;
+    remote_version: number | null;
+    local_modified_at: Date | null;
     confluenceId: string | null;
     created_by_user_id: string | null;
     visibility: string;
     spaceKey: string | null;
   }>(
-    `SELECT source, version, COALESCE(remote_version, version) AS "remoteVersion", confluence_id AS "confluenceId", created_by_user_id, visibility,
+    `SELECT source, version, remote_version, local_modified_at, COALESCE(remote_version, version) AS "remoteVersion", confluence_id AS "confluenceId", created_by_user_id, visibility,
             space_key AS "spaceKey", content_revision::text AS "contentRevision",
             lifecycle_revision::text AS "lifecycleRevision"
        FROM pages WHERE id = $1 AND ($2::boolean OR deleted_at IS NULL) FOR UPDATE`,
@@ -3647,6 +3652,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     let remoteVersion = page.remote_version ?? page.version;
     const publishDraft = async (writeClient: PoolClient): Promise<void> => {
       const current = await loadAuthorizedContentWriteState(writeClient, page.id, userId, expectedRevision);
+      if (remotePublicationRequired) await assertNoPendingSyncConflict([page.id], writeClient);
       remoteVersion = current.remoteVersion;
       await invalidateCollabDocAfterBodyWrite(page.id, writeClient);
       publishedVisibility = current.visibility;
@@ -3654,7 +3660,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
          VALUES ($1, $6, $2, $3, $4, $5, NOW())
          ON CONFLICT (page_id, source, version_number) DO NOTHING`,
-        [page.id, page.version, page.title, page.body_html, page.body_text, snapshotSourceForPage(page.source)],
+        [page.id, page.version, page.title, page.body_html, page.body_text, livePageVersion(current).source],
       );
       await writeClient.query(
         `UPDATE pages SET

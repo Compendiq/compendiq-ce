@@ -428,7 +428,10 @@ Sync and Re-sync record the observed provider `remote_version` in either
 direction. Outbound page PUTs send its successor and keep optimistic edit
 fences on `pages.version`. Held edits keep their title, body and local-edit
 markers. A frozen page defers an observation ahead of its local counter
-until the next fetch after thaw.
+until the next fetch after thaw. A thawed page is fetched again after a later
+upstream edit brings it into the incremental walk or during a full walk.
+A queued manual-review conflict blocks all Confluence content publication and
+leaves local-mode saves available.
 
 Restoring a version titled exactly `vN` at version `N` keeps the live title (#2038).
 Confluence restore and recovery complete a body-less placeholder at the superseded live version with its title and body.

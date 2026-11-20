@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { PAGE_HIERARCHY_LOCK_ID, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
-import { getPool } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { flushPageWriteInvalidations } from './page-write-invalidation.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
@@ -181,6 +181,30 @@ export class PageWriteError extends Error {
     this.name = 'PageWriteError';
     this.statusCode = statusCode;
     this.reason = reason;
+  }
+}
+
+export const CONFLUENCE_CONTENT_PUBLICATION_KINDS = [
+  'pages.update.confluence',
+  'pages.draft.publish.confluence',
+  'page.version_restore',
+  'page.ai_apply',
+  'collab.commit.confluence',
+  'collab.commit.confluence.media',
+] as const;
+
+const confluenceContentPublicationKinds: ReadonlySet<string> = new Set(CONFLUENCE_CONTENT_PUBLICATION_KINDS);
+export const SYNC_CONFLICT_PENDING_CODE = 'sync_conflict_pending';
+
+/** Refuse provider publication while a manual-review conflict is unresolved. */
+export async function assertNoPendingSyncConflict(pageIds: readonly number[], client?: PoolClient): Promise<void> {
+  const read: typeof query = client ? client.query.bind(client) : query;
+  const pending = await read(
+    'SELECT 1 FROM pages WHERE id = ANY($1::int[]) AND conflict_pending IS TRUE LIMIT 1', [pageIds],
+  );
+  if (pending.rows.length > 0) {
+    throw new PageWriteError(409, SYNC_CONFLICT_PENDING_CODE,
+      'Resolve the pending Confluence sync conflict before publishing. Your local edits are still available.');
   }
 }
 
@@ -1215,6 +1239,9 @@ async function reservePageWriteIntentOnClient(
   const rows = rootCreate ? [] : await loadPageStates(client, pageIds);
   if (hierarchyReference) await assertNoCompetingIntent(client, pageIds);
   if (input.expectedRevisions) assertExpectedRevisions(rows, input.expectedRevisions);
+  // Scheduled and bulk observations queue conflicts under the same lifecycle
+  // lock. Check before creating the durable intent or doing provider work.
+  if (confluenceContentPublicationKinds.has(input.kind)) await assertNoPendingSyncConflict(pageIds, client);
   const revisions = revisionsForRows(rows);
   const id = randomUUID();
   await client.query(

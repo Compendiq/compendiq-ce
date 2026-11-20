@@ -292,8 +292,11 @@ Compendiq tracks version history for all pages:
 
 After editing with the integration off, you can publish again once it is on.
 Compendiq keeps the local revision shown in the editor and uses Confluence's
-version for the publish. If another person has edited the page in Confluence,
-re-sync to fetch their changes before publishing.
+version for the publish. A re-sync applies your site's conflict policy.
+With **Compendiq wins**, the next publish sends the kept local content to
+Confluence and can replace changes made there. With **Manual review**, a queued
+conflict blocks publishing until a reviewer resolves it. You can keep editing
+and saving locally with the integration off.
 
 With Confluence enabled, opening **Version History** imports missing
 Confluence versions and preserves the titles and bodies Compendiq has

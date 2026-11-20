@@ -36,6 +36,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
+  assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
   PageWriteError,
@@ -485,6 +486,9 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // Preserve the existing early UX error. The durable admission check below
     // is authoritative and closes the cross-process/freeze race.
     await rejectIfLiveCollabRoom(ctx.id, (m) => fastify.httpErrors.conflict(m));
+
+    // A lazy Confluence read also counts as provider work during a restore.
+    if (!staysLocal) await assertNoPendingSyncConflict([ctx.id]);
 
     // Metadata-only history rows may be filled by a remote READ. Analysis and
     // historical reads remain available while frozen; no authored state is

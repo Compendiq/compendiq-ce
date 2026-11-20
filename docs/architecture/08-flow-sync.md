@@ -418,8 +418,11 @@ and Apply improvement send `remote_version + 1`. An acknowledgment advances
 the local counter to `GREATEST(version + 1, acknowledged)` and records the
 acknowledged provider number. A local-first draft already advanced the local
 counter, so its receipt uses `GREATEST(version, acknowledged)`. New intents
-carry both expected numbers. Recovery still accepts legacy single-counter
-intents. Pending Confluence writes retain the existing recovery semantics.
+carry both expected numbers. A manual-review queue blocks all five publishers
+with `sync_conflict_pending` before provider work or intent reservation.
+Compendiq wins permits the next publish to replace the observed upstream
+version with the kept local edit. Recovery still accepts legacy single-counter
+intents.
 
 ## Transport retries (#1776)
 
