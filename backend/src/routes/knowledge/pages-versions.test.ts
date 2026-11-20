@@ -895,7 +895,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
       const response = await pending;
       expect(response.statusCode).toBe(409);
-      expect(response.json()).toEqual({ error: 'Historical version changed before restore could begin' });
+      expect(response.json()).toEqual({
+        error: 'Historical version changed before restore could begin',
+        reason: 'restore_target_changed',
+      });
       expect(confluenceRequests).toEqual([]);
       expect((await query(
         `SELECT status, remote_effect_started_at FROM page_write_intents
