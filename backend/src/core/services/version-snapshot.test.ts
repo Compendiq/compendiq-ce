@@ -128,7 +128,8 @@ describe.skipIf(!dbAvailable)('upsertVersionMetadata + fillVersionBody (#722)', 
        VALUES
          ($1, 'local', 1, 'v1', '<p>v1</p>', 'v1', '2025-01-01', NULL),
          ($1, 'confluence', 10, 'v10', '<p>v10</p>', 'v10', '2025-05-01', '2025-02-01'),
-         ($1, 'local', 3, 'v3', '<p>v3</p>', 'v3', '2025-03-01', NULL)
+         ($1, 'local', 3, 'v3', '<p>v3</p>', 'v3', '2025-03-01', NULL),
+         ($1, 'confluence', 11, 'v11', NULL, NULL, '2025-06-01', NULL)
        RETURNING id, version_number`,
       [id],
     );

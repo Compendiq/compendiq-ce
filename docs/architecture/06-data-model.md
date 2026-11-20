@@ -1486,7 +1486,9 @@ together, which matters most for #1114's query-side prefix.
   by its page's current provenance and backfills `pages.remote_version`
   from `version` for Confluence pages. Snapshot UUIDs and baseline links are
   preserved. `remote_version` is outside the protected content columns.
-  Retention ranks both sources together per page by edit time or sync time.
+  The insert trigger derives an omitted or NULL snapshot source from the
+  page's provenance. Retention ranks both sources together by edit time or
+  sync time. Undated body-less Confluence imports sort last.
   Snapshots
   are written on sync, on draft-publish, and before a restore — so both
   Confluence-synced and standalone/local pages accumulate history. The

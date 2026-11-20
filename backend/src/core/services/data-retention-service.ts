@@ -129,6 +129,7 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   // Count-based retention for page_versions
   // #828: safeIntOr guards against a non-numeric RETENTION_VERSIONS_MAX (NaN
   // would break the `WHERE rn > $1` bind and disable page_versions pruning).
+  // Import time is not evidence of recency for a body-less Confluence row.
   const maxVersions = safeIntOr(process.env.RETENTION_VERSIONS_MAX, 50, 1);
   try {
     const { rowCount } = await pool.query(`
@@ -137,7 +138,9 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
          SELECT id FROM (
            SELECT id, ROW_NUMBER() OVER (
              PARTITION BY page_id
-             ORDER BY COALESCE(edited_at, synced_at) DESC NULLS LAST, version_number DESC, source DESC
+             ORDER BY CASE WHEN source = 'confluence' AND body_html IS NULL
+                           THEN edited_at ELSE COALESCE(edited_at, synced_at)
+                      END DESC NULLS LAST, version_number DESC, source DESC
            ) AS rn
              FROM page_versions
          ) ranked WHERE rn > $1
