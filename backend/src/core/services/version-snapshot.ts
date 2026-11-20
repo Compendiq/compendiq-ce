@@ -1,3 +1,5 @@
+import type { PoolClient } from 'pg';
+import { PageWriteError } from './page-write-admission.js';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -82,7 +84,7 @@ export async function saveVersionSnapshotByPageId(
 
 /**
  * Save a version snapshot before updating a page, resolving from a
- * `confluence_id`. Called during sync to preserve the current state.
+ * `confluence_id`.
  *
  * Resolves the confluence_id to the internal integer `page_id`, then delegates
  * to {@link saveVersionSnapshotByPageId}.
@@ -113,5 +115,45 @@ export async function saveVersionSnapshot(
   } catch (err) {
     // Never let version tracking break the sync flow
     logger.error({ err, confluenceId, versionNumber }, 'Failed to save version snapshot');
+  }
+}
+
+/**
+ * Preserve the locked local version before overwriting it. The caller must
+ * hold the page row lock and use the same transaction for the snapshot and
+ * overwrite, so both commit or roll back together.
+ *
+ * Claims a body-less history placeholder unless a baseline references it.
+ * An existing identical snapshot is sufficient. Different content raises
+ * local_edit_snapshot_conflict, and database errors propagate to the caller.
+ */
+export async function snapshotLocalVersionBeforeOverwrite(
+  client: PoolClient,
+  row: { id: number; version: number; title: string; body_html: string | null; body_text: string | null },
+): Promise<void> {
+  const stored = await client.query(
+    `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (page_id, version_number) DO UPDATE
+       SET title = EXCLUDED.title, body_html = EXCLUDED.body_html,
+           body_text = EXCLUDED.body_text, synced_at = NOW()
+       WHERE page_versions.body_html IS NULL
+         AND NOT EXISTS (SELECT 1 FROM page_baselines b WHERE b.version_snapshot_id = page_versions.id)`,
+    [row.id, row.version, row.title, row.body_html, row.body_text],
+  );
+  if ((stored.rowCount ?? 0) > 0) return;
+  const preserved = await client.query(
+    `SELECT 1 FROM page_versions
+      WHERE page_id = $1 AND version_number = $2 AND title IS NOT DISTINCT FROM $3
+        AND body_html IS NOT DISTINCT FROM $4 AND body_text IS NOT DISTINCT FROM $5`,
+    [row.id, row.version, row.title, row.body_html, row.body_text],
+  );
+  if (preserved.rowCount === 0) {
+    throw new PageWriteError(
+      409,
+      'local_edit_snapshot_conflict',
+      `Version ${row.version} in the page's version history already holds other content, so the local edit `
+        + 'could not be stored there and was kept; saving the page with the Confluence integration off gives it a new version number',
+    );
   }
 }

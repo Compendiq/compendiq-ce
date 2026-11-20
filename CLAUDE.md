@@ -25,6 +25,12 @@ Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.
 
+Scheduled version jumps and bulk Re-sync use the same history snapshot
+helper before overwriting local edits (#2037). The helper and overwrite share
+the caller's transaction and page row lock. Refuse collisions with different
+history and preserve baseline-linked placeholders. A version jump whose title
+and body already match upstream saves history on a best-effort basis.
+
 A collaborative join that never synced is not a read-only draft (#1895):
 until the first sync the editor shows one message per close reason (4403
 `forbidden` and unknown reasons fail closed; `rate_limited` retries only after
