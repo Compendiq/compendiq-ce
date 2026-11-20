@@ -424,6 +424,9 @@ locally-deleted page re-imported by the sync upsert). `POST /pages/bulk/sync`
 takes the same path: it runs the scheduler's `decideConflictPolicyOnClient` on
 its own `withPageWriteTransaction` and never lowers `version` (#1779).
 
+Restoring a version titled exactly `vN` at version `N` keeps the live title (#2038).
+Confluence restore and recovery complete a body-less placeholder at the superseded live version with its title and body.
+
 **The mode changes where a write lands, never who may make it.** The toggle
 belongs to the caller, so it must not relax page authority. Every local write
 to a synced page must enforce at least the `PUT /pages/:id` rule,

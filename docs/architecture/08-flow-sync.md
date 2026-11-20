@@ -692,7 +692,9 @@ to make clear the displayed time is a sync time, not the author's edit time (#72
 A restore keeps the live title when the stored title is exactly `vN` for
 the target's version number `N`. This applies to local restores and to the
 title used for the Confluence PUT, its durable intent digest, and local
-publication. Restore checks the stored target title and body again before
+publication. Publication and crash recovery complete a body-less placeholder
+at the superseded live version with the live title and body. Restore checks
+the stored target title and body again before
 dispatch. Other snapshot titles are restored along with the body. Older
 rows already labeled `vN` use this same rule, since their original titles
 are unavailable.

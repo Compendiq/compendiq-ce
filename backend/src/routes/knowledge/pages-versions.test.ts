@@ -688,9 +688,11 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     const pageId = await seedPage({
       source: 'confluence', confluenceId, spaceKey: 'OPS', visibility: 'shared',
       ownerId: null, version: 7, title: 'Current roadmap',
+      bodyHtml: '<p>Live body</p>', bodyText: 'Live body',
     });
     const storage = '<p>Historical body</p>';
     await seedVersion(pageId, 6, historyTitle, lazy ? null : storage, lazy ? null : 'Historical body');
+    await seedVersion(pageId, 7, 'v7', null, null, { author: 'Confluence author' });
     if (lazy) historicalStorage = storage;
 
     const response = await app.inject({
@@ -706,6 +708,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     expect(confluenceRequests.at(-1)?.body).toMatchObject({ title, body: { storage: { value: storage } } });
     expect((await query('SELECT title, body_html FROM pages WHERE id = $1', [pageId])).rows)
       .toEqual([{ title, body_html: storage }]);
+    expect((await query(
+      `SELECT title, body_html, body_text, author FROM page_versions
+        WHERE page_id = $1 AND version_number = 7`,
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Current roadmap', body_html: '<p>Live body</p>', body_text: 'Live body', author: 'Confluence author',
+    }]);
     const intent = await query(
       `SELECT status, effect->>'intendedStateDigest' AS digest FROM page_write_intents
         WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
