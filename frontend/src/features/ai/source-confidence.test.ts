@@ -25,7 +25,7 @@ const web = (): Source => ({
   pageId: 0,
   url: 'https://example.com',
   similarity: null,
-  score: 1,        // a sort key, not a measurement
+  score: 1,        // an informational placeholder, not a measurement
 });
 
 describe('averageSourceSimilarity', () => {

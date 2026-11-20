@@ -976,7 +976,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // refusal paths above it never touch the cache at all.
     const docIds = searchResults.map((r) => r.confluenceId ?? `page:${r.pageId}`);
 
-    // `score` is the retrieval ORDERING byproduct — an RRF fusion score from
+    // `score` is an informational/legacy producer value — an RRF fusion score from
     // hybridSearch, typically ~0.033, and since #1106's best-chunk-only
     // fusion rule that is also the CEILING (rrfWorstCase), invariant to the
     // fetch width, the rerank pool and the raw chunk window alike — never
@@ -1035,10 +1035,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // pages, and routing them through `/pages/:id` lands on the not-found
       // page (#1125). `confluenceId` keeps carrying the URL for conversations
       // persisted before this field existed.
-      // `score: 1` is a sort key, not a measurement — these never went through
-      // retrieval. `similarity: null` keeps them out of any confidence average:
-      // previously they were the only sources scoring 1.0, so a web-grounded
-      // answer outranked one grounded in the knowledge base (#1117).
+      // `score: 1` is an informational/legacy placeholder, not a measurement
+      // (nothing sorts by it — citation order comes from the pipeline and final
+      // array position per ADR-027 D12, with pages preceding external/web
+      // entries; these never went through retrieval). `similarity: null` keeps
+      // them out of any confidence average: previously they were the only
+      // sources scoring 1.0, so a web-grounded answer outranked one grounded in
+      // the knowledge base (#1117).
       ...externalDocs.map((d) => ({
         pageId: 0,
         pageTitle: d.title,

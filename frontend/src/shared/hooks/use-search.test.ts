@@ -219,7 +219,7 @@ describe('useSearch', () => {
     await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
 
     expect(result.current.immediateResults[0].similarity).toBeNull();
-    // `score` still falls back to rank so ordering is preserved.
+    // `score` still falls back to rank for informational/wire compatibility (consumers keep array order).
     expect(result.current.immediateResults[0].score).toBe(0.9);
   });
 
