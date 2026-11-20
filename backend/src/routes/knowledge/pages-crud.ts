@@ -4242,7 +4242,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             await lockAiPolicyForPages(writeClient, [numericPageId]);
             await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, observed);
             const decided = await decideConflictPolicyOnClient(writeClient, {
-              confluenceId: id, confluenceVersion: page.version.number,
+              confluenceId: id, confluenceVersion: page.version.number, title: page.title,
               bodyStorage, bodyHtml, bodyText,
               labels: page.metadata?.labels?.results.map((label) => label.name) ?? [],
               syncRunId,

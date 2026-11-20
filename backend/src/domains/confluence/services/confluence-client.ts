@@ -1234,13 +1234,25 @@ const TRANSIENT_STATUS_CODES = new Set([429, 502, 503, 504]);
  */
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
 
+const TRANSIENT_TRANSPORT_CODES = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'ECONNREFUSED',
+]);
+
+function hasTransientTransportCode(error: unknown, seen = new Set<object>()): boolean {
+  if (typeof error !== 'object' || error === null || seen.has(error)) return false;
+  seen.add(error);
+  if ('code' in error && typeof error.code === 'string' && TRANSIENT_TRANSPORT_CODES.has(error.code)) return true;
+  if ('cause' in error && hasTransientTransportCode(error.cause, seen)) return true;
+  return error instanceof AggregateError && error.errors.some((child) => hasTransientTransportCode(child, seen));
+}
+
 /**
  * Determines whether an error is transient and the request should be retried.
  * Returns true for:
  *  - ConfluenceError with status 429, whatever the method: the request was
  *    refused before processing, so re-sending it is safe
  *  - ConfluenceError with status 502, 503, or 504, and network-level errors
- *    (ECONNRESET, ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT), for GET/HEAD only; any
+ *    with known transport codes, for GET/HEAD only; any
  *    other method gets one attempt and its caller sees this original error
  * Returns false for client errors (400, 401, 403, 404) and other non-transient failures.
  * `method` is the request's HTTP method; like `fetchOnce`, it defaults to GET.
@@ -1251,6 +1263,7 @@ export function isTransientError(err: unknown, method = 'GET'): boolean {
   if (err instanceof ConfluenceError) {
     return TRANSIENT_STATUS_CODES.has(err.statusCode);
   }
+  if (hasTransientTransportCode(err)) return true;
   if (err instanceof Error) {
     const msg = err.message;
     return (

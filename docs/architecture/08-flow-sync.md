@@ -56,7 +56,7 @@ sequenceDiagram
             opt existing row behind the upstream version (#35;1772)
                 S->>DB: BEGIN#59; AI-policy lock + SELECT … FOR UPDATE (source = 'confluence')<br/>conflict policy + local_modified_at > last_synced
                 alt local edit under compendiq-wins / manual-review
-                    S->>DB: manual-review only: INSERT pending_sync_versions,<br/>SET conflict_pending#59; COMMIT
+                    S->>DB: manual-review only: INSERT pending_sync_versions (title and bodies),<br/>SET conflict_pending#59; COMMIT
                     S->>DB: audit SYNC_CONFLICT_DETECTED (kept_local / queued_for_review)
                     Note over S,DB: no attachment cleanup, download, snapshot or upsert#59;<br/>restriction sync still runs
                 else incoming wins (confluence-wins, or no local edit)
@@ -207,11 +207,12 @@ sequenceDiagram
   Confluence's new version is routine. With a local edit, `compendiq-wins` keeps
   the row (`SYNC_CONFLICT_DETECTED`, `kept_local`) and `manual-review` queues
   the incoming version (`pending_sync_versions`, `conflict_pending`,
-  `queued_for_review`). The queue stores bodies, not titles, so a rename-only
-  conflict is an entry with an empty body diff: *Keep local* keeps the local
-  title, and *Take Confluence* applies the (equal) body, Confluence's version
-  number and cleared markers but not Confluence's title, which reaches the page
-  only with Confluence's next edit of it; nothing is lost. Neither policy
+  `queued_for_review`). Each queued row records the incoming title and bodies. A
+  rename-only conflict has an empty body diff. Showing the title difference
+  requires the Enterprise API to return the queued title. Applying it with
+  *Take Confluence* requires the Enterprise resolver to write the title in the
+  admitted page-write transaction (Compendiq/compendiq-ee#315). Older resolvers
+  and rows with a NULL title preserve the local title. Neither policy
   cleans, downloads, snapshots, upserts or resets collaborative state, and
   restriction sync still runs. Otherwise (`confluence-wins`, or no local edit,
   which is a routine update with no audit) the cache is cleaned and
@@ -409,12 +410,12 @@ directly: up to `maxAttempts` (default 3) attempts with exponential backoff,
 where a 429's `Retry-After` replaces the computed delay. Whether a failed
 attempt is re-sent depends on the HTTP method (`isTransientError(err, method)`):
 
-| Method | 429 | 502 / 503 / 504 | `ECONNRESET`, `ETIMEDOUT`, `UND_ERR_CONNECT_TIMEOUT` |
+| Method | 429 | 502 / 503 / 504 | `ECONNRESET`, `ETIMEDOUT`, `UND_ERR_CONNECT_TIMEOUT`, `UND_ERR_SOCKET`, `ECONNREFUSED` |
 |---|---|---|---|
 | GET / HEAD, including `downloadAttachment` | retry | retry | retry |
 | POST / PUT / DELETE: `createPage`, `updatePage`, `deletePage`, `addLabels`, `removeLabel` | retry | **one attempt** | **one attempt** |
 
-**Note on transport error matching:** Transport errors are recognised by message via `isTransientError(err, method)` in `confluence-client.ts:1243-1249`. Undici's `ConnectTimeoutError` carries `code: 'UND_ERR_CONNECT_TIMEOUT'` but its message is `'Connect Timeout Error …'`, which does not match the message comparison; a real connect timeout is not retried on GETs today (pre-existing, deferred).
+The client checks transport codes on the error, its cause and individual connection attempts in an `AggregateError`. It also recognises legacy messages containing `ECONNRESET`, `ETIMEDOUT` or `UND_ERR_CONNECT_TIMEOUT`.
 
 - **A 429 is re-sent for every method.** Confluence (or its proxy) refused the
   request before processing it, so re-sending is safe; the Notion client
@@ -1179,7 +1180,7 @@ selective:
 
 | Set | Read from | Effect |
 |---|---|---|
-| **incoming** | the new upstream `body_storage`: `getExpectedAttachmentFilenames` (image refs, draw.io `<name>.png`) plus `<name>.drawio` and `<name>.drawio.png` for every diagram | removed **on purpose**: the downloaders skip a file already on disk and cached names carry no version, so a same-name attachment changed upstream would otherwise be served stale |
+| **incoming** | the new upstream `body_storage`: all `<ac:image>` references regardless of extension, draw.io `<name>.png` plus `<name>.drawio` and `<name>.drawio.png` for every diagram | removed **on purpose**: the downloaders skip a file already on disk and cached names carry no version, so a same-name attachment changed upstream would otherwise be served stale |
 | **localKeep** | this page's `body_html`, `draft_body_html`, `body_storage`, `draft_body_storage` and its `page_versions.body_html` rows: `/api/attachments/…` URLs (`collectAttachmentUrlReferences`), draw.io wrappers' `data-diagram-name` (HTML written before 2026-10-28 has no `<name>.drawio` locator, Markdown-converted HTML no URL at all) and storage refs (`getExpectedAttachmentFilenames`); a diagram any of them names keeps all three files | kept, unless also incoming |
 
 A cached file is removed when it is in *incoming* or not in *localKeep*; every

@@ -922,7 +922,7 @@ async function syncPage(
     // local edits.
     await applyConflictPolicyForExistingPage({
       userId, confluenceId: page.id, confluenceVersion: page.version.number,
-      pageDbTitle: page.title, bodyStorage, bodyHtml, bodyText, parentId,
+      title: page.title, bodyStorage, bodyHtml, bodyText, parentId,
       labels, author, lastModified, syncRunId, counts,
     });
 
@@ -1234,6 +1234,7 @@ export interface ConflictPolicyInput {
    *  the queued pending-version row so the resolution UI knows which
    *  upstream version the stashed content reflects. */
   confluenceVersion: number;
+  title: string;
   bodyStorage: string;
   bodyHtml: string;
   bodyText: string;
@@ -1278,11 +1279,28 @@ export type ConflictPolicyDecision =
 interface ApplyConflictPolicyArgs extends ConflictPolicyInput {
   /** Required for any policy move; legacy internal neutral saves remain inert. */
   userId?: string;
-  pageDbTitle: string;
   parentId: string | null;
   author: string | null;
   lastModified: Date;
   counts: SyncSpaceCounts;
+}
+
+/** Each observation stacks a snapshot until an administrator resolves the conflict. */
+async function queueIncomingVersionOnClient(
+  client: PoolClient,
+  pageId: number,
+  input: ConflictPolicyInput,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO pending_sync_versions
+       (page_id, confluence_version, title, body_storage, body_html, body_text, sync_run_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [pageId, input.confluenceVersion, input.title, input.bodyStorage, input.bodyHtml, input.bodyText, input.syncRunId],
+  );
+  await client.query(
+    `UPDATE pages SET conflict_pending = TRUE, conflict_detected_at = NOW() WHERE id = $1`,
+    [pageId],
+  );
 }
 
 /**
@@ -1385,32 +1403,7 @@ export async function decideConflictPolicyOnClient(
 
   // Three-way branch on policy.
   if (policy === 'manual-review' && hasLocalEdits) {
-    // Stash the Confluence version, do NOT touch the live row. The
-    // admin resolves via the EE conflicts UI (`/api/admin/sync-
-    // conflicts/:id/resolve`). pending_sync_versions has no UNIQUE
-    // constraint on (page_id, confluence_version) so multiple inbound
-    // versions stack up if the admin is slow to react — the resolver
-    // takes the most-recent row and discards older queued ones.
-    await client.query(
-      `INSERT INTO pending_sync_versions
-         (page_id, confluence_version, body_storage, body_html, body_text, sync_run_id)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        row.id,
-        input.confluenceVersion,
-        input.bodyStorage,
-        input.bodyHtml,
-        input.bodyText,
-        input.syncRunId,
-      ],
-    );
-    await client.query(
-      `UPDATE pages
-          SET conflict_pending = TRUE,
-              conflict_detected_at = NOW()
-        WHERE id = $1`,
-      [row.id],
-    );
+    await queueIncomingVersionOnClient(client, row.id, input);
     return decided('queued_for_review');
   }
 
@@ -1565,7 +1558,7 @@ async function applyConflictPolicyForExistingPage(
        WHERE confluence_id = $1 AND source = 'confluence'`,
       [
         args.confluenceId,
-        args.pageDbTitle,
+        args.title,
         args.bodyStorage,
         args.bodyHtml,
         args.bodyText,
@@ -1643,7 +1636,7 @@ type VersionJumpGate =
  * body; a local save that changed neither stays a routine update.
  */
 async function gateVersionJumpByConflictPolicy(
-  input: ConflictPolicyInput & { userId: string; title: string },
+  input: ConflictPolicyInput & { userId: string },
 ): Promise<VersionJumpGate> {
   const conn = await getPool().connect();
   let decision: ConflictPolicyDecision;
@@ -1655,20 +1648,7 @@ async function gateVersionJumpByConflictPolicy(
     if (behind && decision.kind === 'unchanged' && decision.hasLocalEdits && decision.row.title !== input.title) {
       decision = { ...decision, kind: LOCAL_EDIT_OUTCOME[decision.policy] };
       if (decision.kind === 'queued_for_review') {
-        // The same queue write decideConflictPolicyOnClient makes for manual-review.
-        await conn.query(
-          `INSERT INTO pending_sync_versions
-             (page_id, confluence_version, body_storage, body_html, body_text, sync_run_id)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [decision.row.id, input.confluenceVersion, input.bodyStorage, input.bodyHtml, input.bodyText, input.syncRunId],
-        );
-        await conn.query(
-          `UPDATE pages
-              SET conflict_pending = TRUE,
-                  conflict_detected_at = NOW()
-            WHERE id = $1`,
-          [decision.row.id],
-        );
+        await queueIncomingVersionOnClient(conn, decision.row.id, input);
       }
     }
     if (decision.kind === 'missing') {

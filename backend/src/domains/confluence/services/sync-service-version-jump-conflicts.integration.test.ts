@@ -222,8 +222,8 @@ async function syncAudits(pageId: number): Promise<Array<{ action: string; metad
 }
 
 async function pending(pageId: number) {
-  const r = await query<{ confluence_version: number; body_storage: string; body_html: string; sync_run_id: string }>(
-    `SELECT confluence_version, body_storage, body_html, sync_run_id FROM pending_sync_versions
+  const r = await query<{ title: string | null; confluence_version: number; body_storage: string; body_html: string; sync_run_id: string }>(
+    `SELECT title, confluence_version, body_storage, body_html, sync_run_id FROM pending_sync_versions
       WHERE page_id = $1 ORDER BY detected_at, sync_run_id`,
     [pageId],
   );
@@ -654,9 +654,13 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     upstreamPages.set(page.id, page);
 
     await runSync(page, RUN_1);
-    await runSync(page, RUN_2);
+    const renamed = { ...page, title: 'Renamed upstream' };
+    upstreamPages.set(page.id, renamed);
+    await runSync(renamed, RUN_2);
 
-    expect((await pending(id)).map((p) => [p.confluence_version, p.sync_run_id])).toEqual([[7, RUN_1], [7, RUN_2]]);
+    expect((await pending(id)).map((p) => [p.confluence_version, p.sync_run_id, p.title])).toEqual([
+      [7, RUN_1, page.title], [7, RUN_2, renamed.title],
+    ]);
     expect((await syncAudits(id)).map((a) => [a.metadata.resolution, a.metadata.sync_run_id])).toEqual([
       ['queued_for_review', RUN_1],
       ['queued_for_review', RUN_2],
@@ -754,8 +758,8 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(after.local_modified_at).not.toBeNull();
     expect((await syncAudits(id)).map((a) => [a.action, a.metadata.policy, a.metadata.resolution, a.metadata.sync_run_id]))
       .toEqual([['SYNC_CONFLICT_DETECTED', policy, resolution, RUN_2]]);
-    expect((await pending(id)).map((p) => [p.confluence_version, p.sync_run_id]))
-      .toEqual(policy === 'manual-review' ? [[8, RUN_2]] : []);
+    expect((await pending(id)).map((p) => [p.confluence_version, p.sync_run_id, p.title]))
+      .toEqual(policy === 'manual-review' ? [[8, RUN_2, page.title]] : []);
     expect(requestedPaths).not.toContain(attachmentList(cid));
     expect(requestedPaths).toContain(restrictionFetch(cid));
     expect(counts).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
