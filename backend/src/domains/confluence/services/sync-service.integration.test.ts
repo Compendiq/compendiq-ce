@@ -425,7 +425,7 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     // ACE for alice is still there (sweep hasn't run yet inside syncUser).
 
     // Now simulate the end-of-run sweep (scoped to this run's space).
-    await __internal.sweepStaleConfluenceAces(secondStartedAt, ['DOCS']);
+    await __internal.sweepStaleConfluenceAces(['DOCS']);
 
     // The confluence-sourced ACE for alice is gone.
     const pageAces = await getAces(pageDbId);
@@ -472,7 +472,7 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     await __internal.syncPageRestrictions(secondRun as never, fakePage('c-350'), secondStartedAt, new Map());
     // Refreshing alice's existing ACE changes no principal: nothing queued.
     expect(await queuedPageIds()).toEqual([]);
-    await __internal.sweepStaleConfluenceAces(secondStartedAt, ['DOCS']);
+    await __internal.sweepStaleConfluenceAces(['DOCS']);
     expect((await getAces(pageDbId)).map((ace) => ace.principal_id)).toEqual([userA]);
     expect(await queuedPageIds()).toEqual([pageDbId]);
 
@@ -498,9 +498,8 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     const pageY = await insertPage('c-y', 'SPACEY');
 
     // Both pages have a stale Confluence ACE (synced in a prior run), and
-    // both had their restrictions re-read at this run's start — pageY by
-    // another principal's run over SPACEY. The #1771 page scope admits both,
-    // so only the run's space scope keeps pageY out of this sweep.
+    // both had their restrictions confirmed by prior walks. The run's
+    // space scope keeps pageY out of this sweep.
     const oldSyncedAt = new Date('2026-01-01T10:00:00Z');
     const runStartedAt = new Date('2026-01-02T10:00:00Z');
     for (const pid of [pageX, pageY]) {
@@ -518,7 +517,7 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     );
 
     // This run only visited SPACEX.
-    await __internal.sweepStaleConfluenceAces(runStartedAt, ['SPACEX']);
+    await __internal.sweepStaleConfluenceAces(['SPACEX']);
 
     // pageX's stale ACE is gone (its space was in the run).
     expect(await getAces(pageX)).toHaveLength(0);
@@ -567,7 +566,7 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
 
     // The page-scoped end-of-run sweep leaves it in place: its restrictions
     // were not re-read, so restrictions_synced_at was not advanced.
-    await __internal.sweepStaleConfluenceAces(runStartedAt, ['DOCS']);
+    await __internal.sweepStaleConfluenceAces(['DOCS']);
     expect(await getAces(pageDbId)).toHaveLength(1);
   });
 
@@ -666,8 +665,8 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
   // syncPageRestrictions takes an optional change-set. In 'incremental' mode a
   // page is skipped (no Confluence fetch) iff it was mirrored within the
   // audit-covered window AND is not in the changed set. Its ACE synced_at is
-  // still bumped; its restrictions_synced_at is not, so the page-scoped
-  // stale-ACE sweep (#1771) leaves its rows alone.
+  // still bumped for ACEs confirmed by that mirror. Its
+  // restrictions_synced_at stays the same.
   const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
   const incremental = (changed: string[]) => ({
     mode: 'incremental' as const,
@@ -681,16 +680,16 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     await insertUser(userA, 'alice');
     await ensureSpace('DOCS');
     const pageDbId = await insertPage('c-600', 'DOCS');
-    // Mirrored an hour ago (well within the week-long window) ...
+    // The page and ACE share the last successful mirror stamp.
+    const mirroredAt = new Date(Date.now() - 60 * 60 * 1000);
     await query(`UPDATE pages SET restrictions_synced_at = $1, inherit_perms = FALSE WHERE id = $2`, [
-      new Date(Date.now() - 60 * 60 * 1000),
+      mirroredAt,
       pageDbId,
     ]);
-    // ... carrying a Confluence ACE from that prior run with a stale synced_at.
     await query(
       `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source, synced_at)
        VALUES ('page', $1, 'user', $2, 'read', 'confluence', $3)`,
-      [pageDbId, userA, new Date('2020-01-01T00:00:00Z')],
+      [pageDbId, userA, mirroredAt],
     );
 
     const client = makeMockClient();
@@ -702,6 +701,28 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     const aces = await getAces(pageDbId);
     expect(aces).toHaveLength(1);
     expect(aces[0]!.synced_at!.getTime()).toBe(startedAt.getTime());
+  });
+
+  it('keeps the newer mirror grants when an older run skips a restriction read', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-overlap', 'DOCS');
+    const page = fakePage('c-overlap');
+    const newerRun = makeMockClient();
+    newerRun.restrictionsByPage.set(page.id, [
+      readRestriction([{ userKey: 'keyalice', username: 'alice' }]),
+    ]);
+    const mirroredAt = new Date();
+    await __internal.syncPageRestrictions(newerRun as never, page, mirroredAt, new Map());
+
+    const olderRun = makeMockClient();
+    const olderStartedAt = new Date(mirroredAt.getTime() - 60_000);
+    await __internal.syncPageRestrictions(olderRun as never, page, olderStartedAt, new Map(), incremental([]));
+    await __internal.sweepStaleConfluenceAces(['DOCS']);
+
+    expect(olderRun.restrictionCalls).toEqual([]);
+    expect(await getAces(pageDbId)).toMatchObject([{ principal_id: userA, synced_at: mirroredAt }]);
   });
 
   it('audit-skip: FETCHES when the page id is in the changed set', async () => {

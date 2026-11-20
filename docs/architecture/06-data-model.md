@@ -28,6 +28,8 @@ erDiagram
     users o|--o{ page_governance_policies : "updates; SET NULL"
 
     pages ||--o{ pending_sync_versions : "queues incoming versions for manual review"
+    pages ||--o{ confluence_restriction_refresh_failures : "tracks periodic read failures; CASCADE"
+    users ||--o{ confluence_restriction_refresh_failures : "owns retry delays; CASCADE"
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
     pages ||--o{ page_image_analyses : "#1615 (ADR-027, migration 115): one analysis row per referenced image; its text becomes derived page_embeddings rows (writer: #1616)"
@@ -113,6 +115,8 @@ erDiagram
         text source "confluence | standalone"
         text notion_page_id "live standalone import binding; successful relocation clears; legacy CF compensation metadata is ignored"
         text visibility "private | shared"
+        bool inherit_perms "false activates the page ACL"
+        timestamptz restrictions_synced_at "last successful Confluence restriction mirror"
         uuid created_by_user_id FK
         bool embedding_dirty
         bool image_analysis_dirty "migration 116, #1616 (ADR-027 D4): re-enumerate this page's images; raised by every attachment and body writer"
@@ -146,6 +150,12 @@ erDiagram
         int version "persistence generation NOT pages.version"
         timestamptz created_at
         timestamptz updated_at
+    }
+
+    confluence_restriction_refresh_failures {
+        uuid user_id PK,FK "sync user; migration 156"
+        int page_id PK,FK
+        timestamptz failed_at
     }
 
     pending_sync_versions {
