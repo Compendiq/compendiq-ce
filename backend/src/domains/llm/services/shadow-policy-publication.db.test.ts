@@ -13,7 +13,14 @@ describe.skipIf(!available)('shadow HTTP publication policy guards', () => {
     await query('ALTER TABLE pages ADD COLUMN IF NOT EXISTS page_avg_embedding_next vector(1024)');
   });
   beforeEach(async () => { await truncateAllTables(); });
-  afterAll(async () => { await teardownTestDb(); });
+  afterAll(async () => {
+    try {
+      await query('ALTER TABLE page_embeddings DROP COLUMN IF EXISTS embedding_next');
+      await query('ALTER TABLE pages DROP COLUMN IF EXISTS page_avg_embedding_next');
+    } finally {
+      await teardownTestDb();
+    }
+  });
 
   it.each(['allowed', 'policy', 'content', 'provider', 'epoch', 'later_batch', 'model', 'candidate', 'image', 'claim'] as const)('%s', async (change) => {
     let mutate = async () => {};
