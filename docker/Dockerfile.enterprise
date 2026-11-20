@@ -138,8 +138,10 @@ COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modul
 COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@compendiq/contracts/package.json
 
 # Copy compiled (and optionally obfuscated) backend — includes PDF export fonts
-# (#1729) and SQL migrations (#2012) from `npm run build -w backend`; NO .ts,
-# NO .map, NO tests
+# (#1729) and SQL migrations (#2012) from `npm run build -w backend`. This stage
+# is expected to receive a dist without TypeScript sources or test files; the
+# stock tsc build still emits declarations and source maps, so the overlay build
+# is what strips them (see the guard below).
 COPY --chown=node:node --from=obfuscator /app/dist/ dist/
 
 # Explicitly verify no source files leaked into the final image
