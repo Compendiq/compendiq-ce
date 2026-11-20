@@ -64,6 +64,18 @@ describe('selectVersionJumpCacheDeletions (#1773 delete/keep rule)', () => {
     expect(removed).toEqual(['evidence.png', 'orphan.png', 'manual.pdf']);
   });
 
+  it('refreshes unsupported image attachments and preserves locally referenced ordinary attachment links', () => {
+    expect(selectVersionJumpCacheDeletions({
+      cached: ['scan.bmp', 'manual.pdf'],
+      incomingStorage: image('scan.bmp') + '<ac:link><ri:attachment ri:filename="manual.pdf" /></ac:link>',
+      spaceKey: 'DEV',
+      local: {
+        ...noLocalContent,
+        bodyHtml: `<img src="/api/attachments/${K}/scan.bmp"><a href="/api/attachments/${K}/manual.pdf">Manual</a>`,
+      },
+    })).toEqual(['scan.bmp']);
+  });
+
   it("treats a draw.io diagram's .png, .drawio and .drawio.png as one unit on both sides", () => {
     const removed = selectVersionJumpCacheDeletions({
       cached: [

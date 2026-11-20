@@ -327,6 +327,24 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(counts.pagesUpdated).toBe(1);
     });
 
+    it('serves fresh bytes on the first read of a locally referenced BMP after a version jump', async () => {
+      const id = 'vj-bmp';
+      const filename = 'drawing.bmp';
+      const storage = image(filename);
+      const fresh = Buffer.from('new bitmap bytes');
+      await seedPage(id, 1, storage);
+      await seedCache(id, { [filename]: 'old bitmap bytes' });
+      upstreamPages.set(id, remotePage(id, 2, storage));
+      upstreamAttachments.set(id, new Map([[filename, fresh]]));
+
+      expect((await syncVersionJump(id)).pagesUpdated).toBe(1);
+      expect(requestedPaths).not.toContain(`/download/${id}/${filename}`);
+      const response = await app.inject({ method: 'GET', url: `/api/attachments/${id}/${filename}` });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.rawPayload).toEqual(fresh);
+      expect(await cached(id, filename)).toEqual(fresh);
+    });
+
     it('AC2: an image a standalone-mode save put into the local body survives the version bump', async () => {
       const pageId = await seedPage('vj-local', 5, '<p>v5</p>');
       const localShot = await uploadImage(pageId, 'local-shot.png', PNG_A);
