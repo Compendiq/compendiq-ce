@@ -1,12 +1,11 @@
 import type { PoolClient } from 'pg';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { isVersionPlaceholderTitle, snapshotSourceForPage } from '../../core/services/version-snapshot.js';
+import { isVersionPlaceholderTitle, livePageVersion } from '../../core/services/version-snapshot.js';
 import {
   getVersionHistory,
   getVersion,
   getSemanticDiff,
-  saveVersionSnapshotByPageId,
   restoreVersion,
   type RestoreResult,
 } from '../../domains/knowledge/services/version-tracker.js';
@@ -49,22 +48,32 @@ import {
   RestoreVersionSchema,
   PageVersionsResponseSchema,
   PageVersionDetailSchema,
+  PageVersionSourceSchema,
+  PageSemanticDiffRequestSchema,
+  type PageVersionSource,
   type VersionBackfillStatus,
 } from '@compendiq/contracts';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const VersionParamSchema = z.object({ id: z.string().min(1), version: z.coerce.number().int().positive() });
-const SemanticDiffSchema = z.object({
-  v1: z.number().int().positive(),
-  v2: z.number().int().positive(),
-  model: z.string().optional(),
-});
+const VersionSourceQuerySchema = z.object({ source: PageVersionSourceSchema.optional() });
+
+function versionSource(fastify: FastifyInstance, page: PageContext, query: unknown): PageVersionSource {
+  const { source } = VersionSourceQuerySchema.parse(query);
+  if (source === undefined && page.source === 'confluence') {
+    throw fastify.httpErrors.badRequest('Version source is required for Confluence pages');
+  }
+  return source ?? 'local';
+}
 
 const RESTORE_STALE_MESSAGE =
   'Page has been modified since you loaded it. Please refresh and try again.';
 
 function throwPublicRestoreError(fastify: FastifyInstance, error: unknown): never {
+  if (error instanceof PageWriteError && error.reason === 'current_version') {
+    throw fastify.httpErrors.badRequest(error.message);
+  }
   if (error instanceof PageWriteError && error.reason === 'stale_content_revision') {
     throw fastify.httpErrors.conflict(RESTORE_STALE_MESSAGE);
   }
@@ -98,6 +107,7 @@ interface PageContext {
   title: string;
   version: number;
   remoteVersion: number;
+  liveSource: PageVersionSource;
   contentRevision: string;
   lifecycleRevision: string;
 }
@@ -118,13 +128,14 @@ async function currentRestoreClient(
   const page = await client.query<{
     version: number;
     remote_version: number | null;
+    local_modified_at: Date | null;
     source: string;
     confluence_id: string | null;
     space_key: string | null;
     contentRevision: string;
     lifecycleRevision: string;
   }>(
-    `SELECT version, remote_version, source, confluence_id, space_key,
+    `SELECT version, remote_version, local_modified_at, source, confluence_id, space_key,
             content_revision::text AS "contentRevision",
             lifecycle_revision::text AS "lifecycleRevision"
        FROM pages
@@ -141,6 +152,7 @@ async function currentRestoreClient(
     current.lifecycleRevision !== admittedRevision.lifecycleRevision ||
     current.version !== context.version ||
     (current.remote_version ?? current.version) !== context.remoteVersion ||
+    livePageVersion(current).source !== context.liveSource ||
     current.source !== 'confluence' ||
     current.confluence_id !== context.confluenceId
   ) {
@@ -202,11 +214,12 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       title: string;
       version: number;
       remote_version: number | null;
+      local_modified_at: Date | null;
       contentRevision: string;
       lifecycleRevision: string;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source,
-              cp.version, cp.remote_version, cp.title,
+              cp.version, cp.remote_version, cp.local_modified_at, cp.title,
               cp.content_revision::text AS "contentRevision",
               cp.lifecycle_revision::text AS "lifecycleRevision"
          FROM pages cp
@@ -226,6 +239,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       title: page.title,
       version: page.version,
       remoteVersion: page.remote_version ?? page.version,
+      liveSource: livePageVersion(page).source,
       contentRevision: page.contentRevision,
       lifecycleRevision: page.lifecycleRevision,
     };
@@ -246,7 +260,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // standalone pages, where no Confluence backfill applies.
     let backfillStatus: VersionBackfillStatus | undefined;
     let backfillDetail: string | undefined;
-    if (ctx.confluenceId && !(await isConfluenceEnabled(userId))) {
+    if (ctx.source === 'confluence' && ctx.confluenceId && !(await isConfluenceEnabled(userId))) {
       // #1623: Confluence off = standalone mode. The import is not supposed to
       // run, so it is answered BEFORE `getClientForUser` — no credential
       // lookup, no PAT decryption, nothing contacted. This is a deliberate
@@ -256,7 +270,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       backfillStatus = 'skipped_confluence_off';
       backfillDetail =
         'The Confluence integration is off, so historical versions were not imported — the history below is this page’s local history.';
-    } else if (ctx.confluenceId) {
+    } else if (ctx.source === 'confluence' && ctx.confluenceId) {
       // Two distinct failure paths: constructing the client (stored-credential
       // lookup / PAT decryption) throwing means Confluence was never contacted,
       // so the detail points at the stored credentials rather than the import.
@@ -297,16 +311,19 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // it's superseded), surfaced as `isCurrent`.
     const currentResult = await query<{
       version: number;
+      source: string;
+      remote_version: number | null;
+      local_modified_at: Date | null;
       title: string;
       last_modified_at: Date | null;
     }>(
-      'SELECT version, title, last_modified_at FROM pages WHERE id = $1',
+      'SELECT version, source, remote_version, local_modified_at, title, last_modified_at FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [ctx.id],
     );
 
     const currentVersion = currentResult.rows[0]
       ? {
-          versionNumber: currentResult.rows[0].version,
+          ...livePageVersion(currentResult.rows[0]),
           title: currentResult.rows[0].title,
           // #724: use real last_modified_at; null means never synced — don't substitute now()
           editedAt: currentResult.rows[0].last_modified_at?.toISOString() ?? null,
@@ -317,10 +334,9 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         }
       : null;
 
-    // A snapshot whose version_number equals the live version (written on the
-    // way to being superseded) would duplicate the synthetic current row — drop it.
+    // The live row shadows only the snapshot in the same namespace and number.
     const historical = versions.filter(
-      (v) => !currentVersion || v.versionNumber !== currentVersion.versionNumber,
+      (v) => !currentVersion || v.versionNumber !== currentVersion.versionNumber || v.source !== currentVersion.source,
     );
 
     return PageVersionsResponseSchema.parse({
@@ -328,6 +344,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         ...(currentVersion ? [currentVersion] : []),
         ...historical.map((v) => ({
           versionNumber: v.versionNumber,
+          source: v.source,
           title: v.title,
           editedAt: v.editedAt?.toISOString() ?? null,
           syncedAt: v.syncedAt.toISOString(),
@@ -349,38 +366,44 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     const ctx = await resolveAndAuthorize(userId, id);
     if (!ctx) throw fastify.httpErrors.notFound('Page not found');
+    const source = versionSource(fastify, ctx, request.query);
 
     // Check if requesting current version
     const currentResult = await query<{
       version: number;
+      source: string;
+      remote_version: number | null;
+      local_modified_at: Date | null;
       title: string;
       body_html: string;
       body_text: string;
     }>(
-      'SELECT version, title, body_html, body_text FROM pages WHERE id = $1',
+      'SELECT version, source, remote_version, local_modified_at, title, body_html, body_text FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [ctx.id],
     );
 
-    if (currentResult.rows.length > 0 && currentResult.rows[0]!.version === versionNum) {
+    const current = currentResult.rows[0];
+    const live = current && livePageVersion(current);
+    if (current && live?.source === source && live.versionNumber === versionNum) {
       return PageVersionDetailSchema.parse({
         confluenceId: ctx.confluenceId,
-        versionNumber: versionNum,
-        title: currentResult.rows[0]!.title,
-        bodyHtml: currentResult.rows[0]!.body_html,
-        bodyText: currentResult.rows[0]!.body_text,
+        ...live,
+        title: current.title,
+        bodyHtml: current.body_html,
+        bodyText: current.body_text,
         isCurrent: true,
       });
     }
 
     // Get from version history
-    const pageVersion = await getVersion(ctx.id, versionNum);
+    const pageVersion = await getVersion(ctx.id, versionNum, { source });
     if (!pageVersion) {
       throw fastify.httpErrors.notFound(`Version ${versionNum} not found`);
     }
 
     // #722: Lazy-fetch the historical body from Confluence if we stored only metadata.
     let { bodyHtml, bodyText } = pageVersion;
-    if (bodyHtml === null && pageVersion.source === 'confluence' && ctx.confluenceId) {
+    if (bodyHtml === null && source === 'confluence' && ctx.source === 'confluence' && ctx.confluenceId) {
       try {
         const client = await getClientForUser(userId);
         if (client) {
@@ -396,6 +419,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     return PageVersionDetailSchema.parse({
       confluenceId: pageVersion.confluenceId,
       versionNumber: pageVersion.versionNumber,
+      source: pageVersion.source,
       title: pageVersion.title,
       bodyHtml,
       bodyText,
@@ -415,33 +439,15 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // resolves the `chat` use-case server-side (ADR-021) — we deliberately do
     // NOT inject a hardcoded legacy default here, which would otherwise force a
     // model the configured provider may not host (issue #718 / PR #725 regression).
-    const { v1, v2, model } = SemanticDiffSchema.parse(request.body);
-
     const ctx = await resolveAndAuthorize(userId, id);
     if (!ctx) throw fastify.httpErrors.notFound('Page not found');
-
-    // For the current version, save a snapshot first so getSemanticDiff can find it
-    const current = await query<{
-      version: number;
-      title: string;
-      body_html: string;
-      body_text: string;
-    }>(
-      'SELECT version, title, body_html, body_text FROM pages WHERE id = $1',
-      [ctx.id],
-    );
-
-    if (current.rows.length > 0) {
-      const row = current.rows[0]!;
-      // Ensure current version exists in page_versions for comparison
-      await saveVersionSnapshotByPageId(ctx.id, row.version, row.title, row.body_html, row.body_text, snapshotSourceForPage(ctx.source));
-    }
+    const { v1, v2, model } = PageSemanticDiffRequestSchema.parse(request.body);
 
     // #722/#724: pass the Confluence client so getSemanticDiff can lazily fetch
     // bodies for backfilled (metadata-only) versions — otherwise they diff as
     // empty strings and the LLM reports "all content removed".
     let client: Awaited<ReturnType<typeof getClientForUser>> | null = null;
-    if (ctx.confluenceId) {
+    if (ctx.source === 'confluence' && ctx.confluenceId) {
       try {
         client = await getClientForUser(userId);
       } catch (err) {
@@ -468,6 +474,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     const ctx = await resolveAndAuthorize(userId, id);
     if (!ctx) throw fastify.httpErrors.notFound('Page not found');
+    const targetSource = versionSource(fastify, ctx, request.query);
 
     // #1623: the local write has no Confluence-side authority, so it applies
     // the PUT /pages/:id rule itself — page access AND edit rights (a role on
@@ -490,11 +497,15 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // A lazy Confluence read also counts as provider work during a restore.
     if (!staysLocal) await assertNoPendingSyncConflict([ctx.id]);
 
+    if (targetVersion === ctx.version && targetSource === ctx.liveSource) {
+      throw fastify.httpErrors.badRequest('Cannot restore the current version');
+    }
+
     // Metadata-only history rows may be filled by a remote READ. Analysis and
     // historical reads remain available while frozen; no authored state is
     // mutated here, and restore admission still happens before any remote write.
-    const targetBody = await getVersion(ctx.id, targetVersion);
-    if (targetBody?.bodyHtml === null && targetBody.source === 'confluence' && ctx.confluenceId) {
+    const targetBody = await getVersion(ctx.id, targetVersion, { source: targetSource });
+    if (targetBody?.bodyHtml === null && targetSource === 'confluence' && ctx.source === 'confluence' && ctx.confluenceId) {
       const historyClient = await getClientForUser(userId);
       if (historyClient) {
         await getHistoricalBody(ctx.id, ctx.confluenceId, targetVersion, historyClient);
@@ -507,12 +518,6 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     if (staysLocal) {
       try {
         result = await withPageWriteTransaction([ctx.id], async (client) => {
-          const current = await client.query<{ version: number }>(
-            'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL',
-            [ctx.id],
-          );
-          const liveVersion = current.rows[0]?.version;
-          if (liveVersion === undefined) throw fastify.httpErrors.notFound('Page not found');
           const actor = await client.query(
             'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
             [userId],
@@ -520,13 +525,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
           if (actor.rowCount !== 1 || !(await canWritePageLocally(client))) {
             throw fastify.httpErrors.forbidden('Not authorized to edit this page');
           }
-          if (targetVersion === liveVersion) {
-            throw fastify.httpErrors.badRequest('Cannot restore the current version');
-          }
           return restoreVersion(ctx.id, targetVersion, {
             client,
             actorId: userId,
             expectedVersion,
+            source: targetSource,
           });
         });
       } catch (error) {
@@ -540,7 +543,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.badRequest('Confluence not configured');
       }
 
-      const intendedHistorical = await getVersion(ctx.id, targetVersion);
+      const intendedHistorical = await getVersion(ctx.id, targetVersion, { source: targetSource });
       if (!intendedHistorical) {
         throw fastify.httpErrors.notFound(`Version ${targetVersion} not found`);
       }
@@ -572,6 +575,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         expectedRemoteVersion: ctx.remoteVersion,
         expectedLocalVersion: ctx.version,
         targetVersion,
+        targetSource,
       });
       const intent = await reservePageWriteIntent({
         pageIds: [ctx.id],
@@ -597,15 +601,12 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
               'Page has been modified since you loaded it. Please refresh and try again.',
             );
           }
-          if (targetVersion === ctx.version) {
-            throw new PageWriteError(400, 'current_version', 'Cannot restore the current version');
-          }
-          const historical = await getVersion(ctx.id, targetVersion, { client: lockedClient });
+          const historical = await getVersion(ctx.id, targetVersion, { source: targetSource, client: lockedClient });
           // Compare both stored values even when two different titles would
           // produce the same effective title.
           if (
             !historical ||
-            historical.source !== intendedHistorical.source ||
+            historical.id !== intendedHistorical.id ||
             historical.bodyHtml !== intendedHistorical.bodyHtml ||
             historical.title !== intendedHistorical.title
           ) {
@@ -672,6 +673,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     await logAuditEvent(userId, 'PAGE_VERSION_RESTORED', 'page', String(ctx.id), {
       restoredFrom: targetVersion,
+      restoredFromSource: targetSource,
       newVersion: result.newVersion,
       title: result.title,
       source: ctx.source,

@@ -118,9 +118,13 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       await saveVersionSnapshotByPageId(pageId, 2, 'Confluence v2', null, null, 'confluence');
       await saveVersionSnapshotByPageId(pageId, 2, 'Local v2', null, null, 'local');
 
+      await query(`UPDATE page_versions SET synced_at = '2026-01-01'::date
+        + make_interval(days => version_number, hours => CASE WHEN source = 'local' THEN 1 ELSE 0 END)
+        WHERE page_id = $1`, [pageId]);
       expect(await getVersion(pageId, 2)).toMatchObject({ source: 'confluence', title: 'Confluence v2' });
       expect(await getVersion(pageId, 2, { source: 'local' })).toMatchObject({ source: 'local', title: 'Local v2' });
       expect((await getVersionHistory(pageId)).map(({ source, title }) => ({ source, title }))).toEqual([
+        { source: 'local', title: 'Local v2' },
         { source: 'confluence', title: 'Confluence v2' },
         { source: 'confluence', title: 'Confluence v1' },
       ]);
@@ -130,6 +134,7 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       expect(await getVersion(pageId, 1)).toMatchObject({ source: 'confluence', title: 'Confluence v1' });
       expect((await getVersionHistory(pageId)).map(({ source, title }) => ({ source, title }))).toEqual([
         { source: 'local', title: 'Local v2' },
+        { source: 'confluence', title: 'Confluence v2' },
         { source: 'confluence', title: 'Confluence v1' },
       ]);
     });
@@ -373,7 +378,7 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       const fakeClient = {} as never;
       let diff: string;
       try {
-        diff = await getSemanticDiff(pageId, 1, 2, 'test-model', 'vt-page-1', fakeClient, userId);
+        diff = await getSemanticDiff(pageId, { versionNumber: 1, source: 'confluence' }, { versionNumber: 2, source: 'confluence' }, 'test-model', 'vt-page-1', fakeClient, userId);
       } finally {
         setGlobalDispatcher(previous);
         await agent.close();

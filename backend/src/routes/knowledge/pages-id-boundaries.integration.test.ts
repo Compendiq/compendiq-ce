@@ -90,9 +90,9 @@ const legacyCases: LegacyCase[] = [
   { code: 'L14', method: 'POST', suffix: '/presence/heartbeat', payload: { isEditing: false }, hidden: 404 },
   { code: 'L15', method: 'DELETE', suffix: '/presence', hidden: 204 },
   { code: 'L16', method: 'GET', suffix: '/versions', hidden: 200 },
-  { code: 'L17', method: 'GET', suffix: '/versions/1', hidden: 404 },
-  { code: 'L18', method: 'POST', suffix: '/versions/semantic-diff', payload: { v1: 1, v2: 1 }, hidden: 404 },
-  { code: 'L19', method: 'POST', suffix: '/versions/1/restore', payload: { version: 3 }, hidden: 404 },
+  { code: 'L17', method: 'GET', suffix: '/versions/1?source=local', hidden: 404 },
+  { code: 'L18', method: 'POST', suffix: '/versions/semantic-diff', payload: { v1: { versionNumber: 1, source: 'local' }, v2: { versionNumber: 1, source: 'local' } }, hidden: 404 },
+  { code: 'L19', method: 'POST', suffix: '/versions/1/restore?source=confluence', payload: { version: 3 }, hidden: 404 },
   { code: 'L20', method: 'POST', suffix: '/images', payload: { dataUri: DATA_URI, filename: 'id-boundary.png' }, hidden: 403 },
   { code: 'L21', method: 'POST', suffix: '/images/import', payload: { url: IMAGE_URL }, hidden: 403 },
 ];
@@ -547,13 +547,11 @@ describe('#1739 real page-ID route boundaries', () => {
         expect(response.json()).toMatchObject({ versionNumber: 1, confluenceId: page.confluence_id, title: 'ID target', bodyHtml: before.body_html });
         break;
       case 'L18':
-        expect(response.json()).toEqual({ diff: 'identifier diff', v1: 1, v2: 1, pageId: raw });
+        expect(response.json()).toEqual({ diff: 'identifier diff', v1: { versionNumber: 1, source: 'local' }, v2: { versionNumber: 1, source: 'local' }, pageId: raw });
         expect(llmRequests.length - providerCount).toBe(1);
         expect(JSON.stringify(llmRequests.at(-1))).toContain('ID target body');
         expect(JSON.stringify(llmRequests.at(-1))).not.toContain('ID decoy');
-        expect((await query('SELECT version_number, body_html FROM page_versions WHERE page_id = $1', [page.id])).rows).toEqual([
-          { version_number: 1, body_html: before.body_html },
-        ]);
+        expect((await query('SELECT version_number, body_html FROM page_versions WHERE page_id = $1', [page.id])).rows).toEqual([]);
         break;
       case 'L19':
         expect(response.json()).toEqual({ id: page.id, title: 'Historical target', version: 4, restoredFrom: 1, source: 'confluence', pushedToConfluence: false });
@@ -917,7 +915,7 @@ describe('#1739 real page-ID route boundaries', () => {
       await seedHistory(page);
       const before = await observableState();
       const response = await app.inject({ method: 'POST',
-        url: `/api/pages/${page.id}/versions/${refusal === 'current' ? 3 : 1}/restore`,
+        url: `/api/pages/${page.id}/versions/${refusal === 'current' ? 3 : 1}/restore?source=${refusal === 'current' ? 'local' : 'confluence'}`,
         payload: refusal === 'current' ? {} : { version: 2 } });
       expect(response.statusCode, response.body).toBe(refusal === 'current' ? 400 : 409);
       expect(await observableState()).toEqual(before);

@@ -171,7 +171,7 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
   }
 
   async function historyEntry(id: number, versionNumber: number) {
-    const fetched = await app.inject({ method: 'GET', url: `/api/pages/${id}/versions/${versionNumber}` });
+    const fetched = await app.inject({ method: 'GET', url: `/api/pages/${id}/versions/${versionNumber}?source=confluence` });
     expect(fetched.statusCode, fetched.body).toBe(200);
     return PageVersionDetailSchema.parse(fetched.json());
   }

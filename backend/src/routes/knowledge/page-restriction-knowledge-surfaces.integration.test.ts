@@ -124,16 +124,16 @@ describe.skipIf(!available)('page restrictions on version, export, attachment an
         return denied ? 'denied' : `unexpected ${response.body}`;
       }],
       ['version detail', async (userId) =>
-        verdict(await request(userId, `/api/pages/${leaf}/versions/${leafVersion}`), 200)],
+        verdict(await request(userId, `/api/pages/${leaf}/versions/${leafVersion}?source=local`), 200)],
       ['semantic diff', async (userId) =>
         verdict(await request(userId, `/api/pages/${leaf}/versions/semantic-diff`, 'POST', {
-          v1: leafVersion,
-          v2: leafVersion,
+          v1: { versionNumber: leafVersion, source: 'local' },
+          v2: { versionNumber: leafVersion, source: 'local' },
         }), 200)],
       // Restoring the live version is refused after authorization (400);
       // an unauthorized caller must never get that far.
       ['version restore', async (userId) =>
-        verdict(await request(userId, `/api/pages/${leaf}/versions/${leafVersion}/restore`, 'POST', {}), 400)],
+        verdict(await request(userId, `/api/pages/${leaf}/versions/${leafVersion}/restore?source=local`, 'POST', {}), 400)],
       ['single PDF export', async (userId) =>
         verdict(await request(userId, `/api/pages/${leaf}/export/pdf`, 'POST'), 200)],
       ['batch PDF export', async (userId) => {
@@ -263,7 +263,7 @@ describe.skipIf(!available)('page restrictions on version, export, attachment an
         .toEqual({ url: restrictedUrl, status: missing.statusCode, body: missing.body });
     };
 
-    await same('GET', `/api/pages/${leaf}/versions/${leafVersion}`, `/api/pages/${MISSING_PAGE_ID}/versions/${leafVersion}`);
+    await same('GET', `/api/pages/${leaf}/versions/${leafVersion}?source=local`, `/api/pages/${MISSING_PAGE_ID}/versions/${leafVersion}?source=local`);
     await same(
       'POST',
       `/api/pages/${leaf}/versions/semantic-diff`,
@@ -272,8 +272,8 @@ describe.skipIf(!available)('page restrictions on version, export, attachment an
     );
     await same(
       'POST',
-      `/api/pages/${leaf}/versions/${leafVersion}/restore`,
-      `/api/pages/${MISSING_PAGE_ID}/versions/${leafVersion}/restore`,
+      `/api/pages/${leaf}/versions/${leafVersion}/restore?source=local`,
+      `/api/pages/${MISSING_PAGE_ID}/versions/${leafVersion}/restore?source=local`,
       {},
     );
     await same('POST', `/api/pages/${leaf}/export/pdf`, `/api/pages/${MISSING_PAGE_ID}/export/pdf`);

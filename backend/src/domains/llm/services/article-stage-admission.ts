@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import type { PageVersionSource } from '../../../core/services/version-snapshot.js';
+import { livePageVersion, type PageVersionSource } from '../../../core/services/version-snapshot.js';
 import { getPool } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { AI_POLICY_LOCK_NAMESPACE } from '../../../core/services/ai-policy-service.js';
@@ -86,6 +86,8 @@ export interface ArticleStageContext {
   modelSelection?: import('./llm-provider-resolver.js').ArticleModelSelection;
   /** Server-read historical inputs, never a client-supplied source list. */
   historicalVersions?: { pageId: number; versionId: string; versionNumber: number; source: PageVersionSource; digest: string }[];
+  /** The live input is fenced without writing a history row for it. */
+  liveVersion?: { pageId: number; versionNumber: number; source: PageVersionSource; digest: string };
   operation: AiOperationContext;
   stage: string;
   attempt: number;
@@ -166,6 +168,26 @@ export async function admitArticleStage(
       await validateArticleStageOnClient(client, provenance, userId, context.embeddingSources);
       for (const source of context.embeddingSources ?? []) {
         if (!provenance.pages.some((page) => page.pageId === source.pageId)) throw new ArticleStageRefusedError();
+      }
+      if (context.liveVersion) {
+        const version = context.liveVersion;
+        if (!provenance.pages.some((page) => page.pageId === version.pageId)) throw new ArticleStageRefusedError();
+        // The page row is already held FOR SHARE by validateArticleStageOnClient.
+        const current = await client.query<{
+          source: string; version: number; remote_version: number | null; local_modified_at: Date | null;
+          title: string; body_html: string | null; body_text: string | null;
+        }>(
+          `SELECT source, version, remote_version, local_modified_at, title, body_html, body_text
+             FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+          [version.pageId],
+        );
+        const row = current.rows[0];
+        if (!row) throw new ArticleStageRefusedError();
+        const identity = livePageVersion(row);
+        if (identity.source !== version.source || identity.versionNumber !== version.versionNumber
+          || historicalVersionDigest(row.title, row.body_html, row.body_text) !== version.digest) {
+          throw new ArticleStageRefusedError();
+        }
       }
       for (const version of context.historicalVersions ?? []) {
         if (!provenance.pages.some((page) => page.pageId === version.pageId)

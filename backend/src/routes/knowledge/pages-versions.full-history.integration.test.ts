@@ -61,7 +61,7 @@ function jsonResponse(data: unknown, statusCode = 200) {
 function versionEntries(from: number, count: number) {
   return Array.from({ length: count }, (_, i) => ({
     number: from - i,
-    when: `2026-01-01T00:00:${String((from - i) % 60).padStart(2, '0')}Z`,
+    when: new Date(Date.UTC(2026, 0, 1, 0, 0, from - i)).toISOString(),
     by: { displayName: `author-${from - i}` },
     message: `edit ${from - i}`,
     minorEdit: false,
@@ -326,7 +326,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
 
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/2/restore`,
+      url: `/api/pages/${pageId}/versions/2/restore?source=confluence`,
       payload: { version: 5 },
     });
 
@@ -398,6 +398,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
         expectedRemoteVersion: '5',
         intendedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         targetVersion: 2,
+        targetSource: 'confluence',
       },
       remote_effect_started_at: expect.any(Date),
       remote_effects_completed_at: expect.any(Date),
@@ -440,7 +441,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
 
     const response = await app.inject({
       method: 'GET',
-      url: `/api/pages/${pageId}/versions/2`,
+      url: `/api/pages/${pageId}/versions/2?source=confluence`,
     });
 
     expect(response.statusCode, response.body).toBe(200);
@@ -488,7 +489,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
 
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/2/restore`,
+      url: `/api/pages/${pageId}/versions/2/restore?source=confluence`,
       payload: { version: 5 },
     });
 

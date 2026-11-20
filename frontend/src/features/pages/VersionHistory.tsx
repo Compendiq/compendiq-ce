@@ -8,6 +8,9 @@ import { diffWordsWithSpace, type Change } from 'diff';
 import type {
   PageVersionsResponse,
   PageVersionDetail,
+  PageVersionRef,
+  PageVersionSource,
+  PageSemanticDiffRequest,
 } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
@@ -25,8 +28,8 @@ type VersionsResponse = PageVersionsResponse;
 
 interface SemanticDiffResponse {
   diff: string;
-  v1: number;
-  v2: number;
+  v1: PageVersionRef;
+  v2: PageVersionRef;
   pageId: string;
 }
 
@@ -39,10 +42,22 @@ function useVersionHistory(pageId: string | undefined, enabled: boolean) {
   });
 }
 
-function useVersionDetail(pageId: string | undefined, version: number | null) {
+function sourceLabel(source: PageVersionSource): string {
+  return source === 'confluence' ? 'Confluence' : 'Local';
+}
+
+function versionRef({ source, versionNumber }: PageVersionRef): PageVersionRef {
+  return { source, versionNumber };
+}
+
+function sameVersion(left: PageVersionRef | null | undefined, right: PageVersionRef): boolean {
+  return left?.source === right.source && left.versionNumber === right.versionNumber;
+}
+
+function useVersionDetail(pageId: string | undefined, version: PageVersionRef | null) {
   return useQuery<PageVersionDetail>({
-    queryKey: ['pages', pageId, 'versions', version],
-    queryFn: () => apiFetch(`/pages/${pageId}/versions/${version}`),
+    queryKey: ['pages', pageId, 'versions', version?.source, version?.versionNumber],
+    queryFn: () => apiFetch(`/pages/${pageId}/versions/${version!.versionNumber}?source=${version!.source}`),
     enabled: !!pageId && version !== null,
   });
 }
@@ -98,12 +113,12 @@ export function VersionHistory({
 }: VersionHistoryProps) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+  const [selectedVersion, setSelectedVersion] = useState<PageVersionRef | null>(null);
   const [previewMode, setPreviewMode] = useState<'formatted' | 'text'>('formatted');
-  const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
+  const [compareVersions, setCompareVersions] = useState<[PageVersionRef, PageVersionRef] | null>(null);
   const [showSemanticDiff, setShowSemanticDiff] = useState(false);
   // Version awaiting restore confirmation (ConfirmDialog replaces native confirm()).
-  const [pendingRestore, setPendingRestore] = useState<number | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<PageVersionRef | null>(null);
 
   const { data: settings } = useSettings();
   const { data: versionsData, isLoading, isError, error, refetch } = useVersionHistory(pageId, open);
@@ -113,7 +128,7 @@ export function VersionHistory({
   );
 
   const semanticDiffMutation = useMutation({
-    mutationFn: ({ v1, v2 }: { v1: number; v2: number }) =>
+    mutationFn: ({ v1, v2 }: Pick<PageSemanticDiffRequest, 'v1' | 'v2'>) =>
       apiFetch<SemanticDiffResponse>(`/pages/${pageId}/versions/semantic-diff`, {
         method: 'POST',
         body: JSON.stringify({ v1, v2, model }),
@@ -124,14 +139,14 @@ export function VersionHistory({
   const currentVersionNumber = versions.find((v) => v.isCurrent)?.versionNumber;
   const selectedVersionIndex = selectedVersion === null
     ? -1
-    : versions.findIndex((version) => version.versionNumber === selectedVersion);
-  const previousVersionNumber = selectedVersionIndex >= 0 && selectedVersionIndex < versions.length - 1
-    ? versions[selectedVersionIndex + 1]!.versionNumber
+    : versions.findIndex((version) => sameVersion(selectedVersion, version));
+  const previousVersion = selectedVersionIndex >= 0 && selectedVersionIndex < versions.length - 1
+    ? versions[selectedVersionIndex + 1]!
     : null;
   const {
     data: previousVersionData,
     isLoading: isPreviousVersionLoading,
-  } = useVersionDetail(pageId, previousVersionNumber);
+  } = useVersionDetail(pageId, previousVersion);
   const formattedDiffHtml = useMemo(() => {
     if (!selectedVersionData) return null;
     const currentHtml = versionContentAsHtml(
@@ -180,8 +195,8 @@ export function VersionHistory({
         : null;
 
   const restoreMutation = useMutation({
-    mutationFn: ({ version, expected }: { version: number; expected?: number }) =>
-      apiFetch<RestoreResponse>(`/pages/${pageId}/versions/${version}/restore`, {
+    mutationFn: ({ version, expected }: { version: PageVersionRef; expected?: number }) =>
+      apiFetch<RestoreResponse>(`/pages/${pageId}/versions/${version.versionNumber}/restore?source=${version.source}`, {
         method: 'POST',
         body: JSON.stringify(expected !== undefined ? { version: expected } : {}),
       }),
@@ -204,9 +219,9 @@ export function VersionHistory({
     },
   });
 
-  const handleRestore = (version: number) => {
+  const handleRestore = (version: PageVersionRef) => {
     if (restoreMutation.isPending) return;
-    setPendingRestore(version);
+    setPendingRestore(versionRef(version));
   };
 
   const handleConfirmRestore = () => {
@@ -227,14 +242,14 @@ export function VersionHistory({
     }
   }, [open]);
 
-  const handleCompare = (v1: number, v2: number) => {
-    setCompareVersions([v1, v2]);
+  const handleCompare = (v1: PageVersionRef, v2: PageVersionRef) => {
+    setCompareVersions([versionRef(v1), versionRef(v2)]);
     setShowSemanticDiff(false);
   };
 
-  const handleSemanticDiff = (v1: number, v2: number) => {
+  const handleSemanticDiff = (v1: PageVersionRef, v2: PageVersionRef) => {
     setShowSemanticDiff(true);
-    semanticDiffMutation.mutate({ v1, v2 });
+    semanticDiffMutation.mutate({ v1: versionRef(v1), v2: versionRef(v2) });
   };
 
   return (
@@ -357,11 +372,11 @@ export function VersionHistory({
               <div className={cn('overflow-y-auto', (selectedVersion !== null || compareVersions !== null || showSemanticDiff) ? 'max-h-48' : 'max-h-72')}>
                 {versions.map((version, i) => (
                   <div
-                    key={`${version.versionNumber}-${version.isCurrent}`}
+                    key={`${version.source}-${version.versionNumber}`}
                     className={cn(
                       'flex items-center gap-3 px-5 py-2.5',
                       i !== versions.length - 1 && 'border-b border-border',
-                      selectedVersion === version.versionNumber && 'bg-action/5',
+                      sameVersion(selectedVersion, version) && 'bg-action/5',
                     )}
                   >
                     {/* Timeline dot */}
@@ -381,6 +396,7 @@ export function VersionHistory({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">v{version.versionNumber}</span>
+                        <span className="text-[11px] text-muted-foreground">{sourceLabel(version.source)}</span>
                         {version.isCurrent && (
                           <span className="rounded bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success">
                             Current
@@ -406,29 +422,29 @@ export function VersionHistory({
                     <div className="flex shrink-0 gap-1">
                       <button
                         onClick={() => setSelectedVersion(
-                          selectedVersion === version.versionNumber ? null : version.versionNumber,
+                          sameVersion(selectedVersion, version) ? null : versionRef(version),
                         )}
                         className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         title="Preview version"
-                        aria-label={`Preview version ${version.versionNumber}`}
+                        aria-label={`Preview version ${version.versionNumber} (${sourceLabel(version.source)})`}
                       >
                         <Eye size={12} />
                       </button>
                       {i < versions.length - 1 && (
                         <>
                           <button
-                            onClick={() => handleCompare(versions[i + 1]!.versionNumber, version.versionNumber)}
+                            onClick={() => handleCompare(versions[i + 1]!, version)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title="Compare with previous version"
-                            aria-label={`Compare version ${version.versionNumber} with previous version`}
+                            aria-label={`Compare version ${version.versionNumber} (${sourceLabel(version.source)}) with previous version`}
                           >
                             <GitCompare size={12} />
                           </button>
                           <button
-                            onClick={() => handleSemanticDiff(versions[i + 1]!.versionNumber, version.versionNumber)}
+                            onClick={() => handleSemanticDiff(versions[i + 1]!, version)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-action focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title="AI semantic diff with previous version"
-                            aria-label={`AI semantic diff for version ${version.versionNumber}`}
+                            aria-label={`AI semantic diff for version ${version.versionNumber} (${sourceLabel(version.source)})`}
                           >
                             <Sparkles size={12} />
                           </button>
@@ -436,13 +452,13 @@ export function VersionHistory({
                       )}
                       {!version.isCurrent && restoreAllowed && (
                         <button
-                          onClick={() => handleRestore(version.versionNumber)}
+                          onClick={() => handleRestore(version)}
                           disabled={restoreMutation.isPending}
                           className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
                           title="Restore this version"
-                          aria-label={`Restore version ${version.versionNumber}`}
+                          aria-label={`Restore version ${version.versionNumber} (${sourceLabel(version.source)})`}
                         >
-                          {restoreMutation.isPending && restoreMutation.variables?.version === version.versionNumber ? (
+                          {restoreMutation.isPending && sameVersion(restoreMutation.variables?.version, version) ? (
                             <Loader2 size={12} className="animate-spin" />
                           ) : (
                             <RotateCcw size={12} />
@@ -468,7 +484,7 @@ export function VersionHistory({
                   className="overflow-hidden border-t border-border"
                 >
                   {isVersionDetailLoading
-                    || (previousVersionNumber !== null && isPreviousVersionLoading)
+                    || (previousVersion !== null && isPreviousVersionLoading)
                     || !selectedVersionData ? (
                     <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
                       <Loader2 size={14} className="animate-spin" />
@@ -478,7 +494,7 @@ export function VersionHistory({
                     <div className="p-4">
                       <div className="flex items-center justify-between mb-2">
                         <h4 className="text-xs font-medium text-muted-foreground">
-                          Version {selectedVersionData.versionNumber} Preview
+                          Version {selectedVersionData.versionNumber} Preview · {sourceLabel(selectedVersionData.source)}
                           {selectedVersionData.author && (
                             <span className="ml-1 font-normal">by {selectedVersionData.author}</span>
                           )}
@@ -518,7 +534,7 @@ export function VersionHistory({
 
                           {!selectedVersionData.isCurrent && restoreAllowed && (
                             <button
-                              onClick={() => handleRestore(selectedVersionData.versionNumber)}
+                              onClick={() => handleRestore(selectedVersionData)}
                               disabled={restoreMutation.isPending}
                               className="flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
                               title="Restore this version"
@@ -546,7 +562,7 @@ export function VersionHistory({
                           &ldquo;{selectedVersionData.message}&rdquo;
                         </p>
                       )}
-                      {previousVersionNumber === null && (
+                      {previousVersion === null && (
                         <p className="mb-2 text-xs text-muted-foreground" role="status">
                           No previous version to compare.
                         </p>
@@ -659,8 +675,8 @@ export function VersionHistory({
           Destructive styling because the visible page content is replaced. */}
       <ConfirmDialog
         open={pendingRestore !== null}
-        title={`Restore v${pendingRestore ?? ''}?`}
-        description={`The current page content will be replaced with the content of v${pendingRestore ?? ''}, saved as a new version. The replaced content stays in version history; Confluence-synced pages are updated in Confluence as well.`}
+        title={pendingRestore ? `Restore v${pendingRestore.versionNumber} (${sourceLabel(pendingRestore.source)})?` : 'Restore version?'}
+        description={`The current page content will be replaced with the content of v${pendingRestore?.versionNumber ?? ''}, saved as a new version. The replaced content stays in version history; Confluence-synced pages are updated in Confluence as well.`}
         confirmLabel="Restore version"
         destructive
         onConfirm={handleConfirmRestore}
@@ -709,8 +725,8 @@ function CompareView({
   onClose,
 }: {
   pageId: string;
-  v1: number;
-  v2: number;
+  v1: PageVersionRef;
+  v2: PageVersionRef;
   onClose: () => void;
 }) {
   const { data: version1 } = useVersionDetail(pageId, v1);
@@ -731,7 +747,7 @@ function CompareView({
     <div className="border-t border-border">
       <div className="flex items-center justify-between px-4 py-2">
         <h4 className="text-xs font-medium text-muted-foreground">
-          Comparing v{v1} vs v{v2}
+          Comparing v{v1.versionNumber} ({sourceLabel(v1.source)}) vs v{v2.versionNumber} ({sourceLabel(v2.source)})
         </h4>
         <button
           onClick={onClose}

@@ -307,12 +307,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     title: string,
     bodyHtml: string | null,
     bodyText: string | null,
-    metadata: { editedAt?: Date | null; author?: string | null; message?: string | null } = {},
+    metadata: { editedAt?: Date | null; author?: string | null; message?: string | null; source?: 'local' | 'confluence' } = {},
   ): Promise<void> {
     await query(
       `INSERT INTO page_versions
          (page_id, source, version_number, title, body_html, body_text, synced_at, edited_at, author, message)
-       VALUES ($1, (SELECT CASE WHEN source = 'confluence' THEN 'confluence' ELSE 'local' END FROM pages WHERE id = $1), $2, $3, $4, $5, '2026-03-02T12:00:00Z', $6, $7, $8)`,
+       VALUES ($1, COALESCE($9, (SELECT CASE WHEN source = 'confluence' THEN 'confluence' ELSE 'local' END FROM pages WHERE id = $1)), $2, $3, $4, $5, '2026-03-02T12:00:00Z', $6, $7, $8)`,
       [
         pageId,
         versionNumber,
@@ -322,6 +322,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
         metadata.editedAt ?? null,
         metadata.author ?? null,
         metadata.message ?? null,
+        metadata.source ?? null,
       ],
     );
   }
@@ -405,6 +406,71 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     expect(response.json().backfillStatus).toBeUndefined();
   });
 
+  it('orders both namespaces and hides only the exact live identity', async () => {
+    await configureConfluence('OPS');
+    await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [userId]);
+    const pageId = await seedPage({
+      source: 'confluence', confluenceId: 'namespace-order', spaceKey: 'OPS', visibility: 'shared',
+      ownerId: null, version: 6,
+    });
+    await query('UPDATE pages SET remote_version = 5 WHERE id = $1', [pageId]);
+    await seedVersion(pageId, 6, 'Shadowed local', '<p>Shadow</p>', 'Shadow', { source: 'local' });
+    await seedVersion(pageId, 6, 'Confluence six', '<p>Confluence six</p>', 'Confluence six');
+    await seedVersion(pageId, 4, 'Local four', '<p>Local four</p>', 'Local four', { source: 'local' });
+    await seedVersion(pageId, 4, 'Confluence four', '<p>Confluence four</p>', 'Confluence four');
+    await seedVersion(pageId, 2, 'Most recently edited', '<p>Two</p>', 'Two', {
+      editedAt: new Date('2026-03-03T12:00:00Z'),
+    });
+    const headers = { 'x-test-user': userId };
+    const url = `/api/pages/${pageId}/versions`;
+    const list = await app.inject({ url, headers });
+    expect(list.statusCode, list.body).toBe(200);
+    expect(list.json().versions.map(({ source, versionNumber, isCurrent }: {
+      source: string; versionNumber: number; isCurrent: boolean;
+    }) => [source, versionNumber, isCurrent])).toEqual([
+      ['local', 6, true],
+      ['confluence', 2, false],
+      ['confluence', 6, false],
+      ['confluence', 4, false],
+      ['local', 4, false],
+    ]);
+    expect((await app.inject({ url: `${url}/4`, headers })).statusCode).toBe(400);
+    expect((await app.inject({ url: `${url}/4?source=other`, headers })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: `${url}/4/restore`, headers })).statusCode).toBe(400);
+    for (const [ref, title, current] of [
+      ['6?source=local', 'Current title', true],
+      ['6?source=confluence', 'Confluence six', false],
+      ['4?source=local', 'Local four', false],
+      ['4?source=confluence', 'Confluence four', false],
+    ] as const) {
+      const detail = await app.inject({ url: `${url}/${ref}`, headers });
+      expect(detail.statusCode, detail.body).toBe(200);
+      expect(detail.json()).toMatchObject({ title, isCurrent: current });
+    }
+    expect(confluenceRequests).toEqual([]);
+  });
+
+  it.each([true, false])('restores the sibling of the live version at the same number (integration on: %s)', async (enabled) => {
+    await configureConfluence('OPS');
+    await query('UPDATE user_settings SET confluence_enabled = $2 WHERE user_id = $1', [userId, enabled]);
+    const pageId = await seedPage({
+      source: 'confluence', confluenceId: 'namespace-restore', spaceKey: 'OPS', visibility: 'shared',
+      ownerId: null, version: 6,
+    });
+    await seedVersion(pageId, 6, 'Local six', '<p>Local six</p>', 'Local six', { source: 'local' });
+    const headers = { 'x-test-user': userId };
+    const url = `/api/pages/${pageId}/versions/6/restore`;
+    const refused = await app.inject({ method: 'POST', url: `${url}?source=confluence`, headers, payload: { version: 6 } });
+    expect(refused.statusCode, refused.body).toBe(400);
+    const restored = await app.inject({ method: 'POST', url: `${url}?source=local`, headers, payload: { version: 6 } });
+    expect(restored.statusCode, restored.body).toBe(200);
+    expect(restored.json()).toMatchObject({ title: 'Local six', version: 7, pushedToConfluence: enabled });
+    expect(confluenceRequests.map(({ method }) => method)).toEqual(enabled ? ['PUT'] : []);
+    expect((await query(
+      'SELECT source, title FROM page_versions WHERE page_id = $1 AND version_number = 6 ORDER BY source', [pageId],
+    )).rows).toEqual([{ source: 'confluence', title: 'Current title' }, { source: 'local', title: 'Local six' }]);
+  });
+
   it('answers an unreadable private or out-of-space page exactly like a missing one', async () => {
     const privatePageId = await seedPage();
     await query(
@@ -475,9 +541,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     expect(missing.statusCode).toBe(404);
   });
 
-  it('produces a semantic diff through the configured external HTTP provider and snapshots the live version', async () => {
+  it('compares historical and live content through the configured HTTP provider without snapshotting the live row', async () => {
     const pageId = await seedPage({ version: 3, bodyHtml: '<p>Expanded introduction</p>', bodyText: 'Expanded introduction' });
     await seedVersion(pageId, 1, 'First title', '<p>Short introduction</p>', 'Short introduction');
+    await seedVersion(pageId, 1, 'Provider title', '<p>Different provider text</p>', 'Different provider text', {
+      source: 'confluence',
+    });
     const provider = await query<{ id: string }>(
       `INSERT INTO llm_providers
          (name, base_url, auth_type, verify_ssl, is_default, default_model)
@@ -497,24 +566,33 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       method: 'POST',
       url: `/api/pages/${pageId}/versions/semantic-diff`,
       headers: { 'x-test-user': userId },
-      payload: { v1: 1, v2: 3 },
+      payload: { v1: { versionNumber: 1, source: 'local' }, v2: { versionNumber: 3, source: 'local' } },
     });
 
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toEqual({
       diff: '- The introduction was expanded.',
-      v1: 1,
-      v2: 3,
+      v1: { versionNumber: 1, source: 'local' },
+      v2: { versionNumber: 3, source: 'local' },
       pageId: String(pageId),
     });
     expect(llmRequests).toHaveLength(1);
     expect(llmRequests[0]).toMatchObject({ model: 'diff-model' });
     expect(JSON.stringify(llmRequests[0])).toContain('Short introduction');
     expect(JSON.stringify(llmRequests[0])).toContain('Expanded introduction');
+    const siblings = await app.inject({
+      method: 'POST', url: `/api/pages/${pageId}/versions/semantic-diff`,
+      headers: { 'x-test-user': userId },
+      payload: { v1: { versionNumber: 1, source: 'local' }, v2: { versionNumber: 1, source: 'confluence' } },
+    });
+    expect(siblings.statusCode, siblings.body).toBe(200);
+    expect(JSON.stringify(llmRequests[1])).toContain('Short introduction');
+    expect(JSON.stringify(llmRequests[1])).toContain('Different provider text');
+
     expect((await query(
       'SELECT version_number, body_html FROM page_versions WHERE page_id = $1 AND version_number = 3',
       [pageId],
-    )).rows).toEqual([{ version_number: 3, body_html: '<p>Expanded introduction</p>' }]);
+    )).rows).toEqual([]);
   });
 
   it('restores a standalone snapshot transactionally and records the superseded state and audit', async () => {
@@ -706,7 +784,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/4/restore`,
+      url: `/api/pages/${pageId}/versions/4/restore?source=confluence`,
       headers: { 'x-test-user': userId },
       payload: { version: 6 },
     });
@@ -745,7 +823,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     await seedVersion(pageId, 4, 'v4', null, null);
     historicalStorage = '<p>Can be fetched</p>';
     const response = await app.inject({
-      method: 'POST', url: `/api/pages/${pageId}/versions/4/restore`,
+      method: 'POST', url: `/api/pages/${pageId}/versions/4/restore?source=confluence`,
       headers: { 'x-test-user': userId }, payload: { version: 6 },
     });
     expect(response.statusCode, response.body).toBe(409);
@@ -767,7 +845,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
     const stale = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/4/restore`,
+      url: `/api/pages/${pageId}/versions/4/restore?source=confluence`,
       headers: { 'x-test-user': userId },
       payload: { version: 5 },
     });
@@ -792,7 +870,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       await lockPageLifecycle(blocker, [pageId]);
       const pending = app.inject({
         method: 'POST',
-        url: `/api/pages/${pageId}/versions/6/restore`,
+        url: `/api/pages/${pageId}/versions/6/restore?source=confluence`,
         headers: { 'x-test-user': userId },
         payload: { version: 7 },
       });
@@ -836,7 +914,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/1/restore`,
+      url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
       headers: { 'x-test-user': userId },
       payload: { version: 3 },
     });
@@ -910,7 +988,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/1/restore`,
+      url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
       headers: { 'x-test-user': userId },
       payload: { version: 3 },
     });
@@ -965,7 +1043,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/1/restore`,
+      url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
       headers: { 'x-test-user': userId },
       payload: { version: 3 },
     });
@@ -1007,7 +1085,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
       const response = await app.inject({
         method: 'POST',
-        url: `/api/pages/${pageId}/versions/1/restore`,
+        url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
         headers: { 'x-test-user': userId },
         payload: { version: 3 },
       });
@@ -1048,14 +1126,15 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       bodyHtml: '<p>Live compact body</p>',
       bodyText: 'Live compact body',
     });
-    await seedVersion(pageId, 1, 'Compact historical', '<p>Compact restored body</p>', 'Compact restored body');
+    await seedVersion(pageId, 1, 'Wrong provider snapshot', '<p>Wrong provider body</p>', 'Wrong provider body');
+    await seedVersion(pageId, 1, 'Compact historical', '<p>Compact restored body</p>', 'Compact restored body', { source: 'local' });
     await query('UPDATE pages SET remote_version = 2 WHERE id = $1', [pageId]);
     compactPutReply = true;
     readbackStatus = 403;
 
     const response = await app.inject({
       method: 'POST',
-      url: `/api/pages/${pageId}/versions/1/restore`,
+      url: `/api/pages/${pageId}/versions/1/restore?source=local`,
       headers: { 'x-test-user': userId },
       payload: { version: 3 },
     });
@@ -1114,7 +1193,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     }]);
     expect((await query(
       `SELECT title, body_html, body_text
-         FROM page_versions WHERE page_id = $1 AND version_number = 3`,
+         FROM page_versions WHERE page_id = $1 AND version_number = 3 AND source = 'local'`,
       [pageId],
     )).rows).toEqual([{
       title: 'Live compact title',
@@ -1141,7 +1220,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     try {
       const pending = app.inject({
         method: 'POST',
-        url: `/api/pages/${pageId}/versions/1/restore`,
+        url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
         headers: { 'x-test-user': userId },
         payload: { version: 3 },
       });
@@ -1189,7 +1268,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     try {
       const pending = app.inject({
         method: 'POST',
-        url: `/api/pages/${pageId}/versions/1/restore`,
+        url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
         headers: { 'x-test-user': userId },
         payload: { version: 3 },
       });
@@ -1302,7 +1381,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     async function restore(pageId: number) {
       return app.inject({
         method: 'POST',
-        url: `/api/pages/${pageId}/versions/1/restore`,
+        url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
         headers: { 'x-test-user': userId },
         payload: { version: 3 },
       });

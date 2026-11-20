@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Version History distinguishes Local and Confluence versions that share a number. Preview, comparison, and restore use the source shown next to the version (#1918).
+
 - Confluence publishing uses the last observed provider version even after local edits advanced the Compendiq revision (#1918). A fetch heals legacy counters in either direction.
 
 - **Confluence reader removals propagate without a page edit (#1919).** With Enterprise per-page RAG permission enforcement enabled, sync periodically re-reads restrictions on already restricted pages. Successful reads remove stale grants from page views, search and RAG, and failed reads preserve the last mirror. The default interval is 24 hours, configurable with `RESTRICTION_REFRESH_INTERVAL_HOURS`.

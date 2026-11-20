@@ -237,7 +237,8 @@ sequenceDiagram
   snapshot or storage error rolls back the overwrite, counts the page as failed,
   and leaves it for the next walk. `SYNC_OVERWROTE_LOCAL_EDITS` is written after
   commit and before collaborative reconciliation. The superseded version
-  appears in Version History once the local counter moves past it. Routine updates
+  appears in Version History when its source and number differ from the live
+  identity. Routine updates
   save history on a best-effort basis, including when a local save left the
   title and body equal to the incoming version.
   A kept or queued row records the upstream number. While the bodies differ,
@@ -358,10 +359,9 @@ Callers:
     `version = GREATEST(version, upstream)`.
     When Confluence is ahead of the local number the snapshot is ordinary
     history below the live version. When Confluence is behind or at the same
-    number, the snapshot shares the live version number, and Version History
-    — which shows that number as the current version — does not list or serve
-    it until the page's version moves on. The row stays readable in
-    `page_versions` meanwhile. Source-qualified reads are a later #1918 slice.
+    number, the snapshot can share the live number. Version History hides it
+    when it also shares the live source. The final inbound snapshot namespace
+    and version advance are the remaining #1918 overwrite work.
   - One `sync_run_id` per request stamps queued rows and audit metadata, and
     the audits carry the requesting user. Every committed outcome — kept,
     queued and held included — counts as `succeeded`; the
@@ -722,11 +722,20 @@ The `edited_at` column holds the real Confluence edit timestamp; the existing
 shows `edited_at` directly when present, and falls back to "Synced <syncedAt>"
 to make clear the displayed time is a sync time, not the author's edit time (#724).
 
-Until the history API accepts a source parameter, numeric reads prefer the
-page's current namespace and fall back to the other namespace for older
-history retained across relocation. Migration 157 seeds `remote_version`,
-and migration 158 covers intervening rows and preserves both counters for
-relocation recovery.
+Version History shows the current row first, then snapshots in descending
+`COALESCE(edited_at, synced_at)` order, with version number descending and
+source ascending as tie-breakers. The live identity is `(confluence,
+remote_version)` when both counters match and `local_modified_at` is NULL on
+a Confluence page. Other live rows use `(local, version)`. The list hides
+only a stored snapshot with the exact live identity.
+
+Use `?source=local` or `?source=confluence` on detail and restore requests.
+Confluence pages require it, and standalone pages default to Local. A
+semantic diff takes two `{ source, versionNumber }` references as `v1` and
+`v2`. It compares live bytes directly under the AI admission fence and pins
+historical inputs to their saved snapshot IDs and digests. A Confluence
+restore journals the selected source for crash recovery. Legacy pending
+intents still look up the earlier numeric target.
 
 A restore keeps the live title when the stored title is exactly `vN` for
 the target's version number `N`. This applies to local restores and to the
