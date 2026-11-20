@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { isVersionPlaceholderTitle } from '../../core/services/version-snapshot.js';
+import { isVersionPlaceholderTitle, snapshotSourceForPage } from '../../core/services/version-snapshot.js';
 import {
   getVersionHistory,
   getVersion,
@@ -374,7 +374,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     // #722: Lazy-fetch the historical body from Confluence if we stored only metadata.
     let { bodyHtml, bodyText } = pageVersion;
-    if (bodyHtml === null && ctx.confluenceId) {
+    if (bodyHtml === null && pageVersion.source === 'confluence' && ctx.confluenceId) {
       try {
         const client = await getClientForUser(userId);
         if (client) {
@@ -428,7 +428,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     if (current.rows.length > 0) {
       const row = current.rows[0]!;
       // Ensure current version exists in page_versions for comparison
-      await saveVersionSnapshotByPageId(ctx.id, row.version, row.title, row.body_html, row.body_text);
+      await saveVersionSnapshotByPageId(ctx.id, row.version, row.title, row.body_html, row.body_text, snapshotSourceForPage(ctx.source));
     }
 
     // #722/#724: pass the Confluence client so getSemanticDiff can lazily fetch
@@ -484,11 +484,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // Metadata-only history rows may be filled by a remote READ. Analysis and
     // historical reads remain available while frozen; no authored state is
     // mutated here, and restore admission still happens before any remote write.
-    const targetBody = await query<{ body_html: string | null }>(
-      'SELECT body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
-      [ctx.id, targetVersion],
-    );
-    if (targetBody.rows[0]?.body_html === null && ctx.confluenceId) {
+    const targetBody = await getVersion(ctx.id, targetVersion);
+    if (targetBody?.bodyHtml === null && targetBody.source === 'confluence' && ctx.confluenceId) {
       const historyClient = await getClientForUser(userId);
       if (historyClient) {
         await getHistoricalBody(ctx.id, ctx.confluenceId, targetVersion, historyClient);
@@ -534,15 +531,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.badRequest('Confluence not configured');
       }
 
-      const intendedTarget = await query<{ title: string; body_html: string | null }>(
-        'SELECT title, body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
-        [ctx.id, targetVersion],
-      );
-      const intendedHistorical = intendedTarget.rows[0];
+      const intendedHistorical = await getVersion(ctx.id, targetVersion);
       if (!intendedHistorical) {
         throw fastify.httpErrors.notFound(`Version ${targetVersion} not found`);
       }
-      if (intendedHistorical.body_html === null) {
+      if (intendedHistorical.bodyHtml === null) {
         throw fastify.httpErrors.conflict('Historical version body is unavailable');
       }
       // #1751: tasks keep the ids Confluence has, as publication re-derives
@@ -551,7 +544,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         'SELECT body_storage, body_html FROM pages WHERE id = $1',
         [ctx.id],
       );
-      const storageBody = htmlToConfluence(intendedHistorical.body_html, {
+      const storageBody = htmlToConfluence(intendedHistorical.bodyHtml, {
         previousStorage: current.rows[0]?.body_storage,
         legacyTasks: hasOnlyUncarriedTasks(current.rows[0]?.body_html),
       });
@@ -597,16 +590,13 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
           if (targetVersion === ctx.version) {
             throw new PageWriteError(400, 'current_version', 'Cannot restore the current version');
           }
-          const target = await lockedClient.query<{ title: string; body_html: string | null }>(
-            'SELECT title, body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
-            [ctx.id, targetVersion],
-          );
-          const historical = target.rows[0];
+          const historical = await getVersion(ctx.id, targetVersion, { client: lockedClient });
           // Compare both stored values even when two different titles would
           // produce the same effective title.
           if (
             !historical ||
-            historical.body_html !== intendedHistorical.body_html ||
+            historical.source !== intendedHistorical.source ||
+            historical.bodyHtml !== intendedHistorical.bodyHtml ||
             historical.title !== intendedHistorical.title
           ) {
             throw new PageWriteError(

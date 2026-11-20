@@ -110,7 +110,8 @@ erDiagram
         text body_storage "XHTML"
         text body_html
         text body_text
-        int version
+        int version "local revision counter"
+        int remote_version "nullable; backfilled by migration 157"
         text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
         text notion_page_id "live standalone import binding; successful relocation clears; legacy CF compensation metadata is ignored"
@@ -173,6 +174,7 @@ erDiagram
     page_versions {
         uuid id PK
         int page_id FK "universal FK since migration 030"
+        text source "local | confluence"
         int version_number
         text title
         text body_html
@@ -912,7 +914,7 @@ allows only FK-driven nulling of `page_id`, actor IDs and
 The live page points to the active baseline with `ON DELETE RESTRICT`.
 `version_snapshot_id` is only a locator: publication inserts
 `page_versions` with `ON CONFLICT DO NOTHING`, then links it only if the
-existing same-version title/body are byte-equivalent. It never overwrites an
+existing title/body at the same version in the `local` namespace are byte-equivalent. It never overwrites an
 older snapshot, and the baseline remains authoritative when no link can be
 made.
 
@@ -1479,7 +1481,13 @@ together, which matters most for #1114's query-side prefix.
   daily maintenance job; dependent rows go via `ON DELETE CASCADE`).
   Confluence-synced pages have their own purge in `sync-service.ts`
   (`purgeDeletedPages`, with upstream re-confirmation — see 08-flow-sync).
-- **Version history & restore** (`page_versions`, keyed by `page_id`). Snapshots
+- **Version history & restore** (`page_versions`, unique on
+  `(page_id, source, version_number)`). Migration 157 labels existing history
+  by its page's current provenance and backfills `pages.remote_version`
+  from `version` for Confluence pages. Snapshot UUIDs and baseline links are
+  preserved. `remote_version` is outside the protected content columns.
+  Retention ranks both sources together per page by edit time or sync time.
+  Snapshots
   are written on sync, on draft-publish, and before a restore — so both
   Confluence-synced and standalone/local pages accumulate history. The
   right-pane "Version history" UI lists snapshots + the live version, previews

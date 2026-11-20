@@ -675,7 +675,7 @@ during the regular sync — only the latest body and version number are written.
 Full version list import is **lazy-on-open**: when a user opens the Version History
 dialog, `GET /api/pages/:id/versions` calls `backfillVersionHistory` which hits
 `GET /rest/experimental/content/{id}/version?expand=by,message` and upserts each row
-into `page_versions` via `upsertVersionMetadata`. A new row has a `vN` title
+into the `confluence` namespace of `page_versions` via `upsertVersionMetadata`. A new row has a `vN` title
 and no body. On conflict, the import fills missing edit time, author, and
 message fields while preserving the existing title and body (#2038).
 The experimental path is the only one Confluence **Data Center**
@@ -705,6 +705,12 @@ The `edited_at` column holds the real Confluence edit timestamp; the existing
 `synced_at` column records when Compendiq last ingested the row. The frontend
 shows `edited_at` directly when present, and falls back to "Synced <syncedAt>"
 to make clear the displayed time is a sync time, not the author's edit time (#724).
+
+Until the history API accepts a source parameter, numeric reads prefer the
+page's current namespace and fall back to the other namespace for older
+history retained across relocation. Migration 157 seeds a nullable
+`remote_version` column for Confluence pages. Sync and publish still use
+the existing `pages.version` counter in this slice.
 
 A restore keeps the live title when the stored title is exactly `vN` for
 the target's version number `N`. This applies to local restores and to the

@@ -406,8 +406,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     await standaloneEdit(xId, X.title, X.edit);
     await setPolicy('confluence-wins');
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 6, $2, $3, $4)`,
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'confluence', 6, $2, $3, $4)`,
       [xId, title, html, htmlToText(html)],
     );
 

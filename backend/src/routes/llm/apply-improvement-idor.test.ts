@@ -295,8 +295,8 @@ describe.skipIf(!dbAvailable)('POST /api/llm/improvements/apply — standalone p
   it('rejects restoring a historical snapshot over a frozen page', async () => {
     const pageId = await createStandalonePage({ ownerId: owner.userId, visibility: 'private' });
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
-       VALUES ($1, 2, 'Historical', '<p>Historical</p>', 'Historical')`,
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+       VALUES ($1, 'local', 2, 'Historical', '<p>Historical</p>', 'Historical')`,
       [pageId],
     );
     await freezePage(pageId, owner.userId);

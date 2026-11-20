@@ -313,8 +313,8 @@ describe('#1739 real page-ID route boundaries', () => {
 
   async function seedHistory(page: Page, title = 'Historical target', marker = 'Historical target body') {
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at, edited_at, author, message)
-       VALUES ($1, 1, $2, $3, $4, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', 'Fixture author', 'Fixture history')`,
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at, edited_at, author, message)
+       VALUES ($1, (SELECT CASE WHEN source = 'confluence' THEN 'confluence' ELSE 'local' END FROM pages WHERE id = $1), 1, $2, $3, $4, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', 'Fixture author', 'Fixture history')`,
       [page.id, title, `<p>${marker}</p>`, marker],
     );
   }

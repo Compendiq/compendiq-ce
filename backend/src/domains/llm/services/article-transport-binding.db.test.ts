@@ -59,10 +59,10 @@ describe.skipIf(!available)('article transport concrete binding', () => {
       await expect(generateEmbedding(config, 'm', 'article bytes', context)).resolves.toEqual([[1, 2]]);
       expect(sent).toBe(1);
       const version = await query<{ id: string }>(
-        "INSERT INTO page_versions (page_id, version_number, title, body_html, body_text) VALUES ($1, 1, 'Old', '<p>old</p>', 'old') RETURNING id", [page.id],
+        "INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text) VALUES ($1, 'local', 1, 'Old', '<p>old</p>', 'old') RETURNING id", [page.id],
       );
       context.stage.context.historicalVersions = [{ pageId: page.id, versionId: version.rows[0]!.id,
-        versionNumber: 1, digest: historicalVersionDigest('Old', '<p>old</p>', 'old') }];
+        versionNumber: 1, source: 'local', digest: historicalVersionDigest('Old', '<p>old</p>', 'old') }];
       await query("UPDATE page_versions SET body_html = '<p>replacement</p>' WHERE id = $1", [version.rows[0]!.id]);
       await expect(generateEmbedding(config, 'm', 'old historical bytes', context)).rejects.toThrow();
       expect(sent).toBe(1);

@@ -75,8 +75,8 @@ describe.skipIf(!canRun)('page version restore production error contract', () =>
     const pageId = page.rows[0]!.id;
     await query(
       `INSERT INTO page_versions
-         (page_id, version_number, title, body_html, body_text, synced_at)
-       VALUES ($1, 1, 'Version one', '<p>version one</p>', 'version one', NOW())`,
+         (page_id, source, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 'local', 1, 'Version one', '<p>version one</p>', 'version one', NOW())`,
       [pageId],
     );
 

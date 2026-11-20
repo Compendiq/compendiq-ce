@@ -287,7 +287,8 @@ export async function publishConfluencePagePut(
     }>(
       `SELECT title, body_html
          FROM page_versions
-        WHERE page_id = $1 AND version_number = $2`,
+        WHERE page_id = $1 AND version_number = $2
+        ORDER BY (source = 'confluence') DESC LIMIT 1`,
       [publication.pageId, publication.targetVersion],
     );
     const target = targetResult.rows[0];
@@ -318,9 +319,9 @@ export async function publishConfluencePagePut(
     }
 
     const inserted = await dbClient.query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (page_id, version_number) DO NOTHING
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 'confluence', $2, $3, $4, $5, NOW())
+       ON CONFLICT (page_id, source, version_number) DO NOTHING
        RETURNING id`,
       [publication.pageId, page.version, page.title, page.body_html, page.body_text],
     );
@@ -329,7 +330,7 @@ export async function publishConfluencePagePut(
       // Lock the history row before checking its title so a concurrent body
       // fill or snapshot write cannot change which row we are completing.
       const existing = await dbClient.query<{ title: string }>(
-        `SELECT title FROM page_versions WHERE page_id = $1 AND version_number = $2 FOR UPDATE`,
+        `SELECT title FROM page_versions WHERE page_id = $1 AND source = 'confluence' AND version_number = $2 FOR UPDATE`,
         [publication.pageId, page.version],
       );
       const existingTitle = existing.rows[0]?.title;
@@ -341,6 +342,7 @@ export async function publishConfluencePagePut(
                 body_text = COALESCE(body_text, $5),
                 synced_at = COALESCE(synced_at, NOW())
           WHERE page_id = $1
+            AND source = 'confluence'
             AND version_number = $2
             AND (title = $3 OR ($6::boolean AND body_html IS NULL))
             AND (body_html IS NULL OR body_html = $4)

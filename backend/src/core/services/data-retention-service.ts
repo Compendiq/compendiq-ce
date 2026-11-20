@@ -135,7 +135,10 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
       DELETE FROM page_versions pv
        WHERE pv.id IN (
          SELECT id FROM (
-           SELECT id, ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY version_number DESC) AS rn
+           SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY page_id
+             ORDER BY COALESCE(edited_at, synced_at) DESC NULLS LAST, version_number DESC, source DESC
+           ) AS rn
              FROM page_versions
          ) ranked WHERE rn > $1
        )

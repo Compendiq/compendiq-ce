@@ -1121,8 +1121,8 @@ async function run() {
         await client.query(`UPDATE pages SET path = $1 WHERE id = $2`, [`/${topicPageId}`, topicPageId]);
 
         await client.query(
-          `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, author, message)
-           VALUES ($1, 1, $2, $3, $4, 'System Seed', 'Initial creation of topic overview page')`,
+          `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, author, message)
+           VALUES ($1, 'local', 1, $2, $3, $4, 'System Seed', 'Initial creation of topic overview page')`,
           [topicPageId, topic.title, topicHtml, topicText]
         );
 
@@ -1158,8 +1158,8 @@ async function run() {
           await client.query(`UPDATE pages SET path = $1 WHERE id = $2`, [`/${topicPageId}/${subPageId}`, subPageId]);
 
           await client.query(
-            `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, author, message)
-             VALUES ($1, 1, $2, $3, $4, 'System Seed', 'Initial creation of technical article')`,
+            `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, author, message)
+             VALUES ($1, 'local', 1, $2, $3, $4, 'System Seed', 'Initial creation of technical article')`,
             [subPageId, article.title, articleHtml, articleText]
           );
 

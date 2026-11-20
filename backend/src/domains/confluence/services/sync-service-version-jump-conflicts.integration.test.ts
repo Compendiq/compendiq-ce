@@ -240,8 +240,8 @@ async function snapshots(pageId: number) {
 
 async function seedHistory(pageId: number, version: number, title: string, html: string | null, text: string | null) {
   const result = await query<{ id: string }>(
-    `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
-     VALUES ($1, $2, $3, $4, $5, '2020-01-01T00:00:00Z') RETURNING id`,
+    `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
+     VALUES ($1, 'confluence', $2, $3, $4, $5, '2020-01-01T00:00:00Z') RETURNING id`,
     [pageId, version, title, html, text],
   );
   return result.rows[0]!.id;

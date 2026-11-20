@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
+import type { PageVersionSource } from '../../../core/services/version-snapshot.js';
 import { getPool } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { AI_POLICY_LOCK_NAMESPACE } from '../../../core/services/ai-policy-service.js';
@@ -84,7 +85,7 @@ export interface ArticleStageContext {
   /** Caller intent only; the held-client resolver validates saved authority. */
   modelSelection?: import('./llm-provider-resolver.js').ArticleModelSelection;
   /** Server-read historical inputs, never a client-supplied source list. */
-  historicalVersions?: { pageId: number; versionId: string; versionNumber: number; digest: string }[];
+  historicalVersions?: { pageId: number; versionId: string; versionNumber: number; source: PageVersionSource; digest: string }[];
   operation: AiOperationContext;
   stage: string;
   attempt: number;
@@ -171,8 +172,8 @@ export async function admitArticleStage(
           || !Number.isSafeInteger(version.versionNumber) || version.versionNumber < 1
           || !/^[a-f0-9]{64}$/.test(version.digest)) throw new ArticleStageRefusedError();
         const saved = await client.query<{ title: string; body_html: string | null; body_text: string | null }>(
-          'SELECT title, body_html, body_text FROM page_versions WHERE id::text = $1 AND page_id = $2 AND version_number = $3 FOR SHARE',
-          [version.versionId, version.pageId, version.versionNumber],
+          'SELECT title, body_html, body_text FROM page_versions WHERE id::text = $1 AND page_id = $2 AND version_number = $3 AND source = $4 FOR SHARE',
+          [version.versionId, version.pageId, version.versionNumber, version.source],
         );
         const row = saved.rows[0];
         if (!row || historicalVersionDigest(row.title, row.body_html, row.body_text) !== version.digest) {

@@ -1287,9 +1287,9 @@ describe.skipIf(!canRun)('competing writers 409 while room live (#1445)', () => 
       bodyHtml: '<p>live-room</p>',
     });
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
-       VALUES ($1, 1, 'Collab page', '<p>old</p>', 'old', NOW())
-       ON CONFLICT (page_id, version_number) DO NOTHING`,
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 'local', 1, 'Collab page', '<p>old</p>', 'old', NOW())
+       ON CONFLICT (page_id, source, version_number) DO NOTHING`,
       [pageId],
     );
     await query(
@@ -1297,9 +1297,9 @@ describe.skipIf(!canRun)('competing writers 409 while room live (#1445)', () => 
       [pageId],
     );
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
-       VALUES ($1, 2, 'Collab page', '<p>live-room</p>', 'live-room', NOW())
-       ON CONFLICT (page_id, version_number) DO NOTHING`,
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 'local', 2, 'Collab page', '<p>live-room</p>', 'live-room', NOW())
+       ON CONFLICT (page_id, source, version_number) DO NOTHING`,
       [pageId],
     );
     await enableCollabFlag();
@@ -1408,8 +1408,8 @@ describe.skipIf(!canRun)('competing writers 409 while room live (#1445)', () => 
     });
     await query(`UPDATE pages SET version = 2 WHERE id = $1`, [restoreId]);
     await query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
-       VALUES ($1, 1, 'Collab page', '<p>old</p>', 'old', NOW())`,
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, 'local', 1, 'Collab page', '<p>old</p>', 'old', NOW())`,
       [restoreId],
     );
     await seedBytea(restoreId);

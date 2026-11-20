@@ -138,8 +138,8 @@ async function seedCorpus(): Promise<SeededCorpus> {
   const confPageId = conf.rows[0]!.id;
 
   await query(
-    `INSERT INTO page_versions (page_id, version_number, title, body_html)
-     VALUES ($1, 1, 'Conf v1', '<p><img src="/api/attachments/90001/version-kept.png"></p>')`,
+    `INSERT INTO page_versions (page_id, source, version_number, title, body_html)
+     VALUES ($1, 'confluence', 1, 'Conf v1', '<p><img src="/api/attachments/90001/version-kept.png"></p>')`,
     [confPageId],
   );
   await query(
@@ -336,8 +336,8 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const { confPageId } = await seedCorpus();
       // KEEP_SET_BATCH is 200; 250 rows forces a second and third page.
       await query(
-        `INSERT INTO page_versions (page_id, version_number, title, body_html)
-         SELECT $1, 100 + g, 'bulk', '<p><img src="/api/attachments/90001/bulk-' || g || '.png"></p>'
+        `INSERT INTO page_versions (page_id, source, version_number, title, body_html)
+         SELECT $1, 'confluence', 100 + g, 'bulk', '<p><img src="/api/attachments/90001/bulk-' || g || '.png"></p>'
            FROM generate_series(1, 250) g`,
         [confPageId],
       );

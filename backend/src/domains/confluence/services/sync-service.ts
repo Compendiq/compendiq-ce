@@ -1051,7 +1051,7 @@ async function syncPage(
       } else if (locked) {
         if (overwritesLocalEdit) {
           try {
-            await snapshotLocalVersionBeforeOverwrite(txClient, locked);
+            await snapshotLocalVersionBeforeOverwrite(txClient, locked, 'confluence');
           } catch (err) {
             logger.warn(
               { err, pageId: page.id, localVersion: locked.version,
@@ -1205,7 +1205,7 @@ async function syncPage(
     // row that moved during attachment download leaves no spurious snapshot.
     if (versionJumpDecision && !overwritesLocalEdit) {
       const prior = versionJumpDecision.row;
-      await saveVersionSnapshotByPageId(prior.id, prior.version, prior.title, prior.body_html, prior.body_text);
+      await saveVersionSnapshotByPageId(prior.id, prior.version, prior.title, prior.body_html, prior.body_text, 'confluence');
     }
     // #1772: SYNC_OVERWROTE_LOCAL_EDITS iff this upsert replaced a local edit
     // the policy let the incoming version win over. Written before the collab

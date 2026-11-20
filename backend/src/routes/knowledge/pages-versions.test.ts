@@ -304,8 +304,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
   ): Promise<void> {
     await query(
       `INSERT INTO page_versions
-         (page_id, version_number, title, body_html, body_text, synced_at, edited_at, author, message)
-       VALUES ($1, $2, $3, $4, $5, '2026-03-02T12:00:00Z', $6, $7, $8)`,
+         (page_id, source, version_number, title, body_html, body_text, synced_at, edited_at, author, message)
+       VALUES ($1, (SELECT CASE WHEN source = 'confluence' THEN 'confluence' ELSE 'local' END FROM pages WHERE id = $1), $2, $3, $4, $5, '2026-03-02T12:00:00Z', $6, $7, $8)`,
       [
         pageId,
         versionNumber,

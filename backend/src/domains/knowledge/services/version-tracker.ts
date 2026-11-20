@@ -11,7 +11,7 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { getHistoricalBody } from '../../confluence/services/version-backfill.js';
 import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
 import { PageWriteError } from '../../../core/services/page-write-admission.js';
-import { isVersionPlaceholderTitle } from '../../../core/services/version-snapshot.js';
+import { isVersionPlaceholderTitle, snapshotSourceForPage, type PageVersionSource } from '../../../core/services/version-snapshot.js';
 
 // Re-export from core so existing consumers keep working
 export { saveVersionSnapshot, saveVersionSnapshotByPageId } from '../../../core/services/version-snapshot.js';
@@ -21,6 +21,7 @@ interface PageVersion {
   pageId: number;
   confluenceId: string | null;
   versionNumber: number;
+  source: PageVersionSource;
   title: string;
   bodyHtml: string | null;
   bodyText: string | null;
@@ -29,6 +30,10 @@ interface PageVersion {
   author: string | null;
   message: string | null;
 }
+
+// The numeric API selects one row per number until it accepts a namespace.
+// Prefer the page's current namespace and keep older history across relocation.
+const PREFERRED_VERSION_SOURCE = `CASE WHEN p.source = 'confluence' THEN 'confluence' ELSE 'local' END`;
 
 /**
  * Get version history for a page, keyed by the internal integer `page_id`.
@@ -46,19 +51,21 @@ export async function getVersionHistory(
     page_id: number;
     confluence_id: string | null;
     version_number: number;
+    source: PageVersionSource;
     title: string;
     synced_at: Date;
     edited_at: Date | null;
     author: string | null;
     message: string | null;
   }>(
-    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.synced_at,
+    `SELECT DISTINCT ON (pv.version_number)
+            pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.source, pv.title, pv.synced_at,
             pv.edited_at, pv.author, pv.message
      FROM page_versions pv
      JOIN pages p ON pv.page_id = p.id
      WHERE pv.page_id = $1
        AND p.deleted_at IS NULL
-     ORDER BY pv.version_number DESC`,
+     ORDER BY pv.version_number DESC, (pv.source = ${PREFERRED_VERSION_SOURCE}) DESC`,
     [pageId],
   );
 
@@ -67,6 +74,7 @@ export async function getVersionHistory(
     pageId: row.page_id,
     confluenceId: row.confluence_id,
     versionNumber: row.version_number,
+    source: row.source,
     title: row.title,
     syncedAt: row.synced_at,
     editedAt: row.edited_at ?? null,
@@ -82,12 +90,15 @@ export async function getVersionHistory(
 export async function getVersion(
   pageId: number,
   versionNumber: number,
+  { source, client }: { source?: PageVersionSource; client?: PoolClient } = {},
 ): Promise<PageVersion | null> {
-  const result = await query<{
+  const readQuery: typeof query = client ? client.query.bind(client) : query;
+  const result = await readQuery<{
     id: string;
     page_id: number;
     confluence_id: string | null;
     version_number: number;
+    source: PageVersionSource;
     title: string;
     body_html: string | null;
     body_text: string | null;
@@ -96,14 +107,16 @@ export async function getVersion(
     author: string | null;
     message: string | null;
   }>(
-    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text,
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.source, pv.title, pv.body_html, pv.body_text,
             pv.synced_at, pv.edited_at, pv.author, pv.message
      FROM page_versions pv
      JOIN pages p ON pv.page_id = p.id
      WHERE pv.page_id = $1
        AND p.deleted_at IS NULL
-       AND pv.version_number = $2`,
-    [pageId, versionNumber],
+       AND pv.version_number = $2
+       AND ($3::text IS NULL OR pv.source = $3)
+     ORDER BY (pv.source = ${PREFERRED_VERSION_SOURCE}) DESC LIMIT 1`,
+    [pageId, versionNumber, source ?? null],
   );
 
   if (result.rows.length === 0) return null;
@@ -114,6 +127,7 @@ export async function getVersion(
     pageId: row.page_id,
     confluenceId: row.confluence_id,
     versionNumber: row.version_number,
+    source: row.source,
     title: row.title,
     bodyHtml: row.body_html,
     bodyText: row.body_text,
@@ -189,8 +203,9 @@ export async function restoreVersion(
       title: string;
       body_html: string | null;
       body_text: string | null;
+      source: string;
     }>(
-      `SELECT version, title, body_html, body_text
+      `SELECT version, title, body_html, body_text, source
        FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
       [pageId],
     );
@@ -208,24 +223,15 @@ export async function restoreVersion(
       );
     }
 
-    const targetRes = await txClient.query<{
-      title: string;
-      body_html: string | null;
-      body_text: string | null;
-    }>(
-      `SELECT title, body_html, body_text
-       FROM page_versions WHERE page_id = $1 AND version_number = $2`,
-      [pageId, targetVersion],
-    );
-    if (targetRes.rows.length === 0) {
+    const target = await getVersion(pageId, targetVersion, { client: txClient });
+    if (!target) {
       if (ownsTransaction) await txClient.query('ROLLBACK');
       return null;
     }
-    const target = targetRes.rows[0]!;
 
     // Backfilled rows are metadata-only until lazily fetched. Never blank a
     // live page or push an empty body upstream.
-    if (target.body_html === null) {
+    if (target.bodyHtml === null) {
       if (ownsTransaction) await txClient.query('ROLLBACK');
       throw new Error(
         `Cannot restore version ${targetVersion} of page ${pageId}: historical body is unavailable (not yet fetched from Confluence).`,
@@ -235,15 +241,15 @@ export async function restoreVersion(
     // Ordinary history only. Never overwrite a same-version row: it may differ
     // from the current payload, and the immutable baseline remains authoritative.
     await txClient.query(
-      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (page_id, version_number) DO NOTHING`,
-      [pageId, live.version, live.title, live.body_html, live.body_text],
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
+       VALUES ($1, $6, $2, $3, $4, $5, NOW())
+       ON CONFLICT (page_id, source, version_number) DO NOTHING`,
+      [pageId, live.version, live.title, live.body_html, live.body_text, snapshotSourceForPage(live.source)],
     );
 
     const newVersion = live.version + 1;
     const restoredTitle = isVersionPlaceholderTitle(target.title, targetVersion) ? live.title : target.title;
-    const restoredBodyText = target.body_text ?? htmlToText(target.body_html);
+    const restoredBodyText = target.bodyText ?? htmlToText(target.bodyHtml);
     await txClient.query(
       `UPDATE pages SET
          title = $2, body_html = $3, body_text = $4,
@@ -261,7 +267,7 @@ export async function restoreVersion(
       [
         pageId,
         restoredTitle,
-        target.body_html,
+        target.bodyHtml,
         restoredBodyText,
         newVersion,
         options.actorId ?? null,
@@ -273,7 +279,7 @@ export async function restoreVersion(
       pageId,
       title: restoredTitle,
       newVersion,
-      bodyHtml: target.body_html,
+      bodyHtml: target.bodyHtml,
       bodyText: restoredBodyText,
     };
   } catch (err) {
@@ -300,7 +306,7 @@ async function resolveVersionBodyHtml(
   client?: ConfluenceClient | null,
 ): Promise<string | null> {
   if (version.bodyHtml !== null) return version.bodyHtml;
-  if (!confluenceId || !client) return version.bodyHtml;
+  if (version.source !== 'confluence' || !confluenceId || !client) return version.bodyHtml;
   try {
     const fetched = await getHistoricalBody(pageId, confluenceId, version.versionNumber, client);
     return fetched.bodyHtml;
@@ -384,14 +390,17 @@ ${sanitized2}`;
   // Reload after lazy fill and verify that the exact historical bytes used to
   // compose the prompt are still the saved snapshot. The dispatch repeats this
   // check after queue waits; live revisions alone cannot certify old versions.
-  const historical = await Promise.all([getVersion(pageId, v1), getVersion(pageId, v2)]);
+  const historical = await Promise.all([
+    getVersion(pageId, v1, { source: version1.source }),
+    getVersion(pageId, v2, { source: version2.source }),
+  ]);
   const inputs = [{ version: version1, body: body1 }, { version: version2, body: body2 }];
   const historicalVersions = inputs.map(({ version, body }, index) => {
     const saved = historical[index];
     if (!saved || saved.id !== version.id || saved.title !== version.title || saved.bodyHtml !== body
       || (body === null && saved.bodyText !== version.bodyText)
       || (saved.bodyHtml === null && saved.bodyText === null)) throw new ArticleStageRefusedError();
-    return { pageId, versionId: saved.id, versionNumber: saved.versionNumber,
+    return { pageId, versionId: saved.id, versionNumber: saved.versionNumber, source: saved.source,
       digest: historicalVersionDigest(saved.title, saved.bodyHtml, saved.bodyText) };
   });
   const transportContext: TransportContext = { kind: 'article', stage: {

@@ -262,7 +262,9 @@ async function createPage(opts: {
 async function addVersions(pageId: number, count: number): Promise<void> {
   for (let i = 1; i <= count; i++) {
     await query(
-      'INSERT INTO page_versions (page_id, version_number, title, body_html) VALUES ($1, $2, $3, $4)',
+      `INSERT INTO page_versions (page_id, source, version_number, title, body_html)
+       SELECT id, CASE WHEN source = 'confluence' THEN 'confluence' ELSE 'local' END, $2, $3, $4
+         FROM pages WHERE id = $1`,
       [pageId, i, `v${i}`, `<p>v${i}</p>`],
     );
   }

@@ -1296,9 +1296,9 @@ async function reconcileVersionSnapshot(
   baseline: BaselineRow,
 ): Promise<string | null> {
   await client.query(
-    `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (page_id, version_number) DO NOTHING`,
+    `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+     VALUES ($1, 'local', $2, $3, $4, $5)
+     ON CONFLICT (page_id, source, version_number) DO NOTHING`,
     [page.id, baseline.version, baseline.title, baseline.body_html, baseline.body_text],
   );
   const existing = await client.query<{
@@ -1308,7 +1308,7 @@ async function reconcileVersionSnapshot(
     body_text: string | null;
   }>(
     `SELECT id, title, body_html, body_text FROM page_versions
-      WHERE page_id = $1 AND version_number = $2`,
+      WHERE page_id = $1 AND source = 'local' AND version_number = $2`,
     [page.id, baseline.version],
   );
   const row = existing.rows[0];
