@@ -134,6 +134,7 @@ async function getPageRow(id: number): Promise<{
 }
 
 async function getPendingVersions(pageId: number): Promise<Array<{
+  title: string | null;
   body_html: string;
   body_text: string;
   body_storage: string;
@@ -141,13 +142,14 @@ async function getPendingVersions(pageId: number): Promise<Array<{
   sync_run_id: string;
 }>> {
   const r = await query<{
+    title: string | null;
     body_html: string;
     body_text: string;
     body_storage: string;
     confluence_version: number;
     sync_run_id: string;
   }>(
-    `SELECT body_html, body_text, body_storage, confluence_version, sync_run_id
+    `SELECT title, body_html, body_text, body_storage, confluence_version, sync_run_id
        FROM pending_sync_versions
       WHERE page_id = $1
       ORDER BY detected_at ASC`,
@@ -176,7 +178,7 @@ function makeArgs(overrides: Partial<Parameters<typeof __internal.applyConflictP
   return {
     confluenceId: 'c-100',
     confluenceVersion: 2,
-    pageDbTitle: 'Test Page',
+    title: 'Test Page',
     bodyStorage: 'INCOMING-STORAGE',
     bodyHtml: 'INCOMING-HTML',
     bodyText: 'INCOMING-TEXT',
@@ -386,7 +388,7 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
       withLocalEdit: true,
     });
 
-    const args = makeArgs({ confluenceId: 'c-300', confluenceVersion: 7 });
+    const args = makeArgs({ confluenceId: 'c-300', confluenceVersion: 7, title: 'Remote title' });
     await __internal.applyConflictPolicyForExistingPage(args);
 
     const row = await getPageRow(inserted.id);
@@ -400,6 +402,7 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
     const pending = await getPendingVersions(inserted.id);
     expect(pending).toHaveLength(1);
     expect(pending[0]).toMatchObject({
+      title: 'Remote title',
       body_html: 'INCOMING-HTML',
       body_text: 'INCOMING-TEXT',
       body_storage: 'INCOMING-STORAGE',
