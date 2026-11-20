@@ -173,7 +173,7 @@ async function pageUpdateAuditCount(pageId: number): Promise<number> {
   return Number(result.rows[0]!.count);
 }
 
-function acceptNextConfluenceUpdate(): void {
+function acceptNextConfluenceUpdate(expectedProviderVersion?: number): void {
   mockHttpRequest.mockImplementationOnce(async (url: string, options: Record<string, unknown>) => {
     lastConfluenceRequest = { url, options };
     const sent = JSON.parse(String(options.body)) as {
@@ -181,6 +181,9 @@ function acceptNextConfluenceUpdate(): void {
       version: { number: number };
       body: { storage: { value: string } };
     };
+    if (expectedProviderVersion !== undefined && sent.version.number !== expectedProviderVersion + 1) {
+      return { statusCode: 409, body: { text: async () => 'Confluence requires its next version' } } as never;
+    }
     return {
       statusCode: 200,
       headers: {},
@@ -398,9 +401,11 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(await readPage(pageId)).toMatchObject({ body_text: 'Old body', version: 5 });
     });
 
-    it('pushes production XHTML and commits the accepted body, exact improvement status, and audit row', async () => {
+    it.each([false, true])('pushes production XHTML and commits the improvement with divergent counters: %s', async (diverged) => {
       const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
-      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      const localVersion = diverged ? 6 : 5;
+      await setPageContent(pageId, '<p>Old body</p>', localVersion, '<p>Old storage</p>');
+      await query('UPDATE pages SET remote_version = 5 WHERE id = $1', [pageId]);
       await enableConfluence(true);
       const improvedMarkdown = '## Improved\n\nBetter **content**.';
       const accepted = await query<{ id: string }>(
@@ -417,17 +422,22 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
          RETURNING id`,
         [userId, pageId],
       );
-      acceptNextConfluenceUpdate();
+      if (diverged) {
+        const stale = await apply({ pageId: 'page-1', improvedMarkdown, version: 5 });
+        expect(stale.statusCode).toBe(409);
+        expect(lastConfluenceRequest).toBeNull();
+      }
+      acceptNextConfluenceUpdate(5);
 
       const response = await apply({
         pageId: 'page-1',
         improvedMarkdown,
-        version: 5,
+        version: localVersion,
         title: 'Improved title',
       });
 
       expect(response.statusCode, response.body).toBe(200);
-      expect(response.json()).toEqual({ id: pageId, title: 'Improved title', version: 6 });
+      expect(response.json()).toEqual({ id: pageId, title: 'Improved title', version: localVersion + 1 });
       expect(lastConfluenceRequest?.url).toBe('https://confluence.example.test/rest/api/content/page-1');
       const sent = JSON.parse(String(lastConfluenceRequest?.options.body));
       expect(sent).toMatchObject({ title: 'Improved title', version: { number: 6 } });
@@ -437,7 +447,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       const saved = await readPage(pageId);
       expect(saved).toMatchObject({
         title: 'Improved title',
-        version: 6,
+        version: localVersion + 1,
         body_storage: sent.body.storage.value,
         local_modified_at: null,
         local_modified_by: null,
@@ -447,6 +457,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(saved.body_html).toContain('<h2>Improved</h2>');
       expect(saved.body_text).toContain('Improved Better content.');
 
+      expect((await query('SELECT remote_version FROM pages WHERE id = $1', [pageId])).rows)
+        .toEqual([{ remote_version: 6 }]);
       const improvements = await query<{ id: string; status: string }>(
         'SELECT id, status FROM llm_improvements WHERE page_id = $1',
         [pageId],
@@ -464,12 +476,14 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         effect: {
           improvementId: accepted.rows[0]!.id,
           expectedRemoteVersion: '5',
+          expectedLocalVersion: localVersion,
           intendedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         },
       });
       expect(Object.keys(intent.rows[0]!.effect).sort()).toEqual([
         'confluenceId',
         'effectClass',
+        'expectedLocalVersion',
         'expectedRemoteVersion',
         'improvementId',
         'intendedStateDigest',
@@ -483,6 +497,21 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         [userId, String(pageId)],
       );
       expect(audit.rows[0]?.metadata.source).toBe('ai_improvement');
+    });
+
+    it('blocks Confluence Apply while a manual-review sync conflict is pending', async () => {
+      const pageId = await insertConfluencePage('page-conflict-pending', 'Synced', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      await query('UPDATE pages SET conflict_pending = TRUE WHERE id = $1', [pageId]);
+
+      const response = await apply({ pageId: 'page-conflict-pending', improvedMarkdown: 'My edited body', version: 5 });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ reason: 'sync_conflict_pending' });
+      expect(lastConfluenceRequest).toBeNull();
+      expect((await query(
+        'SELECT id FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[] AND status = $2', [pageId, 'pending'],
+      )).rows).toEqual([]);
     });
 
     it('keeps the Confluence id of a task whose text the improvement left unchanged (#1751)', async () => {

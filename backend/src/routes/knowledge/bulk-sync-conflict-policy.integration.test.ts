@@ -81,6 +81,7 @@ interface PageRow {
   body_html: string;
   body_text: string;
   version: number;
+  remote_version: number;
   local_modified_at: Date | null;
   local_modified_by: string | null;
   last_synced: Date | null;
@@ -108,8 +109,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
   async function seedSyncedPage(confluenceId: string, title: string, html: string, version: number): Promise<number> {
     const inserted = await query<{ id: number }>(
       `INSERT INTO pages (confluence_id, source, space_key, title, body_storage, body_html, body_text,
-                          version, last_synced, inherit_perms)
-       VALUES ($1, 'confluence', 'DEV', $2, $3, $3, $4, $5, NOW() - INTERVAL '1 hour', TRUE)
+                          version, remote_version, last_synced, inherit_perms)
+       VALUES ($1, 'confluence', 'DEV', $2, $3, $3, $4, $5, $5, NOW() - INTERVAL '1 hour', TRUE)
        RETURNING id`,
       [confluenceId, title, html, htmlToText(html), version],
     );
@@ -129,7 +130,7 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
 
   async function pageRow(id: number): Promise<PageRow> {
     const result = await query<PageRow>(
-      `SELECT title, body_html, body_text, version, local_modified_at, local_modified_by,
+      `SELECT title, body_html, body_text, version, remote_version, local_modified_at, local_modified_by,
               last_synced, conflict_pending
          FROM pages WHERE id = $1`,
       [id],
@@ -238,9 +239,9 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     const x = await pageRow(xId);
     expect(x.body_html).toBe(X.edit);
     expect(x.version).toBe(6);
-    // Upstream-unchanged X and upstream-newer Y: the local rows are untouched.
+    // Both local bodies stay in place. Each provider observation is recorded.
     expect(x).toEqual(xBefore);
-    expect(await pageRow(yId)).toEqual(yBefore);
+    expect(await pageRow(yId)).toEqual({ ...yBefore, version: 7, remote_version: 7 });
     expect([...await pendingOf(xId), ...await pendingOf(yId)]).toEqual([]);
     expect([...await versionsOf(xId), ...await versionsOf(yId)]).toEqual([]);
     for (const [id, confluenceId] of [[xId, X.confluenceId], [yId, Y.confluenceId]] as const) {
@@ -267,7 +268,7 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     const x = await pageRow(xId);
     expect(x.body_html).toBe(X.edit);
     expect(x).toEqual({ ...xBefore, conflict_pending: true });
-    expect(await pageRow(yId)).toMatchObject({ body_html: Y.edit, version: 6, conflict_pending: true });
+    expect(await pageRow(yId)).toMatchObject({ body_html: Y.edit, version: 7, remote_version: 7, conflict_pending: true });
     const xQueue = await pendingOf(xId);
     const yQueue = await pendingOf(yId);
     // The scheduler queues an upstream-unchanged page with a local edit too;
@@ -290,7 +291,7 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     const yQueueAfter = await pendingOf(yId);
     expect(yQueueAfter).toHaveLength(2);
     expect(yQueueAfter[1]!.sync_run_id).not.toBe(runId);
-    expect(await pageRow(yId)).toMatchObject({ body_html: Y.edit, version: 6 });
+    expect(await pageRow(yId)).toMatchObject({ body_html: Y.edit, version: 7, remote_version: 7 });
   });
 
   it('confluence-wins overwrites only after snapshotting the local version, audits it, and never lowers the version', async () => {
@@ -371,13 +372,14 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     // A title-only standalone edit: the body still equals Confluence's v5.
     await standaloneEdit(xId, 'Bob local title', X.base);
     await setPolicy('confluence-wins');
+    await query('UPDATE pages SET remote_version = version WHERE id = $1', [xId]);
     const before = await pageRow(xId);
 
     const response = await bulkSync([X.confluenceId]);
 
     expect(response.json()).toEqual({ succeeded: 1, failed: 0, errors: [] });
     expect(before).toMatchObject({ title: 'Bob local title', version: 6 });
-    expect(await pageRow(xId)).toEqual(before);
+    expect(await pageRow(xId)).toEqual({ ...before, remote_version: 5 });
     expect(await versionsOf(xId)).toEqual([]);
     expect(await syncAuditsOf(xId)).toEqual([]);
   });

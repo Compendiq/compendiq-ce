@@ -53,10 +53,13 @@ sequenceDiagram
             CL-->>S: page
             S->>CC: confluenceToHtml(XHTML)
             CC-->>S: body_html + body_text
-            opt existing row behind the upstream version (#35;1772)
-                S->>DB: BEGIN#59; AI-policy lock + SELECT … FOR UPDATE (source = 'confluence')<br/>conflict policy + local_modified_at > last_synced
+            opt incoming number exceeds pages.remote_version (#35;1772)
+                S->>DB: BEGIN#59; lifecycle + AI-policy locks + SELECT … FOR UPDATE (source = 'confluence')<br/>conflict policy + local_modified_at > last_synced
                 alt local edit under compendiq-wins / manual-review
-                    S->>DB: manual-review only: INSERT pending_sync_versions (title and bodies),<br/>SET conflict_pending#59; COMMIT
+                    opt manual-review
+                        S->>DB: INSERT pending_sync_versions (title and bodies), SET conflict_pending
+                    end
+                    S->>DB: Set remote_version and advance local counter if needed#59; COMMIT
                     S->>DB: audit SYNC_CONFLICT_DETECTED (kept_local / queued_for_review)
                     Note over S,DB: no attachment cleanup, download, snapshot or upsert#59;<br/>restriction sync still runs
                 else incoming wins (confluence-wins, or no local edit)
@@ -78,7 +81,7 @@ sequenceDiagram
                 opt version jump overwrites a local edit
                     S->>DB: Store local edit in page_versions on the same transaction
                 end
-                S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
+                S->>DB: INSERT/UPDATE pages<br/>SET remote_version = incoming, version = GREATEST(version, incoming)<br/>SET embedding_dirty = true, image_analysis_dirty = true
                 S->>DB: COMMIT
                 opt version jump
                     S->>DB: Audit SYNC_OVERWROTE_LOCAL_EDITS for a local edit,<br/>or save best-effort history for a routine update
@@ -202,9 +205,9 @@ sequenceDiagram
   and explicit thaw are independent of the user's current integration mode;
   re-enabling the integration does not auto-thaw or remove evidence.
 - **Conflict policy on an upstream version jump (#1772).** When an existing
-  `source = 'confluence'` row is behind the fetched upstream version, `syncPage`
+  `source = 'confluence'` row's `remote_version` is behind the fetched number, `syncPage`
   applies the sync-conflict policy *before* it cleans the page's attachment
-  cache or downloads anything. One short transaction takes the AI-policy lock and
+  cache or downloads anything. One short transaction takes the lifecycle and AI-policy locks and
   `SELECT … FOR UPDATE` (`decideConflictPolicyOnClient`). A local edit
   (`local_modified_at > last_synced`) counts when the local body differs from
   Confluence's new version, and also when the bodies are equal but the local
@@ -224,21 +227,22 @@ sequenceDiagram
   re-downloaded before the upsert. The upsert re-reads the row under
   `FOR UPDATE` and skips the content write and snapshot if the row moved
   since the decision (for example, a local save during the download). It
-  still publishes the AI policy observed on this walk. The initial decision
-  also skips a row that has already reached or passed the upstream version.
+  still publishes the AI policy observed on this walk. The gate fences the
+  provider counter across the fetch. A concurrent sync or publishing intent
+  leaves content and counter maintenance to the current writer.
   When Confluence wins over a local edit (#2037), the upsert transaction must
   store the locked row in `page_versions`. Scheduled sync and bulk Re-sync
   use the same helper: it can claim a body-less placeholder unless a baseline
   references it, and accepts an identical snapshot already stored. A conflicting
   snapshot or storage error rolls back the overwrite, counts the page as failed,
   and leaves it for the next walk. `SYNC_OVERWROTE_LOCAL_EDITS` is written after
-  commit and before collaborative reconciliation. The superseded version is
-  below the new live version and appears in Version History. Routine updates
+  commit and before collaborative reconciliation. The superseded version
+  appears in Version History once the local counter moves past it. Routine updates
   save history on a best-effort basis, including when a local save left the
   title and body equal to the incoming version.
-  A kept or queued row keeps its older version, so
-  every walk of the page re-enters this branch: `compendiq-wins` audits again
-  and `manual-review` queues another version on each such run. Incremental runs
+  A kept or queued row records the upstream number. While the bodies differ,
+  `compendiq-wins` audits again and `manual-review` queues another version
+  on each fetch, through the version-unchanged branch if the counter stayed level. Incremental runs
   re-fetch pages modified upstream in the last 24 hours, and the
   missing-attachment retry re-walks a draw.io page on every incremental run
   (its stored storage renders differently from the kept local body), so such a
@@ -263,13 +267,13 @@ sequenceDiagram
 - **Distributed live collab rooms (#1448/#276).** `collab:active:{pageId}` is
   only liveness advice. Inbound sync — the scheduled run and the bulk refresh
   alike — skips snapshot-HTML drift unless the remote version is ahead of the
-  local one; a remote version ahead of it applies the inbound HTML (unless the
+  last recorded `remote_version`; an advance applies the inbound HTML (unless the
   conflict policy keeps or queues a local edit, see above), rebuilds
   BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
   instead takes durable lifecycle admissions, gathers a freshly correlated
   state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
   Redis transport generation before publishing. For a Confluence-sourced page
-  with integration on it still GETs the remote version first; a moved version
+  with integration on it GETs the remote version and compares it with `remote_version`. A mismatch
   is 409 `{ code: 'confluence_modified' }` with the room left live. With
   integration explicitly off, the same page commits locally and performs no
   Confluence call.
@@ -282,7 +286,7 @@ sequenceDiagram
   instances, and the miss was permanent because the bound only advances forward.
   The 24h margin provably covers the full real-world offset range (−12h…+14h);
   over-fetching is a no-op because the `version` idempotency guard above skips
-  any re-fetched page whose stored version is already current.
+  the version-jump branch when the incoming number matches the recorded provider counter.
 - **Relocate exclusion (#1123)** — `POST /api/pages/:id/relocate` refuses with
   `409` while `sync:worker:lock` is held, by a scheduled run or (since #1775) a
   manual one. It mutates `source` / `confluence_id`, which the upsert and
@@ -307,16 +311,18 @@ the configured policy (`getSyncConflictPolicy()`, **Settings → Knowledge →
 Spaces & Sync → Conflict policy**) decides through one function,
 `decideConflictPolicyOnClient` in `sync-service.ts`, for the three writers
 listed below. The function runs on the writer's own open transaction (the writer
-owns `BEGIN`/`COMMIT`), takes the AI-policy lock, re-reads the row
+owns `BEGIN`/`COMMIT`), takes the lifecycle and AI-policy locks, re-reads the row
 `FOR UPDATE` (`source = 'confluence'` only) and returns one outcome, first
 match wins:
 
 | Outcome | When | What happens |
 |---|---|---|
+| `stale_observation` | another writer advanced or healed the provider counter, or a Confluence PUT intent is pending | publish observed AI policy and defer content and version |
+| `frozen_hold` | live baseline attached | record an observation at or below the local version |
 | `unchanged` | stored `body_html` and `body_text` equal the incoming ones | nothing to resolve |
-| `live_collab_hold` | live collab room, upstream version not ahead of the local one | row untouched: snapshot-HTML drift is a false conflict |
+| `live_collab_hold` | live collab room, upstream number at or below `remote_version` | counter-only observation for snapshot-HTML drift |
 | `queued_for_review` | `manual-review` + local edit | incoming version queued in `pending_sync_versions`, `conflict_pending = TRUE`; `SYNC_CONFLICT_DETECTED` (`queued_for_review`) |
-| `kept_local` | `compendiq-wins` + local edit | row untouched; `SYNC_CONFLICT_DETECTED` (`kept_local`) |
+| `kept_local` | `compendiq-wins` + local edit | keep authored content and record observed counters; `SYNC_CONFLICT_DETECTED` (`kept_local`) |
 | `apply_incoming` | `confluence-wins`, or no local edit | the writer stores the incoming body and clears the local-edit markers; `SYNC_OVERWROTE_LOCAL_EDITS` only when a local edit was overwritten |
 
 The decision never writes the body, publishes the AI policy or audits by
@@ -333,7 +339,7 @@ Callers:
 
 - **Scheduled sync, version-unchanged branch**
   (`applyConflictPolicyForExistingPage`, its own transaction): `apply_incoming`
-  overwrites without a `page_versions` snapshot and leaves `version` alone.
+  overwrites without a `page_versions` snapshot and heals `remote_version`. The local number stays level.
 - **Bulk refresh** (`POST /api/pages/bulk/sync`: a page's **Re-sync** and
   **Force re-sync**): inside `withPageWriteTransaction`, after
   `lockAiPolicyForPages` and `loadAuthorizedContentWriteState` re-checked the
@@ -348,21 +354,20 @@ Callers:
     claimed for the snapshot; a row that already holds other content (title or
     body) refuses the page instead: it is reported in `errors` (HTTP 200,
     `failed` + 1) and nothing is written.
-  - Every write sets `version = GREATEST(version, upstream)`: Confluence's
-    number, or the local one when that is higher, so it never decreases.
+  - An applied refresh sets `remote_version = upstream` and
+    `version = GREATEST(version, upstream)`.
     When Confluence is ahead of the local number the snapshot is ordinary
     history below the live version. When Confluence is behind or at the same
     number, the snapshot shares the live version number, and Version History
     — which shows that number as the current version — does not list or serve
     it until the page's version moves on. The row stays readable in
-    `page_versions` meanwhile; listing it needs a separate upstream-version
-    column (deferred follow-up, user decision on #1779 review r2).
+    `page_versions` meanwhile. Source-qualified reads are a later #1918 slice.
   - One `sync_run_id` per request stamps queued rows and audit metadata, and
     the audits carry the requesting user. Every committed outcome — kept,
     queued and held included — counts as `succeeded`; the
     `{ succeeded, failed, errors }` shape is unchanged.
 - **Scheduled sync, version-jump branch** (Confluence's version ahead of the
-  local row; `gateVersionJumpByConflictPolicy`, #1772): decides in its own short
+  recorded provider counter; `gateVersionJumpByConflictPolicy`, #1772): decides in its own short
   transaction *before* the page's attachment cache is cleaned or anything is
   downloaded. On this branch a local edit whose body equals the incoming one
   but whose title differs (a local rename) is decided like a diverged body,
@@ -374,8 +379,8 @@ Callers:
     sync only publishes the observed AI policy. To overwrite a local edit,
     sync calls `snapshotLocalVersionBeforeOverwrite` on that transaction.
     If it cannot store the edit, sync rolls back and reports a page failure.
-    A successful upsert moves the live version above the snapshot. Routine
-    version jumps save best-effort history after commit.
+    The upsert records the provider version and keeps the local counter monotonic.
+    Routine version jumps save best-effort history after commit.
   - The overwrite audit is written before the collab reconcile; counts change
     only after a committed upsert.
 
@@ -384,29 +389,40 @@ the same transactional snapshot helper (#2037). A baseline-linked placeholder
 is ineligible for reuse. The scheduled version-unchanged branch can still
 overwrite a local edit without saving history.
 
-**Version alignment.** A local edit made while the integration was off moves
-`pages.version` ahead of Confluence's version, and a Re-sync no longer moves
-it back (the version never decreases). Until Confluence's version catches up:
+### Counter-only observations for held and frozen pages (#1918)
 
-- Publishing from Compendiq fails and fences the page. The editor push (and a
-  Confluence-mode version restore) sends `pages.version + 1` without reading
-  Confluence's version first, and Confluence accepts only its current version
-  plus one [per Atlassian's REST documentation; not run against a real DC].
-  The refused write leaves a pending page-write intent, which blocks every
-  later writer of the page, Re-sync included, until a system administrator
-  resolves it through page-write recovery. The collaborative commit refuses a
-  mismatch up front (409 `confluence_modified`) without leaving an intent.
-- The scheduled sync decides "Confluence moved" by comparing version numbers,
-  so a newer Confluence version at or below the local number takes the
-  version-unchanged branch: its content is applied through the conflict
-  policy, cached attachments are only fetched when missing (a changed
-  attachment under the same file name is not refreshed), and a live
-  collaborative session holds the change back as "not newer".
+The editor, Version History and stale-edit guards use the monotonic local
+`pages.version`. Sync and Re-sync record Confluence's last observed
+`pages.remote_version` in either direction, including unchanged content and
+legacy rows backfilled with a too-high provider counter. An inbound number
+above `remote_version` is a version jump even if it equals the local number.
 
-Once Confluence's version passes the local one, the scheduled sync's
-version-jump branch realigns `pages.version` when the conflict policy lets
-Confluence's version in; under `compendiq-wins` and `manual-review` a kept or
-queued local edit keeps the local number until it is resolved.
+For an editable page whose content the policy keeps or queues, one statement
+under the row lock sets `remote_version = incoming` and
+`version = GREATEST(version, incoming)`. Title, body and unpublished edit
+markers stay in place. The write creates no history and leaves the embeddings
+and collaborative document intact. A local counter advance still moves
+`content_revision`, so a save based on the older local number gets the
+normal stale-edit 409. The embedding publication fence compares title and
+body when the revision changed.
+
+A frozen page records observations at or below its local counter without
+moving its content revision. It defers an ahead observation until the next
+fetch after thaw. The Enterprise resolver must apply the same remote-counter
+rule and keep the local counter monotonic (Compendiq/compendiq-ee#315).
+
+### Publish and recovery (#1918)
+
+The editor, draft publish, Confluence version restore, collaborative commit
+and Apply improvement send `remote_version + 1`. An acknowledgment advances
+the local counter to `GREATEST(version + 1, acknowledged)` and records the
+acknowledged provider number. A local-first draft already advanced the local
+counter, so its receipt uses `GREATEST(version, acknowledged)`. New intents
+carry both expected numbers. A manual-review queue blocks all five publishers
+with `sync_conflict_pending` before provider work or intent reservation.
+Compendiq wins permits the next publish to replace the observed upstream
+version with the kept local edit. Recovery still accepts legacy single-counter
+intents.
 
 ## Transport retries (#1776)
 
@@ -708,9 +724,9 @@ to make clear the displayed time is a sync time, not the author's edit time (#72
 
 Until the history API accepts a source parameter, numeric reads prefer the
 page's current namespace and fall back to the other namespace for older
-history retained across relocation. Migration 157 seeds a nullable
-`remote_version` column for Confluence pages. Sync and publish still use
-the existing `pages.version` counter in this slice.
+history retained across relocation. Migration 157 seeds `remote_version`,
+and migration 158 covers intervening rows and preserves both counters for
+relocation recovery.
 
 A restore keeps the live title when the stored title is exactly `vN` for
 the target's version number `N`. This applies to local restores and to the

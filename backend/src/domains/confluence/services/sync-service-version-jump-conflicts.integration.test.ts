@@ -35,6 +35,11 @@ import {
 import { ConfluenceClient, type ConfluencePage } from './confluence-client.js';
 import { setRateLimit } from './confluence-rate-limiter.js';
 import { __internal } from './sync-service.js';
+import { unfreezePage } from '../../../core/services/page-baseline-service.js';
+import {
+  cancelPageWriteIntentBeforeEffect,
+  reservePageWriteIntent,
+} from '../../../core/services/page-write-admission.js';
 
 // `syncPageRestrictions` is gated on the Enterprise RAG permission flag, which
 // the CE no-op plugin always reports off. Turn that one feature on (the loader
@@ -151,8 +156,8 @@ async function seedSyncedV5(confluenceId: string): Promise<number> {
   // re-marks that flag independently of the later content transaction.
   const r = await query<{ id: number }>(
     `INSERT INTO pages
-       (source, confluence_id, space_key, title, body_storage, body_html, body_text, version, last_synced, image_analysis_dirty)
-     VALUES ('confluence', $1, $2, 'Runbook', '<p>A v5</p>', '<p>A v5</p>', 'A v5', 5, NOW() - INTERVAL '1 hour', TRUE)
+       (source, confluence_id, space_key, title, body_storage, body_html, body_text, version, remote_version, last_synced, image_analysis_dirty)
+     VALUES ('confluence', $1, $2, 'Runbook', '<p>A v5</p>', '<p>A v5</p>', 'A v5', 5, 5, NOW() - INTERVAL '1 hour', TRUE)
      RETURNING id`,
     [confluenceId, SPACE],
   );
@@ -198,11 +203,13 @@ async function cached(confluenceId: string, file: string): Promise<string | null
 
 async function row(pageId: number) {
   const r = await query<{
-    title: string; body_html: string; body_text: string; version: number;
+    title: string; body_html: string; body_text: string; version: number; remote_version: number;
+    content_revision: string; embedding_dirty: boolean; embedding_status: string; image_analysis_dirty: boolean;
     local_modified_at: Date | null; local_modified_by: string | null;
     conflict_pending: boolean; conflict_detected_at: Date | null;
   }>(
-    `SELECT title, body_html, body_text, version, local_modified_at, local_modified_by,
+    `SELECT title, body_html, body_text, version, remote_version, content_revision::text,
+            embedding_dirty, embedding_status, image_analysis_dirty, local_modified_at, local_modified_by,
             conflict_pending, conflict_detected_at
        FROM pages WHERE id = $1`,
     [pageId],
@@ -270,10 +277,12 @@ async function linkBaseline(pageId: number, snapshotId: string) {
      INSERT INTO page_baselines (
        id, page_id, original_page_id, page_identity, version, content_revision, lifecycle_revision,
        manifest_digest, manifest, manifest_bytes, title, total_bytes, reserved_bytes,
-       prepared_by_name, preparation_intent_id, version_snapshot_id
+       prepared_by_name, preparation_intent_id, version_snapshot_id,
+       status, published_by_name, published_at, provenance, freeze_reason
      )
      SELECT gen_random_uuid(), p.id, p.id, '[]', p.version, p.content_revision, p.lifecycle_revision,
-            repeat('0', 64), '[]', convert_to('[]', 'UTF8'), p.title, 0, 0, 'Test', intent.id, $2
+            repeat('0', 64), '[]', convert_to('[]', 'UTF8'), p.title, 0, 0, 'Test', intent.id, $2,
+            'published', 'Test', NOW(), 'authenticated_approval', 'Fixture'
        FROM pages p CROSS JOIN intent WHERE p.id = $1`,
     [pageId, snapshotId, runtimeId],
   );
@@ -376,11 +385,19 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     const page = upstreamPage('vj-keep');
     upstreamPages.set(page.id, page);
 
+    await query(`UPDATE pages SET embedding_dirty = FALSE, image_analysis_dirty = FALSE,
+      embedding_status = 'embedded' WHERE id = $1`, [id]);
+    const before = await row(id);
     const counts = await runSync(page, RUN_1);
 
     const after = await row(id);
     expect(after.body_html).toBe(BOB_HTML);
-    expect(after).toMatchObject({ body_text: BOB_TEXT, version: 6, local_modified_by: bobId, conflict_pending: false });
+    expect(after.local_modified_at).toEqual(before.local_modified_at);
+    expect(after).toMatchObject({
+      embedding_dirty: false, embedding_status: 'embedded', image_analysis_dirty: false,
+    });
+    expect(BigInt(after.content_revision)).toBe(BigInt(before.content_revision) + 1n);
+    expect(after).toMatchObject({ body_text: BOB_TEXT, version: 7, remote_version: 7, local_modified_by: bobId, conflict_pending: false });
     expect(after.local_modified_at).not.toBeNull();
     expect(await syncAudits(id)).toEqual([{
       action: 'SYNC_CONFLICT_DETECTED',
@@ -412,7 +429,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(queued[0]).toMatchObject({ confluence_version: 7, body_storage: UPSTREAM_STORAGE, sync_run_id: RUN_1 });
     expect(queued[0]!.body_html).toContain('A upstream v7');
     const after = await row(id);
-    expect(after).toMatchObject({ body_html: BOB_HTML, body_text: BOB_TEXT, version: 6, conflict_pending: true });
+    expect(after).toMatchObject({ body_html: BOB_HTML, body_text: BOB_TEXT, version: 7, remote_version: 7, conflict_pending: true });
     expect(after.conflict_detected_at).not.toBeNull();
     expect(after.local_modified_at).not.toBeNull();
     expect(await syncAudits(id)).toEqual([{
@@ -626,7 +643,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(await syncAudits(id)).toEqual([]);
   });
 
-  it('compendiq-wins re-evaluates on every run while upstream stays ahead: one kept_local audit per run (deliberate steady state)', async () => {
+  it('compendiq-wins re-evaluates on every run while the body differs: one kept_local audit per run (deliberate steady state)', async () => {
     await usePolicy('compendiq-wins');
     const id = await seedSyncedV5('vj-keep-repeat');
     await bobSavesLocally(id);
@@ -641,12 +658,12 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
       ['SYNC_CONFLICT_DETECTED', 'kept_local', RUN_1],
       ['SYNC_CONFLICT_DETECTED', 'kept_local', RUN_2],
     ]);
-    // The local row keeps its own (older) version, so every walk re-enters the version-jump branch.
-    expect(await row(id)).toMatchObject({ body_html: BOB_HTML, version: 6 });
+    // After the counter advance, the next walk still sees an unpublished body.
+    expect(await row(id)).toMatchObject({ body_html: BOB_HTML, version: 7, remote_version: 7 });
     expect(requestedPaths).not.toContain(attachmentList('vj-keep-repeat'));
   });
 
-  it('manual-review stacks one pending version per run while upstream stays ahead (deliberate steady state)', async () => {
+  it('manual-review stacks one pending version per run while the body differs (deliberate steady state)', async () => {
     await usePolicy('manual-review');
     const id = await seedSyncedV5('vj-queue-repeat');
     await bobSavesLocally(id);
@@ -665,7 +682,92 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
       ['queued_for_review', RUN_1],
       ['queued_for_review', RUN_2],
     ]);
-    expect(await row(id)).toMatchObject({ body_html: BOB_HTML, version: 6, conflict_pending: true });
+    expect(await row(id)).toMatchObject({ body_html: BOB_HTML, version: 7, remote_version: 7, conflict_pending: true });
+  });
+
+  it.each(['confluence-wins', 'compendiq-wins', 'manual-review'] as const)(
+    'uses the version-jump policy when both sides reach number 6 under %s',
+    async (policy) => {
+      await usePolicy(policy);
+      const id = await seedSyncedV5('vj-equal');
+      await bobSavesLocally(id);
+      await seedCache('vj-equal');
+      await runSync(upstreamPage('vj-equal', 6), RUN_1);
+
+      const after = await row(id);
+      expect(after).toMatchObject({ version: 6, remote_version: 6 });
+      if (policy === 'confluence-wins') {
+        expect(after.body_html).toContain('A upstream');
+        expect(await snapshots(id)).toEqual([{ version_number: 6, body_html: BOB_HTML }]);
+        expect(requestedPaths).toContain(attachmentList('vj-equal'));
+      } else {
+        expect(after.body_html).toBe(BOB_HTML);
+        expect(await snapshots(id)).toEqual([]);
+        expect(requestedPaths).not.toContain(attachmentList('vj-equal'));
+      }
+      expect(await pending(id)).toHaveLength(policy === 'manual-review' ? 1 : 0);
+    },
+  );
+
+  it('heals a legacy provider counter down and then back up without lowering the local revision', async () => {
+    await usePolicy('compendiq-wins');
+    const id = await seedSyncedV5('vj-heal');
+    await bobSavesLocally(id);
+    await query('UPDATE pages SET remote_version = version WHERE id = $1', [id]);
+
+    await runSync(upstreamPage('vj-heal', 5), RUN_1);
+    expect(await row(id)).toMatchObject({ body_html: BOB_HTML, version: 6, remote_version: 5 });
+    await runSync(upstreamPage('vj-heal', 6), RUN_2);
+    expect(await row(id)).toMatchObject({ body_html: BOB_HTML, version: 6, remote_version: 6 });
+    expect(await snapshots(id)).toEqual([]);
+  });
+
+  it('leaves the provider counter to a pending publication and retries on the next fetch', async () => {
+    const id = await seedSyncedV5('vj-pending-put');
+    const intent = await reservePageWriteIntent({
+      kind: 'pages.update.confluence',
+      pageIds: [id],
+      actorId,
+      effect: { effectClass: 'remote', confluenceId: 'vj-pending-put', expectedLocalVersion: 5, expectedRemoteVersion: 5 },
+    });
+    const before = await row(id);
+
+    await runSync(upstreamPage('vj-pending-put', 6), RUN_1);
+    expect(await row(id)).toEqual(before);
+    expect(await snapshots(id)).toEqual([]);
+    expect(requestedPaths).not.toContain(attachmentList('vj-pending-put'));
+
+    await cancelPageWriteIntentBeforeEffect(intent);
+    await runSync(upstreamPage('vj-pending-put', 6), RUN_2);
+    expect(await row(id)).toMatchObject({ version: 6, remote_version: 6 });
+  });
+
+  it('defers a frozen advance, heals an observation at or below local, and retries the advance after thaw', async () => {
+    const id = await seedSyncedV5('vj-frozen');
+    const snapshotId = await seedHistory(id, 5, 'Runbook', '<p>A v5</p>', 'A v5');
+    await linkBaseline(id, snapshotId);
+    const { rows: [frozen] } = await query<{ baseline_id: string; lifecycle_revision: string }>(
+      `UPDATE pages p SET baseline_id = b.id, frozen_version = p.version, frozen_at = NOW(),
+             frozen_by_name = 'Test', freeze_reason = 'Fixture',
+             freeze_provenance = 'authenticated_approval', freeze_reported_signatories = '[]'
+         FROM page_baselines b WHERE p.id = $1 AND b.page_id = p.id
+         RETURNING p.baseline_id, p.lifecycle_revision::text`, [id],
+    );
+    const before = await row(id);
+
+    await runSync(upstreamPage('vj-frozen', 7), RUN_1);
+    expect(await row(id)).toEqual(before);
+    await runSync(upstreamPage('vj-frozen', 4), RUN_2);
+    expect(await row(id)).toEqual({ ...before, remote_version: 4 });
+    expect(await snapshots(id)).toEqual([{ version_number: 5, body_html: '<p>A v5</p>' }]);
+
+    await unfreezePage(id, actorId, {
+      reason: 'Resume synchronization',
+      expectedBaselineId: frozen!.baseline_id,
+      expectedLifecycleRevision: frozen!.lifecycle_revision,
+    });
+    await runSync(upstreamPage('vj-frozen', 7), RUN_1);
+    expect(await row(id)).toMatchObject({ version: 7, remote_version: 7, body_html: expect.stringContaining('A upstream') });
   });
 
   it('a local save that lands while attachments download is not overwritten by that run; the next run decides on it', async () => {
@@ -720,7 +822,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
         return waiting.rows[0]!.n;
       }, { timeout: 10_000 }).toBeGreaterThan(0);
       await blocker.query(
-        `UPDATE pages SET version = 8, body_html = '<p>A v8 from another run</p>', body_text = 'A v8 from another run',
+        `UPDATE pages SET version = 8, remote_version = 8, body_html = '<p>A v8 from another run</p>', body_text = 'A v8 from another run',
                 last_synced = NOW(), local_modified_at = NULL, local_modified_by = NULL
           WHERE id = $1`,
         [id],
@@ -754,7 +856,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     const counts = await runSync(page, RUN_2);
 
     const after = await row(id);
-    expect(after).toMatchObject({ title: 'Bob local title', version: 7, conflict_pending: policy === 'manual-review' });
+    expect(after).toMatchObject({ title: 'Bob local title', version: 8, remote_version: 8, conflict_pending: policy === 'manual-review' });
     expect(after.local_modified_at).not.toBeNull();
     expect((await syncAudits(id)).map((a) => [a.action, a.metadata.policy, a.metadata.resolution, a.metadata.sync_run_id]))
       .toEqual([['SYNC_CONFLICT_DETECTED', policy, resolution, RUN_2]]);

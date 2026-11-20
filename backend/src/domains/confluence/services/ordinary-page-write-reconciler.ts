@@ -260,9 +260,9 @@ export async function publishCreatedConfluencePage(
   const inserted = await client.query<PublishedConfluencePage>(
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
-        version, parent_id, source, embedding_dirty, image_analysis_dirty, embedding_status,
+        version, remote_version, parent_id, source, embedding_dirty, image_analysis_dirty, embedding_status,
         labels, ai_policy)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded', $9, $10)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded', $9, $10)
      ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO NOTHING
      RETURNING id, labels, ai_policy AS "aiPolicy", content_revision::text AS "contentRevision",
                lifecycle_revision::text AS "lifecycleRevision"`,
@@ -1024,6 +1024,29 @@ const reconcilePagePut: PageWriteIntentReconciler = async (client, intent) => {
   if (terminal.confluenceId !== expectedConfluenceId) {
     throw new PageWriteError(409, 'intent_terminal_result_invalid', 'The page acknowledgment names another operation target');
   }
+  const isEditorPut = intent.kind === 'pages.update.confluence';
+  // Older effects used expectedVersion for the common pre-write number.
+  // A local-first draft already advanced the local revision at reservation.
+  const acceptedVersion = terminal.expectedVersion;
+  const versionInEffect = Object.hasOwn(intent.effect, 'expectedRemoteVersion')
+    ? intent.effect.expectedRemoteVersion
+    : intent.effect.expectedVersion;
+  const expectedRemoteVersion = versionInEffect === undefined && acceptedVersion !== undefined
+    ? acceptedVersion - 1
+    : versionInEffect;
+  const expectedLocalVersion = Object.hasOwn(intent.effect, 'expectedLocalVersion')
+    ? intent.effect.expectedLocalVersion
+    : typeof versionInEffect === 'number' ? versionInEffect + Number(!isEditorPut) : undefined;
+  if (
+    typeof expectedRemoteVersion !== 'number' || !Number.isSafeInteger(expectedRemoteVersion)
+    || expectedRemoteVersion < 1 || acceptedVersion !== expectedRemoteVersion + 1
+    || (expectedLocalVersion !== undefined && (
+      typeof expectedLocalVersion !== 'number' || !Number.isSafeInteger(expectedLocalVersion)
+      || expectedLocalVersion < expectedRemoteVersion + Number(!isEditorPut)
+    ))
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The page publication lacks valid version metadata');
+  }
   const confluence = await getClientForUser(actorId, client);
   if (!confluence) {
     throw new PageWriteError(409, 'intent_provider_unavailable', 'The original Confluence connection is unavailable');
@@ -1031,22 +1054,30 @@ const reconcilePagePut: PageWriteIntentReconciler = async (client, intent) => {
   const observed = await confirmPagePublication(confluence, terminal);
   const storage = observed.body.storage.value;
   const storageDigest = createHash('sha256').update(storage).digest('hex');
-  const local = await client.query<{ space_key: string | null }>(
-    `SELECT space_key FROM pages WHERE id = $1 AND confluence_id = $2 AND source = 'confluence'`,
+  const local = await client.query<{ space_key: string | null; version: number; remote_version: number | null }>(
+    `SELECT space_key, version, remote_version FROM pages
+      WHERE id = $1 AND confluence_id = $2 AND source = 'confluence' FOR UPDATE`,
     [pageId, expectedConfluenceId],
   );
-  if (!local.rows[0]) {
+  const page = local.rows[0];
+  if (!page) {
     throw new PageWriteError(409, 'intent_local_identity_changed', 'The local page identity changed after admission');
   }
+  if (
+    (expectedLocalVersion !== undefined && page.version !== expectedLocalVersion)
+    || (page.remote_version ?? (isEditorPut ? page.version : expectedRemoteVersion)) !== expectedRemoteVersion
+  ) {
+    throw new PageWriteError(409, 'intent_local_publication_stale', 'The local or Confluence revision changed after admission');
+  }
   const bodyHtml = (await materializeDrawioPreviews(
-    confluenceToHtml(storage, expectedConfluenceId, local.rows[0].space_key ?? undefined),
+    confluenceToHtml(storage, expectedConfluenceId, page.space_key ?? undefined),
     expectedConfluenceId,
   )).html;
-  const resetDerivedWork = intent.kind === 'pages.update.confluence';
-  await client.query(
+  const updated = await client.query<{ version: number }>(
     `UPDATE pages SET
        title = $2, body_storage = $3, body_html = $4, body_text = $5,
-       version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+       version = GREATEST(version + CASE WHEN $7::boolean THEN 1 ELSE 0 END, $6),
+       remote_version = $6, last_synced = NOW(), embedding_dirty = TRUE,
        image_analysis_dirty = CASE WHEN body_html IS DISTINCT FROM $4 THEN TRUE ELSE image_analysis_dirty END,
        embedding_status = 'not_embedded', embedded_at = NULL,
        last_modified_at = NOW(), local_modified_at = NULL, local_modified_by = NULL,
@@ -1054,7 +1085,7 @@ const reconcilePagePut: PageWriteIntentReconciler = async (client, intent) => {
        summary_retry_count = CASE WHEN $7::boolean THEN 0 ELSE summary_retry_count END,
        quality_status = CASE WHEN $7::boolean THEN 'pending' ELSE quality_status END,
        quality_retry_count = CASE WHEN $7::boolean THEN 0 ELSE quality_retry_count END
-     WHERE id = $1`,
+     WHERE id = $1 RETURNING version`,
     [
       pageId,
       observed.title,
@@ -1062,7 +1093,7 @@ const reconcilePagePut: PageWriteIntentReconciler = async (client, intent) => {
       bodyHtml,
       htmlToText(bodyHtml),
       observed.version.number,
-      resetDerivedWork,
+      isEditorPut,
     ],
   );
   await enqueuePageWriteInvalidation(client, intent.id);
@@ -1074,7 +1105,7 @@ const reconcilePagePut: PageWriteIntentReconciler = async (client, intent) => {
       reference: `confluence-page:${expectedConfluenceId}:v${observed.version.number}`,
       details: { remoteEffectsCompleted: true, terminalEvidence: storageDigest },
     },
-    result: { pageId, version: observed.version.number },
+    result: { pageId, version: updated.rows[0]!.version },
   };
 };
 

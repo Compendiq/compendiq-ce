@@ -138,6 +138,7 @@ export interface RelocatablePage {
   body_storage: string | null;
   body_text: string | null;
   version: number;
+  remote_version: number | null;
   inherit_perms: boolean;
   local_modified_at: Date | null;
   local_modified_by: string | null;
@@ -157,7 +158,7 @@ export interface RelocatablePage {
 
 export const RELOCATABLE_COLUMNS =
   'id, title, source, space_key, confluence_id, notion_page_id, visibility, created_by_user_id, ' +
-  'body_html, body_storage, body_text, version, inherit_perms, local_modified_at, ' +
+  'body_html, body_storage, body_text, version, remote_version, inherit_perms, local_modified_at, ' +
   'local_modified_by, embedding_dirty, image_analysis_dirty, embedding_status, embedded_at, ' +
   'content_revision::text, lifecycle_revision::text';
 
@@ -195,6 +196,7 @@ interface ProviderAttachmentReceipt {
 
 interface RelocationPreparation extends PreMoveSnapshot {
   intentId: string;
+  publishedLocalVersion: number | null;
   direction: 'to_confluence' | 'to_local';
   actorId: string;
   targetSpaceKey: string | null;
@@ -776,7 +778,7 @@ async function persistRelocationPreparation(
              original_image_analysis_dirty, original_embedding_status, original_embedded_at,
              original_key, child_ids, access_control_entries, attachments,
              expected_remote_title_sha256, expected_remote_body_storage_sha256, parent_confluence_id,
-             original_notion_page_id
+             original_notion_page_id, original_remote_version
            ) VALUES (
              $1, $2, $3, $4, $5, $6,
              $7, $8, $9, $10,
@@ -785,7 +787,7 @@ async function persistRelocationPreparation(
              $18, $19, $20,
              $21, $22, $23,
              $24, $25, $26::jsonb, $27::jsonb,
-             $28, $29, $30, $31
+             $28, $29, $30, $31, $32
            )`,
           [
             intent.id,
@@ -819,11 +821,13 @@ async function persistRelocationPreparation(
             input.expectedRemoteBodyStorageSha256,
             input.parentConfluenceId,
             page.notion_page_id,
+            page.source === 'confluence' ? (page.remote_version ?? page.version) : null,
           ],
         );
         return {
           ...page,
           intentId: intent.id,
+          publishedLocalVersion: null,
           direction: input.direction,
           actorId: input.actorId,
           targetSpaceKey: input.targetSpaceKey,
@@ -865,6 +869,8 @@ async function loadRelocationPreparation(
     original_body_storage: string | null;
     original_body_text: string | null;
     original_version: number;
+    original_remote_version: number | null;
+    published_local_version: number | null;
     original_visibility: string;
     original_created_by_user_id: string | null;
     original_inherit_perms: boolean;
@@ -926,6 +932,7 @@ async function loadRelocationPreparation(
     body_storage: row.original_body_storage,
     body_text: row.original_body_text,
     version: row.original_version,
+    remote_version: row.original_source === 'confluence' ? (row.original_remote_version ?? row.original_version) : null,
     inherit_perms: row.original_inherit_perms,
     local_modified_at: row.original_local_modified_at,
     local_modified_by: row.original_local_modified_by,
@@ -936,6 +943,7 @@ async function loadRelocationPreparation(
     embedding_status: row.original_embedding_status,
     embedded_at: row.original_embedded_at,
     intentId: row.intent_id,
+    publishedLocalVersion: row.published_local_version,
     direction: row.direction,
     actorId: row.actor_id,
     targetSpaceKey: row.target_space_key,
@@ -1377,7 +1385,7 @@ async function publishToConfluenceOnClient(
     confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? ''), confluenceId,
   )).html;
   const finalText = htmlToText(finalHtml);
-  await client.query(
+  const publication = await client.query<{ version: number }>(
     `UPDATE pages SET
        title = $2,
        source = 'confluence',
@@ -1388,13 +1396,14 @@ async function publishToConfluenceOnClient(
        body_storage = $6,
        body_text = $7,
        visibility = 'shared',
-       version = $8,
+       version = GREATEST(version, $8),
+       remote_version = $8,
        last_synced = NOW(),
        embedding_dirty = TRUE,
        image_analysis_dirty = TRUE,
        embedding_status = 'not_embedded',
        embedded_at = NULL
-     WHERE id = $1`,
+     WHERE id = $1 RETURNING version`,
     [
       prep.id,
       observed.title,
@@ -1405,6 +1414,10 @@ async function publishToConfluenceOnClient(
       finalText,
       observed.version,
     ],
+  );
+  await client.query(
+    'UPDATE page_relocation_preparations SET published_local_version = $2 WHERE intent_id = $1',
+    [intentId, publication.rows[0]!.version],
   );
   await invalidateCollabDocAfterBodyWrite(prep.id, client);
   let childrenRepointed = 0;
@@ -1742,6 +1755,7 @@ async function publishToLocalOnClient(
   await client.query(
     `UPDATE pages SET
        source = 'standalone',
+       remote_version = NULL,
        confluence_id = NULL,
        notion_page_id = NULL,
        space_key = $2,
@@ -1867,7 +1881,8 @@ async function restorePreMoveStateOnClient(
          image_analysis_dirty = $16,
          embedding_status = $17,
          embedded_at = $18,
-         notion_page_id = $19
+         notion_page_id = $19,
+         remote_version = $20
        WHERE id = $1`,
       [
         prep.id,
@@ -1889,6 +1904,7 @@ async function restorePreMoveStateOnClient(
         prep.embedding_status,
         prep.embedded_at,
         prep.notion_page_id,
+        prep.remote_version,
       ],
     );
     await invalidateCollabDocAfterBodyWrite(prep.id, client);
@@ -2172,7 +2188,8 @@ async function verifyLocalToConfluencePublication(
     current.body_storage !== observed.bodyStorage ||
     current.body_html !== expectedHtml ||
     current.body_text !== htmlToText(expectedHtml) ||
-    current.version !== observed.version ||
+    current.version !== (prep.publishedLocalVersion ?? observed.version) ||
+    (current.remote_version ?? current.version) !== observed.version ||
     current.embedding_dirty !== true ||
     current.image_analysis_dirty !== true ||
     current.embedding_status !== 'not_embedded' ||
@@ -2246,6 +2263,7 @@ async function verifyLocalPublicationState(
     current.body_storage !== prep.body_storage ||
     current.body_text !== prep.body_text ||
     current.version !== prep.version ||
+    current.remote_version !== null ||
     current.inherit_perms !== true ||
     current.local_modified_at === null ||
     current.local_modified_by !== prep.actorId ||

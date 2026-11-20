@@ -111,7 +111,7 @@ import {
 import {
   initPageBaselineOutbox,
 } from './core/services/page-baseline-outbox.js';
-import { getPageWriterRuntimeId, PageWriteError } from './core/services/page-write-admission.js';
+import { getPageWriterRuntimeId, PageWriteError, SYNC_CONFLICT_PENDING_CODE } from './core/services/page-write-admission.js';
 import { PageSubtreeFrozenError } from './core/services/page-subtree.js';
 import { registerPageBaselineEnforcementReadiness } from './core/services/page-baseline-governance.js';
 import {
@@ -514,6 +514,9 @@ export async function buildApp() {
       reply.status(statusCode).send({
         error: error.name,
         reason: error.reason,
+        ...(error.reason === SYNC_CONFLICT_PENDING_CODE
+          ? { code: SYNC_CONFLICT_PENDING_CODE, message: error.message }
+          : {}),
         ...(error instanceof PageSubtreeFrozenError
           ? { message: error.message, blockedCount: error.blockedCount }
           : {}),

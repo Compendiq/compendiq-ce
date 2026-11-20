@@ -158,9 +158,9 @@ async function page(options: {
   const result = await query<{ id: number }>(
     `INSERT INTO pages (title, source, confluence_id, space_key, created_by_user_id,
        notion_page_id, visibility, body_html, body_storage, body_text, version,
-       parent_id, deleted_at, ai_policy)
+       parent_id, deleted_at, ai_policy, remote_version)
      VALUES ($1, $2, $3, $4, $5, $6, 'shared', $7, $8, 'provider body', 1,
-       $9, CASE WHEN $10::boolean THEN '2026-10-01T12:34:56.123456Z'::timestamptz ELSE NULL END, 'none')
+       $9, CASE WHEN $10::boolean THEN '2026-10-01T12:34:56.123456Z'::timestamptz ELSE NULL END, 'none', CASE WHEN $2 = 'confluence' THEN 1 END)
      RETURNING id`,
     [title, source, options.confluenceId ?? null, source === 'confluence' ? 'CONF' : 'LOCAL',
       options.owner ?? ownerA, options.notion ?? null, options.body ?? '<p>provider body</p>',

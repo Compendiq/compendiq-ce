@@ -557,6 +557,10 @@ local repair, settlement and publication all remain owned; a quiesced/fenced
 process cannot begin recovery, and a crash requires fencing the new owner.
 A fully failed attempt may retry on the same active process, never concurrently.
 
+Confluence publishers use the provider counter `pages.remote_version` for
+dispatch and record the local `pages.version` as the optimistic fence. Sync
+and relocation update each counter according to its source.
+
 `domains/confluence/services/page-put-intent-reconciler.ts` owns one transactional
 publisher for normal and recovered conditional page PUTs. Exact E+1 evidence
 must update local authored content plus its original AI-improvement or restore

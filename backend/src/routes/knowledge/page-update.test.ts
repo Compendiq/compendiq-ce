@@ -23,8 +23,9 @@ import {
   previewPageBaseline,
   setPageBaselineCreationEnabled,
 } from '../../core/services/page-baseline-service.js';
-import { lockPageLifecycle, reconcilePageWriteIntent } from '../../core/services/page-write-admission.js';
+import { lockPageLifecycle, reconcilePageWriteIntent, withPageWriteTransaction } from '../../core/services/page-write-admission.js';
 import { registerOrdinaryPageWriteReconcilers } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
+import { recordConfluenceVersionObservation } from '../../domains/confluence/services/sync-service.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import {
   buildKnowledgeTestApp,
@@ -57,6 +58,7 @@ let recoveryAdminId: string;
 let attachmentsDir: string;
 let originalAttachmentsDir: string | undefined;
 let remoteVersion = 8;
+let strictProviderVersion: number | null = null;
 let confluenceRequests: ConfluenceRequest[] = [];
 let compactPutReply = false;
 let readbackStatus = 200;
@@ -209,6 +211,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       confluenceRequests.push({
         method: request.method, url: request.url, body, authorization: request.headers.authorization,
       });
+      if (strictProviderVersion !== null && body.version.number !== strictProviderVersion + 1) {
+        response.writeHead(409).end(JSON.stringify({ message: 'Confluence requires its next version' }));
+        return;
+      }
       providerPage = {
         id: decodeURIComponent(request.url.split('/').at(-1)!),
         status: 'current',
@@ -260,6 +266,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     await redis.flushDb();
     confluenceRequests = [];
     remoteVersion = 8;
+    strictProviderVersion = null;
     compactPutReply = false;
     readbackStatus = 200;
     readbackCalls = 0;
@@ -472,24 +479,31 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     expect(await pageRow(pageId)).toMatchObject({ title: 'Original', version: 7 });
   });
 
-  it('pushes a Confluence edit over HTTP and persists the remote version and converted body', async () => {
+  it.each([false, true])('publishes through Confluence with divergent counters: %s', async (diverged) => {
     const pageId = await seedConfluencePage(currentUserId);
 
+    const localVersion = diverged ? 6 : 7;
+    const providerVersion = diverged ? 5 : 7;
+    remoteVersion = providerVersion + 1;
+    strictProviderVersion = providerVersion;
+    if (diverged) {
+      await query('UPDATE pages SET version = $2, remote_version = $3 WHERE id = $1', [pageId, localVersion, providerVersion]);
+    }
     const response = await app.inject({
       method: 'PUT',
       url: `/api/pages/${pageId}`,
-      payload: { title: 'Remote title', bodyHtml: '<p>Remote body</p>', version: 7 },
+      payload: { title: 'Remote title', bodyHtml: '<p>Remote body</p>', version: localVersion },
     });
 
     expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toMatchObject({ id: pageId, title: 'Remote title', version: 8, source: 'confluence' });
+    expect(response.json()).toMatchObject({ id: pageId, title: 'Remote title', version: localVersion + 1, source: 'confluence' });
     expect(confluenceRequests).toHaveLength(1);
     expect(confluenceRequests[0]).toMatchObject({ method: 'PUT', url: '/rest/api/content/page-1' });
-    expect(confluenceRequests[0]!.body).toMatchObject({ title: 'Remote title', version: { number: 8 } });
+    expect(confluenceRequests[0]!.body).toMatchObject({ title: 'Remote title', version: { number: providerVersion + 1 } });
     const row = await pageRow(pageId);
     expect(row).toMatchObject({
       title: 'Remote title',
-      version: 8,
+      version: localVersion + 1,
       body_storage: expect.stringContaining('Remote body'),
       body_html: expect.stringContaining('Remote body'),
       body_text: 'Remote body',
@@ -500,6 +514,52 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       local_modified_at: null,
       local_modified_by: null,
     });
+    expect((await query('SELECT remote_version FROM pages WHERE id = $1', [pageId])).rows)
+      .toEqual([{ remote_version: providerVersion + 1 }]);
+    expect((await query('SELECT status FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId])).rows)
+      .toEqual([{ status: 'completed' }]);
+  });
+
+  it('blocks a queued manual-review conflict before provider calls and allows local editing', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    await query('UPDATE pages SET conflict_pending = TRUE, remote_version = 6 WHERE id = $1', [pageId]);
+    const put = () => app.inject({
+      method: 'PUT', url: `/api/pages/${pageId}`,
+      payload: { title: 'Local edit', bodyHtml: '<p>Local edit</p>', version: 7 },
+    });
+
+    const refused = await put();
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json()).toMatchObject({ reason: 'sync_conflict_pending' });
+    expect((await query(
+      'SELECT id FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[] AND status = $2', [pageId, 'pending'],
+    )).rows).toEqual([]);
+    await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [currentUserId]);
+    expect((await put()).statusCode).toBe(200);
+    expect(confluenceRequests).toEqual([]);
+  });
+
+  it.each([false, true])('refuses a stale editor revision (counter-only bump: %s)', async (bump) => {
+    const pageId = await seedConfluencePage(currentUserId);
+    await query('UPDATE pages SET remote_version = 6 WHERE id = $1', [pageId]);
+    const before = await pageRow(pageId);
+    // The same SQL that the sync conflict path runs under its row lock.
+    if (bump) {
+      await withPageWriteTransaction([pageId], async (client) => {
+        await client.query('SELECT 1 FROM pages WHERE id = $1 FOR UPDATE', [pageId]);
+        await recordConfluenceVersionObservation(client, pageId, 8);
+      });
+    }
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Stale editor', bodyHtml: '<p>Must not land</p>', version: bump ? 7 : 6 },
+    });
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json().error).toContain('modified since you loaded it');
+    expect(await pageRow(pageId)).toMatchObject({ version: bump ? 8 : 7, title: before.title, body_html: before.body_html });
+    expect(confluenceRequests).toEqual([]);
   });
 
   it('keeps the Confluence ids of tasks synced before ids were carried when the page is saved (#1751)', async () => {

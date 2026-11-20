@@ -36,6 +36,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
+  assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
   PageWriteError,
@@ -96,6 +97,7 @@ interface PageContext {
   spaceKey: string | null;
   title: string;
   version: number;
+  remoteVersion: number;
   contentRevision: string;
   lifecycleRevision: string;
 }
@@ -115,13 +117,14 @@ async function currentRestoreClient(
   }
   const page = await client.query<{
     version: number;
+    remote_version: number | null;
     source: string;
     confluence_id: string | null;
     space_key: string | null;
     contentRevision: string;
     lifecycleRevision: string;
   }>(
-    `SELECT version, source, confluence_id, space_key,
+    `SELECT version, remote_version, source, confluence_id, space_key,
             content_revision::text AS "contentRevision",
             lifecycle_revision::text AS "lifecycleRevision"
        FROM pages
@@ -137,6 +140,7 @@ async function currentRestoreClient(
     current.contentRevision !== admittedRevision.contentRevision ||
     current.lifecycleRevision !== admittedRevision.lifecycleRevision ||
     current.version !== context.version ||
+    (current.remote_version ?? current.version) !== context.remoteVersion ||
     current.source !== 'confluence' ||
     current.confluence_id !== context.confluenceId
   ) {
@@ -197,11 +201,12 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       source: string;
       title: string;
       version: number;
+      remote_version: number | null;
       contentRevision: string;
       lifecycleRevision: string;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source,
-              cp.version, cp.title,
+              cp.version, cp.remote_version, cp.title,
               cp.content_revision::text AS "contentRevision",
               cp.lifecycle_revision::text AS "lifecycleRevision"
          FROM pages cp
@@ -220,6 +225,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       spaceKey: page.space_key,
       title: page.title,
       version: page.version,
+      remoteVersion: page.remote_version ?? page.version,
       contentRevision: page.contentRevision,
       lifecycleRevision: page.lifecycleRevision,
     };
@@ -481,6 +487,9 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // is authoritative and closes the cross-process/freeze race.
     await rejectIfLiveCollabRoom(ctx.id, (m) => fastify.httpErrors.conflict(m));
 
+    // A lazy Confluence read also counts as provider work during a restore.
+    if (!staysLocal) await assertNoPendingSyncConflict([ctx.id]);
+
     // Metadata-only history rows may be filled by a remote READ. Analysis and
     // historical reads remain available while frozen; no authored state is
     // mutated here, and restore admission still happens before any remote write.
@@ -560,7 +569,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         confluenceId: ctx.confluenceId,
         title: restoredTitle,
         bodyStorage: storageBody,
-        expectedRemoteVersion: ctx.version,
+        expectedRemoteVersion: ctx.remoteVersion,
+        expectedLocalVersion: ctx.version,
         targetVersion,
       });
       const intent = await reservePageWriteIntent({
@@ -627,11 +637,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
             ctx.confluenceId!,
             restoredTitle,
             storageBody,
-            ctx.version,
+            ctx.remoteVersion,
           );
           return {
             page,
-            receipt: pagePublicationReceipt(ctx.confluenceId!, ctx.version + 1, page),
+            receipt: pagePublicationReceipt(ctx.confluenceId!, ctx.remoteVersion + 1, page),
           };
         },
       );

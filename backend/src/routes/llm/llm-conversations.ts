@@ -39,6 +39,7 @@ import {
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
+  assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
   PageWriteError,
@@ -304,12 +305,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // resolvePageRef in the improve route. The digit cap keeps long Confluence
     // ids out of the int4 cast (a 10+ digit id would error, not 404).
     type PageRow = {
-      id: number; version: number; title: string; space_key: string | null;
+      id: number; version: number; remote_version: number | null; title: string; space_key: string | null;
       source: string; confluence_id: string | null; body_html: string | null;
       created_by_user_id: string | null; visibility: string;
       contentRevision: string; lifecycleRevision: string; bodyStorage: string | null;
     };
-    const PAGE_COLUMNS = `id, version, title, space_key, source, confluence_id, body_html,
+    const PAGE_COLUMNS = `id, version, remote_version, title, space_key, source, confluence_id, body_html,
               created_by_user_id, visibility, content_revision::text AS "contentRevision",
               lifecycle_revision::text AS "lifecycleRevision", body_storage AS "bodyStorage"`;
     const currentConfluenceClient = async (
@@ -336,6 +337,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         current.contentRevision !== admittedRevision.contentRevision ||
         current.lifecycleRevision !== admittedRevision.lifecycleRevision ||
         current.version !== expected.version ||
+        (current.remote_version ?? current.version) !== (expected.remote_version ?? expected.version) ||
         current.body_html !== expected.body_html ||
         current.source !== 'confluence' ||
         current.confluence_id !== expected.confluence_id
@@ -562,6 +564,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       if (!existingPage.confluence_id) {
         throw fastify.httpErrors.badRequest('Page is missing confluence_id');
       }
+      await assertNoPendingSyncConflict([existingPage.id]);
       // Preserve the existing early configuration error. The post-admission
       // resolver below is authoritative for dispatch.
       if (!await getClientForUser(userId)) {
@@ -570,6 +573,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
       const confluenceId = existingPage.confluence_id;
       const storageBody = htmlToConfluence(bodyHtml, { previousStorage: existingPage.bodyStorage });
+      const remoteVersion = existingPage.remote_version ?? currentVersion;
       const publication = describeConfluencePagePut({
         kind: 'page.ai_apply',
         actorId: userId,
@@ -577,7 +581,8 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         confluenceId,
         title: pageTitle,
         bodyStorage: storageBody,
-        expectedRemoteVersion: currentVersion,
+        expectedRemoteVersion: remoteVersion,
+        expectedLocalVersion: currentVersion,
         improvementId,
       });
       const intent = await reservePageWriteIntent({
@@ -620,11 +625,11 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
             confluenceId,
             pageTitle,
             storageBody,
-            currentVersion,
+            remoteVersion,
           );
           return {
             page,
-            receipt: pagePublicationReceipt(confluenceId, currentVersion + 1, page),
+            receipt: pagePublicationReceipt(confluenceId, remoteVersion + 1, page),
           };
         },
       );

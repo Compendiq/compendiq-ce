@@ -75,6 +75,7 @@ async function seedPendingIntent(input: {
   actorId: string;
   fencedBy: string;
   expectedRemoteVersion: number;
+  expectedLocalVersion?: number;
   intendedTitle: string;
   intendedStorage: string;
   mediaImages?: CollabCommitImage[];
@@ -93,12 +94,12 @@ async function seedPendingIntent(input: {
     lifecycle_revision: string;
   }>(
     `INSERT INTO pages
-       (confluence_id, space_key, title, body_html, body_storage, body_text, version,
+       (confluence_id, space_key, title, body_html, body_storage, body_text, version, remote_version,
         source, visibility, created_by_user_id, embedding_dirty, embedding_status)
-     VALUES ($1, 'REC', 'Local title', '<p>local</p>', '<p>local</p>', 'local', $2,
+     VALUES ($1, 'REC', 'Local title', '<p>local</p>', '<p>local</p>', 'local', $2, $4,
              'confluence', 'private', $3, FALSE, 'not_embedded')
      RETURNING id, content_revision::text, lifecycle_revision::text`,
-    [confluenceId, input.expectedRemoteVersion, input.actorId],
+    [confluenceId, input.expectedLocalVersion ?? input.expectedRemoteVersion, input.actorId, input.expectedRemoteVersion],
   );
   const pageRow = page.rows[0]!;
   const digest = confluencePagePutDigest({
@@ -175,6 +176,7 @@ async function seedPendingIntent(input: {
     pageId: pageRow.id,
     confluenceId,
     expectedRemoteVersion: String(input.expectedRemoteVersion),
+    ...(input.expectedLocalVersion === undefined ? {} : { expectedLocalVersion: input.expectedLocalVersion }),
     intendedStateDigest: digest,
     ...publicationEffect,
   };
@@ -478,7 +480,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
     },
   );
 
-  it('recovers an accepted collaborative commit without deleting its durable Yjs state', async () => {
+  it.each([undefined, 6])('recovers a collaborative commit without deleting its durable Yjs state (expected local: %s)', async (expectedLocalVersion) => {
     const expectedRemoteVersion = 5;
     const intendedTitle = 'Recovered collaborative title';
     const intendedStorage = '<p>recovered collaborative body</p>';
@@ -487,6 +489,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
       actorId: originalActorId,
       fencedBy: administratorId,
       expectedRemoteVersion,
+      ...(expectedLocalVersion === undefined ? {} : { expectedLocalVersion }),
       intendedTitle,
       intendedStorage,
     });
@@ -517,13 +520,15 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
       body_html: intendedStorage,
       body_storage: intendedStorage,
       body_text: 'recovered collaborative body',
-      version: expectedRemoteVersion + 1,
+      version: (expectedLocalVersion ?? expectedRemoteVersion) + 1,
       embedding_dirty: true,
       image_analysis_dirty: true,
     });
     expect(
       (await query('SELECT 1 FROM page_collaborative_docs WHERE page_id = $1', [intent.pageId])).rows,
     ).toHaveLength(1);
+    expect((await query('SELECT remote_version FROM pages WHERE id = $1', [intent.pageId])).rows)
+      .toEqual([{ remote_version: expectedRemoteVersion + 1 }]);
     expect((await statusAndProof(intent.intentId)).status).toBe('reconciled_applied');
   });
 

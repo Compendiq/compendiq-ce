@@ -31,6 +31,7 @@ export interface CollabCommitPublication {
   pageId: number;
   confluenceId: string;
   expectedRemoteVersion: number;
+  expectedLocalVersion: number;
   expectedLifecycleRevision: string;
   intendedStateDigest: string;
   images: CollabCommitImage[];
@@ -142,6 +143,7 @@ export function describeCollabCommit(input: {
   title: string;
   bodyStorage: string;
   expectedRemoteVersion: number;
+  expectedLocalVersion: number;
   expectedLifecycleRevision: string;
   images?: CollabCommitImage[];
 }): CollabCommitPublication {
@@ -166,6 +168,7 @@ export function describeCollabCommit(input: {
     pageId: input.pageId,
     confluenceId: input.confluenceId,
     expectedRemoteVersion: input.expectedRemoteVersion,
+    expectedLocalVersion: input.expectedLocalVersion,
     expectedLifecycleRevision: input.expectedLifecycleRevision,
     intendedStateDigest,
     images,
@@ -174,6 +177,7 @@ export function describeCollabCommit(input: {
       pageId: input.pageId,
       confluenceId: input.confluenceId,
       expectedRemoteVersion: String(input.expectedRemoteVersion),
+      expectedLocalVersion: input.expectedLocalVersion,
       intendedStateDigest,
       ...(images.length > 0 ? { images } : {}),
     },
@@ -186,6 +190,8 @@ function publicationFromRecoveryIntent(intent: PageWriteRecoveryIntent): CollabC
   const expectedRemoteVersion = typeof expectedText === 'string' && /^[1-9]\d*$/.test(expectedText)
     ? Number(expectedText)
     : Number.NaN;
+  const hasLocalVersion = Object.hasOwn(effect, 'expectedLocalVersion');
+  const expectedLocalVersion = hasLocalVersion ? effect.expectedLocalVersion : expectedRemoteVersion;
   const mediaIntent = intent.kind === 'collab.commit.confluence.media';
   const images = mediaIntent ? plannedImages(effect.images) : [];
   const pageId = typeof effect.pageId === 'number' ? effect.pageId : Number.NaN;
@@ -202,12 +208,15 @@ function publicationFromRecoveryIntent(intent: PageWriteRecoveryIntent): CollabC
     && effect.confluenceId.length > 0
     && Number.isSafeInteger(expectedRemoteVersion)
     && expectedRemoteVersion > 0
+    && typeof expectedLocalVersion === 'number'
+    && Number.isSafeInteger(expectedLocalVersion)
+    && expectedLocalVersion >= expectedRemoteVersion
     && typeof effect.intendedStateDigest === 'string'
     && /^[a-f0-9]{64}$/.test(effect.intendedStateDigest)
     && typeof revision?.lifecycleRevision === 'string'
     && revision.lifecycleRevision.length > 0
     && (!mediaIntent || images !== null)
-    && Object.keys(effect).length === expectedKeys.length
+    && Object.keys(effect).length === expectedKeys.length + Number(hasLocalVersion)
     && expectedKeys.every((key) => Object.hasOwn(effect, key));
   if (!valid) {
     throw new PageWriteError(
@@ -221,6 +230,7 @@ function publicationFromRecoveryIntent(intent: PageWriteRecoveryIntent): CollabC
     pageId,
     confluenceId: String(effect.confluenceId),
     expectedRemoteVersion,
+    expectedLocalVersion,
     expectedLifecycleRevision: revision!.lifecycleRevision,
     intendedStateDigest: String(effect.intendedStateDigest),
     images: images ?? [],
@@ -257,12 +267,13 @@ export async function publishCollabCommit(
 
   const current = await client.query<{
     version: number;
+    remote_version: number | null;
     source: string;
     confluence_id: string | null;
     space_key: string | null;
     lifecycle_revision: string;
   }>(
-    `SELECT version, source, confluence_id, space_key, lifecycle_revision::text
+    `SELECT version, remote_version, source, confluence_id, space_key, lifecycle_revision::text
        FROM pages
       WHERE id = $1 AND deleted_at IS NULL
       FOR UPDATE`,
@@ -271,7 +282,8 @@ export async function publishCollabCommit(
   const page = current.rows[0];
   if (
     !page
-    || page.version !== publication.expectedRemoteVersion
+    || page.version !== publication.expectedLocalVersion
+    || (page.remote_version ?? page.version) !== publication.expectedRemoteVersion
     || page.source !== 'confluence'
     || page.confluence_id !== publication.confluenceId
     || page.lifecycle_revision !== publication.expectedLifecycleRevision
@@ -312,10 +324,10 @@ export async function publishCollabCommit(
     );
   }
   const bodyText = htmlToText(bodyHtml);
-  const updated = await client.query(
+  const updated = await client.query<{ version: number }>(
     `UPDATE pages SET
        title = $2, body_storage = $3, body_html = $4, body_text = $5,
-       version = $6, last_synced = NOW(), last_modified_at = NOW(),
+       version = GREATEST(version + 1, $6), remote_version = $6, last_synced = NOW(), last_modified_at = NOW(),
        local_modified_at = NULL, local_modified_by = NULL,
        embedding_dirty = TRUE,
        image_analysis_dirty = CASE
@@ -326,7 +338,8 @@ export async function publishCollabCommit(
        summary_status = 'pending', summary_retry_count = 0,
        quality_status = 'pending', quality_retry_count = 0
      WHERE id = $1 AND version = $7
-       AND source = 'confluence' AND confluence_id = $8`,
+       AND source = 'confluence' AND confluence_id = $8
+     RETURNING version`,
     [
       publication.pageId,
       observed.title,
@@ -334,7 +347,7 @@ export async function publishCollabCommit(
       bodyHtml,
       bodyText,
       acceptedVersion,
-      publication.expectedRemoteVersion,
+      publication.expectedLocalVersion,
       publication.confluenceId,
     ],
   );
@@ -349,7 +362,7 @@ export async function publishCollabCommit(
   return {
     pageId: publication.pageId,
     title: observed.title,
-    newVersion: acceptedVersion,
+    newVersion: updated.rows[0]!.version,
     bodyHtml,
     bodyText,
   };

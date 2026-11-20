@@ -49,6 +49,7 @@ import {
 import { pageWriteStaysLocal } from '../../domains/confluence/services/standalone-mode.js';
 import {
   completePageWriteIntent,
+  assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   deferPageRequestAdmissionRelease,
   PageWriteError,
@@ -91,6 +92,7 @@ function throwConfluenceModified(
 type CollabCommitPage = {
   id: number;
   version: number;
+  remote_version: number | null;
   source: string;
   visibility: string;
   confluence_id: string | null;
@@ -107,13 +109,14 @@ async function assertCurrentCollabMutationAuthority(
 ): Promise<void> {
   const state = await client.query<{
     version: number;
+    remote_version: number | null;
     source: string;
     confluence_id: string | null;
     lifecycle_revision: string;
     baseline_id: string | null;
     deleted_at: Date | null;
   }>(
-    `SELECT version, source, confluence_id, lifecycle_revision::text,
+    `SELECT version, remote_version, source, confluence_id, lifecycle_revision::text,
             baseline_id, deleted_at
        FROM pages
       WHERE id = $1`,
@@ -126,7 +129,10 @@ async function assertCurrentCollabMutationAuthority(
     || current.source !== expected.source
     || current.confluence_id !== expected.confluence_id
     || current.lifecycle_revision !== expected.lifecycle_revision
-    || (expected.source === 'confluence' && current.version !== expected.version)
+    || (expected.source === 'confluence' && (
+      current.version !== expected.version
+      || (current.remote_version ?? current.version) !== (expected.remote_version ?? expected.version)
+    ))
   ) {
     throw new PageWriteError(
       409,
@@ -160,6 +166,7 @@ async function currentConfluenceCommitClient(
   userId: string,
 ): Promise<ConfluenceClient> {
   await assertCurrentCollabMutationAuthority(dbClient, expected, userId);
+  await assertNoPendingSyncConflict([expected.id], dbClient);
   const client = await getClientForUser(userId, dbClient);
   if (!client) {
     throw new PageWriteError(
@@ -228,8 +235,9 @@ async function commitConfluencePage(args: {
   }
   const remote = await readClient.getPage(existing.confluence_id);
   const remoteVersion = remote.version.number;
-  if (remoteVersion !== existing.version) {
-    throwConfluenceModified(fastify, remoteVersion, existing.version);
+  const expectedRemoteVersion = existing.remote_version ?? existing.version;
+  if (remoteVersion !== expectedRemoteVersion) {
+    throwConfluenceModified(fastify, remoteVersion, expectedRemoteVersion);
   }
 
   const publication = describeCollabCommit({
@@ -238,7 +246,8 @@ async function commitConfluencePage(args: {
     confluenceId: existing.confluence_id,
     title: body.title,
     bodyStorage: storageBody,
-    expectedRemoteVersion: existing.version,
+    expectedRemoteVersion,
+    expectedLocalVersion: existing.version,
     expectedLifecycleRevision: existing.lifecycle_revision,
     images: imagePlan.images.map((image) => ({
       filename: image.filename,
@@ -332,13 +341,13 @@ async function commitConfluencePage(args: {
             existing.confluence_id!,
             body.title,
             storageBody,
-            existing.version,
+            expectedRemoteVersion,
           );
           return {
             confPage,
             receipt: pagePublicationReceipt(
               existing.confluence_id!,
-              existing.version + 1,
+              expectedRemoteVersion + 1,
               confPage,
             ),
           };
@@ -346,13 +355,13 @@ async function commitConfluencePage(args: {
       );
     } catch (err) {
       if (err instanceof ConfluenceError && err.statusCode === 409) {
-        let observedVersion = existing.version + 1;
+        let observedVersion = expectedRemoteVersion + 1;
         try {
           observedVersion = (await readClient.getPage(existing.confluence_id!)).version.number;
         } catch {
           // The durable intent remains pending for exact reconciliation.
         }
-        throwConfluenceModified(fastify, observedVersion, existing.version);
+        throwConfluenceModified(fastify, observedVersion, expectedRemoteVersion);
       }
       throw err;
     }
@@ -534,6 +543,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     const page = await query<{
       id: number;
       version: number;
+      remote_version: number | null;
       source: string;
       visibility: string;
       deleted_at: Date | null;
@@ -544,7 +554,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       baseline_id: string | null;
       body_storage: string | null;
     }>(
-      `SELECT id, version, source, visibility, deleted_at, page_type,
+      `SELECT id, version, remote_version, source, visibility, deleted_at, page_type,
               confluence_id, space_key,
               lifecycle_revision::text, baseline_id, body_storage
          FROM pages
