@@ -1827,9 +1827,10 @@ async function syncPageRestrictions(
   }
   const pageDbId = pageRow.rows[0]!.id;
   const restrictionsSyncedAt = pageRow.rows[0]!.restrictions_synced_at;
+  // An older overlapping run can reach this touch after a newer mirror.
   const touchConfirmedAces = () => query(
     `UPDATE access_control_entries
-        SET synced_at = $1
+        SET synced_at = GREATEST(synced_at, $1)
       WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'
         AND ($3::timestamptz IS NULL OR synced_at >= $3)`,
     [syncRunStartedAt, pageDbId, restrictionsSyncedAt],

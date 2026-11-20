@@ -618,7 +618,8 @@ EE skip all of it (`syncPageRestrictions` and the sweep both short-circuit).
 - **Walked is not always re-read.** The audit-log fast path (no `Permissions`
   event for the page in the covered window) and a failed restriction fetch
   leave `restrictions_synced_at` alone and only bump `synced_at` on entries
-  belonging to the last confirmed mirror.
+  belonging to the last confirmed mirror. An older overlapping run preserves
+  a newer ACE timestamp during either path.
 - **Sweep set (#1771).** Once at the end of the run,
   `sweepStaleConfluenceAces` deletes `source='confluence'` page rows whose
   `synced_at` is older than their page's last successful mirror. This removes

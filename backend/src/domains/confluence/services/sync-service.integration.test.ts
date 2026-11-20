@@ -703,6 +703,28 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     expect(aces[0]!.synced_at!.getTime()).toBe(startedAt.getTime());
   });
 
+  it('keeps the newer mirror grants when an older run skips a restriction read', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    await insertUser(userA, 'alice');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-overlap', 'DOCS');
+    const page = fakePage('c-overlap');
+    const newerRun = makeMockClient();
+    newerRun.restrictionsByPage.set(page.id, [
+      readRestriction([{ userKey: 'keyalice', username: 'alice' }]),
+    ]);
+    const mirroredAt = new Date();
+    await __internal.syncPageRestrictions(newerRun as never, page, mirroredAt, new Map());
+
+    const olderRun = makeMockClient();
+    const olderStartedAt = new Date(mirroredAt.getTime() - 60_000);
+    await __internal.syncPageRestrictions(olderRun as never, page, olderStartedAt, new Map(), incremental([]));
+    await __internal.sweepStaleConfluenceAces(['DOCS']);
+
+    expect(olderRun.restrictionCalls).toEqual([]);
+    expect(await getAces(pageDbId)).toMatchObject([{ principal_id: userA, synced_at: mirroredAt }]);
+  });
+
   it('audit-skip: FETCHES when the page id is in the changed set', async () => {
     const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     await insertUser(userA, 'alice');
