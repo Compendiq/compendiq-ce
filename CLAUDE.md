@@ -142,10 +142,11 @@ Domain-based backend with ESLint-enforced import boundaries (`eslint-plugin-boun
 Layout: `backend/src/{core,domains/{confluence,llm,knowledge},routes/{foundation,confluence,llm,knowledge}}` + `frontend/src/{features,shared,stores,providers}` + `packages/contracts/`. Detailed structure → `docs/architecture/03-backend-domains.md` and `04-frontend-structure.md`.
 
 Snapshot identity includes `page_versions.source` (#1918). Freeze writes
-`local` snapshots. Import and lazy backfill use `confluence`. The numeric
-history API prefers the page's current namespace and falls back for retained
-history after relocation. For Confluence pages, `pages.remote_version` is
-the last observed or acknowledged provider number. Publish sends its successor
+`local` snapshots. Import and lazy backfill use `confluence`. Version History
+reads, restores, and compares with a source and version number. For detail and
+restore requests without a source, standalone pages default to `local`.
+For Confluence pages, `pages.remote_version` is the last observed or
+acknowledged provider number. Publish sends its successor
 and keeps the optimistic fence on the monotonic local `pages.version`.
 Relocation recovery retains both counters (migration 158). Legacy inserts
 with no snapshot source inherit the page's provenance. Keyed upserts use

@@ -1122,6 +1122,10 @@ the backend side.
 ## Version History (#1404)
 
 `VersionHistory` (`features/pages/`) opens an enlarged dialog (`w-[96vw] sm:w-[92vw] max-w-5xl max-h-[90vh]`) allowing users to inspect historical page revisions.
+- Each row displays **Local** or **Confluence**. Detail cache keys, selection,
+  comparison and restore include the source and version number, so two rows at
+  the same number stay distinct. Restore sends the current local version as its
+  optimistic guard.
 - **Rich Document Preview**: Renders formatted HTML using `ArticleViewer` inside a `FeatureErrorBoundary` fallback wrapper, preserving headings, tables, panels, diagrams, and image attachments.
 - **View Mode Toggle**: Users can toggle between **Formatted View** (rich TipTap rendering) and **Raw Text View** (monospaced `<pre>` view).
 - **Graceful Fallback**: Automatically falls back to plain `bodyText` if `bodyHtml` is absent or fails to parse.

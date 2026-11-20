@@ -1071,6 +1071,10 @@ The closed policy assigns this mode only to remote writes with the required
 conditional-version evidence, currently AI Apply and version restore. It does
 not permit replaying the write during reconciliation.
 
+New Version History restore intents also record the target snapshot's
+`source`. When inspecting history for an intent, match page ID, source, and
+version number. Legacy restore intents record only the target number.
+
 ### `remote_terminal_only`
 
 A fenced intent is not automatically an unknown remote outcome. The trusted

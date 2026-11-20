@@ -1,7 +1,22 @@
 import { z } from 'zod';
 
-export const PageVersionSummarySchema = z.object({
-  versionNumber: z.number(),
+export const PageVersionSourceSchema = z.enum(['local', 'confluence']);
+export type PageVersionSource = z.infer<typeof PageVersionSourceSchema>;
+
+export const PageVersionRefSchema = z.object({
+  versionNumber: z.number().int().positive(),
+  source: PageVersionSourceSchema,
+});
+export type PageVersionRef = z.infer<typeof PageVersionRefSchema>;
+
+export const PageSemanticDiffRequestSchema = z.object({
+  v1: PageVersionRefSchema,
+  v2: PageVersionRefSchema,
+  model: z.string().optional(),
+});
+export type PageSemanticDiffRequest = z.infer<typeof PageSemanticDiffRequestSchema>;
+
+export const PageVersionSummarySchema = PageVersionRefSchema.extend({
   title: z.string(),
   editedAt: z.string().nullable(),
   syncedAt: z.string().nullable(),
@@ -53,9 +68,8 @@ export type PageVersionsResponse = z.infer<typeof PageVersionsResponseSchema>;
  * lazily fetched from Confluence (and the fetch is best-effort). `editedAt` /
  * `syncedAt` / `author` / `message` are absent on the synthetic current row.
  */
-export const PageVersionDetailSchema = z.object({
+export const PageVersionDetailSchema = PageVersionRefSchema.extend({
   confluenceId: z.string().nullable(),
-  versionNumber: z.number(),
   title: z.string(),
   bodyHtml: z.string().nullable(),
   bodyText: z.string().nullable(),

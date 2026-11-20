@@ -13,6 +13,8 @@ import type { ConfluenceClient } from '../../confluence/services/confluence-clie
 import { PageWriteError } from '../../../core/services/page-write-admission.js';
 import { isVersionPlaceholderTitle, livePageVersion, type PageVersionSource } from '../../../core/services/version-snapshot.js';
 
+import type { PageVersionRef } from '@compendiq/contracts';
+
 // Re-export from core so existing consumers keep working
 export { saveVersionSnapshot, saveVersionSnapshotByPageId } from '../../../core/services/version-snapshot.js';
 
@@ -31,8 +33,7 @@ interface PageVersion {
   message: string | null;
 }
 
-// The numeric API selects one row per number until it accepts a namespace.
-// Prefer the page's current namespace and keep older history across relocation.
+// The internal legacy lookup prefers the page provenance for callers without a source.
 const PREFERRED_VERSION_SOURCE = `CASE WHEN p.source = 'confluence' THEN 'confluence' ELSE 'local' END`;
 
 /**
@@ -58,14 +59,13 @@ export async function getVersionHistory(
     author: string | null;
     message: string | null;
   }>(
-    `SELECT DISTINCT ON (pv.version_number)
-            pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.source, pv.title, pv.synced_at,
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.source, pv.title, pv.synced_at,
             pv.edited_at, pv.author, pv.message
      FROM page_versions pv
      JOIN pages p ON pv.page_id = p.id
      WHERE pv.page_id = $1
        AND p.deleted_at IS NULL
-     ORDER BY pv.version_number DESC, (pv.source = ${PREFERRED_VERSION_SOURCE}) DESC`,
+     ORDER BY COALESCE(pv.edited_at, pv.synced_at) DESC NULLS LAST, pv.version_number DESC, pv.source ASC`,
     [pageId],
   );
 
@@ -148,6 +148,7 @@ export interface RestoreResult {
 }
 
 export interface RestoreVersionOptions {
+  source?: PageVersionSource;
   /**
    * A caller-owned transaction which already holds the page lifecycle fence.
    * When supplied, this function never begins, commits, rolls back, or releases
@@ -225,7 +226,13 @@ export async function restoreVersion(
       );
     }
 
-    const target = await getVersion(pageId, targetVersion, { client: txClient });
+    const liveIdentity = livePageVersion(live);
+    if (targetVersion === liveIdentity.versionNumber && options.source === liveIdentity.source) {
+      throw new PageWriteError(400, 'current_version', 'Cannot restore the current version');
+    }
+    const target = await getVersion(pageId, targetVersion, {
+      client: txClient, ...(options.source === undefined ? {} : { source: options.source }),
+    });
     if (!target) {
       if (ownsTransaction) await txClient.query('ROLLBACK');
       return null;
@@ -246,7 +253,7 @@ export async function restoreVersion(
       `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
        VALUES ($1, $6, $2, $3, $4, $5, NOW())
        ON CONFLICT (page_id, source, version_number) DO NOTHING`,
-      [pageId, live.version, live.title, live.body_html, live.body_text, livePageVersion(live).source],
+      [pageId, live.version, live.title, live.body_html, live.body_text, liveIdentity.source],
     );
 
     const newVersion = live.version + 1;
@@ -327,31 +334,49 @@ async function resolveVersionBodyHtml(
  */
 export async function getSemanticDiff(
   pageId: number,
-  v1: number,
-  v2: number,
+  v1: PageVersionRef,
+  v2: PageVersionRef,
   model?: string,
   confluenceId?: string | null,
   client?: ConfluenceClient | null,
   userId?: string,
 ): Promise<string> {
   if (!userId) throw new ArticleStageRefusedError();
-  const [version1, version2] = await Promise.all([
-    getVersion(pageId, v1),
-    getVersion(pageId, v2),
-  ]);
+  const current = await query<{
+    source: string; version: number; remote_version: number | null; local_modified_at: Date | null;
+    title: string; body_html: string | null; body_text: string | null;
+    ai_policy: string; ai_policy_revision: string; content_revision: string;
+  }>(
+    `SELECT source, version, remote_version, local_modified_at, title, body_html, body_text,
+            ai_policy, ai_policy_revision, content_revision
+       FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+    [pageId],
+  );
+  const row = current.rows[0];
+  if (!row) throw new ArticleStageRefusedError();
+  const identity = livePageVersion(row);
+  const liveDigest = historicalVersionDigest(row.title, row.body_html, row.body_text);
 
-  if (!version1) throw new Error(`Version ${v1} not found for page ${pageId}`);
-  if (!version2) throw new Error(`Version ${v2} not found for page ${pageId}`);
-
-  // #722/#724: backfilled rows are metadata-only (body_html IS NULL) until a
-  // version is previewed. Without this, a never-previewed version would diff as
-  // an empty string and the LLM would report "all content removed". Lazily fetch
-  // (and persist) both bodies from Confluence first — same helper as the restore
-  // path — so the diff compares real content.
-  const [body1, body2] = await Promise.all([
-    resolveVersionBodyHtml(pageId, version1, confluenceId, client),
-    resolveVersionBodyHtml(pageId, version2, confluenceId, client),
-  ]);
+  const resolve = async (reference: PageVersionRef) => {
+    if (reference.source === identity.source && reference.versionNumber === identity.versionNumber) {
+      if (row.body_html === null && row.body_text === null) throw new ArticleStageRefusedError();
+      return { ...reference, title: row.title, bodyHtml: row.body_html, bodyText: row.body_text, history: null };
+    }
+    const version = await getVersion(pageId, reference.versionNumber, { source: reference.source });
+    if (!version) throw new PageWriteError(404, 'version_not_found', `Version ${reference.versionNumber} not found`);
+    const bodyHtml = await resolveVersionBodyHtml(pageId, version, confluenceId, client);
+    // A lazy fill can race an import or retention. Use only the exact bytes
+    // and snapshot identity captured in the provenance.
+    const saved = await getVersion(pageId, reference.versionNumber, { source: reference.source });
+    if (!saved || saved.id !== version.id || saved.title !== version.title || saved.bodyHtml !== bodyHtml
+      || (bodyHtml === null && saved.bodyText !== version.bodyText)
+      || (saved.bodyHtml === null && saved.bodyText === null)) throw new ArticleStageRefusedError();
+    return { ...saved, history: { pageId, versionId: saved.id, ...reference,
+      digest: historicalVersionDigest(saved.title, saved.bodyHtml, saved.bodyText) } };
+  };
+  const [version1, version2] = await Promise.all([resolve(v1), resolve(v2)]);
+  const { bodyHtml: body1 } = version1;
+  const { bodyHtml: body2 } = version2;
 
   // Convert to markdown for LLM consumption
   const text1 = body1 ? htmlToMarkdown(body1) : (version1.bodyText ?? '');
@@ -373,43 +398,30 @@ export async function getSemanticDiff(
 
 Format your response as a clear bullet-point list. Be specific about what changed.`;
 
-  const userPrompt = `## Version ${v1} (Title: "${version1.title}")
+  const userPrompt = `## Version ${v1.versionNumber} [${v1.source}] (Title: "${version1.title}")
 ${sanitized1}
 
 ---
 
-## Version ${v2} (Title: "${version2.title}")
+## Version ${v2.versionNumber} [${v2.source}] (Title: "${version2.title}")
 ${sanitized2}`;
 
   const { config, model: resolvedModel } = await resolveUsecase('chat');
-  const current = await query('SELECT ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL', [pageId]);
-  const row = current.rows[0];
-  const policyRevision = asRevision(row?.ai_policy_revision);
-  const contentRevision = asRevision(row?.content_revision);
+  const policyRevision = asRevision(row.ai_policy_revision);
+  const contentRevision = asRevision(row.content_revision);
   const provider = await loadProviderMetadata({ query }, config.providerId);
-  if (!row || !isAiPolicy(row.ai_policy) || policyRevision === null || contentRevision === null
+  if (!isAiPolicy(row.ai_policy) || policyRevision === null || contentRevision === null
     || !provider || provider.configRevision !== config.configRevision) throw new ArticleStageRefusedError();
-  // Reload after lazy fill and verify that the exact historical bytes used to
-  // compose the prompt are still the saved snapshot. The dispatch repeats this
-  // check after queue waits; live revisions alone cannot certify old versions.
-  const historical = await Promise.all([
-    getVersion(pageId, v1, { source: version1.source }),
-    getVersion(pageId, v2, { source: version2.source }),
-  ]);
-  const inputs = [{ version: version1, body: body1 }, { version: version2, body: body2 }];
-  const historicalVersions = inputs.map(({ version, body }, index) => {
-    const saved = historical[index];
-    if (!saved || saved.id !== version.id || saved.title !== version.title || saved.bodyHtml !== body
-      || (body === null && saved.bodyText !== version.bodyText)
-      || (saved.bodyHtml === null && saved.bodyText === null)) throw new ArticleStageRefusedError();
-    return { pageId, versionId: saved.id, versionNumber: saved.versionNumber, source: saved.source,
-      digest: historicalVersionDigest(saved.title, saved.bodyHtml, saved.bodyText) };
-  });
+  const historicalVersions = [version1.history, version2.history].filter((version) => version !== null);
+  const liveVersion = version1.history === null || version2.history === null
+    ? { pageId, ...identity, digest: liveDigest }
+    : undefined;
   const transportContext: TransportContext = { kind: 'article', stage: {
     provenance: { version: 1, providerId: config.providerId, configRevision: provider.configRevision,
       locality: provider.effectiveLocality, pages: [{ pageId, policy: row.ai_policy, policyRevision, contentRevision }] },
     userId, usecase: 'chat', context: { operation: newAiOperation('semantic_diff', { kind: 'user', id: userId }),
       stage: 'semantic_diff', attempt: 1, historicalVersions,
+      ...(liveVersion === undefined ? {} : { liveVersion }),
       modelSelection: model ? { kind: 'explicit', model } : { kind: 'assigned' } },
   } };
   await admitArticleStage(transportContext.stage.provenance, userId, 'chat', undefined, transportContext.stage.context);

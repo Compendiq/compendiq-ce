@@ -561,6 +561,10 @@ Confluence publishers use the provider counter `pages.remote_version` for
 dispatch and record the local `pages.version` as the optimistic fence. Sync
 and relocation update each counter according to its source.
 
+Version History resolves each target by source and number. The semantic diff
+passes historical row identities and digests to article admission. A live
+input uses the fenced page content directly.
+
 `domains/confluence/services/page-put-intent-reconciler.ts` owns one transactional
 publisher for normal and recovered conditional page PUTs. Exact E+1 evidence
 must update local authored content plus its original AI-improvement or restore

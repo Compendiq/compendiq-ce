@@ -433,6 +433,13 @@ upstream edit brings it into the incremental walk or during a full walk.
 A queued manual-review conflict blocks all Confluence content publication and
 leaves local-mode saves available.
 
+Version History identifies rows by `(source, versionNumber)` (#1918). A synced
+live row is Confluence history only when both counters agree and there is no
+local edit marker. Otherwise the live identity is Local. Hide only the exact
+live identity from stored history, and never populate Confluence body data
+for a Local snapshot. Compare live bytes directly under the existing AI
+admission fence and pin historical comparisons to their saved snapshot IDs.
+
 Restoring a version titled exactly `vN` at version `N` keeps the live title (#2038).
 Confluence restore and recovery complete a body-less placeholder at the superseded live version with its title and body.
 

@@ -298,6 +298,10 @@ Confluence and can replace changes made there. With **Manual review**, a queued
 conflict blocks publishing until a reviewer resolves it. You can keep editing
 and saving locally with the integration off.
 
+Each version is marked **Local** or **Confluence**. Two versions can share
+a number. Use the source shown next to the number to choose the right version
+when previewing, comparing, or restoring.
+
 With Confluence enabled, opening **Version History** imports missing
 Confluence versions and preserves the titles and bodies Compendiq has
 already recorded. In standalone mode, the panel shows Compendiq's local

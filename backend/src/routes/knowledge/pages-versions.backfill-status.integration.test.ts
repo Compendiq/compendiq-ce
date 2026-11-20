@@ -73,8 +73,8 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — backfillStatus (#
 
   async function seedConfluencePage(confluenceId: string, version: number): Promise<number> {
     const res = await query<{ id: number }>(
-      `INSERT INTO pages (confluence_id, space_key, title, body_html, body_text, version, source, last_modified_at, embedding_dirty, embedding_status)
-       VALUES ($1, 'DEV', 'Page 763', '<p>live</p>', 'live', $2, 'confluence', NOW(), FALSE, 'not_embedded')
+      `INSERT INTO pages (confluence_id, space_key, title, body_html, body_text, version, remote_version, source, last_modified_at, embedding_dirty, embedding_status)
+       VALUES ($1, 'DEV', 'Page 763', '<p>live</p>', 'live', $2, $2, 'confluence', NOW(), FALSE, 'not_embedded')
        RETURNING id`,
       [confluenceId, version],
     );

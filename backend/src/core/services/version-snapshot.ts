@@ -1,17 +1,18 @@
 import type { PoolClient } from 'pg';
+import type { PageVersionRef, PageVersionSource } from '@compendiq/contracts';
 import { PageWriteError } from './page-write-admission.js';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
-export type PageVersionSource = 'local' | 'confluence';
+export type { PageVersionSource } from '@compendiq/contracts';
 
-/** The live article and its superseded snapshot use the same identity. */
+/** The live article shadows exactly one history identity. */
 export function livePageVersion(page: {
   source: string;
   version: number;
   remote_version: number | null;
   local_modified_at: Date | null;
-}): { versionNumber: number; source: PageVersionSource } {
+}): PageVersionRef {
   return {
     versionNumber: page.version,
     source: page.source === 'confluence'
@@ -20,11 +21,6 @@ export function livePageVersion(page: {
       ? 'confluence'
       : 'local',
   };
-}
-
-/** Until version counters are decoupled, live snapshots follow page provenance. */
-export function snapshotSourceForPage(source: string): PageVersionSource {
-  return source === 'confluence' ? 'confluence' : 'local';
 }
 
 /**

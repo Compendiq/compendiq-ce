@@ -1497,11 +1497,11 @@ together, which matters most for #1114's query-side prefix.
   Snapshots
   are written on sync, on draft-publish, and before a restore — so both
   Confluence-synced and standalone/local pages accumulate history. The
-  right-pane "Version history" UI lists snapshots + the live version, previews
-  any snapshot, and offers a Confluence-style **restore**
-  (`POST /api/pages/:id/versions/:version/restore`): after locking the live row,
-  it rejects a supplied stale optimistic version before writing history or live
-  content (an omitted version deliberately remains unconditional), snapshots
+  right-pane "Version history" UI displays source-qualified snapshots and the
+  current row. Only the exact current identity shadows a stored row.
+  `POST /api/pages/:id/versions/:version/restore?source=local|confluence`
+  restores the selected snapshot. After locking the live row, it rejects a
+  supplied stale optimistic version before writing history or live content (an omitted version deliberately remains unconditional), snapshots
   the current live state, then applies the target snapshot as a **new** bumped
   version. Older versions remain, `embedding_dirty` is raised, and — for
   Confluence-sourced pages — the restored content is pushed upstream as a new

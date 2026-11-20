@@ -10,7 +10,7 @@ import { materializeDrawioPreviews } from '../../../core/services/drawio-preview
 import { invalidateCollabDocAfterBodyWrite } from '../../../core/services/collab-guard.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
-import { isVersionPlaceholderTitle, livePageVersion } from '../../../core/services/version-snapshot.js';
+import { isVersionPlaceholderTitle, livePageVersion, type PageVersionSource } from '../../../core/services/version-snapshot.js';
 import {
   PageWriteError,
   registerPageWriteIntentReconciler,
@@ -35,6 +35,7 @@ type PublicationKindState =
   | {
       kind: 'page.version_restore';
       targetVersion: number;
+      targetSource?: PageVersionSource;
     };
 
 export type ConfluencePagePutPublication = PublicationKindState & {
@@ -88,7 +89,10 @@ export function confluencePagePutDigest(state: PagePutState): string {
  * are deliberately absent from the persisted effect.
  */
 export function describeConfluencePagePut(
-  input: PagePutState & { actorId: string; expectedLocalVersion: number } & PublicationKindState,
+  input: PagePutState & { actorId: string; expectedLocalVersion: number } & (
+    Extract<PublicationKindState, { kind: 'page.ai_apply' }>
+    | { kind: 'page.version_restore'; targetVersion: number; targetSource: PageVersionSource }
+  ),
 ): ConfluencePagePutPublication {
   const intendedStateDigest = confluencePagePutDigest(input);
   const common = {
@@ -119,7 +123,8 @@ export function describeConfluencePagePut(
     ...common,
     kind: input.kind,
     targetVersion: input.targetVersion,
-    effect: { ...effectCommon, targetVersion: input.targetVersion },
+    targetSource: input.targetSource,
+    effect: { ...effectCommon, targetVersion: input.targetVersion, targetSource: input.targetSource },
   };
 }
 
@@ -179,16 +184,23 @@ function publicationFromRecoveryIntent(
   ) {
     return { ...common, kind: intent.kind, improvementId: effect.improvementId as string | null };
   }
+  const hasTargetSource = Object.hasOwn(effect, 'targetSource');
+  const targetSource = effect.targetSource;
   if (
     intent.kind === 'page.version_restore'
     && typeof effect.targetVersion === 'number'
-    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1 + Number(hasLocalVersion)
+    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1 + Number(hasLocalVersion) + Number(hasTargetSource)
     && COMMON_EFFECT_KEYS.every((key) => Object.hasOwn(effect, key))
-    && effect.targetVersion !== expectedLocalVersion
+    && (hasTargetSource
+      ? (targetSource === 'local' || targetSource === 'confluence')
+      : effect.targetVersion !== expectedLocalVersion)
     && Number.isSafeInteger(effect.targetVersion)
     && effect.targetVersion > 0
   ) {
-    return { ...common, kind: intent.kind, targetVersion: effect.targetVersion };
+    return {
+      ...common, kind: intent.kind, targetVersion: effect.targetVersion,
+      ...(targetSource === 'confluence' || targetSource === 'local' ? { targetSource } : {}),
+    };
   }
   throw new PageWriteError(
     409,
@@ -293,15 +305,19 @@ export async function publishConfluencePagePut(
         );
       }
     }
+    const live = livePageVersion(page);
+    if (publication.targetSource === live.source && publication.targetVersion === live.versionNumber) {
+      throw new PageWriteError(409, 'intent_restore_target_changed', 'The selected restore version is now current');
+    }
     const targetResult = await dbClient.query<{
       title: string;
       body_html: string | null;
     }>(
       `SELECT title, body_html
          FROM page_versions
-        WHERE page_id = $1 AND version_number = $2
+        WHERE page_id = $1 AND version_number = $2 AND ($3::text IS NULL OR source = $3)
         ORDER BY (source = 'confluence') DESC LIMIT 1`,
-      [publication.pageId, publication.targetVersion],
+      [publication.pageId, publication.targetVersion, publication.targetSource ?? null],
     );
     const target = targetResult.rows[0];
     if (!target || target.body_html === null) {
@@ -330,7 +346,7 @@ export async function publishConfluencePagePut(
       );
     }
 
-    const snapshotSource = livePageVersion(page).source;
+    const snapshotSource = live.source;
     const inserted = await dbClient.query(
       `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text, synced_at)
        VALUES ($1, $6, $2, $3, $4, $5, NOW())

@@ -39,6 +39,7 @@ function mockVersionsResponse() {
       versions: [
         {
           versionNumber: 3,
+          source: 'local',
           title: 'Page v3',
           editedAt: '2026-03-05T10:00:00Z',
           syncedAt: '2026-03-05T10:00:00Z',
@@ -48,6 +49,7 @@ function mockVersionsResponse() {
         },
         {
           versionNumber: 2,
+          source: 'local',
           title: 'Page v2',
           editedAt: '2026-03-04T10:00:00Z',
           syncedAt: '2026-03-04T10:00:00Z',
@@ -57,6 +59,7 @@ function mockVersionsResponse() {
         },
         {
           versionNumber: 1,
+          source: 'local',
           title: 'Page v1',
           editedAt: null,
           syncedAt: '2026-03-03T10:00:00Z',
@@ -524,7 +527,7 @@ describe('VersionHistory', () => {
     // ConfirmDialog replaces native confirm(). The copy must reflect the
     // backend reality (pages-versions.ts): Confluence-style non-destructive
     // restore — current content is replaced but stays in version history.
-    expect(await screen.findByText('Restore v2?')).toBeInTheDocument();
+    expect(await screen.findByText('Restore v2 (Local)?')).toBeInTheDocument();
     expect(screen.getByText(/saved as a new version/i)).toBeInTheDocument();
     expect(screen.getByText(/stays in version history/i)).toBeInTheDocument();
 
@@ -536,7 +539,7 @@ describe('VersionHistory', () => {
       );
       expect(restoreCall).toBeDefined();
       const [url, options] = restoreCall as [string, RequestInit];
-      expect(url).toContain('/pages/page-1/versions/2/restore');
+      expect(url).toContain('/pages/page-1/versions/2/restore?source=local');
       expect(options.method).toBe('POST');
       // Optimistic guard: the current live version (3) is sent.
       expect(JSON.parse(options.body as string)).toEqual({ version: 3 });
@@ -569,6 +572,56 @@ describe('VersionHistory', () => {
       ([input]) => (typeof input === 'string' ? input : String(input)).includes('/restore'),
     );
     expect(restoreCall).toBeUndefined();
+  });
+
+  it('keeps same-number Local and Confluence entries distinct in preview, diff, and restore', async () => {
+    const entry = { versionNumber: 6, editedAt: null, syncedAt: null, author: null, message: null };
+    const list = [
+      { ...entry, source: 'local', title: 'Local edit', isCurrent: true },
+      { ...entry, source: 'confluence', title: 'Confluence version', isCurrent: false },
+    ];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      let body: unknown = { versions: list, pageId: 'page-1' };
+      if (url.includes('/versions/6?')) {
+        const version = url.endsWith('=local') ? list[0] : list[1];
+        body = { ...version, confluenceId: 'page-1', bodyHtml: `<p>${version!.title} body</p>`, bodyText: `${version!.title} body` };
+      }
+      if (url.includes('/semantic-diff')) body = { diff: 'Version comparison' };
+      if (url.includes('/restore')) body = { id: 1, title: 'Confluence version', version: 7, restoredFrom: 6, pushedToConfluence: true };
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<VersionHistory pageId="page-1" />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('History'));
+    expect(await screen.findByText('Confluence')).toBeInTheDocument();
+    expect(screen.getByText('Local')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Preview version 6 (Local)' }));
+    await screen.findByText('Version 6 Preview · Local');
+    fireEvent.click(screen.getByRole('button', { name: 'Preview version 6 (Confluence)' }));
+    await screen.findByText('Version 6 Preview · Confluence');
+
+    fireEvent.click(screen.getByRole('button', { name: 'AI semantic diff for version 6 (Local)' }));
+    await screen.findByText('Version comparison');
+    const request = fetchSpy.mock.calls.find(([url]) => String(url).includes('/semantic-diff'));
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      v1: { versionNumber: 6, source: 'confluence' },
+      v2: { versionNumber: 6, source: 'local' },
+    });
+    const urls = fetchSpy.mock.calls.map(([url]) => String(url));
+    expect(urls).toEqual(expect.arrayContaining([
+      expect.stringContaining('/versions/6?source=local'),
+      expect.stringContaining('/versions/6?source=confluence'),
+    ]));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore version 6 (Confluence)' }));
+    await screen.findByText('Restore v6 (Confluence)?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await waitFor(() => {
+      const restore = fetchSpy.mock.calls.find(([url]) => String(url).includes('/restore'));
+      expect(String(restore?.[0])).toContain('/versions/6/restore?source=confluence');
+      expect(JSON.parse(String(restore?.[1]?.body))).toEqual({ version: 6 });
+    });
   });
 
   it('requests a semantic diff without a model prop (server resolves the use-case)', async () => {
@@ -607,8 +660,8 @@ describe('VersionHistory', () => {
       const body = JSON.parse(options.body as string);
       // v1/v2 are sent; model is undefined (omitted from JSON) so the backend
       // resolves the chat use-case instead of forcing a hardcoded model.
-      expect(body.v1).toBeGreaterThan(0);
-      expect(body.v2).toBeGreaterThan(0);
+      expect(body.v1).toEqual({ versionNumber: 2, source: 'local' });
+      expect(body.v2).toEqual({ versionNumber: 3, source: 'local' });
       expect(body.model).toBeUndefined();
     });
   });
@@ -623,6 +676,7 @@ describe('VersionHistory', () => {
         JSON.stringify({
           confluenceId: null,
           versionNumber,
+          source: 'local',
           title: `Page v${versionNumber}`,
           bodyHtml: `<p>${bodyText}</p>`,
           bodyText,
@@ -633,9 +687,9 @@ describe('VersionHistory', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      // Version detail endpoints end in /versions/<number>.
-      if (/\/versions\/3$/.test(url)) return Promise.resolve(detail(3, 'The happy cat'));
-      if (/\/versions\/2$/.test(url)) return Promise.resolve(detail(2, 'The cat'));
+      // Version detail endpoints include the source query parameter.
+      if (/\/versions\/3\?source=local$/.test(url)) return Promise.resolve(detail(3, 'The happy cat'));
+      if (/\/versions\/2\?source=local$/.test(url)) return Promise.resolve(detail(2, 'The cat'));
       return Promise.resolve(mockVersionsResponse());
     });
 
@@ -672,6 +726,7 @@ describe('VersionHistory', () => {
         JSON.stringify({
           confluenceId: null,
           versionNumber,
+          source: 'local',
           title: `Page v${versionNumber}`,
           bodyHtml: `<p>${bodyText}</p>`,
           bodyText,
@@ -682,8 +737,8 @@ describe('VersionHistory', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (/\/versions\/3$/.test(url)) return Promise.resolve(detail(3, 'The happy cat'));
-      if (/\/versions\/2$/.test(url)) return Promise.resolve(detail(2, 'The cat'));
+      if (/\/versions\/3\?source=local$/.test(url)) return Promise.resolve(detail(3, 'The happy cat'));
+      if (/\/versions\/2\?source=local$/.test(url)) return Promise.resolve(detail(2, 'The cat'));
       return Promise.resolve(mockVersionsResponse());
     });
 
@@ -794,6 +849,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: 'conf-123',
         versionNumber: 2,
+        source: 'local',
         title: 'Page v2',
         bodyHtml: '<h2>System Architecture</h2><p>Overview of the <strong>services</strong>.</p>',
         bodyText: 'System Architecture\nOverview of the services.',
@@ -823,7 +879,7 @@ describe('VersionHistory', () => {
     fireEvent.click(previewButtons[1]!); // row for v2
 
     await waitFor(() => {
-      expect(screen.getByText('Version 2 Preview')).toBeInTheDocument();
+      expect(screen.getByText('Version 2 Preview · Local')).toBeInTheDocument();
       expect(screen.getByText('by alice')).toBeInTheDocument();
       expect(screen.getByText('“Updated architecture”')).toBeInTheDocument();
     });
@@ -843,6 +899,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: 'conf-123',
         versionNumber: 2,
+        source: 'local',
         title: 'Page v2',
         bodyHtml: '<h3>Database Schema</h3><p>PostgreSQL 16 with pgvector.</p>',
         bodyText: 'Database Schema\nPostgreSQL 16 with pgvector.',
@@ -891,6 +948,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: null,
         versionNumber,
+        source: 'local',
         title: `Page v${versionNumber}`,
         bodyHtml,
         bodyText,
@@ -939,6 +997,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: null,
         versionNumber: 1,
+        source: 'local',
         title: 'Page v1',
         bodyHtml: '<p>First version.</p>',
         bodyText: 'First version.',
@@ -965,6 +1024,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: null,
         versionNumber: 1,
+        source: 'local',
         title: 'Page v1',
         bodyHtml: null,
         bodyText: 'Plain text historical body without HTML.',
@@ -990,7 +1050,7 @@ describe('VersionHistory', () => {
     fireEvent.click(screen.getAllByTitle('Preview version')[2]!);
 
     await waitFor(() => {
-      expect(screen.getByText('Version 1 Preview')).toBeInTheDocument();
+      expect(screen.getByText('Version 1 Preview · Local')).toBeInTheDocument();
       expect(screen.getByText(/Plain text historical body without HTML\./)).toBeInTheDocument();
     });
   });
@@ -1000,6 +1060,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: null,
         versionNumber: 1,
+        source: 'local',
         title: 'Page v1',
         bodyHtml: null,
         bodyText: null,
@@ -1062,6 +1123,7 @@ describe('VersionHistory', () => {
           JSON.stringify({
             confluenceId: null,
             versionNumber: 2,
+            source: 'local',
             title: 'Page v2',
             bodyHtml: '<p>Loaded content</p>',
             bodyText: 'Loaded content',
@@ -1074,7 +1136,7 @@ describe('VersionHistory', () => {
 
     await waitFor(() => {
       expect(screen.queryByText('Loading version preview...')).not.toBeInTheDocument();
-      expect(screen.getByText('Version 2 Preview')).toBeInTheDocument();
+      expect(screen.getByText('Version 2 Preview · Local')).toBeInTheDocument();
     });
   });
 
@@ -1083,6 +1145,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: null,
         versionNumber: 2,
+        source: 'local',
         title: 'Page v2',
         bodyHtml: '<p>V2 body</p>',
         bodyText: 'V2 body',
@@ -1121,18 +1184,18 @@ describe('VersionHistory', () => {
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
-    await screen.findByText('Version 2 Preview');
+    await screen.findByText('Version 2 Preview · Local');
 
     // Click "Restore this version" inside the preview header
     const restoreInPreview = screen.getByText('Restore this version');
     fireEvent.click(restoreInPreview);
 
     // ConfirmDialog opens
-    expect(await screen.findByText('Restore v2?')).toBeInTheDocument();
+    expect(await screen.findByText('Restore v2 (Local)?')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await waitFor(() => {
-      expect(screen.queryByText('Version 2 Preview')).not.toBeInTheDocument();
+      expect(screen.queryByText('Version 2 Preview · Local')).not.toBeInTheDocument();
     });
   });
 
@@ -1141,6 +1204,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: null,
         versionNumber: 2,
+        source: 'local',
         title: 'Page v2',
         bodyHtml: '<p>V2 body</p>',
         bodyText: 'V2 body',
@@ -1167,7 +1231,7 @@ describe('VersionHistory', () => {
 
     // Select version 2 to preview
     fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
-    await screen.findByText('Version 2 Preview');
+    await screen.findByText('Version 2 Preview · Local');
 
     // Timeline should now have max-h-48 class
     expect(document.querySelector('.max-h-48')).toBeInTheDocument();
@@ -1179,6 +1243,7 @@ describe('VersionHistory', () => {
       JSON.stringify({
         confluenceId: null,
         versionNumber: 2,
+        source: 'local',
         title: 'Page v2',
         bodyHtml: '<p>V2 body</p>',
         bodyText: 'V2 body',
@@ -1203,7 +1268,7 @@ describe('VersionHistory', () => {
     expect(screen.queryByTitle('Restore this version')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
-    await screen.findByText('Version 2 Preview');
+    await screen.findByText('Version 2 Preview · Local');
     expect(screen.queryByTitle('Restore this version')).not.toBeInTheDocument();
   });
 });

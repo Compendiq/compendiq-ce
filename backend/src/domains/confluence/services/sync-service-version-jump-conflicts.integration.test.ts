@@ -498,7 +498,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
       const list = await app.inject({ url: `/api/pages/${id}/versions` });
       expect(list.statusCode).toBe(200);
       expect(list.json().versions).toContainEqual(expect.objectContaining({ versionNumber: 6, isCurrent: false }));
-      const detail = await app.inject({ url: `/api/pages/${id}/versions/6` });
+      const detail = await app.inject({ url: `/api/pages/${id}/versions/6?source=confluence` });
       expect(detail.statusCode).toBe(200);
       expect(detail.json()).toMatchObject({ title: 'Runbook', bodyHtml: BOB_HTML, bodyText: BOB_TEXT, isCurrent: false });
     } finally {
