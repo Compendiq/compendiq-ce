@@ -60,7 +60,7 @@ sequenceDiagram
                     S->>DB: audit SYNC_CONFLICT_DETECTED (kept_local / queued_for_review)
                     Note over S,DB: no attachment cleanup, download, snapshot or upsert#59;<br/>restriction sync still runs
                 else incoming wins (confluence-wins, or no local edit)
-                    S->>DB: COMMIT (nothing written)#59; cleanup + download follow,<br/>then a snapshot of the locked row and the upsert below
+                    S->>DB: COMMIT (nothing written)#59; cleanup + download follow,<br/>then the row is rechecked in the upsert transaction
                 end
             end
             S->>AH: downloadAttachments(page)
@@ -68,9 +68,22 @@ sequenceDiagram
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
             AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
-            S->>DB: version jump: INSERT page_versions (snapshot of the locked row)
-            S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
-            S->>DB: version jump: audit SYNC_OVERWROTE_LOCAL_EDITS<br/>only if a local edit was overwritten (#35;1772)
+            S->>DB: BEGIN + recheck current row FOR UPDATE
+            alt row moved since version-jump decision
+                S->>DB: COMMIT AI-policy publication only
+            else local edit cannot be snapshotted (#35;2037)
+                S->>DB: ROLLBACK
+                Note over S,DB: Count a page failure and retry on the next walk
+            else publication proceeds
+                opt version jump overwrites a local edit
+                    S->>DB: Store local edit in page_versions on the same transaction
+                end
+                S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
+                S->>DB: COMMIT
+                opt version jump
+                    S->>DB: Audit SYNC_OVERWROTE_LOCAL_EDITS for a local edit,<br/>or save best-effort history for a routine update
+                end
+            end
             S->>R: HSET sync:status:{user} progress
         end
 
@@ -202,19 +215,21 @@ sequenceDiagram
   cleans, downloads, snapshots, upserts or resets collaborative state, and
   restriction sync still runs. Otherwise (`confluence-wins`, or no local edit,
   which is a routine update with no audit) the cache is cleaned and
-  re-downloaded, the locked row is saved to `page_versions`, and the upsert
-  replaces it with Confluence's version number, which is above the saved local
-  one. `SYNC_OVERWROTE_LOCAL_EDITS` is written after the commit, and before the
-  collaborative document is reconciled, only if a local edit was overwritten.
-  The snapshot uses `ON CONFLICT DO NOTHING`: if that version number is already
-  taken in the history (for example by a body-less row that opening Version
-  History imported), no entry is added. Two checks leave the page to the next
-  walk. The upsert re-reads the row under `FOR UPDATE` and writes no content if
-  its `version` or `local_modified_at` moved since the decision (for example a
-  local save during the download); it still publishes the AI policy this walk
-  observed, as every exit does. The decision itself stops if the locked row is
-  no longer behind upstream, so a concurrent newer write is never moved back. A
-  kept or queued row keeps its older version, so
+  re-downloaded before the upsert. The upsert re-reads the row under
+  `FOR UPDATE` and skips the content write and snapshot if the row moved
+  since the decision (for example, a local save during the download). It
+  still publishes the AI policy observed on this walk. The initial decision
+  also skips a row that has already reached or passed the upstream version.
+  When Confluence wins over a local edit (#2037), the upsert transaction must
+  store the locked row in `page_versions`. Scheduled sync and bulk Re-sync
+  use the same helper: it can claim a body-less placeholder unless a baseline
+  references it, and accepts an identical snapshot already stored. A conflicting
+  snapshot or storage error rolls back the overwrite, counts the page as failed,
+  and leaves it for the next walk. `SYNC_OVERWROTE_LOCAL_EDITS` is written after
+  commit and before collaborative reconciliation. The superseded version is
+  below the new live version and appears in Version History. Routine updates
+  without a local edit still save history on a best-effort basis.
+  A kept or queued row keeps its older version, so
   every walk of the page re-enters this branch: `compendiq-wins` audits again
   and `manual-review` queues another version on each such run. Incremental runs
   re-fetch pages modified upstream in the last 24 hours, and the
@@ -347,23 +362,20 @@ Callers:
   and a locked row that is no longer behind upstream is left to the newer write.
   - `queued_for_review`, `kept_local` and held rows skip cleanup, download,
     snapshot and upsert; restriction sync still runs.
-  - `apply_incoming`, and `unchanged` unless it is a local rename, clean and
-    download, save the locked local version to `page_versions` with
-    `ON CONFLICT DO NOTHING`, and upsert Confluence's version number, which is
-    above the saved local one, so the snapshot is ordinary history. The upsert
-    first re-reads the row `FOR UPDATE` and writes no content if its `version`
-    or `local_modified_at` moved since the decision; it still publishes the AI
-    policy the walk observed.
+  - When incoming content wins, sync cleans and downloads attachments. The
+    upsert transaction rechecks the page under `FOR UPDATE`. If the row moved,
+    sync only publishes the observed AI policy. To overwrite a local edit,
+    sync calls `snapshotLocalVersionBeforeOverwrite` on that transaction.
+    If it cannot store the edit, sync rolls back and reports a page failure.
+    A successful upsert moves the live version above the snapshot. Routine
+    version jumps save best-effort history after commit.
   - The overwrite audit is written before the collab reconcile; counts change
     only after a committed upsert.
 
-**Snapshot asymmetry.** The scheduled version-unchanged branch is the only
-writer that overwrites a local edit without a `page_versions` snapshot. The
-bulk refresh snapshots it on the overwrite's own transaction, claiming a
-body-less imported row or refusing the page when that number holds other
-content. The scheduled version-jump branch saves the locked local version with
-`ON CONFLICT DO NOTHING`, so it skips the snapshot silently when that number
-is already taken in history, for example by a row imported from Confluence.
+**Local edit snapshots.** Bulk refresh and scheduled version jumps use
+the same transactional snapshot helper (#2037). A baseline-linked placeholder
+is ineligible for reuse. The scheduled version-unchanged branch can still
+overwrite a local edit without saving history.
 
 **Version alignment.** A local edit made while the integration was off moves
 `pages.version` ahead of Confluence's version, and a Re-sync no longer moves

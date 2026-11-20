@@ -14,7 +14,7 @@ import { getRestrictionChangeSet, type RestrictionChangeSet } from './restrictio
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { pruneVersionJumpAttachmentCache } from './version-jump-attachment-cleanup.js';
-import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
+import { saveVersionSnapshotByPageId, snapshotLocalVersionBeforeOverwrite } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
@@ -39,6 +39,7 @@ import {
 import { isConfluenceEnabled } from '../../../core/services/confluence-integration.js';
 import {
   getPageWriterRuntimeId,
+  PageWriteError,
   lockPageWriterRuntime,
   lockPageWrites,
 } from '../../../core/services/page-write-admission.js';
@@ -974,18 +975,6 @@ async function syncPage(
   bodyHtml = preview.html;
   bodyText = htmlToText(bodyHtml);
 
-  // Save current version snapshot before updating (for version history / semantic diff).
-  // #1772: it is the row the conflict policy decided on, read under its lock.
-  if (versionJumpDecision) {
-    await saveVersionSnapshot(
-      page.id,
-      versionJumpDecision.row.version,
-      versionJumpDecision.row.title,
-      versionJumpDecision.row.body_html,
-      versionJumpDecision.row.body_text,
-    );
-  }
-
   // Upsert page (shared table, no user_id)
   // deleted_at = NULL restores pages that were previously soft-deleted
   // (e.g. page was restored from Confluence trash)
@@ -1019,8 +1008,9 @@ async function syncPage(
       const current = await txClient.query<{
         id: number; source: string; deleted_at: Date | null;
         ai_policy: AiPolicy; version: number; local_modified_at: Date | null;
+        title: string; body_html: string | null; body_text: string | null;
       }>(
-        `SELECT id, source, deleted_at, ai_policy, version, local_modified_at
+        `SELECT id, source, deleted_at, ai_policy, version, local_modified_at, title, body_html, body_text
            FROM pages WHERE confluence_id = $1 FOR UPDATE`,
         [page.id],
       );
@@ -1034,6 +1024,7 @@ async function syncPage(
       const decided = versionJumpDecision?.row;
       if (decided && (
         !locked
+        || locked.id !== decided.id
         || locked.version !== decided.version
         || (locked.local_modified_at?.getTime() ?? null) !== (decided.local_modified_at?.getTime() ?? null)
       )) {
@@ -1046,10 +1037,22 @@ async function syncPage(
             }),
           });
         }
-      } else if (current.rows[0]) {
-        admittedCurrentPolicy = current.rows[0].ai_policy;
+      } else if (locked) {
+        if (versionJumpDecision?.hasLocalEdits) {
+          try {
+            await snapshotLocalVersionBeforeOverwrite(txClient, locked);
+          } catch (err) {
+            logger.warn(
+              { err, pageId: page.id, localVersion: locked.version,
+                reason: err instanceof PageWriteError ? err.reason : 'local_edit_snapshot_failed' },
+              'Version-jump overwrite refused because the local edit could not be saved to history',
+            );
+            throw err;
+          }
+        }
+        admittedCurrentPolicy = locked.ai_policy;
         creationPolicy = admitAutomaticIngestionPolicy({
-          identity: page.id, currentPolicy: current.rows[0].ai_policy, candidate: policyFromLabels(labels),
+          identity: page.id, currentPolicy: locked.ai_policy, candidate: policyFromLabels(labels),
         });
         seededLabels = applyCanonicalAiPolicyLabel(labels, creationPolicy);
       } else {
@@ -1187,6 +1190,12 @@ async function syncPage(
     counts.pagesCreated++;
   } else {
     counts.pagesUpdated++;
+    // Routine history remains best effort. Wait for a successful upsert so a
+    // row that moved during attachment download leaves no spurious snapshot.
+    if (versionJumpDecision && !versionJumpDecision.hasLocalEdits) {
+      const prior = versionJumpDecision.row;
+      await saveVersionSnapshotByPageId(prior.id, prior.version, prior.title, prior.body_html, prior.body_text);
+    }
     // #1772: SYNC_OVERWROTE_LOCAL_EDITS iff this upsert replaced a local edit
     // the policy let the incoming version win over. Written before the collab
     // reconcile, which can still throw after the commit (logAuditEvent never

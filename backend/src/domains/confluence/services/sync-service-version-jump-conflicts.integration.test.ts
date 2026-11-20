@@ -14,11 +14,15 @@
  * version + 1, local markers), then upstream moves to v7.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import Fastify from 'fastify';
+import sensible from '@fastify/sensible';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
+import { insertTestRuntime, isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
+import { logger } from '../../../core/utils/logger.js';
+import { pagesVersionRoutes } from '../../../routes/knowledge/pages-versions.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
 import { setAiPolicyEnforcementForTest } from '../../../core/services/ai-policy-activation.js';
 import type * as EnterpriseFeatures from '../../../core/enterprise/features.js';
@@ -84,6 +88,10 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://fixture.test');
   requestedPaths.push(url.pathname);
+  if (url.pathname === '/rest/api/content') {
+    json(res, 200, { results: [...upstreamPages.values()], _links: {} });
+    return;
+  }
   const list = url.pathname.match(/^\/rest\/api\/content\/([^/]+)\/child\/attachment$/);
   if (list) {
     const id = decodeURIComponent(list[1]!);
@@ -139,9 +147,12 @@ async function usePolicy(policy: SyncConflictPolicy): Promise<void> {
 
 /** Page synced at v5 an hour ago. */
 async function seedSyncedV5(confluenceId: string): Promise<number> {
+  // A synced page starts with image analysis queued. The attachment cleanup
+  // re-marks that flag independently of the later content transaction.
   const r = await query<{ id: number }>(
-    `INSERT INTO pages (source, confluence_id, space_key, title, body_storage, body_html, body_text, version, last_synced)
-     VALUES ('confluence', $1, $2, 'Runbook', '<p>A v5</p>', '<p>A v5</p>', 'A v5', 5, NOW() - INTERVAL '1 hour')
+    `INSERT INTO pages
+       (source, confluence_id, space_key, title, body_storage, body_html, body_text, version, last_synced, image_analysis_dirty)
+     VALUES ('confluence', $1, $2, 'Runbook', '<p>A v5</p>', '<p>A v5</p>', 'A v5', 5, NOW() - INTERVAL '1 hour', TRUE)
      RETURNING id`,
     [confluenceId, SPACE],
   );
@@ -227,6 +238,47 @@ async function snapshots(pageId: number) {
   return r.rows;
 }
 
+async function seedHistory(pageId: number, version: number, title: string, html: string | null, text: string | null) {
+  const result = await query<{ id: string }>(
+    `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
+     VALUES ($1, $2, $3, $4, $5, '2020-01-01T00:00:00Z') RETURNING id`,
+    [pageId, version, title, html, text],
+  );
+  return result.rows[0]!.id;
+}
+
+async function historyRow(snapshotId: string) {
+  const result = await query('SELECT * FROM page_versions WHERE id = $1', [snapshotId]);
+  return result.rows[0];
+}
+
+async function pageBytes(pageId: number): Promise<string> {
+  const result = await query<{ bytes: string }>('SELECT to_jsonb(p)::text AS bytes FROM pages p WHERE id = $1', [pageId]);
+  return result.rows[0]!.bytes;
+}
+
+async function linkBaseline(pageId: number, snapshotId: string) {
+  const runtimeId = await insertTestRuntime();
+  await query(
+    `WITH intent AS (
+       INSERT INTO page_write_intents
+         (runtime_id, kind, page_ids, revisions, recovery_mode, effect, status, settled_at, settlement_reason, settlement_proof)
+       VALUES ($3, 'baseline.prepare', ARRAY[$1]::int[], '{}', 'local_verified',
+               '{"effectClass":"local"}', 'completed', NOW(), 'effect_committed', '{}')
+       RETURNING id
+     )
+     INSERT INTO page_baselines (
+       id, page_id, original_page_id, page_identity, version, content_revision, lifecycle_revision,
+       manifest_digest, manifest, manifest_bytes, title, total_bytes, reserved_bytes,
+       prepared_by_name, preparation_intent_id, version_snapshot_id
+     )
+     SELECT gen_random_uuid(), p.id, p.id, '[]', p.version, p.content_revision, p.lifecycle_revision,
+            repeat('0', 64), '[]', convert_to('[]', 'UTF8'), p.title, 0, 0, 'Test', intent.id, $2
+       FROM pages p CROSS JOIN intent WHERE p.id = $1`,
+    [pageId, snapshotId, runtimeId],
+  );
+}
+
 async function snapshotTitles(pageId: number) {
   const r = await query<{ version_number: number; title: string }>(
     'SELECT version_number, title FROM page_versions WHERE page_id = $1 ORDER BY version_number',
@@ -244,6 +296,7 @@ async function collabDocStored(pageId: number): Promise<boolean> {
 }
 
 async function runSync(page: ConfluencePage, runId: string) {
+  upstreamPages.set(page.id, page);
   const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
   await __internal.syncPage(client, actorId, SPACE, page, new Date(), new Map(), counts, runId);
   return counts;
@@ -256,7 +309,6 @@ const restrictionFetch = (confluenceId: string) => `/rest/api/content/${confluen
 async function seedRenamedLocally(confluenceId: string): Promise<number> {
   const id = await seedSyncedV5(confluenceId);
   const v6 = upstreamPage(confluenceId, 6);
-  upstreamPages.set(confluenceId, v6);
   await runSync(v6, RUN_1);
   await query(
     `UPDATE pages SET title = 'Bob local title', version = version + 1,
@@ -402,6 +454,139 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(Date.parse(localAt)).toBeGreaterThan(Date.parse(syncedAt));
   });
 
+  it('claims an imported placeholder and exposes the local edit as non-current history', async () => {
+    await usePolicy('confluence-wins');
+    const page = upstreamPage('vj-claim');
+    const id = await seedSyncedV5(page.id);
+    await bobSavesLocally(id);
+    const snapshotId = await seedHistory(id, 6, 'v6', null, null);
+
+    await runSync(page, RUN_1);
+
+    expect(await historyRow(snapshotId)).toMatchObject({
+      title: 'Runbook', body_html: BOB_HTML, body_text: BOB_TEXT,
+    });
+    expect((await historyRow(snapshotId))?.synced_at.getTime()).toBeGreaterThan(Date.parse('2020-01-01'));
+    expect(await row(id)).toMatchObject({ version: 7 });
+    expect((await syncAudits(id)).map(({ action }) => action)).toEqual(['SYNC_OVERWROTE_LOCAL_EDITS']);
+
+    const app = Fastify();
+    try {
+      await app.register(sensible);
+      app.decorateRequest('userId', '');
+      app.decorate('authenticate', async (request: { userId: string }) => { request.userId = actorId; });
+      // Read from local history to exercise the already saved snapshot.
+      await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [actorId]);
+      await app.register(pagesVersionRoutes, { prefix: '/api' });
+      const list = await app.inject({ url: `/api/pages/${id}/versions` });
+      expect(list.statusCode).toBe(200);
+      expect(list.json().versions).toContainEqual(expect.objectContaining({ versionNumber: 6, isCurrent: false }));
+      const detail = await app.inject({ url: `/api/pages/${id}/versions/6` });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({ title: 'Runbook', bodyHtml: BOB_HTML, bodyText: BOB_TEXT, isCurrent: false });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses a divergent stored version and counts one page failure while the space walk continues', async () => {
+    await usePolicy('confluence-wins');
+    const page = upstreamPage('vj-divergent');
+    upstreamPages.set(page.id, page);
+    const other = upstreamPage('vj-next');
+    upstreamPages.set(other.id, other);
+    const id = await seedSyncedV5(page.id);
+    const otherId = await seedSyncedV5(other.id);
+    await bobSavesLocally(id);
+    const snapshotId = await seedHistory(id, 6, 'Other title', BOB_HTML, BOB_TEXT);
+    const before = await pageBytes(id);
+    const snapshot = await historyRow(snapshotId);
+    const warn = vi.spyOn(logger, 'warn');
+    try {
+      await __internal.syncSpace(client, actorId, SPACE, undefined, new Date(), new Map(), RUN_1);
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ pagesFailed: 1, total: 2 }), expect.any(String));
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({
+        pageId: page.id, localVersion: 6, reason: 'local_edit_snapshot_conflict',
+      }), expect.any(String));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await pageBytes(id)).toBe(before);
+    expect(await historyRow(snapshotId)).toEqual(snapshot);
+    expect(await syncAudits(id)).toEqual([]);
+    expect(await row(otherId)).toMatchObject({ version: 7 });
+  });
+
+  it('accepts an identical existing snapshot without modifying it', async () => {
+    await usePolicy('confluence-wins');
+    const page = upstreamPage('vj-identical');
+    const id = await seedSyncedV5(page.id);
+    await bobSavesLocally(id);
+    const snapshotId = await seedHistory(id, 6, 'Runbook', BOB_HTML, BOB_TEXT);
+    const snapshot = await historyRow(snapshotId);
+
+    expect((await runSync(page, RUN_1)).pagesUpdated).toBe(1);
+    expect(await historyRow(snapshotId)).toEqual(snapshot);
+    expect(await snapshots(id)).toHaveLength(1);
+  });
+
+  it('refuses a body-less placeholder linked to a baseline', async () => {
+    await usePolicy('confluence-wins');
+    const page = upstreamPage('vj-baseline');
+    const id = await seedSyncedV5(page.id);
+    await bobSavesLocally(id);
+    const snapshotId = await seedHistory(id, 6, 'v6', null, null);
+    await linkBaseline(id, snapshotId);
+    const before = await pageBytes(id);
+    const snapshot = await historyRow(snapshotId);
+
+    await expect(runSync(page, RUN_1)).rejects.toMatchObject({ reason: 'local_edit_snapshot_conflict' });
+    expect(await pageBytes(id)).toBe(before);
+    expect(await historyRow(snapshotId)).toEqual(snapshot);
+    expect(await syncAudits(id)).toEqual([]);
+  });
+
+  it.each(['claim', 'insert', 'snapshot error'] as const)(
+    'rolls back the overwrite and history together (%s)',
+    async (operation) => {
+      await usePolicy('confluence-wins');
+      const page = upstreamPage('vj-rollback');
+      const id = await seedSyncedV5(page.id);
+      await bobSavesLocally(id);
+      const snapshotId = operation === 'claim' ? await seedHistory(id, 6, 'v6', null, null) : null;
+      const before = await pageBytes(id);
+      const snapshot = snapshotId ? await historyRow(snapshotId) : null;
+      const target = operation === 'snapshot error' ? 'page_versions' : 'pages';
+      const check = operation === 'snapshot error' ? 'version_number <> 6' : 'version <> 7';
+      await query(`ALTER TABLE ${target} ADD CONSTRAINT reject_jump_test CHECK (${check}) NOT VALID`);
+      try {
+        await expect(runSync(page, RUN_1)).rejects.toMatchObject({ code: '23514', constraint: 'reject_jump_test' });
+      } finally {
+        await query(`ALTER TABLE ${target} DROP CONSTRAINT reject_jump_test`);
+      }
+      expect(await pageBytes(id)).toBe(before);
+      if (snapshotId) {
+        expect(await historyRow(snapshotId)).toEqual(snapshot);
+      } else {
+        expect(await snapshots(id)).toEqual([]);
+      }
+      expect(await syncAudits(id)).toEqual([]);
+    },
+  );
+
+  it('updates a routine version jump even if history already holds different content', async () => {
+    await usePolicy('confluence-wins');
+    const page = upstreamPage('vj-routine-collision', 6);
+    const id = await seedSyncedV5(page.id);
+    const snapshotId = await seedHistory(id, 5, 'Other title', '<p>Other body</p>', 'Other body');
+    const snapshot = await historyRow(snapshotId);
+
+    expect((await runSync(page, RUN_1)).pagesUpdated).toBe(1);
+    expect(await row(id)).toMatchObject({ version: 6 });
+    expect(await historyRow(snapshotId)).toEqual(snapshot);
+    expect(await syncAudits(id)).toEqual([]);
+  });
+
   it.each(['confluence-wins', 'compendiq-wins', 'manual-review'] as const)(
     'without a local edit an upstream version jump stays a routine update with no audit (%s)',
     async (policy) => {
@@ -495,6 +680,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect((await row(id)).body_html).toBe(raceHtml);
     expect(await row(id)).toMatchObject({ version: 6 });
     expect(await syncAudits(id)).toEqual([]);
+    expect(await snapshots(id)).toEqual([]);
     expect(first).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
     expect(requestedPaths).toContain(restrictionFetch('vj-race'));
 
@@ -588,6 +774,21 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(await row(id)).toMatchObject({ title: 'Alice upstream title', version: 8, local_modified_at: null });
     expect(await snapshotTitles(id)).toContainEqual({ version_number: 7, title: 'Bob local title' });
     expect(counts.pagesUpdated).toBe(1);
+  });
+
+  it('keeps a title-only local edit when history holds a different title with the same body', async () => {
+    await usePolicy('confluence-wins');
+    const id = await seedRenamedLocally('vj-title-refused');
+    const page = upstreamPage('vj-title-refused', 8, 'Alice upstream title');
+    const { body_html, body_text } = await row(id);
+    const snapshotId = await seedHistory(id, 7, 'v7', body_html, body_text);
+    const snapshot = await historyRow(snapshotId);
+    const before = await pageBytes(id);
+
+    await expect(runSync(page, RUN_2)).rejects.toMatchObject({ reason: 'local_edit_snapshot_conflict' });
+    expect(await pageBytes(id)).toBe(before);
+    expect(await historyRow(snapshotId)).toEqual(snapshot);
+    expect(await syncAudits(id)).toEqual([]);
   });
 
   it('a local save that left body and title equal to upstream stays a routine version jump with no audit', async () => {
