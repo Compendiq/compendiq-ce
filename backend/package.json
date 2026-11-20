@@ -6,7 +6,7 @@
   "//hoisting-note": "The runtime Docker stage only copies the root node_modules tree, so any prod dep that ends up nested under backend/node_modules disappears at runtime. The @opentelemetry runtime packages are force-hoisted via a mirror in the root package.json `dependencies` block (a conflicting root devDep chain would otherwise nest them) — change those ranges in lockstep with the root mirror. `p-limit`, `ipaddr.js` and `@pdf-lib/fontkit` currently hoist naturally (the old root mirror of the first two was removed as redundant); PR Check asserts they stay at the root, the docker-build smoke step imports all of them and is the safety net, but local repros are faster.",
   "scripts": {
     "dev": "tsx watch --env-file=../.env src/index.ts",
-    "build": "tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('src/core/services/fonts','dist/core/services/fonts',{recursive:true})\"",
+    "build": "tsc -p tsconfig.build.json && node -e \"const fs=require('node:fs');fs.cpSync('src/core/services/fonts','dist/core/services/fonts',{recursive:true});fs.rmSync('dist/core/db/migrations',{recursive:true,force:true});fs.mkdirSync('dist/core/db/migrations',{recursive:true});for(const d of fs.readdirSync('src/core/db/migrations',{withFileTypes:true}))if(d.isFile()&&d.name.endsWith('.sql'))fs.copyFileSync('src/core/db/migrations/'+d.name,'dist/core/db/migrations/'+d.name)\"",
     "start": "node --env-file-if-exists=.env --import ./dist/telemetry-register.js dist/index.js",
     "lint": "eslint --max-warnings=0 src/ scripts/",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",

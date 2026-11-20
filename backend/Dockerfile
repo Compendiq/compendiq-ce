@@ -71,12 +71,11 @@ COPY --chown=node:node --from=prod-deps /app/backend/node_modules/. ./node_modul
 # Copy built contracts package so backend can resolve it at runtime
 COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@compendiq/contracts/dist/
 COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@compendiq/contracts/package.json
-# Copy compiled backend. dist includes the PDF export fonts, copied into
-# dist/core/services/fonts by `npm run build -w backend` (#1729): an overlay
-# Dockerfile must ship dist from that build.
+# Copy compiled backend. dist includes the PDF export fonts (#1729) and SQL
+# migrations (#2012), copied into dist/core/services/fonts and
+# dist/core/db/migrations by `npm run build -w backend`: an overlay Dockerfile
+# must ship dist from that build.
 COPY --chown=node:node --from=builder /app/backend/dist/ dist/
-# Copy SQL migration files (not emitted by tsc)
-COPY --chown=node:node --from=builder /app/backend/src/core/db/migrations/ dist/core/db/migrations/
 
 USER node
 
