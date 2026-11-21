@@ -580,10 +580,9 @@ function renderTable(ctx: RenderContext, el: Element): void {
     }
   });
   const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
-  // Header cells too tall to repeat print once, in the band they start in. A
-  // cell's later pieces are no wider (full bands, then its last piece), and
-  // wrapText gives a narrower width no fewer lines, so one check per cell holds.
-  const tooTall = new Set<GridCell>();
+  // A carried first-row header piece is checked at its actual width. After it
+  // fails, later pieces of the same cell can only be as wide or narrower.
+  let tooTall: GridCell | undefined;
   for (let from = 0; from < width; from += perBand) {
     const starting = startingRows.get(from / perBand) ?? [];
     if (from > 0 && starting.length === 0) continue;
@@ -598,15 +597,18 @@ function renderTable(ctx: RenderContext, el: Element): void {
       next[r] = i;
       const carried = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from ? row.cells[i - 1] : undefined;
       const startsHere = i < row.cells.length && row.cells[i]!.start < to;
-      if (from > 0 && r === 0 && row.isHeader && carried && !tooTall.has(carried)) {
-        const piece = sliceRow(ctx, row, i - 1, from, Math.min(carried.start + carried.span, to), colWidth);
-        if (!repeatsAsHeader(piece)) tooTall.add(carried);
+      const firstIsBlank = carried !== undefined && carried === tooTall;
+      if (from > 0 && !startsHere && (!carried || firstIsBlank)) continue;
+      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, firstIsBlank);
+      if (r === 0 && row.isHeader && carried && !firstIsBlank) {
+        const piece = slice.pieces[0]!;
+        if (!repeatsAsHeader(piece.lines.length)) {
+          tooTall = carried;
+          if (!startsHere) continue;
+          piece.lines = []; // Keep its column and the next cell's offset.
+          slice.count = Math.max(1, ...slice.pieces.map((p) => p.lines.length));
+        }
       }
-      // Only header cells are ever too tall: their piece here stays blank, and
-      // with no header cell starting here the header row has nothing to show.
-      const blank = carried !== undefined && tooTall.has(carried);
-      if (from > 0 && !startsHere && (!carried || blank)) continue;
-      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, blank);
       if (r === 0 && row.isHeader) header = slice;
       band.push(slice);
     }
@@ -662,15 +664,14 @@ function sliceRow(
 }
 
 /**
- * Whether a header slice repeats — on a continuation page, or as the header
- * row's share of a later band: only when a line of the row below still fits
- * under it on a fresh page. A header cell too tall for that prints once, in
- * the band it starts in.
+ * Only a th-first row at index zero can repeat on continuation pages. Its
+ * entire slice (or a carried piece in a later band) must leave room for one
+ * body line on a fresh page. Later th-first rows follow ordinary band rules.
  */
-function repeatsAsHeader(header: BandRow): boolean {
+function repeatsAsHeader(lines: number): boolean {
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
-  return header.count * lineHeight + padding + lineHeight + padding <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
+  return lines * lineHeight + padding + lineHeight + padding <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
 }
 
 /**
@@ -688,7 +689,7 @@ function renderTableBand(
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
   const pageCapacity = PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
-  const repeatHeader = header && repeatsAsHeader(header) ? header : undefined;
+  const repeatHeader = header && repeatsAsHeader(header.count) ? header : undefined;
 
   const drawFragment = (row: BandRow, start: number, count: number): void => {
     const height = count * lineHeight + padding;

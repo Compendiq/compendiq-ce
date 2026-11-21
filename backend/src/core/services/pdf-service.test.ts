@@ -312,6 +312,21 @@ describe('pdf-service (pdf-lib)', () => {
       expect(text).toBe('ItemQtyApples3Total3');
     });
 
+    it('keeps an empty bordered row between populated rows', async () => {
+      const { runs, verticals, horizontals } = await tableLayout(
+        '<table><tr><th>a</th><th>b</th></tr><tr></tr><tr><td>c</td><td>d</td></tr></table>',
+      );
+      const middle = verticals.filter((rule) => rule.top < runs[0]!.y && rule.bottom > runs[2]!.y);
+      expect(middle.map((rule) => +rule.x.toFixed(2))).toEqual([50, 297.64, 545.28]);
+      expect(horizontals).toHaveLength(6);
+    });
+
+    it('keeps the boxes even when no cell starts anywhere in the table', async () => {
+      const { verticals, horizontals } = await tableLayout('<table><tr></tr><tr></tr><tr></tr></table>');
+      expect(verticals.map((rule) => +rule.x.toFixed(2))).toEqual([50, 545.28, 50, 545.28, 50, 545.28]);
+      expect(horizontals).toHaveLength(6);
+    });
+
     it('takes only a row\'s own cells, so a nested table adds no columns and prints once', async () => {
       const { text, runs } = await tableLayout(
         '<table><tr><td>outer<table><tr><td>N1</td><td>N2</td></tr></table></td><td>RIGHT</td></tr></table>',
@@ -412,7 +427,7 @@ describe('pdf-service (pdf-lib)', () => {
         const { runs, pages } = await tableLayout(
           '<table><tr><th colspan="1000">Title</th></tr><tr><td>a</td><td>b</td></tr></table>',
         );
-        // 1000 columns → 72 bands of 14; only the first holds the start of a cell.
+        // No cell starts after the first band, even though the grid is 1000 columns wide.
         expect(runs.map((run) => run.str)).toEqual(['Title', 'a', 'b']);
         expect(pages).toBe(1);
       });
@@ -484,11 +499,29 @@ describe('pdf-service (pdf-lib)', () => {
         // 21 columns → bands of 11 and 10. The long cell's last piece shares the second band with `tail`:
         // the header row prints there for `tail`, and the long cell's piece stays blank.
         const words = Array.from({ length: 1000 }, (_, w) => `w${w}`).join(' ');
-        const { text, runs } = await tableLayout(`<table>
+        const { text, runs, verticals } = await tableLayout(`<table>
           <tr><th colspan="20">${words} HEADEREND</th><th>tail</th></tr>
           <tr>${Array.from({ length: 21 }, (_, c) => `<td>d${c}</td>`).join('')}</tr></table>`);
         expect(text.match(/HEADEREND|tail/g)).toEqual(['HEADEREND', 'tail']);
         expect(runs.filter((run) => /^d\d+$/.test(run.str))).toHaveLength(21);
+        const tail = runs.find((run) => run.str === 'tail')!;
+        expect(tail.x).toBeCloseTo(LEFT + 9 * (WIDTH / 11) + PAD);
+        expect(bordersAt(verticals, tail)).toEqual([50, 455.23, 500.25]);
+      });
+
+      it('repeats a fitting carried label beside a newly starting oversized header', async () => {
+        const { text } = await tableLayout(`<table><tr>
+          <th colspan="12">Label one</th><th colspan="8">${'wide '.repeat(1200)}HEADEREND</th></tr>
+          <tr>${'<td>x</td>'.repeat(20)}</tr></table>`);
+        expect(text.match(/Labelone/g)).toHaveLength(2);
+        expect(text.match(/HEADEREND/g)).toHaveLength(1);
+      });
+
+      it('treats a second thead row as an ordinary row even when its carried piece is oversized', async () => {
+        const { text } = await tableLayout(`<table><thead><tr><th colspan="20">Group</th></tr>
+          <tr><th colspan="15">${'wide '.repeat(1200)}HEADEREND</th><th colspan="5">next</th></tr></thead>
+          <tr>${'<td>x</td>'.repeat(20)}</tr></table>`);
+        expect(text.match(/HEADEREND/g)).toHaveLength(2);
       });
 
       it('drops each too-tall header share on its own and still prints a later fitting one', async () => {
