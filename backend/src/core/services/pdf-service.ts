@@ -2,6 +2,7 @@ import { PDFDocument, rgb, PDFPage, PDFFont } from 'pdf-lib';
 import { JSDOM } from 'jsdom';
 import { logger } from '../utils/logger.js';
 import { drawText, embedFonts, measureText, normalizeText } from './pdf-fonts.js';
+import { PdfCodeBudget, PdfCodeLimitError } from './pdf-code-budget.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 const PAGE_WIDTH = 595.28;   // A4 width in points
@@ -88,20 +89,32 @@ interface RenderContext {
   fontItalic: PDFFont;
   fontMono: PDFFont;
   title?: string;
+  codeBudget: PdfCodeBudget;
+  tables: Map<Element, PreparedTable>;
 }
 
-// ── Public API (same signature as before) ──────────────────────────
+// ── Public API ────────────────────────────────────────────────────
 
 export async function generatePdf(
   html: string,
-  options: { title?: string },
+  options: { title?: string; codeBudget?: PdfCodeBudget; fontDir?: string },
 ): Promise<Buffer> {
   try {
-    const doc = await PDFDocument.create();
-    // Parse first: which fonts to embed depends on the characters to draw.
     const body = new JSDOM(html).window.document.body;
-    const alts = Array.from(body.querySelectorAll('img'), (img) => img.getAttribute('alt') ?? '');
-    const fonts = await embedFonts(doc, [options.title ?? '', body.textContent ?? '', ...alts].join('\n'));
+    const codeBudget = options.codeBudget ?? new PdfCodeBudget();
+    // Every effective source line takes at least one row. Refuse newline storms
+    // before building the font input, embedding any fonts, or allocating rows.
+    visitBlocks(body, (node, render) => {
+      if (render !== renderPre) return;
+      const code = trimmedText(node);
+      if (!code) return;
+      codeBudget.reserveRow();
+      for (let lf = code.indexOf('\n'); lf !== -1; lf = code.indexOf('\n', lf + 1)) codeBudget.reserveRow();
+    });
+
+    const doc = await PDFDocument.create();
+    const tables = new Map<Element, PreparedTable>();
+    const fonts = await embedFonts(doc, fontCharacters(body, options.title, tables), options.fontDir);
 
     const ctx: RenderContext = {
       doc,
@@ -110,6 +123,8 @@ export async function generatePdf(
       pageNum: 1,
       ...fonts,
       title: options.title,
+      codeBudget,
+      tables,
     };
 
     // Cover page
@@ -117,7 +132,9 @@ export async function generatePdf(
       renderCoverPage(ctx, options.title);
     }
 
-    renderChildren(ctx, body);
+    visitBlocks(body, (el, render) => render(ctx, el), (node) => {
+      renderTextBlock(ctx, trimmedText(node), ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
+    });
 
     // Add footers to all pages
     addFooters(ctx);
@@ -125,7 +142,7 @@ export async function generatePdf(
     const bytes = await doc.save();
     return Buffer.from(bytes);
   } catch (err) {
-    logger.error({ err }, 'PDF generation failed');
+    if (!(err instanceof PdfCodeLimitError)) logger.error({ err }, 'PDF generation failed');
     throw err;
   }
 }
@@ -208,91 +225,85 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
 
 // ── DOM rendering ──────────────────────────────────────────────────
 
-function renderChildren(ctx: RenderContext, node: Node): void {
-  for (const child of Array.from(node.childNodes)) {
-    renderNode(ctx, child);
+type ElementRenderer = (ctx: RenderContext, el: Element) => void;
+
+function trimmedText(node: Node): string {
+  return node.textContent?.trim() ?? '';
+}
+
+function heading(size: number): ElementRenderer {
+  return (ctx, el) => renderHeading(ctx, trimmedText(el), size);
+}
+
+function renderPre(ctx: RenderContext, node: Node): void {
+  renderCodeBlock(ctx, trimmedText(node));
+}
+
+const elementRenderers: Record<string, ElementRenderer> = {
+  h1: heading(FONT_SIZE_H1), h2: heading(FONT_SIZE_H2), h3: heading(FONT_SIZE_H3),
+  h4: heading(FONT_SIZE_H4), h5: heading(FONT_SIZE_H4), h6: heading(FONT_SIZE_H4),
+  p: renderParagraph, pre: renderPre, table: renderTable,
+  blockquote: (ctx, el) => renderBlockquote(ctx, trimmedText(el)),
+  ul: (ctx, el) => renderList(ctx, el, false), ol: (ctx, el) => renderList(ctx, el, true),
+  hr: renderHorizontalRule, br: (ctx) => { ctx.y -= LINE_HEIGHT; },
+  img: renderImagePlaceholder, summary: renderExpandSummary,
+};
+const containers: Record<string, true> = {
+  div: true, section: true, article: true, main: true, details: true, figure: true, figcaption: true,
+};
+
+/** Admission and drawing visit the same leaves. For example, a pre inside
+ * a table cell is cell text, not a separately rendered code block. */
+function visitBlocks(
+  parent: Node, visit: (el: Element, render: ElementRenderer) => void, visitText?: (node: Node) => void,
+): void {
+  for (let node = parent.firstChild; node; node = node.nextSibling) {
+    if (node.nodeType === 3) {
+      visitText?.(node);
+    } else if (node.nodeType === 1) {
+      const el = node as Element;
+      const tag = el.tagName.toLowerCase();
+      if (Object.hasOwn(elementRenderers, tag)) visit(el, elementRenderers[tag]!);
+      else if (el.firstElementChild || Object.hasOwn(containers, tag)) visitBlocks(el, visit, visitText);
+      else visitText?.(el);
+    }
   }
 }
 
-function renderNode(ctx: RenderContext, node: Node): void {
-  if (node.nodeType === 3 /* TEXT_NODE */) {
-    const text = node.textContent?.trim();
-    if (text) {
-      renderTextBlock(ctx, text, ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
+/** Only distinct normalized scalars cross the font-selection boundary, not
+ * another whole-document string. Whitespace expansion adds no new glyphs. */
+function fontCharacters(body: Element, title: string | undefined, tables: Map<Element, PreparedTable>): string {
+  const chars = new Set<string>();
+  const collect = (text: string, preserveSpacing = false) => {
+    // wrapText replaces word separators with ASCII spaces. Code and image
+    // labels retain spacing except for the line breaks normalizeText replaces.
+    // Skip those scalars without expanding tabs or splitting long code lines.
+    const needsFont = preserveSpacing ? /[^\p{ASCII}\u0085\u2028\u2029]/u : /[^\p{ASCII}\s\u0085]/u;
+    if (!needsFont.test(text)) return;
+    for (const ch of text.normalize('NFC')) if (needsFont.test(ch)) chars.add(ch);
+  };
+  collect(title ?? '');
+  visitBlocks(body, (el, render) => {
+    if (render === renderImagePlaceholder) {
+      collect(el.getAttribute('alt') ?? '', true);
+    } else if (render === renderPre) {
+      collect(trimmedText(el), true);
+    } else if (render === renderTable) {
+      // A cell boundary can split an NFC sequence. Collect the exact cell
+      // and caption text, and reuse that projection when drawing the grid.
+      const table = el as HTMLTableElement;
+      const prepared = { ...tableGrid(Array.from(table.rows)), caption: table.caption ? tableText(table.caption) : '' };
+      tables.set(el, prepared);
+      collect(prepared.caption);
+      for (const row of prepared.grid) for (const cell of row.cells) collect(cell.text);
+    } else if (el.localName === 'ul' || el.localName === 'ol') {
+      for (const item of el.querySelectorAll(':scope > li')) collect(item.textContent ?? '');
+    } else {
+      collect(el.textContent ?? '');
     }
-    return;
-  }
-
-  if (node.nodeType !== 1 /* ELEMENT_NODE */) return;
-
-  const el = node as Element;
-  const tag = el.tagName.toLowerCase();
-
-  switch (tag) {
-    case 'h1':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H1);
-      break;
-    case 'h2':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H2);
-      break;
-    case 'h3':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H3);
-      break;
-    case 'h4':
-    case 'h5':
-    case 'h6':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H4);
-      break;
-    case 'p':
-      renderParagraph(ctx, el);
-      break;
-    case 'pre':
-      renderCodeBlock(ctx, el.textContent?.trim() ?? '');
-      break;
-    case 'blockquote':
-      renderBlockquote(ctx, el.textContent?.trim() ?? '');
-      break;
-    case 'ul':
-      renderList(ctx, el, false);
-      break;
-    case 'ol':
-      renderList(ctx, el, true);
-      break;
-    case 'table':
-      renderTable(ctx, el);
-      break;
-    case 'hr':
-      renderHorizontalRule(ctx);
-      break;
-    case 'br':
-      ctx.y -= LINE_HEIGHT;
-      break;
-    case 'img':
-      renderImagePlaceholder(ctx, el);
-      break;
-    case 'summary':
-      renderExpandSummary(ctx, el);
-      break;
-    case 'div':
-    case 'section':
-    case 'article':
-    case 'main':
-    case 'details':
-    case 'figure':
-    case 'figcaption':
-      renderChildren(ctx, el);
-      break;
-    default:
-      // For unknown elements, try to render their text content
-      if (el.children.length > 0) {
-        renderChildren(ctx, el);
-      } else {
-        const text = el.textContent?.trim();
-        if (text) {
-          renderTextBlock(ctx, text, ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
-        }
-      }
-  }
+  }, (node) => collect(node.textContent ?? ''));
+  // Keep neighboring members from composing into a different scalar.
+  return [...chars].join(' ');
 }
 
 // ── Block renderers ────────────────────────────────────────────────
@@ -363,11 +374,14 @@ function renderTextBlock(
   font: PDFFont,
   fontSize: number,
   color: ReturnType<typeof rgb>,
+  keepWithNext = 0,
 ): void {
   const lines = wrapText(text, font, fontSize, CONTENT_WIDTH);
-  for (const line of lines) {
-    ensureSpace(ctx, LINE_HEIGHT);
-    drawText(ctx.page, line, {
+  const height = lines.length * LINE_HEIGHT + keepWithNext;
+  if (keepWithNext && height <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM) ensureSpace(ctx, height);
+  for (let i = 0; i < lines.length; i++) {
+    ensureSpace(ctx, LINE_HEIGHT + (i === lines.length - 1 ? keepWithNext : 0));
+    drawText(ctx.page, lines[i]!, {
       x: MARGIN_LEFT,
       y: ctx.y,
       size: fontSize,
@@ -382,9 +396,7 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   if (!code) return;
   // A source line wider than the code box continues flush left on the next
   // row (#1730); every row, continuation or not, is positioned like a line.
-  const rows = code.split('\n').flatMap((line) =>
-    breakToWidth(normalizeText(line), ctx.fontMono, FONT_SIZE_CODE, CODE_TEXT_WIDTH),
-  );
+  const rows = codeRows(code, ctx.fontMono, ctx.codeBudget);
   const lineHeight = FONT_SIZE_CODE + 4;
 
   ensureSpace(ctx, Math.min(rows.length * lineHeight + CODE_PADDING * 2, 200));
@@ -429,6 +441,43 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   }
 
   ctx.y -= CODE_PADDING + PARAGRAPH_SPACING;
+}
+
+/** Source lines are already reserved. Reserve each continuation at the width
+ * crossing, not after building an array for an entire long line. Keep spans
+ * of unchanged text; a tab may itself straddle two rows. */
+function codeRows(code: string, font: PDFFont, budget: PdfCodeBudget): string[] {
+  const rows: string[] = [];
+  let row = '';
+  let width = 0;
+  // NFC cannot compose across these separators. Expand a single tab at a
+  // time rather than allocating a four-times-larger string for a long line.
+  for (const [part] of code.matchAll(/[^\n\t\v\f\r\u0085\u2028\u2029]+|./gsu)) {
+    if (part === '\n') {
+      rows.push(row);
+      row = '';
+      width = 0;
+      continue;
+    }
+    const text = normalizeText(part);
+    let start = 0;
+    let end = 0;
+    for (const ch of text) {
+      const w = measureText(ch, font, FONT_SIZE_CODE);
+      if ((row || end > start) && width + w > CODE_TEXT_WIDTH) {
+        budget.reserveRow();
+        rows.push(row + text.slice(start, end));
+        start = end;
+        row = '';
+        width = 0;
+      }
+      width += w;
+      end += ch.length;
+    }
+    row += text.slice(start);
+  }
+  rows.push(row);
+  return rows;
 }
 
 function drawCodeBg(page: PDFPage, top: number, bottom: number): void {
@@ -553,11 +602,15 @@ interface BandRow {
   count: number;
 }
 
+interface PreparedTable { grid: GridRow[]; width: number; caption: string }
+
 function renderTable(ctx: RenderContext, el: Element): void {
-  // thead rows, then tbody (and bare) rows, then tfoot rows; never a nested table's.
-  const rows = Array.from((el as HTMLTableElement).rows);
-  if (rows.length === 0) return;
-  const { grid, width } = tableGrid(rows);
+  const { grid, width, caption } = ctx.tables.get(el)!;
+  ctx.tables.delete(el);
+  if (!grid.length) {
+    if (caption) renderTextBlock(ctx, caption, ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
+    return;
+  }
 
   // Narrow-column policy: no column is narrower than TABLE_MIN_COLUMN_WIDTH, so
   // a grid of more than 14 columns prints as bands of whole columns, one below
@@ -580,10 +633,9 @@ function renderTable(ctx: RenderContext, el: Element): void {
     }
   });
   const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
-  // Header cells too tall to repeat print once, in the band they start in. A
-  // cell's later pieces are no wider (full bands, then its last piece), and
-  // wrapText gives a narrower width no fewer lines, so one check per cell holds.
-  const tooTall = new Set<GridCell>();
+  // A carried first-row header piece is checked at its actual width. After it
+  // fails, later pieces of the same cell can only be as wide or narrower.
+  let tooTall: GridCell | undefined;
   for (let from = 0; from < width; from += perBand) {
     const starting = startingRows.get(from / perBand) ?? [];
     if (from > 0 && starting.length === 0) continue;
@@ -598,19 +650,57 @@ function renderTable(ctx: RenderContext, el: Element): void {
       next[r] = i;
       const carried = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from ? row.cells[i - 1] : undefined;
       const startsHere = i < row.cells.length && row.cells[i]!.start < to;
-      if (from > 0 && r === 0 && row.isHeader && carried && !tooTall.has(carried)) {
-        const piece = sliceRow(ctx, row, i - 1, from, Math.min(carried.start + carried.span, to), colWidth);
-        if (!repeatsAsHeader(piece)) tooTall.add(carried);
+      const firstIsBlank = carried !== undefined && carried === tooTall;
+      if (from > 0 && !startsHere && (!carried || firstIsBlank)) continue;
+      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, firstIsBlank);
+      if (r === 0 && row.isHeader && carried && !firstIsBlank) {
+        const piece = slice.pieces[0]!;
+        if (!repeatsAsHeader(piece.lines.length)) {
+          tooTall = carried;
+          if (!startsHere) continue;
+          piece.lines = []; // Keep its column and the next cell's offset.
+          slice.count = Math.max(1, ...slice.pieces.map((p) => p.lines.length));
+        }
       }
-      // Only header cells are ever too tall: their piece here stays blank, and
-      // with no header cell starting here the header row has nothing to show.
-      const blank = carried !== undefined && tooTall.has(carried);
-      if (from > 0 && !startsHere && (!carried || blank)) continue;
-      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, blank);
       if (r === 0 && row.isHeader) header = slice;
       band.push(slice);
     }
-    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth);
+    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth, from === 0 ? caption : '');
+  }
+}
+
+// HTML's default block elements (including legacy import markup), plus the
+// table and explicit line boundaries. Inline marks and author CSS do not split words.
+const TABLE_TEXT_BREAKS: Record<string, true> = {
+  address: true, article: true, aside: true, blockquote: true, br: true, caption: true, center: true,
+  dd: true, details: true, dialog: true, dir: true, div: true, dl: true, dt: true, fieldset: true,
+  figcaption: true, figure: true, footer: true, form: true, h1: true, h2: true, h3: true,
+  h4: true, h5: true, h6: true, header: true, hgroup: true, hr: true, legend: true, li: true,
+  listing: true, main: true, menu: true, nav: true, ol: true, p: true, plaintext: true, pre: true,
+  search: true, section: true, summary: true, table: true, td: true, th: true, tr: true, ul: true, xmp: true,
+};
+
+/** Flatten blocks to word boundaries, not inline marks: `get<b>ting</b>` stays one word. */
+function tableText(root: Element): string {
+  if (!root.firstElementChild) return (root.textContent ?? '').trim();
+  let text = '';
+  // Walk enter/leave edges without recursing on the depth of imported markup.
+  let node: Node = root;
+  let leaving = false;
+  for (;;) {
+    if (node.nodeType === 1 && Object.hasOwn(TABLE_TEXT_BREAKS, (node as Element).localName)) text += ' ';
+    else if (!leaving && node.nodeType === 3) text += node.nodeValue;
+    if (!leaving && node.firstChild) {
+      node = node.firstChild;
+    } else if (node === root) {
+      return text.trim();
+    } else if (node.nextSibling) {
+      node = node.nextSibling;
+      leaving = false;
+    } else {
+      node = node.parentNode!;
+      leaving = true;
+    }
   }
 }
 
@@ -626,7 +716,7 @@ function tableGrid(rows: HTMLTableRowElement[]): { grid: GridRow[]; width: numbe
   const grid = rows.map((row): GridRow => {
     let column = 0;
     const cells = Array.from(row.cells, (cell): GridCell => {
-      const placed = { start: column, span: cell.colSpan, text: cell.textContent?.trim() ?? '' };
+      const placed = { start: column, span: cell.colSpan, text: tableText(cell) };
       column += cell.colSpan;
       return placed;
     });
@@ -662,15 +752,14 @@ function sliceRow(
 }
 
 /**
- * Whether a header slice repeats — on a continuation page, or as the header
- * row's share of a later band: only when a line of the row below still fits
- * under it on a fresh page. A header cell too tall for that prints once, in
- * the band it starts in.
+ * Only a th-first row at index zero can repeat on continuation pages. Its
+ * entire slice (or a carried piece in a later band) must leave room for one
+ * body line on a fresh page. Later th-first rows follow ordinary band rules.
  */
-function repeatsAsHeader(header: BandRow): boolean {
+function repeatsAsHeader(lines: number): boolean {
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
-  return header.count * lineHeight + padding + lineHeight + padding <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
+  return lines * lineHeight + padding + lineHeight + padding <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
 }
 
 /**
@@ -681,14 +770,23 @@ function repeatsAsHeader(header: BandRow): boolean {
  */
 function renderTableBand(
   ctx: RenderContext, prepared: BandRow[], header: BandRow | undefined, colWidth: number, bandWidth: number,
+  caption: string,
 ): void {
-  ensureSpace(ctx, LINE_HEIGHT * 2);
-  ctx.y -= 4;
-
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
   const pageCapacity = PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
-  const repeatHeader = header && repeatsAsHeader(header) ? header : undefined;
+  const repeatHeader = header && repeatsAsHeader(header.count) ? header : undefined;
+  const topGap = 4;
+  if (caption) {
+    const firstHeight = prepared[0]!.count * lineHeight + padding;
+    // If even one caption line and the full row cannot share a fresh page,
+    // keep its first fragment instead; the rest continues normally.
+    const keep = LINE_HEIGHT + topGap + firstHeight <= pageCapacity ? firstHeight : lineHeight + padding;
+    renderTextBlock(ctx, caption, ctx.font, FONT_SIZE_BODY, COLOR_TEXT, topGap + keep);
+  } else {
+    ensureSpace(ctx, LINE_HEIGHT * 2);
+  }
+  ctx.y -= topGap;
 
   const drawFragment = (row: BandRow, start: number, count: number): void => {
     const height = count * lineHeight + padding;
@@ -734,8 +832,8 @@ function renderTableBand(
     const row = prepared[r]!;
     const fullHeight = row.count * lineHeight + padding;
     const freshCapacity = pageCapacity - (r > 0 && repeatHeader ? repeatHeader.count * lineHeight + padding : 0);
-    // Keep ordinary rows together when they fit on a fresh page.
-    if (fullHeight <= freshCapacity && ctx.y - fullHeight < MARGIN_BOTTOM) continueTable(r);
+    // A caption already reserved its row (or a fragment); never orphan it by moving the row now.
+    if (!(r === 0 && caption) && fullHeight <= freshCapacity && ctx.y - fullHeight < MARGIN_BOTTOM) continueTable(r);
     let start = 0;
     while (start < row.count) {
       const available = Math.floor((ctx.y - MARGIN_BOTTOM - padding) / lineHeight);

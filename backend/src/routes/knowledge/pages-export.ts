@@ -1,8 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { generatePdf } from '../../core/services/pdf-service.js';
+import { PdfCodeBudget } from '../../core/services/pdf-code-budget.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { articlePdfDisposition } from '../../core/utils/article-pdf-disposition.js';
 import { PDFDocument } from 'pdf-lib';
 import { BatchExportBodySchema, PagePrimaryKeySchema } from '@compendiq/contracts';
 import { z } from 'zod';
@@ -37,14 +39,9 @@ export async function pagesExportRoutes(fastify: FastifyInstance) {
 
     const pdfBuffer = await generatePdf(row.body_html, { title: row.title });
 
-    const filename = row.title
-      .replace(/[^a-zA-Z0-9-_ ]/g, '')
-      .replace(/\s+/g, '-')
-      .toLowerCase();
-
     return reply
       .header('Content-Type', 'application/pdf')
-      .header('Content-Disposition', `attachment; filename="${filename}.pdf"`)
+      .header('Content-Disposition', articlePdfDisposition(row.title, pageId))
       .send(pdfBuffer);
   });
 
@@ -71,9 +68,10 @@ export async function pagesExportRoutes(fastify: FastifyInstance) {
 
     // Generate individual PDFs and merge with pdf-lib
     const merged = await PDFDocument.create();
+    const codeBudget = new PdfCodeBudget();
 
     for (const row of result.rows) {
-      const pdfBytes = await generatePdf(row.body_html, { title: row.title });
+      const pdfBytes = await generatePdf(row.body_html, { title: row.title, codeBudget });
       const doc = await PDFDocument.load(pdfBytes);
       const pages = await merged.copyPages(doc, doc.getPageIndices());
       pages.forEach((p) => merged.addPage(p));

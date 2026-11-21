@@ -218,20 +218,27 @@ describe('ArticleReadToolbar', () => {
     expect(mockResyncMutate).toHaveBeenCalledWith('1', expect.any(Object));
   });
 
-  it('triggers PDF download from Export PDF', async () => {
+  it.each([
+    ['установка.pdf', 'установка.pdf'],
+    [null, 'guide-2.pdf'],
+  ])('downloads the PDF from the toolbar (server name: %s)', async (filename, expected) => {
     const fakeBlob = new Blob(['%PDF'], { type: 'application/pdf' });
-    mockExportPdfAsync.mockResolvedValueOnce(fakeBlob);
+    mockExportPdfAsync.mockResolvedValueOnce({ blob: fakeBlob, filename });
     const createObjectURLSpy = vi.fn(() => 'blob:http://localhost/fake-url');
-    const revokeObjectURLSpy = vi.fn();
-    globalThis.URL.createObjectURL = createObjectURLSpy;
-    globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = createObjectURLSpy;
+      static revokeObjectURL = vi.fn();
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
 
-    renderToolbar();
+    renderToolbar({ title: 'Guide 2!' });
     await openMoreMenu();
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Export PDF' }));
-    await waitFor(() => expect(mockExportPdfAsync).toHaveBeenCalledWith(1));
-    await waitFor(() => expect(createObjectURLSpy).toHaveBeenCalledWith(fakeBlob));
+    await waitFor(() => expect(click).toHaveBeenCalledOnce());
+    expect(click.mock.contexts[0]).toHaveProperty('download', expected);
+    expect(mockExportPdfAsync).toHaveBeenCalledWith(1);
+    expect(createObjectURLSpy).toHaveBeenCalledWith(fakeBlob);
   });
 
   it('hides write actions and disables history restore when the article is frozen (#277)', async () => {

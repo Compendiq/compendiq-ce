@@ -887,6 +887,29 @@ describe('ArticleRightPane', () => {
       expect(screen.getByText('Maintenance & AI')).toBeInTheDocument();
     });
 
+    it.each([
+      ['Установка', 'установка.pdf', 'установка.pdf'],
+      ['A guide!', null, 'a-guide.pdf'],
+      ['手順書', null, '.pdf'], // The legacy title fallback is nullish, not truthy.
+    ])('downloads %s from the rail', async (title, filename, expected) => {
+      currentMockPage = { ...mockPage, title: title! };
+      const blob = new Blob(['%PDF']);
+      mockExportPdfAsync.mockResolvedValue({ blob, filename });
+      const createUrl = vi.fn(() => 'blob:test');
+      vi.stubGlobal('URL', class extends URL {
+        static createObjectURL = createUrl;
+        static revokeObjectURL = vi.fn();
+      });
+      const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+      await waitFor(() => expect(click).toHaveBeenCalledOnce());
+      expect(click.mock.contexts[0]).toHaveProperty('download', expected);
+      expect(createUrl).toHaveBeenCalledWith(blob);
+    });
+
     it('names Re-embed without RAG jargon', async () => {
       renderRail();
       fireEvent.click(screen.getByTestId('article-actions-rail'));
