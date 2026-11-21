@@ -166,6 +166,31 @@ describe('export-helpers (#303)', () => {
   // No overlay is registered; these exercise the real `renderPdfCe` path.
   // ---------------------------------------------------------------------------
 
+  it('prints the first-seen union, not inherited values, and hashes the original rows', async () => {
+    const rows = [
+      { type: 'quality', bucket: '80-100', count: 4 },
+      { type: 'coverage', spaceKey: 'OPS', pageCount: 17, avgQuality: 81, constructor: 'owner' },
+    ];
+    await exportToPdf('union.pdf', rows, 'Health');
+    const strings = await pdfStrings(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
+    const data = strings.slice(strings.indexOf('Health — data') + 1);
+    expect(data).toEqual(['type', 'bucket', 'count', 'spaceKey', 'pageCount', 'avgQuality', 'constructor',
+      'quality', '80-100', '4', '', '', '', '', 'coverage', '', '', 'OPS', '17', '81', 'owner', 'Health', 'Page 2 of 2']);
+    expect(strings).toContain(await sha256Hex(canonicalJson(rows)));
+  });
+
+  it('paginates widened bands vertically with continuous page numbers', async () => {
+    const rows = Array.from({ length: 80 }, (_, i) => i % 2 === 0
+      ? { id: `r${i}` }
+      : Object.fromEntries(Array.from({ length: 20 }, (_, c) => [`k${c}`, `v${i}-${c}`])));
+    await exportToPdf('bands.pdf', rows, 'Bands');
+    const strings = await pdfStrings(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
+    const footers = strings.filter((s) => /^Page \d+ of \d+$/.test(s));
+    expect(footers).toEqual(Array.from({ length: 6 }, (_, i) => `Page ${i + 1} of 6`));
+    expect(strings.filter((s) => s === 'k19')).toHaveLength(2);
+    expect(strings).toEqual(expect.arrayContaining(['v1-19', 'v79-19', 'v79-0', 'r78']));
+  });
+
   it('default renderer produces cover + multi-page data PDF for >57 rows', async () => {
     const rows = Array.from({ length: 80 }, (_, i) => ({
       id: `row-${i}`,

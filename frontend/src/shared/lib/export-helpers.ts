@@ -206,19 +206,28 @@ async function renderPdfCe(
   cover.drawText(integrityHash, { x: MARGIN, y, font, size: 7, color: COLOR_TEXT });
 
   // ── Data pages ────────────────────────────────────────────────────────
-  const cols = rows.length > 0 ? Object.keys(rows[0]!) : [];
-  const pagesWritten: Array<{ page: ReturnType<typeof doc.addPage>; pageNo: number }> = [];
+  const firstKeys = rows.length ? Object.keys(rows[0]!) : [];
+  const keys = new Set(firstKeys);
+  for (let r = 1; r < rows.length; r++) {
+    for (const key of Object.keys(rows[r]!)) keys.add(key);
+  }
+  const cols = [...keys];
   if (rows.length > 0) {
-    const layout = computeColumnLayout(cols, rows, font, boldFont, { portraitSize: A4, margin: MARGIN });
-    const dataPageContext = renderDataPages(
-      doc, rows, cols, title, layout,
-      { MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont, text: guard.text },
-    );
-    pagesWritten.push(...dataPageContext);
+    // A widened union may need several horizontal bands. Keep the incumbent
+    // layout (even below the minimum width) when the first row already fits
+    // every key, so existing reports paginate exactly as before.
+    const capacity = Math.floor((A4[1] - 2 * MARGIN) / MIN_COLUMN_WIDTH);
+    const bands = cols.length > firstKeys.length && cols.length > capacity
+      ? Array.from({ length: Math.ceil(cols.length / capacity) }, (_, i) => cols.slice(i * capacity, (i + 1) * capacity))
+      : [cols];
+    for (const band of bands) {
+      const layout = computeColumnLayout(band, rows, font, boldFont, { portraitSize: A4, margin: MARGIN });
+      renderDataPages(doc, rows, band, title, layout,
+        { MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont, text: guard.text });
+    }
   } else {
     const p = doc.addPage(A4);
     p.drawText('No data', { x: MARGIN, y: A4[1] - MARGIN, font, size: 12, color: COLOR_MUTED });
-    pagesWritten.push({ page: p, pageNo: 1 });
   }
 
   // Drawn after the data pages, which can replace characters too.
@@ -227,9 +236,8 @@ async function renderPdfCe(
   }
 
   // ── Footer on every page (cover + data) ───────────────────────────────
-  const totalPages = 1 + pagesWritten.length;
-  drawFooter(cover, 1, totalPages, title, font, COLOR_MUTED);
-  pagesWritten.forEach((p) => drawFooter(p.page, p.pageNo + 1, totalPages, title, font, COLOR_MUTED));
+  const pages = doc.getPages();
+  pages.forEach((page, i) => drawFooter(page, i + 1, pages.length, title, font, COLOR_MUTED));
 
   return await doc.save();
 }
@@ -312,8 +320,7 @@ interface RenderCtx {
 /**
  * Paginate rows across data pages. Uses the precomputed `layout` for
  * per-column widths + page orientation (portrait or landscape) so wide
- * tables don't overflow the right margin. Returns the list of pages so
- * the caller can stamp footers.
+ * tables don't overflow the right margin.
  */
 function renderDataPages(
   doc: Awaited<ReturnType<typeof import('pdf-lib')['PDFDocument']['create']>>,
@@ -322,7 +329,7 @@ function renderDataPages(
   title: string,
   layout: ColumnLayout,
   ctx: RenderCtx,
-): Array<{ page: ReturnType<typeof doc.addPage>; pageNo: number }> {
+): void {
   const { MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont, text } = ctx;
   const { pageSize, colWidths } = layout;
   const rowHeight = 12;
@@ -331,7 +338,6 @@ function renderDataPages(
   const rowsPerPage = Math.max(1, Math.floor(available / rowHeight));
 
   const pageCount = Math.ceil(rows.length / rowsPerPage);
-  const pages: Array<{ page: ReturnType<typeof doc.addPage>; pageNo: number }> = [];
 
   for (let p = 0; p < pageCount; p++) {
     const page = doc.addPage(pageSize);
@@ -360,19 +366,14 @@ function renderDataPages(
       const row = rows[r]!;
       cols.forEach((col, i) => {
         const x = MARGIN + colWidths.slice(0, i).reduce((a, b) => a + b, 0);
-        const raw = row[col];
-        const s = raw == null ? '' : typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
+        const s = cellText(row, col);
         page.drawText(truncateToWidth(text(s), colWidths[i]! - 4, font, 7), {
           x, y, font, size: 7, color: COLOR_MUTED,
         });
       });
       y -= rowHeight;
     }
-
-    pages.push({ page, pageNo: p + 1 });
   }
-
-  return pages;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +383,13 @@ function renderDataPages(
 type PdfFont = Awaited<
   ReturnType<Awaited<ReturnType<typeof import('pdf-lib')['PDFDocument']['create']>>['embedFont']>
 >;
+
+const MIN_COLUMN_WIDTH = 40;
+
+function cellText(row: Record<string, unknown>, key: string): string {
+  const raw = Object.hasOwn(row, key) ? row[key] : null;
+  return raw == null ? '' : typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
+}
 
 /** Result of the layout pass — what `renderDataPages` consumes. */
 interface ColumnLayout {
@@ -438,7 +446,7 @@ export function computeColumnLayout(
 ): ColumnLayout {
   const portraitSize = opts.portraitSize ?? [595, 842];
   const margin = opts.margin ?? 50;
-  const minColWidth = opts.minColWidth ?? 40;
+  const minColWidth = opts.minColWidth ?? MIN_COLUMN_WIDTH;
   const maxColWidth = opts.maxColWidth ?? 220;
   const landscapeThresholdCols = opts.landscapeThresholdCols ?? 11;
   const maxSampleRows = opts.maxSampleRows ?? 200;
@@ -456,8 +464,7 @@ export function computeColumnLayout(
   const desiredRaw = cols.map((col) => {
     let w = safeWidth(boldFont, col, headerSize);
     for (let r = 0; r < rows.length; r += sampleStep) {
-      const raw = rows[r]![col];
-      const s = raw == null ? '' : typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
+      const s = cellText(rows[r]!, col);
       const cellW = safeWidth(font, s, bodySize);
       if (cellW > w) w = cellW;
     }

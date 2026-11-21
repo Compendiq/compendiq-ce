@@ -21,6 +21,9 @@ Trending and content-quality analytics remain admin-only across the corpus.
 Both exclude trashed pages in SQL; restoration makes the same historical
 activity eligible again. See `docs/claude/pages-and-confluence.md`.
 
+CE analytics PDFs use first-seen own column names across all rows. Preserve
+homogeneous report layout, the original-row integrity hash and EE overlay.
+
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.
