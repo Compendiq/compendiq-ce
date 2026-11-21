@@ -61,6 +61,10 @@ large-graph gate, and full-graph escape remain independent.
   exact rollback retains its original value in operation-owned preparation.
 - `docs/claude/enterprise-and-baselines.md`: REQUIRED before changing EE hooks, baselines or page writers.
 
+Article PDF exports share one printed-code-row budget across authorized batch
+members. Reserve source rows before font selection and wrapped continuations
+before storing them; never return a partial download (#1962).
+
 ## Mandatory Rules
 
 1. **Tests required** for every change. Vitest everywhere; frontend uses jsdom + `@testing-library/react`. Backend DB tests hit real Postgres (port 5433 via `test-db-helper.ts`) — never mock the DB. PR Check runs backend tests without coverage (frontend is its own job); the aggregate floors in `backend/vitest.config.ts` are for local `npm run test:coverage`. Never use `--no-verify`.

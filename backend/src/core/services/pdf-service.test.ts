@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getDocumentProxy, extractText, getResolvedPDFJS } from 'unpdf';
 import { generatePdf, closeBrowser } from './pdf-service.js';
+import { PdfCodeBudget } from './pdf-code-budget.js';
 import fontkit from '@pdf-lib/fontkit';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -50,6 +51,32 @@ describe('pdf-service (pdf-lib)', () => {
       const result = await generatePdf(html, {});
 
       expect(result).toBeInstanceOf(Buffer);
+    });
+
+    it('counts internal empty code rows, not trimmed edges or pre consumed as cell/list text', async () => {
+      const html = `<table><tr><td><pre>cell\n\ntext</pre></td></tr></table>
+        <ul><li><pre>list\n\ntext</pre></li></ul>
+        <pre> \n\t\n </pre><details><section><pre>\n  first\n\nlast   \n\n</pre></section></details>`;
+      const pdf = await generatePdf(html, { codeBudget: new PdfCodeBudget(3) });
+      const text = (await extractText(new Uint8Array(pdf), { mergePages: true })).text;
+      expect(text).toMatch(/cell\s+text.*list\s+text.*first.*last/s);
+      await expect(generatePdf(html, { codeBudget: new PdfCodeBudget(2) })).rejects.toMatchObject({ statusCode: 413 });
+    });
+
+    it('admits exactly the remaining width-aware rows across multiple code blocks', async () => {
+      // Four spaces from the tab straddle the 83-cell boundary, so the first
+      // block prints two rows despite containing no newline.
+      const wrapped = `<custom-wrapper><pre>${'x'.repeat(82)}\tEND</pre></custom-wrapper>`;
+      for (const suffix of ['', '<pre>last</pre>']) { // cap−1 and cap
+        const pdf = await generatePdf(wrapped + suffix, { codeBudget: new PdfCodeBudget(3) });
+        const text = (await extractText(new Uint8Array(pdf), { mergePages: true })).text;
+        expect(text.replace(/\s/g, '')).toContain('x'.repeat(82) + 'END' + (suffix ? 'last' : ''));
+      }
+      await expect(generatePdf(wrapped + '<pre>last\nextra</pre>', { codeBudget: new PdfCodeBudget(3) }))
+        .rejects.toMatchObject({ statusCode: 413 });
+      // Many continuations of one unbroken line must hit the same limit.
+      await expect(generatePdf(`<pre>${'q'.repeat(3 * 83 + 1)}</pre>`, { codeBudget: new PdfCodeBudget(3) }))
+        .rejects.toMatchObject({ statusCode: 413 });
     });
 
     it('should handle tables', async () => {
