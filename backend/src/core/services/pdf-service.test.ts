@@ -382,6 +382,13 @@ describe('pdf-service (pdf-lib)', () => {
       expect(runs.map((run) => run.str)).toEqual(['a b x y getting started outer N1 N2 N3 end']);
     });
 
+    it('separates form labels and legacy blocks without source whitespace in imported tables', async () => {
+      const { runs } = await tableLayout('<table><caption>Place<center>Above</center>Grid</caption>'
+        + '<tr><td><fieldset><legend>Owner</legend>Alice</fieldset>'
+        + 'Before<form>get<b>ting</b></form>after</td></tr></table>');
+      expect(runs.map((run) => run.str)).toEqual(['Place Above Grid', 'Owner Alice Before getting after']);
+    });
+
     it('wraps at the block separator and sizes the bordered row to both lines', async () => {
       const word = 'W'.repeat(12);
       const { runs, verticals } = await tableLayout(`<table><tr>
