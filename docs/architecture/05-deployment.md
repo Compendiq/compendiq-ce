@@ -224,16 +224,18 @@ same value; the installer auto-generates it into `.env` on first install and
 
 ## PDF export fonts and SQL migrations
 
-The backend runtime image carries the PDF export fonts (Noto Sans, Noto Sans
-Mono, Noto Sans SC and KR; about 17 MiB, SIL OFL 1.1) in
-`dist/core/services/fonts` and the startup SQL migrations in
+The backend runtime image carries 18.1 MiB of article PDF fonts and licences
+in `dist/core/services/fonts` (Noto Sans, Mono, SC, KR, Armenian, Georgian,
+Symbols and Symbols 2; SIL OFL 1.1). The four additions in #1970 total
+855,704 font bytes before licences. The image also ships startup SQL migrations in
 `dist/core/db/migrations`. `tsc` emits no assets: `npm run build -w backend`
 copies the fonts from `backend/src/core/services/fonts` (#1729) and the
 top-level `*.sql` files from `backend/src/core/db/migrations` (excluding
 `__tests__/`, #2012), so both Dockerfiles, which copy the built `dist`, ship
-them without a separate `COPY` step. Without the fonts every PDF export fails
-with `PDF export font missing`; without the migrations the compiled backend
-fails on startup with `ENOENT` reading `dist/core/db/migrations`.
+them without a separate `COPY` step. A missing required PDF font fails that
+export with `PDF export font missing`; optional faces are read only when
+needed. Without the migrations the compiled backend fails on startup with
+`ENOENT` reading `dist/core/db/migrations`.
 
 ## Backup process boundaries
 
