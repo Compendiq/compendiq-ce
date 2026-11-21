@@ -25,6 +25,13 @@ is four spaces and, outside code blocks, a newline is a space; each run is
 measured in the font that draws it. Fonts are embedded as subsets, SC and KR
 only when the text needs them; a missing font file fails the export.
 
+**Intentionally deferred (#2033):** unsupported Arabic, Hebrew, Indic, Thai
+and emoji still print U+FFFD in article PDFs and `?` in CE analytics PDFs.
+[ADR-028](../ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports)
+selects PDFKit for article bidi and shaping; the writer has not shipped.
+Both glyph placement and logical copy/search order must pass before enabling
+a script. The analytics renderer stays separate.
+
 **Confluence links live in the href (#1748).** The editor's Link mark keeps no
 `data-*` attribute, so `confluenceToHtml` writes an `ac:link` as
 `#confluence-page:<title>`, `#confluence-attachment:<filename>` or

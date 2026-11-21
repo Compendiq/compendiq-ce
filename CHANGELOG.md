@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- [Accepted ADR-028](docs/ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports) selects PDFKit for a future article PDF writer. Article and analytics exports are unchanged (#2033).
+
 ### Fixed
 
 - Wide article PDF tables no longer wrap fitting carried header text twice per band; text placement and borders are unchanged (#1959).

@@ -4,6 +4,11 @@ Confluence Data Center 9.2 exposes its pages in **XHTML Storage Format**
 only — no ADF, no REST API v2. Compendiq normalizes this into three
 representations that flow through the rest of the system.
 
+Article PDFs render this stored HTML on the server; they do not print the
+editor DOM. [ADR-028](../ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports)
+selects PDFKit for a future article writer. Production still uses pdf-lib;
+activating the new writer requires correct printed glyphs and copied text.
+
 ## Representations
 
 | Form | Stored in | Consumed by |
