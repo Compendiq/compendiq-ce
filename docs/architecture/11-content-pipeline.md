@@ -6,8 +6,8 @@ representations that flow through the rest of the system.
 
 Article PDFs render this stored HTML on the server; they do not print the
 editor DOM. [ADR-028](../ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports)
-compares ways to make both the printed glyphs and copied text correct for
-complex scripts. Its proposed writer is **not** in the export path.
+selects PDFKit for a future article writer. Production still uses pdf-lib;
+activating the new writer requires correct printed glyphs and copied text.
 
 ## Representations
 

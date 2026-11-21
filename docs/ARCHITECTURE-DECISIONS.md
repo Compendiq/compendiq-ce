@@ -5973,7 +5973,7 @@ what an existing row means, exactly like the ceiling (D8).
 
 ## ADR-028: Complex text in PDF exports
 
-**Status: Proposed.** [#2033](https://github.com/Compendiq/compendiq-ce/issues/2033), part of [#2028](https://github.com/Compendiq/compendiq-ce/issues/2028). Only the maintainer may accept this in PR review. It does not change either renderer.
+**Status: Accepted.** The [maintainer’s decision on 2026-11-21](https://github.com/Compendiq/compendiq-ce/pull/2099#issuecomment-7067411302) accepts this design for [#2033](https://github.com/Compendiq/compendiq-ce/issues/2033) at `85d929d557`. It authorizes the five article-only implementation issues under [#2028](https://github.com/Compendiq/compendiq-ce/issues/2028), not a production cutover or an analytics renderer change.
 
 ### Context
 
@@ -5996,7 +5996,7 @@ Arabic and Hebrew require paragraph-level bidi; Arabic also needs joining. Devan
 
 ### Decision
 
-**Propose PDFKit for a gated, article-only implementation. Keep pdf-lib in production until drawn output *and* logical extraction pass.** Its measured image increment was 15,878,870 bytes, not a new service. It already positions and subsets the actual glyphs. Its unsolved problem is narrower than owning HarfBuzz *and* a PDF writer: generate correct logical spans/CIDs and ordering while preserving today's pagination. Do not adopt the proof of concept's per-line `ActualText` shortcut. If this cannot pass in multiple readers using supported APIs or a maintained upstream fix, stop the rollout; do not create an in-house PDFKit fork by default.
+**Use PDFKit for the gated article-only implementation. Keep pdf-lib in production until drawn output *and* logical extraction pass.** Its measured image increment was 15,878,870 bytes, not a new service. It already positions and subsets the actual glyphs. Its unsolved problem is narrower than owning HarfBuzz *and* a PDF writer: generate correct logical spans/CIDs and ordering while preserving today's pagination. Do not adopt the proof of concept's per-line `ActualText` shortcut. If this cannot pass in multiple readers using supported APIs or a maintained upstream fix, stop the rollout; do not create an in-house PDFKit fork by default.
 
 The alternative of **no future implementation** would leave article U+FFFD and analytics `?` permanent. It costs nothing but discards searchable words even on this small corpus. We reject it for articles: useful shaping was demonstrated within the existing deployment boundary. No decision to migrate the analytics renderer: although PDFKit can run in a browser, this spike did not establish lazy font cost or compatibility with the fast Helvetica path, original-row hash or EE overlay. Keep #2032's separate fallback.
 
@@ -6007,14 +6007,14 @@ The alternative of **no future implementation** would leave article U+FFFD and a
 ### Consequences, rollout and rollback
 
 * No storage, API, CSS, UI, font, engine or dependency change in this ADR. Today unsupported visible article characters intentionally print U+FFFD; uncovered analytics characters print `?`. Invisible controls are not visible text; do not generalize their deletion to visible unsupported characters. With either engine an unavailable, corrupt or mismatched **required** asset fails the entire export, never an apparently successful fallback or partial batch.
-* On **maintainer acceptance only**, create and attach the following implementation issues to #2028. Estimates express independent delivery size, not calendar promises.
+* The five implementation issues below are children of [#2028](https://github.com/Compendiq/compendiq-ce/issues/2028). Acceptance authorizes this work; each release gate still applies.
 
   | Follow-up | Estimate | Release gate |
   |---|---|---|
-  | Article writer integration and semantic text | L | Load verified assets locally; correct cluster-to-CID/ToUnicode and logical selection in PDF.js and MuPDF. Prove existing tables, captions, code, batch authorization/bounds and missing-asset failure. |
-  | Paragraph/cell bidi and Arabic/Hebrew | L | Isolates, mixed numbers, paired punctuation, joining across spans and logical order round-trip; test both cell directions. |
-  | Indic and Thai shaping fonts | M | Retain GSUB/GPOS/GDEF, check OFLs, marks, split vowels and conjuncts against shaped references and copy/paste. |
-  | Line breaking and graphemes | L | UAX #14/#29, Thai dictionary, emergency breaks and no cluster loss; rerun wrapped-row budget and carried header geometry. |
-  | Monochrome emoji | M | Whole-sequence fallback, flag/modifier/ZWJ/VS15/VS16 drawing **and extraction**; pass size/latency gates with the pinned face. |
+  | [#2100 Article writer integration and semantic text](https://github.com/Compendiq/compendiq-ce/issues/2100) | L | Load verified assets locally; correct cluster-to-CID/ToUnicode and logical selection in PDF.js and MuPDF. Prove existing tables, captions, code, batch authorization/bounds and missing-asset failure. |
+  | [#2101 Paragraph/cell bidi and Arabic/Hebrew](https://github.com/Compendiq/compendiq-ce/issues/2101) | L | Isolates, mixed numbers, paired punctuation, joining across spans and logical order round-trip; test both cell directions. |
+  | [#2102 Indic and Thai shaping fonts](https://github.com/Compendiq/compendiq-ce/issues/2102) | M | Retain GSUB/GPOS/GDEF, check OFLs, marks, split vowels and conjuncts against shaped references and copy/paste. |
+  | [#2103 Line breaking and graphemes](https://github.com/Compendiq/compendiq-ce/issues/2103) | L | UAX #14/#29, Thai dictionary, emergency breaks and no cluster loss; rerun wrapped-row budget and carried header geometry. |
+  | [#2104 Monochrome emoji](https://github.com/Compendiq/compendiq-ce/issues/2104) | M | Whole-sequence fallback, flag/modifier/ZWJ/VS15/VS16 drawing **and extraction**; pass size/latency gates with the pinned face. |
 
-* Run both writers on **synthetic** golden articles first. Require the appendix oracle, full existing article geometry/extraction regressions, at-limit/mixed-face batch and production-heap 413/recovery measurements before enabling the successor. Review actual amd64/arm64 image and concurrency costs; a 455-byte article is not a service SLO. Deploy a versioned backend release only after these gates. Roll back to the preceding image/writer (no migration or stored PDF rewrite); never silently retry a failed request with the old writer. If the gates cannot be met, the documented fallbacks remain. No implementation issue is created or closed by proposing this ADR.
+* Run both writers on **synthetic** golden articles first. Require the appendix oracle, full existing article geometry/extraction regressions, at-limit/mixed-face batch and production-heap 413/recovery measurements before enabling the successor. Review actual amd64/arm64 image and concurrency costs; a 455-byte article is not a service SLO. Deploy a versioned backend release only after these gates. Roll back to the preceding image/writer (no migration or stored PDF rewrite); never silently retry a failed request with the old writer. If the gates cannot be met, the documented fallbacks remain.

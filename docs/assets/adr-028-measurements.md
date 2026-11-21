@@ -1,6 +1,6 @@
 # ADR-028 measurement appendix — what was printed and what was copied
 
-[Decision and acceptance gate](../ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports). Synthetic documents only. No candidate code or font ships with this record.
+[Accepted decision and release gates](../ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports). These historical measurements use synthetic documents only. No candidate code or font ships with this record.
 
 ## Fixed corpus and oracle
 

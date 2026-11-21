@@ -28,9 +28,9 @@ only when the text needs them; a missing font file fails the export.
 **Intentionally deferred (#2033):** unsupported Arabic, Hebrew, Indic, Thai
 and emoji still print U+FFFD in article PDFs and `?` in CE analytics PDFs.
 [ADR-028](../ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports)
-proposes an article writer with bidi and shaping; it has not shipped. A
-covering font alone is not enough: both placement and logical copy/search
-order must pass before enabling a script.
+selects PDFKit for article bidi and shaping; the writer has not shipped.
+Both glyph placement and logical copy/search order must pass before enabling
+a script. The analytics renderer stays separate.
 
 **Confluence links live in the href (#1748).** The editor's Link mark keeps no
 `data-*` attribute, so `confluenceToHtml` writes an `ac:link` as

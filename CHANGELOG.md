@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- [Proposed ADR-028](docs/ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports) compares PDF text shaping, bidi and emoji strategies on the same article corpus. Export behavior is unchanged (#2033).
+- [Accepted ADR-028](docs/ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports) selects PDFKit for a future article PDF writer. Article and analytics exports are unchanged (#2033).
 
 ### Fixed
 
