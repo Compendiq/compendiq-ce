@@ -624,12 +624,15 @@ function renderTable(ctx: RenderContext, el: Element): void {
   }
 }
 
+// HTML's default block elements (including legacy import markup), plus the
+// table and explicit line boundaries. Inline marks and author CSS do not split words.
 const TABLE_TEXT_BREAKS: Record<string, true> = {
-  address: true, article: true, aside: true, blockquote: true, br: true, caption: true,
-  dd: true, details: true, div: true, dl: true, dt: true, fieldset: true, figcaption: true,
-  figure: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
-  header: true, hr: true, li: true, main: true, nav: true, ol: true, p: true, pre: true,
-  section: true, summary: true, table: true, td: true, th: true, tr: true, ul: true,
+  address: true, article: true, aside: true, blockquote: true, br: true, caption: true, center: true,
+  dd: true, details: true, dialog: true, dir: true, div: true, dl: true, dt: true, fieldset: true,
+  figcaption: true, figure: true, footer: true, form: true, h1: true, h2: true, h3: true,
+  h4: true, h5: true, h6: true, header: true, hgroup: true, hr: true, legend: true, li: true,
+  listing: true, main: true, menu: true, nav: true, ol: true, p: true, plaintext: true, pre: true,
+  search: true, section: true, summary: true, table: true, td: true, th: true, tr: true, ul: true, xmp: true,
 };
 
 /** Flatten blocks to word boundaries, not inline marks: `get<b>ting</b>` stays one word. */

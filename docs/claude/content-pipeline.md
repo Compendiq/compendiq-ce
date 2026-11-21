@@ -71,8 +71,9 @@ regular body text at the full content width. Keep the caption with the first
 row when they fit a fresh page; otherwise keep its last line with at least
 the first row fragment. A caption needs no rows to print. An editor caption
 outside the table remains ordinary body content. In captions and cells,
-block boundaries (including paragraphs, list items, `<br>` and nested table
-cells and rows) separate words with a space; inline marks do not. Nested
+HTML block boundaries (including form legends and legacy `<center>`), `<br>`
+and nested table cells and rows separate words with a space. Inline marks
+preserve the word; author CSS does not determine these boundaries. Nested
 tables contribute text, not another grid (#1969).
 
 PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Noto Sans Mono
