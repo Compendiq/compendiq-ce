@@ -1029,6 +1029,34 @@ describe('pdf-service (pdf-lib)', () => {
       expect(runs.filter((run) => run.str === '⚽').map((run) => run.font)).toEqual(Array(6).fill('NotoSansSC-Regular'));
     });
 
+    it.each([
+      '<p>≶</p><p>&#x338;</p>',
+      '<table><tr><td>≶</td><td>&#x338;</td></tr></table>',
+      '<ul><li>≶</li><li>&#x338;</li></ul>',
+    ])('does not compose across independently drawn text: %s', async (html) => {
+      const { runs } = await drawn(html);
+      expect(runs.filter((run) => run.str !== '•').map(({ str, font }) => [str, font])).toEqual([
+        ['≶', 'NotoSansSC-Regular'], ['\u0338', 'NotoSans-Regular'],
+      ]);
+    });
+
+    it('composes adjacent inline text before choosing a fallback', async () => {
+      const { runs, pdf } = await drawn('<p><b>ᄒ</b>ᅡᆫ</p><p>≶<b>&#x338;</b></p>');
+      // 한 needs KR; NFC(≶ + U+0338) is ≸, unsupported, not SC's ≶.
+      expect(runs.map(({ str, font }) => [str, font])).toEqual([
+        ['한', 'NotoSansKR-Regular'], ['\uFFFD', 'NotoSans-Regular'],
+      ]);
+      expect((await embeddedFonts(pdf)).map((font) => font.name)).not.toContain('NotoSansSC-Regular');
+    });
+
+    it('does not embed an optional face for image labels consumed as paragraph or cell text', async () => {
+      const { text, pdf } = await drawn('<p>Plain<img alt="Հայաստան"></p><table><tr><td>Cell<img alt="საქართველო"></td></tr></table>');
+      expect(text).toBe('Plain Cell');
+      expect((await embeddedFonts(pdf)).map((font) => font.name)).toEqual([
+        'NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular',
+      ]);
+    });
+
     it('selects optional fonts needed only in an image label or on the cover', async () => {
       const { runs } = await drawn('<img alt="Հայաստան">', { title: 'ᲥᲐᲠᲗᲣᲚᲘ' });
       expect(runs.filter((run) => run.font === 'NotoSansGeorgian-Regular').map((run) => [run.str, run.page])).toEqual([['ᲥᲐᲠᲗᲣᲚᲘ', 1]]);

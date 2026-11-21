@@ -18,8 +18,11 @@ Noto Sans SC for Chinese and Japanese, and Noto Sans KR for Hangul.
 A character its style lacks falls back to Mono (in code: Regular), then SC,
 KR, Armenian, Georgian, Symbols and Symbols 2, all in regular weight.
 Armenian words, Georgian including Mtavruli capitals, Braille patterns, and
-text symbols such as ✔ ✘ ☑ ➜ ❤ print and extract as written. Only a needed optional face is
-read; each document embeds fresh subsets. A missing required file fails export.
+text symbols such as ✔ ✘ ☑ ➜ ❤ print and extract as written. Font selection
+uses the NFC text of each rendered block, list item and cell separately. Inline
+text within a block can compose; text in separate blocks cannot. Only rendered
+image labels count. Each document embeds fresh subsets; a missing required
+file fails export.
 
 Arabic, Hebrew, Indic scripts, Thai and emoji rendering are deferred to
 #2033. Unsupported visible code points print one U+FFFD each (in CE analytics

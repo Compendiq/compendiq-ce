@@ -88,6 +88,7 @@ interface RenderContext {
   fontItalic: PDFFont;
   fontMono: PDFFont;
   title?: string;
+  tables: Map<Element, PreparedTable>;
 }
 
 // ── Public API (same signature as before) ──────────────────────────
@@ -100,8 +101,8 @@ export async function generatePdf(
     const doc = await PDFDocument.create();
     // Parse first: which fonts to embed depends on the characters to draw.
     const body = new JSDOM(html).window.document.body;
-    const alts = Array.from(body.querySelectorAll('img'), (img) => img.getAttribute('alt') ?? '');
-    const fonts = await embedFonts(doc, [options.title ?? '', body.textContent ?? '', ...alts].join('\n'));
+    const tables = new Map<Element, PreparedTable>();
+    const fonts = await embedFonts(doc, fontCharacters(body, options.title, tables));
 
     const ctx: RenderContext = {
       doc,
@@ -110,6 +111,7 @@ export async function generatePdf(
       pageNum: 1,
       ...fonts,
       title: options.title,
+      tables,
     };
 
     // Cover page
@@ -117,7 +119,9 @@ export async function generatePdf(
       renderCoverPage(ctx, options.title);
     }
 
-    renderChildren(ctx, body);
+    visitBlocks(body, (el, render) => render(ctx, el), (node) => {
+      renderTextBlock(ctx, trimmedText(node), ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
+    });
 
     // Add footers to all pages
     addFooters(ctx);
@@ -208,91 +212,76 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
 
 // ── DOM rendering ──────────────────────────────────────────────────
 
-function renderChildren(ctx: RenderContext, node: Node): void {
-  for (const child of Array.from(node.childNodes)) {
-    renderNode(ctx, child);
+type ElementRenderer = (ctx: RenderContext, el: Element) => void;
+
+function trimmedText(node: Node): string {
+  return node.textContent?.trim() ?? '';
+}
+
+function heading(size: number): ElementRenderer {
+  return (ctx, el) => renderHeading(ctx, trimmedText(el), size);
+}
+
+function renderPre(ctx: RenderContext, node: Node): void {
+  renderCodeBlock(ctx, trimmedText(node));
+}
+
+const elementRenderers: Record<string, ElementRenderer> = {
+  h1: heading(FONT_SIZE_H1), h2: heading(FONT_SIZE_H2), h3: heading(FONT_SIZE_H3),
+  h4: heading(FONT_SIZE_H4), h5: heading(FONT_SIZE_H4), h6: heading(FONT_SIZE_H4),
+  p: renderParagraph, pre: renderPre, table: renderTable,
+  blockquote: (ctx, el) => renderBlockquote(ctx, trimmedText(el)),
+  ul: (ctx, el) => renderList(ctx, el, false), ol: (ctx, el) => renderList(ctx, el, true),
+  hr: renderHorizontalRule, br: (ctx) => { ctx.y -= LINE_HEIGHT; },
+  img: renderImagePlaceholder, summary: renderExpandSummary,
+};
+const containers: Record<string, true> = {
+  div: true, section: true, article: true, main: true, details: true, figure: true, figcaption: true,
+};
+
+/** Font preflight and drawing visit the same leaves. A paragraph, table cell
+ * or list item renders its text, not placeholders for its descendant images. */
+function visitBlocks(
+  parent: Node, visit: (el: Element, render: ElementRenderer) => void, visitText?: (node: Node) => void,
+): void {
+  for (let node = parent.firstChild; node; node = node.nextSibling) {
+    if (node.nodeType === 3) {
+      visitText?.(node);
+    } else if (node.nodeType === 1) {
+      const el = node as Element;
+      const tag = el.tagName.toLowerCase();
+      if (Object.hasOwn(elementRenderers, tag)) visit(el, elementRenderers[tag]!);
+      else if (el.firstElementChild || Object.hasOwn(containers, tag)) visitBlocks(el, visit, visitText);
+      else visitText?.(el);
+    }
   }
 }
 
-function renderNode(ctx: RenderContext, node: Node): void {
-  if (node.nodeType === 3 /* TEXT_NODE */) {
-    const text = node.textContent?.trim();
-    if (text) {
-      renderTextBlock(ctx, text, ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
+/** Only distinct normalized scalars cross the font-selection boundary, not
+ * another whole-document string. Whitespace expansion adds no new glyphs. */
+function fontCharacters(body: Element, title: string | undefined, tables: Map<Element, PreparedTable>): string {
+  const chars = new Set<string>();
+  const collect = (text: string) => {
+    if (!/[^\p{ASCII}]/u.test(text)) return;
+    for (const ch of text.normalize('NFC')) if (ch.codePointAt(0)! > 127) chars.add(ch);
+  };
+  collect(title ?? '');
+  visitBlocks(body, (el, render) => {
+    if (render === renderImagePlaceholder) {
+      collect(el.getAttribute('alt') ?? '');
+    } else if (render === renderTable) {
+      const table = el as HTMLTableElement;
+      const prepared = tableGrid(Array.from(table.rows));
+      tables.set(el, prepared);
+      for (const row of prepared.grid) for (const cell of row.cells) collect(cell.text);
+    } else if (el.localName === 'ul' || el.localName === 'ol') {
+      for (const item of el.querySelectorAll(':scope > li')) collect(item.textContent ?? '');
+    } else {
+      collect(el.textContent ?? '');
     }
-    return;
-  }
-
-  if (node.nodeType !== 1 /* ELEMENT_NODE */) return;
-
-  const el = node as Element;
-  const tag = el.tagName.toLowerCase();
-
-  switch (tag) {
-    case 'h1':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H1);
-      break;
-    case 'h2':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H2);
-      break;
-    case 'h3':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H3);
-      break;
-    case 'h4':
-    case 'h5':
-    case 'h6':
-      renderHeading(ctx, el.textContent?.trim() ?? '', FONT_SIZE_H4);
-      break;
-    case 'p':
-      renderParagraph(ctx, el);
-      break;
-    case 'pre':
-      renderCodeBlock(ctx, el.textContent?.trim() ?? '');
-      break;
-    case 'blockquote':
-      renderBlockquote(ctx, el.textContent?.trim() ?? '');
-      break;
-    case 'ul':
-      renderList(ctx, el, false);
-      break;
-    case 'ol':
-      renderList(ctx, el, true);
-      break;
-    case 'table':
-      renderTable(ctx, el);
-      break;
-    case 'hr':
-      renderHorizontalRule(ctx);
-      break;
-    case 'br':
-      ctx.y -= LINE_HEIGHT;
-      break;
-    case 'img':
-      renderImagePlaceholder(ctx, el);
-      break;
-    case 'summary':
-      renderExpandSummary(ctx, el);
-      break;
-    case 'div':
-    case 'section':
-    case 'article':
-    case 'main':
-    case 'details':
-    case 'figure':
-    case 'figcaption':
-      renderChildren(ctx, el);
-      break;
-    default:
-      // For unknown elements, try to render their text content
-      if (el.children.length > 0) {
-        renderChildren(ctx, el);
-      } else {
-        const text = el.textContent?.trim();
-        if (text) {
-          renderTextBlock(ctx, text, ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
-        }
-      }
-  }
+  }, (node) => collect(node.textContent ?? ''));
+  // Keep neighboring members from composing into a different scalar.
+  return [...chars].join(' ');
 }
 
 // ── Block renderers ────────────────────────────────────────────────
@@ -553,11 +542,12 @@ interface BandRow {
   count: number;
 }
 
+interface PreparedTable { grid: GridRow[]; width: number }
+
 function renderTable(ctx: RenderContext, el: Element): void {
-  // thead rows, then tbody (and bare) rows, then tfoot rows; never a nested table's.
-  const rows = Array.from((el as HTMLTableElement).rows);
-  if (rows.length === 0) return;
-  const { grid, width } = tableGrid(rows);
+  const { grid, width } = ctx.tables.get(el)!;
+  ctx.tables.delete(el);
+  if (!grid.length) return;
 
   // Narrow-column policy: no column is narrower than TABLE_MIN_COLUMN_WIDTH, so
   // a grid of more than 14 columns prints as bands of whole columns, one below
@@ -621,7 +611,7 @@ function renderTable(ctx: RenderContext, el: Element): void {
  * shorter row ends in empty columns. rowspan is ignored, so the cells of a row
  * below a rowspan cell shift left.
  */
-function tableGrid(rows: HTMLTableRowElement[]): { grid: GridRow[]; width: number } {
+function tableGrid(rows: HTMLTableRowElement[]): PreparedTable {
   let width = 1;
   const grid = rows.map((row): GridRow => {
     let column = 0;
