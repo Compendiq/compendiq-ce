@@ -68,6 +68,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useExportPdf, useVerifyPage } from '../../hooks/use-standalone';
 import { useSettings } from '../../hooks/use-settings';
 import { apiFetch, ApiError } from '../../lib/api';
+import { downloadArticlePdf } from '../../lib/article-pdf-download';
 import { cn } from '../../lib/cn';
 import { BLOCK_REASON_LABEL } from '../../lib/article-ai-policy';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -609,14 +610,7 @@ export function ArticleRightPane({
   const handleExportPdf = useCallback(async () => {
     if (!id) return;
     try {
-      const blob = await exportPdf.mutateAsync(parseInt(id, 10));
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${page?.title?.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').toLowerCase() ?? 'page'}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadArticlePdf(await exportPdf.mutateAsync(parseInt(id, 10)), page?.title);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'PDF export failed';
       toast.error(msg.includes('Chromium') ? 'PDF generation unavailable — Chromium not installed on the server' : msg);
