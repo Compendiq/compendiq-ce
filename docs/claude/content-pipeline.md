@@ -555,16 +555,21 @@ in `mcp-docs/src/search-web-limits.test.ts`. Never widen one side alone
 The analytics dashboards' PDF is built in the browser by
 `frontend/src/shared/lib/export-helpers.ts`, which loads `pdf-lib` on demand,
 unless an EE renderer is registered with `setPdfRendererOverlay` (it receives
-the rows and metadata unchanged). The CE renderer draws with pdf-lib's standard
-Helvetica fonts, which encode only WinAnsi (Windows-1252), so the cover prints
-the date range as `<start> to <end>` and every caller-supplied string (title,
-user name, instance URL, KPIs, column names, cells) passes through
-`createTextGuard`: NFC first, whitespace the font lacks becomes a space, any
-other character it lacks becomes `?`, and the cover then says so. Non-Latin
-analytics data (Cyrillic or CJK titles and queries) is therefore lossy in this
-PDF; the dashboards themselves show it intact, and the integrity hash still
-covers the original rows. A failed export downloads nothing and shows an error
-toast (see `docs/claude/ui-ux.md`) (#1732).
+the rows and metadata unchanged). WinAnsi-only reports use standard Helvetica
+without fetching a font or loading fontkit. The renderer normalizes text to
+NFC, replaces non-WinAnsi whitespace with spaces and prints the date range
+as `<start> to <end>`. Other glyphs use same-origin Noto Sans Regular or Bold,
+then SC and KR (per printed style). Non-CJK symbols can use a small subset
+of SC rather than either full CJK file. Downloads are shared within the
+session; each PDF embeds only its own subsets. Greek, Cyrillic, Han, kana
+and Hangul remain searchable and selectable. There is no bidi, complex
+shaping or emoji support: uncovered Arabic, Hebrew, Indic, Thai, emoji
+and rare symbols print as `?`. Non-WinAnsi controls, format characters
+and default-ignorable characters (including the combining grapheme joiner)
+also print as `?`, even if a font maps them. The cover discloses substitutions actually drawn, not
+ones hidden by truncation. The hash always covers the original rows. A
+missing or corrupt required file rejects the export; the dashboard shows
+an error toast and downloads nothing (#1732, #2032).
 
 Columns follow first-seen own keys across every row; absent keys print blank.
 If new keys widen the table beyond 18 minimum-width landscape columns, the

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Article PDFs print imported table captions above the first row and separate words in adjacent paragraphs, list items, line breaks and nested cells (#1969).
 - Article PDF downloads keep non-Latin titles and accents in the filename, from both the read toolbar and the inspector (#1963). A title with no usable characters saves as `article-<id>.pdf`.
 - Analytics PDFs include columns introduced by later rows, with wide column sets continued on additional pages (#1961).
+- Analytics PDFs preserve covered Cyrillic, Greek, Chinese, Japanese, Korean and symbols with on-demand local fonts. Missing fonts stop the download; nonprinting joiners appear as `?` with a cover notice only if printed (#2032).
 
 - Article PDF exports that exceed 1,000 printed code rows now return HTTP 413 instead of risking a backend crash. The limit includes wrapped rows and applies across the whole batch (#1962).
 

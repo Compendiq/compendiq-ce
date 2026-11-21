@@ -19,6 +19,8 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+import analytics
+
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.tables._g_l_y_f import ROUND_XY_TO_GRID, USE_MY_METRICS, Glyph
@@ -136,3 +138,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    analytics.publish(OUT, Path(__file__).resolve().parents[2] / 'frontend')

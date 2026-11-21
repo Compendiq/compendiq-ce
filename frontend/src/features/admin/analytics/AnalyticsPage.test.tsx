@@ -14,6 +14,7 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 // ── Mock lazy-loaded dashboards ────────────────────────────────────────────────
 // Each mock's PDF button calls `onExportPdf` the way its real dashboard does,
 // so the page's export handler runs against the real export-helpers.
+const { qualityBucket } = vi.hoisted(() => ({ qualityBucket: vi.fn(() => '80-100') }));
 
 vi.mock('./KnowledgeHealthDashboard', () => ({
   KnowledgeHealthDashboard: ({ onExportPdf }: DashboardProps) => (
@@ -23,7 +24,7 @@ vi.mock('./KnowledgeHealthDashboard', () => ({
         type="button"
         data-testid="mock-export-pdf"
         onClick={() => onExportPdf(
-          [{ type: 'quality', bucket: '80-100', count: 4 }],
+          [{ type: 'quality', bucket: qualityBucket(), count: 4 }],
           'Knowledge Health',
           [{ label: 'Total pages', value: 4 }],
         )}
@@ -236,6 +237,19 @@ describe('AnalyticsPage', () => {
 
     afterEach(() => {
       setPdfRendererOverlay(null);
+    });
+
+    it('reports a missing required Unicode font and downloads nothing', async () => {
+      qualityBucket.mockReturnValueOnce('Среднее');
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 404 })));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      renderWithProviders();
+      fireEvent.click(await screen.findByTestId('mock-export-pdf'));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not export the Knowledge Health PDF', {
+        description: 'Could not load PDF font NotoSans-Regular: HTTP 404',
+      }));
+      expect(downloads).toEqual([]);
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
     });
 
     it.each(DASHBOARDS)('exports the %s date-range report through the CE renderer', async (tab, _title, slug) => {

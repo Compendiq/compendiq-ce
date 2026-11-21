@@ -23,6 +23,8 @@ activity eligible again. See `docs/claude/pages-and-confluence.md`.
 
 CE analytics PDFs use first-seen own column names across all rows. Preserve
 homogeneous report layout, the original-row integrity hash and EE overlay.
+Keep WinAnsi reports on Helvetica; analytics Noto bytes are fetched from the
+frontend only on demand. A required font failure rejects before download.
 
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
