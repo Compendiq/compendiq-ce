@@ -363,11 +363,14 @@ function renderTextBlock(
   font: PDFFont,
   fontSize: number,
   color: ReturnType<typeof rgb>,
+  keepWithNext = 0,
 ): void {
   const lines = wrapText(text, font, fontSize, CONTENT_WIDTH);
-  for (const line of lines) {
-    ensureSpace(ctx, LINE_HEIGHT);
-    drawText(ctx.page, line, {
+  const height = lines.length * LINE_HEIGHT + keepWithNext;
+  if (keepWithNext && height <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM) ensureSpace(ctx, height);
+  for (let i = 0; i < lines.length; i++) {
+    ensureSpace(ctx, LINE_HEIGHT + (i === lines.length - 1 ? keepWithNext : 0));
+    drawText(ctx.page, lines[i]!, {
       x: MARGIN_LEFT,
       y: ctx.y,
       size: fontSize,
@@ -555,8 +558,13 @@ interface BandRow {
 
 function renderTable(ctx: RenderContext, el: Element): void {
   // thead rows, then tbody (and bare) rows, then tfoot rows; never a nested table's.
-  const rows = Array.from((el as HTMLTableElement).rows);
-  if (rows.length === 0) return;
+  const table = el as HTMLTableElement;
+  const caption = table.caption ? tableText(table.caption) : '';
+  const rows = Array.from(table.rows);
+  if (rows.length === 0) {
+    if (caption) renderTextBlock(ctx, caption, ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
+    return;
+  }
   const { grid, width } = tableGrid(rows);
 
   // Narrow-column policy: no column is narrower than TABLE_MIN_COLUMN_WIDTH, so
@@ -612,7 +620,39 @@ function renderTable(ctx: RenderContext, el: Element): void {
       if (r === 0 && row.isHeader) header = slice;
       band.push(slice);
     }
-    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth);
+    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth, from === 0 ? caption : '');
+  }
+}
+
+const TABLE_TEXT_BREAKS: Record<string, true> = {
+  address: true, article: true, aside: true, blockquote: true, br: true, caption: true,
+  dd: true, details: true, div: true, dl: true, dt: true, fieldset: true, figcaption: true,
+  figure: true, footer: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
+  header: true, hr: true, li: true, main: true, nav: true, ol: true, p: true, pre: true,
+  section: true, summary: true, table: true, td: true, th: true, tr: true, ul: true,
+};
+
+/** Flatten blocks to word boundaries, not inline marks: `get<b>ting</b>` stays one word. */
+function tableText(root: Element): string {
+  if (!root.firstElementChild) return (root.textContent ?? '').trim();
+  let text = '';
+  // Walk enter/leave edges without recursing on the depth of imported markup.
+  let node: Node = root;
+  let leaving = false;
+  for (;;) {
+    if (node.nodeType === 1 && Object.hasOwn(TABLE_TEXT_BREAKS, (node as Element).localName)) text += ' ';
+    else if (!leaving && node.nodeType === 3) text += node.nodeValue;
+    if (!leaving && node.firstChild) {
+      node = node.firstChild;
+    } else if (node === root) {
+      return text.trim();
+    } else if (node.nextSibling) {
+      node = node.nextSibling;
+      leaving = false;
+    } else {
+      node = node.parentNode!;
+      leaving = true;
+    }
   }
 }
 
@@ -628,7 +668,7 @@ function tableGrid(rows: HTMLTableRowElement[]): { grid: GridRow[]; width: numbe
   const grid = rows.map((row): GridRow => {
     let column = 0;
     const cells = Array.from(row.cells, (cell): GridCell => {
-      const placed = { start: column, span: cell.colSpan, text: cell.textContent?.trim() ?? '' };
+      const placed = { start: column, span: cell.colSpan, text: tableText(cell) };
       column += cell.colSpan;
       return placed;
     });
@@ -682,14 +722,23 @@ function repeatsAsHeader(lines: number): boolean {
  */
 function renderTableBand(
   ctx: RenderContext, prepared: BandRow[], header: BandRow | undefined, colWidth: number, bandWidth: number,
+  caption: string,
 ): void {
-  ensureSpace(ctx, LINE_HEIGHT * 2);
-  ctx.y -= 4;
-
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
   const pageCapacity = PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
   const repeatHeader = header && repeatsAsHeader(header.count) ? header : undefined;
+  const topGap = 4;
+  if (caption) {
+    const firstHeight = prepared[0]!.count * lineHeight + padding;
+    // If even one caption line and the full row cannot share a fresh page,
+    // keep its first fragment instead; the rest continues normally.
+    const keep = LINE_HEIGHT + topGap + firstHeight <= pageCapacity ? firstHeight : lineHeight + padding;
+    renderTextBlock(ctx, caption, ctx.font, FONT_SIZE_BODY, COLOR_TEXT, topGap + keep);
+  } else {
+    ensureSpace(ctx, LINE_HEIGHT * 2);
+  }
+  ctx.y -= topGap;
 
   const drawFragment = (row: BandRow, start: number, count: number): void => {
     const height = count * lineHeight + padding;
@@ -735,8 +784,8 @@ function renderTableBand(
     const row = prepared[r]!;
     const fullHeight = row.count * lineHeight + padding;
     const freshCapacity = pageCapacity - (r > 0 && repeatHeader ? repeatHeader.count * lineHeight + padding : 0);
-    // Keep ordinary rows together when they fit on a fresh page.
-    if (fullHeight <= freshCapacity && ctx.y - fullHeight < MARGIN_BOTTOM) continueTable(r);
+    // A caption already reserved its row (or a fragment); never orphan it by moving the row now.
+    if (!(r === 0 && caption) && fullHeight <= freshCapacity && ctx.y - fullHeight < MARGIN_BOTTOM) continueTable(r);
     let start = 0;
     while (start < row.count) {
       const available = Math.floor((ctx.y - MARGIN_BOTTOM - padding) / lineHeight);
