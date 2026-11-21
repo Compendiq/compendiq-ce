@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getDocumentProxy, extractText, getResolvedPDFJS } from 'unpdf';
 import { generatePdf, closeBrowser } from './pdf-service.js';
 import fontkit from '@pdf-lib/fontkit';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream, type PDFObject } from 'pdf-lib';
 
@@ -1047,6 +1048,26 @@ describe('pdf-service (pdf-lib)', () => {
         ['한', 'NotoSansKR-Regular'], ['\uFFFD', 'NotoSans-Regular'],
       ]);
       expect((await embeddedFonts(pdf)).map((font) => font.name)).not.toContain('NotoSansSC-Regular');
+    });
+
+    it('requires SC only when the ideographic space survives layout', async () => {
+      const fontDir = mkdtempSync(join(tmpdir(), 'pdf-base-faces-'));
+      try {
+        for (const name of ['NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular']) {
+          copyFileSync(join(FONT_DIR, `${name}.ttf`), join(fontDir, `${name}.ttf`));
+        }
+        const html = '<pre>\u3000</pre><p>Plain\u3000words</p><table><tr><td>Table\u3000cell</td></tr></table><pre>\u3000code\u3000</pre>';
+        const pdf = await generatePdf(html, { fontDir, title: 'A\u3000title' });
+        const { text } = await extractText(new Uint8Array(pdf), { mergePages: true });
+        expect(text).toContain('A title');
+        expect(text).toMatch(/Plain words\s+Table cell\s+code/);
+
+        for (const literal of ['<pre>a\u3000b</pre>', '<img alt="a\u3000b">']) {
+          await expect(generatePdf(literal, { fontDir })).rejects.toThrow(`PDF export font missing: ${join(fontDir, 'NotoSansSC-Regular.ttf')}`);
+        }
+      } finally {
+        rmSync(fontDir, { recursive: true, force: true });
+      }
     });
 
     it('does not embed an optional face for image labels consumed as paragraph or cell text', async () => {

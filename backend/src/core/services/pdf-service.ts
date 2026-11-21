@@ -91,18 +91,18 @@ interface RenderContext {
   tables: Map<Element, PreparedTable>;
 }
 
-// ── Public API (same signature as before) ──────────────────────────
+// ── Public API ────────────────────────────────────────────────────
 
 export async function generatePdf(
   html: string,
-  options: { title?: string },
+  options: { title?: string; fontDir?: string },
 ): Promise<Buffer> {
   try {
     const doc = await PDFDocument.create();
     // Parse first: which fonts to embed depends on the characters to draw.
     const body = new JSDOM(html).window.document.body;
     const tables = new Map<Element, PreparedTable>();
-    const fonts = await embedFonts(doc, fontCharacters(body, options.title, tables));
+    const fonts = await embedFonts(doc, fontCharacters(body, options.title, tables), options.fontDir);
 
     const ctx: RenderContext = {
       doc,
@@ -261,14 +261,20 @@ function visitBlocks(
  * another whole-document string. Whitespace expansion adds no new glyphs. */
 function fontCharacters(body: Element, title: string | undefined, tables: Map<Element, PreparedTable>): string {
   const chars = new Set<string>();
-  const collect = (text: string) => {
-    if (!/[^\p{ASCII}]/u.test(text)) return;
-    for (const ch of text.normalize('NFC')) if (ch.codePointAt(0)! > 127) chars.add(ch);
+  const collect = (text: string, preserveSpacing = false) => {
+    // wrapText replaces word separators with ASCII spaces. Code and image
+    // labels retain spacing except for the line breaks normalizeText replaces.
+    // Skip those scalars without expanding tabs or splitting long code lines.
+    const needsFont = preserveSpacing ? /[^\p{ASCII}\u0085\u2028\u2029]/u : /[^\p{ASCII}\s\u0085]/u;
+    if (!needsFont.test(text)) return;
+    for (const ch of text.normalize('NFC')) if (needsFont.test(ch)) chars.add(ch);
   };
   collect(title ?? '');
   visitBlocks(body, (el, render) => {
     if (render === renderImagePlaceholder) {
-      collect(el.getAttribute('alt') ?? '');
+      collect(el.getAttribute('alt') ?? '', true);
+    } else if (render === renderPre) {
+      collect(trimmedText(el), true);
     } else if (render === renderTable) {
       const table = el as HTMLTableElement;
       const prepared = tableGrid(Array.from(table.rows));

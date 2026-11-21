@@ -23,6 +23,9 @@ uses the NFC text of each rendered block, list item and cell separately. Inline
 text within a block can compose; text in separate blocks cannot. Only rendered
 image labels count. Each document embeds fresh subsets; a missing required
 file fails export.
+An ideographic space collapsed in prose or trimmed from the ends of a code
+block needs no fallback font. Inside a code line or image label it keeps its
+printed width and still needs its font.
 
 Arabic, Hebrew, Indic scripts, Thai and emoji rendering are deferred to
 #2033. Unsupported visible code points print one U+FFFD each (in CE analytics
