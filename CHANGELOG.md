@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Article PDFs print and preserve Armenian, Georgian (including Mtavruli), and text symbols such as ✔ ✘ ☑ ➜ ❤ in searchable text. Fonts are bundled and loaded on demand; shaping, bidirectional text and emoji rendering remain deferred (#1970, #2033).
+
 ### Fixed
 
 - Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
