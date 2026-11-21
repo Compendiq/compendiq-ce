@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Analytics PDFs include columns introduced by later rows, with wide column sets continued on additional pages (#1961).
+- Analytics PDFs preserve covered Cyrillic, Greek, Chinese, Japanese, Korean and symbols with on-demand local fonts. A missing font stops the download instead of silently replacing text (#2032).
 
 - Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
 

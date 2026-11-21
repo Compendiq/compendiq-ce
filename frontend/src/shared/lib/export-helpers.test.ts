@@ -269,8 +269,8 @@ describe('export-helpers (#303)', () => {
 
   it('default renderer replaces characters its fonts cannot encode in data values (#1732)', async () => {
     const rows = [{
-      query: 'Установка 手順 😀',
-      page: 'Cafe\u0301\u3000Zürich\nA→B',
+      query: 'عربي ไทย 😀',
+      page: 'Cafe\u0301\u3000Zürich\nA😀B',
       raw: 'a\u0081b\uD800c\u0007d\te\u007Ff',
       hits: 3,
     }];
@@ -279,7 +279,7 @@ describe('export-helpers (#303)', () => {
 
     const strings = await pdfStrings(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
     expect(strings).toEqual(expect.arrayContaining([
-      '????????? ?? ?',
+      '???? ??? ?',
       'Café Zürich A?B',
       'a?b?c?d e?f',
       SUBSTITUTION_NOTE,
@@ -290,16 +290,16 @@ describe('export-helpers (#303)', () => {
 
   it('default renderer replaces unencodable characters in the title, column names, user name and KPIs (#1732)', async () => {
     const meta: PdfReportMeta = {
-      title: 'Отчёт',
+      title: 'مرحبا',
       dateRange: { startDate: '2026-10-01', endDate: '2026-10-27' },
-      generatedBy: 'Анна',
+      generatedBy: 'عربي',
       kpis: [
-        { label: 'Топ', value: '手順', unit: '😀' },
-        { label: 'Trend', value: 'up → 3' },
+        { label: 'ไทย', value: 'אב', unit: '😀' },
+        { label: 'Trend', value: 'up 😀 3' },
       ],
     };
 
-    await expect(exportToPdf('report.pdf', [{ 'Запрос': 'ok' }], meta)).resolves.toBeUndefined();
+    await expect(exportToPdf('report.pdf', [{ 'مرحبا!': 'ok' }], meta)).resolves.toBeUndefined();
 
     const strings = await pdfStrings(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
     expect(strings).toEqual(expect.arrayContaining([
@@ -309,7 +309,7 @@ describe('export-helpers (#303)', () => {
       '???',
       '?? ?',
       'up ? 3',
-      '??????',
+      '?????!',
       '2026-10-01 to 2026-10-27',
       SUBSTITUTION_NOTE,
     ]));
