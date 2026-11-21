@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Wide article PDF tables no longer wrap fitting carried header text twice per band; text placement and borders are unchanged (#1959).
 
+- Article PDFs print imported table captions above the first row and separate words in adjacent paragraphs, list items, line breaks and nested cells (#1969).
+
 - Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
 
 - **Upgrade note for #1918.** Reload any open Compendiq tabs after upgrading. A tab still running the old frontend bundle receives HTTP 400 on Confluence version preview and restore, and on semantic diff, until it reloads.

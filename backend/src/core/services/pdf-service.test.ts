@@ -327,6 +327,73 @@ describe('pdf-service (pdf-lib)', () => {
       expect(horizontals).toHaveLength(6);
     });
 
+    it('keeps words across inline marks and separates paragraphs, breaks, lists and nested tables', async () => {
+      const { runs } = await tableLayout(`<table><tr><td><p>a</p><p>b</p><div>x<br>y</div>
+        <ul><li>get<b>ting</b></li><li>started</li></ul>outer<table>
+        <tr><td>N1</td><td>N2</td></tr><tr><td>N3</td></tr></table>end</td></tr></table>`);
+      expect(runs.map((run) => run.str)).toEqual(['a b x y getting started outer N1 N2 N3 end']);
+    });
+
+    it('separates form labels and legacy blocks without source whitespace in imported tables', async () => {
+      const { runs } = await tableLayout('<table><caption>Place<center>Above</center>Grid</caption>'
+        + '<tr><td><fieldset><legend>Owner</legend>Alice</fieldset>'
+        + 'Before<form>get<b>ting</b></form>after</td></tr></table>');
+      expect(runs.map((run) => run.str)).toEqual(['Place Above Grid', 'Owner Alice Before getting after']);
+    });
+
+    it('wraps at the block separator and sizes the bordered row to both lines', async () => {
+      const word = 'W'.repeat(12);
+      const { runs, verticals } = await tableLayout(`<table><tr>
+        <td><p>${word}</p><p>${word}</p></td><td>beside</td></tr><tr><td>after</td></tr></table>`);
+      const words = runs.filter((run) => run.str === word);
+      expect(at(words)).toEqual([[word, 56], [word, 56]]);
+      expect(words[0]!.y - words[1]!.y).toBeCloseTo(14);
+      const border = verticals.find((rule) => rule.x === LEFT && rule.top > words[0]!.y)!;
+      expect(border.top - border.bottom).toBeCloseTo(40);
+      expect(runs.find((run) => run.str === 'after')!.y).toBeLessThan(border.bottom);
+    });
+
+    it('prints a direct caption once, above all bands, and leaves an external editor caption alone', async () => {
+      const { runs } = await tableLayout(`<table><caption>Quarter<b>ly</b> figures</caption>
+        <tr>${'<th>H</th>'.repeat(20)}</tr></table><div class="table-caption">Editor caption</div>`);
+      expect(runs.map((run) => run.str)).toEqual(['Quarterly figures', ...Array(20).fill('H'), 'Editor caption']);
+      expect(runs[0]!.x).toBeCloseTo(LEFT);
+      expect(runs[0]!.y).toBeGreaterThan(runs[1]!.y);
+    });
+
+    it('prints a caption even without rows, but an empty caption takes no space', async () => {
+      const { runs } = await tableLayout('<table><caption>Only caption</caption></table>');
+      expect(at(runs)).toEqual([['Only caption', LEFT]]);
+      const row = '<tr><td>Plain</td></tr>';
+      expect(await tableLayout(`<table><caption> </caption>${row}</table>`))
+        .toEqual(await tableLayout(`<table>${row}</table>`));
+    });
+
+    it('moves a wrapped caption and its entire fitting first row to the next page together', async () => {
+      const word = 'W'.repeat(32); // One word per line across the full content width.
+      const { runs } = await tableLayout(`${'<p>intro</p>'.repeat(22)}
+        <table><caption>${word} ${word}</caption><tr><td>${Array(6).fill(word).join(' ')}</td></tr></table>`);
+      const block = runs.filter((run) => run.str === word);
+      expect(block.map((run) => run.page)).toEqual(Array(8).fill(2));
+      expect(at(block).map(([, x]) => x)).toEqual([LEFT, LEFT, ...Array(6).fill(LEFT + PAD)]);
+      expect(block[1]!.y).toBeGreaterThan(block[2]!.y);
+    });
+
+    it('keeps the last line of a multi-page caption beside the first fragment of a near-page-high row', async () => {
+      const word = 'W'.repeat(32);
+      const { runs } = await tableLayout(`<table><caption>${Array(46).fill(word).join(' ')} ${word}END</caption>
+        <tr><td>${Array(50).fill(word).join(' ')}</td></tr></table>`);
+      const caption = runs.filter((run) => run.x === LEFT);
+      const row = runs.filter((run) => run.x === LEFT + PAD);
+      expect(caption).toHaveLength(47);
+      expect(caption.at(-1)!.str).toBe(`${word}END`);
+      expect(caption[0]!.page).toBeLessThan(caption.at(-1)!.page);
+      expect(caption.at(-1)!.page).toBe(row[0]!.page);
+      expect(caption.at(-1)!.y).toBeGreaterThan(row[0]!.y);
+      expect(row).toHaveLength(50);
+      expect(row.at(-1)!.page).toBeGreaterThan(row[0]!.page);
+    });
+
     it('takes only a row\'s own cells, so a nested table adds no columns and prints once', async () => {
       const { text, runs } = await tableLayout(
         '<table><tr><td>outer<table><tr><td>N1</td><td>N2</td></tr></table></td><td>RIGHT</td></tr></table>',
@@ -895,6 +962,16 @@ describe('pdf-service (pdf-lib)', () => {
 
     /** Each run as [text, font, x]. */
     const at = (runs: Run[]): Array<[string, string, number]> => runs.map((run) => [run.str, run.font, +run.x.toFixed(2)]);
+
+    it('uses the regular body face and its fallbacks for an imported table caption', async () => {
+      const { runs } = await drawn('<table><caption>Установка 手順</caption><tr><th>Header</th></tr></table>');
+      expect(runs.map(({ str, font }) => [str, font])).toEqual([
+        ['Установка', 'NotoSans-Regular'], ['手順', 'NotoSansSC-Regular'], ['Header', 'NotoSans-Bold'],
+      ]);
+      expect(runs[0]!.x).toBe(50);
+      expect(runs[1]!.y).toBe(runs[0]!.y);
+      expect(runs[2]!.y).toBeLessThan(runs[1]!.y);
+    });
 
     interface EmbeddedFont { name: string; bytes: number; glyphs: Array<{ char: string; inked: boolean; sameOutline: boolean }> }
 
