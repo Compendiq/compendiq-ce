@@ -231,6 +231,15 @@ curl -X POST http://localhost:3051/api/auth/refresh \
   }'
 ```
 
+### Download an article PDF
+
+`POST /api/pages/:id/export/pdf` returns `application/pdf` for a visible page.
+Its `Content-Disposition` gives the Unicode download name in `filename*` and
+a diacritic-folded ASCII alternative in `filename`. For example, **Guía:
+instalación** downloads as `guía-instalación.pdf` or `guia-instalacion.pdf`.
+Both stems are limited to 150 UTF-8 bytes; an empty stem becomes `article-<id>`.
+The batch endpoint `POST /api/pages/export/pdf` still returns `kb-export.pdf`.
+
 ### List Pages
 
 ```bash
