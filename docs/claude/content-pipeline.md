@@ -82,6 +82,23 @@ and each row is placed and paginated like a source line. Tabs expand to four
 spaces before measuring; blank lines keep their row. Text is measured as drawn
 (pdf-lib applies no kerning), and a word wider than its line (URL, hash)
 breaks between characters in body text and table cells.
+Font selection follows that layout: an ideographic space collapsed in prose
+or trimmed from the ends of a code block needs no fallback font. Inside a
+code line or image label it keeps its printed width and still needs its font.
+
+**Article PDF export limit (#1962).** One request may print at most **1,000
+code rows**, including internal blank lines and wrapped continuations. Empty
+or whitespace-only code blocks print no rows. The limit is shared across the
+articles the reader can access in a batch. Exceed it and the whole request
+returns HTTP 413 with no download: shorten the code or export fewer articles.
+This is not an HTML byte limit, a limit on other content, or a concurrency cap.
+
+The renderer reserves source rows after parsing and before font selection,
+then charges continuations as it wraps. The fixed limit leaves headroom for
+rows with alternating font faces: at 1,000 such rows, a two-article merge and
+save peaked at about 337 MiB RSS in a 1 GiB container with a 560 MiB V8 heap limit.
+The originating measurement was about 1.9 GB for 500,000 short ASCII rows.
+Rendering stays in-process; a worker alone would not bound the work.
 
 Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 `.png` files. Publish a preview only after validating PNG chunks, checksums
