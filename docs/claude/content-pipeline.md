@@ -535,3 +535,8 @@ analytics data (Cyrillic or CJK titles and queries) is therefore lossy in this
 PDF; the dashboards themselves show it intact, and the integrity hash still
 covers the original rows. A failed export downloads nothing and shows an error
 toast (see `docs/claude/ui-ux.md`) (#1732).
+
+Columns follow first-seen own keys across every row; absent keys print blank.
+If new keys widen the table beyond 18 minimum-width landscape columns, the
+remaining columns continue on additional pages with the same row order.
+Reports whose first row already names every column retain the old layout.
