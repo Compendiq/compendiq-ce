@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wide article PDF tables no longer wrap fitting carried header text twice per band; text placement and borders are unchanged (#1959).
+
+- Article PDFs print imported table captions above the first row and separate words in adjacent paragraphs, list items, line breaks and nested cells (#1969).
 - Article PDF downloads keep non-Latin titles and accents in the filename, from both the read toolbar and the inspector (#1963). A title with no usable characters saves as `article-<id>.pdf`.
+
+- Article PDF exports that exceed 1,000 printed code rows now return HTTP 413 instead of risking a backend crash. The limit includes wrapped rows and applies across the whole batch (#1962).
 
 - Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
 
