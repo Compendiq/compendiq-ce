@@ -85,6 +85,20 @@ it('truncates mixed-font runs at scalar boundaries and warns only for a printed 
   expect(cover).not.toContain('Some characters');
 });
 
+it('discloses mapped but nonprinting controls only if they survive truncation', async () => {
+  const controls = 'A\u202eB C\u0000D E\u200dF';
+  const tail = 'To'.repeat(200);
+  const [cover, table] = await print([{ query: controls + tail }], { title: 'Report' });
+  expect(table).toMatch(/A\?B C\?D E\?FTo[^?]*…/);
+  expect(cover).toContain('Some characters cannot be shown');
+
+  const [clippedCover, clippedTable] = await print([{ query: tail + controls }], { title: 'Report' });
+  expect(clippedTable).toMatch(/To[^?]*…/);
+  expect(clippedTable).not.toContain('?');
+  expect(clippedCover).not.toContain('Some characters cannot be shown');
+  expect(requests).not.toHaveBeenCalled();
+});
+
 it.each(['NotoSans-Regular.ttf', 'NotoSans-Bold.ttf', 'NotoSansSC-Regular.ttf', 'NotoSansKR-Regular.ttf',
   'OFL-NotoSans.txt', 'OFL-NotoSansCJK.txt'])('ships the verified article asset %s unchanged', async name => {
   const digest = async (path: string) => createHash('sha256').update(await readFile(path)).digest('hex');

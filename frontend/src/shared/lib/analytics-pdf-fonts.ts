@@ -50,6 +50,13 @@ export async function unicodeText(doc: PDFDocument, styles: [PDFFont, PDFFont], 
     const primary = index ? 'NotoSans-Bold' : 'NotoSans-Regular';
     const selected = new Map<number, Face | null>();
     for (const cp of points) {
+      // Whitespace was normalized before preflight. Remaining control/format
+      // characters (e.g. NUL, bidi overrides and joiners) have no drawable
+      // representation here, even when a Noto cmap assigns them a glyph.
+      if (/[\p{Cc}\p{Cf}]/u.test(String.fromCodePoint(cp))) {
+        selected.set(cp, null);
+        continue;
+      }
       const face = covers(primary, cp) ? primary : covers(SHARD, cp) ? SHARD
         : covers(SC, cp) ? SC : covers(KR, cp) ? KR : null;
       selected.set(cp, face);
