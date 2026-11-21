@@ -3,6 +3,28 @@ export interface ArticlePdfDownload {
   filename: string | null;
 }
 
+// RFC 5646 §2.1. The regular grandfathered tags already match langtag;
+// the irregular ones and private-use-only tags are separate alternatives.
+const irregularTag = /^(?:en-gb-oed|i-(?:ami|bnn|default|enochian|hak|klingon|lux|mingo|navajo|pwn|tao|tay|tsu)|sgn-(?:be-fr|be-nl|ch-de))$/;
+const langtag = new RegExp(
+  '^(?:[a-z]{2,3}(?:-[a-z]{3}){0,3}|[a-z]{4,8})' + // language and optional extlangs
+  '(?:-[a-z]{4})?(?:-[a-z]{2}|-[0-9]{3})?' +         // script, region
+  '((?:-(?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))*)' +     // variants
+  '((?:-[0-9a-wy-z](?:-[a-z0-9]{2,8})+)*)' +          // extensions
+  '(?:-x(?:-[a-z0-9]{1,8})+)?$',                       // private use
+);
+
+function isLanguageTag(tag: string): boolean {
+  const lower = tag.toLowerCase();
+  if (irregularTag.test(lower) || /^x(?:-[a-z0-9]{1,8})+$/.test(lower)) return true;
+  const match = langtag.exec(lower);
+  if (!match) return false;
+  // Well-formedness also forbids repeated variants and extension singletons.
+  const variants = match[1]!.split('-');
+  const singletons = match[2]!.match(/-[a-z0-9](?=-)/g) ?? [];
+  return new Set(variants).size === variants.length && new Set(singletons).size === singletons.length;
+}
+
 /** Read one complete attachment header; never recover a name from ambiguous syntax. */
 export function parseArticlePdfFilename(header: string | null): string | null {
   if (!header) return null;
@@ -26,10 +48,10 @@ export function parseArticlePdfFilename(header: string | null): string | null {
     if (key === 'filename*') {
       // RFC 5987 ext-value is not a quoted string. A bad one invalidates the
       // header even when it also carries a syntactically valid ASCII fallback.
-      const value = /^utf-8'(?:[a-z]{1,8}(?:-[a-z0-9]{1,8})*)?'((?:[a-z0-9!#$&+.^_`|~-]|%[a-f0-9]{2})+)$/i.exec(part[3] ?? '');
-      if (!value) return null;
+      const value = /^utf-8'([a-z0-9-]*)'((?:[a-z0-9!#$&+.^_`|~-]|%[a-f0-9]{2})+)$/i.exec(part[3] ?? '');
+      if (!value || (value[1] && !isLanguageTag(value[1]))) return null;
       try {
-        extended = decodeURIComponent(value[1]!);
+        extended = decodeURIComponent(value[2]!);
       } catch {
         return null; // Valid percent triplets, invalid UTF-8.
       }

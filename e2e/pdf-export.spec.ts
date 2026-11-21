@@ -23,7 +23,7 @@ test.describe('PDF export', () => {
     test(`${surface} saves the named PDF or falls back to the page title`, async ({ page }, testInfo) => {
       // A laptop viewport starts with a collapsed inspector and exposes the rail action.
       await page.setViewportSize({ width: 1200, height: 900 });
-      for (const header of ['from server', 'missing', 'malformed'] as const) {
+      for (const header of ['from server', 'missing', 'malformed', 'malformed language'] as const) {
         await page.goto(`/pages/${pageId}`);
         await expect(page.getByTestId('edit-page-btn')).toBeVisible();
         const endpoint = `/api/pages/${pageId}/export/pdf`;
@@ -36,6 +36,7 @@ test.describe('PDF export', () => {
           const headers = response.headers();
           if (header === 'missing') delete headers['content-disposition'];
           if (header === 'malformed') headers['content-disposition'] = "attachment; filename=wrong.pdf; filename*=UTF-8''bad%FF.pdf";
+          if (header === 'malformed language') headers['content-disposition'] = "attachment; filename=plain.pdf; filename*=UTF-8'en-a'wrong.pdf";
           await route.fulfill({ response, headers, body: serverBytes });
         }, { times: 1 });
 

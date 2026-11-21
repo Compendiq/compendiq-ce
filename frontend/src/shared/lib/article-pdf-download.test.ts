@@ -13,6 +13,18 @@ describe('article PDF download name', () => {
     expect(parseArticlePdfFilename(`attachment; ${parameters}`)).toBe(expected);
   });
 
+  it.each(['en-a', 'x', 'en-x', 'en-a-GB-A-us', 'sl-rozaj-ROZAJ'])(
+    'rejects both names when filename* carries malformed language %s', tag => {
+      expect(parseArticlePdfFilename(`attachment; filename=plain.pdf; filename*=UTF-8'${tag}'wrong.pdf`)).toBeNull();
+    },
+  );
+
+  it.each(['en-a-GB', 'x-local', 'zh-cmn-Hans-CN', 'i-klingon', 'sl-rozaj-biske'])(
+    'prefers the UTF-8 name for valid language %s', tag => {
+      expect(parseArticlePdfFilename(`attachment; filename=plain.pdf; filename*=UTF-8'${tag}'%C3%A9.pdf`)).toBe('é.pdf');
+    },
+  );
+
   it.each([
     null, '', 'attachment', 'inline; filename=foo.pdf',
     'attachment; filename="unfinished.pdf', 'attachment; filename=has space.pdf',
