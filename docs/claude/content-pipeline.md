@@ -58,10 +58,13 @@ cells of the rows below shift left. A spanning cell wraps at the combined width
 of its columns within each band, with no border inside it. Grids wider than 14
 columns print in bands of at most 14 equal columns (at least 35.38 pt, two
 glyphs wide), one below the other. A later band holds only the rows with a
-cell starting in it (a crossing cell repeats there), plus the header row's
-share of the band; a header cell prints again in a later band only if its
-piece there would also repeat on a continuation page, so an oversized header
-cell prints once. A band in which no cell starts is skipped.
+cell starting in it (a crossing cell repeats there), plus the first row's
+share if that row starts with `th`. Its carried cell wraps once at the
+clipped band width; if it leaves no room for a body line on a fresh page,
+its piece stays blank there and in subsequent bands. Later `th`-first rows
+follow ordinary band rules. A `colspan` of 1000 can touch up to 73 bands
+when offset from the band edge. Bands with no cell starts are skipped,
+except the first, which preserves empty rows as bordered boxes.
 
 PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Noto Sans Mono
 cells): the rest of a long line continues flush left on the next row, unmarked,
