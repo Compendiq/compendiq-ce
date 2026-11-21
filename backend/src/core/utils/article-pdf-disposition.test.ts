@@ -9,6 +9,11 @@ describe('single-article PDF Content-Disposition', () => {
     ['Guía: instalación', 'guía-instalación', 'guia-instalacion'],
     ['Re\u0301sume\u0301', 'résumé', 'resume'],
     ['हिन्दी', 'हिन्दी', 'article-42'],
+    ['❤️', 'article-42', 'article-42'],
+    ['👩‍⚕️', 'article-42', 'article-42'],
+    ['.\u034f\u3164.', 'article-42', 'article-42'], // Invisible mark and Hangul filler (a letter).
+    ['उपयोग❤️', 'उपयोग', 'article-42'],
+    ['Re\u034f\u0301sume\u0301', 'résumé', 'resume'],
     ['Résumé_Я手.01', 'résumé_я手.01', 'resume_.01'],
     [' .  ...🎉   . ', 'article-42', 'article-42'],
     [' ..A\r\nB\0/\\:*?"<>|;C\u202E\'(D)* .. ', 'abcd', 'abcd'],

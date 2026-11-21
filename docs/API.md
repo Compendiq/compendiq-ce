@@ -238,6 +238,8 @@ Its `Content-Disposition` gives the Unicode download name in `filename*` and
 a diacritic-folded ASCII alternative in `filename`. For example, **Guía:
 instalación** downloads as `guía-instalación.pdf` or `guia-instalacion.pdf`.
 Both stems are limited to 150 UTF-8 bytes; an empty stem becomes `article-<id>`.
+Invisible Unicode selectors do not count toward a name: **❤️** downloads as
+`article-<id>.pdf`. Combining marks in names such as **उपयोग** are retained.
 The batch endpoint `POST /api/pages/export/pdf` still returns `kb-export.pdf`.
 
 ### List Pages
