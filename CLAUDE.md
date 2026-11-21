@@ -21,6 +21,11 @@ Trending and content-quality analytics remain admin-only across the corpus.
 Both exclude trashed pages in SQL; restoration makes the same historical
 activity eligible again. See `docs/claude/pages-and-confluence.md`.
 
+CE analytics PDFs use first-seen own column names across all rows. Preserve
+homogeneous report layout, the original-row integrity hash and EE overlay.
+Keep WinAnsi reports on Helvetica; analytics Noto bytes are fetched from the
+frontend only on demand. A required font failure rejects before download.
+
 Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.
@@ -50,16 +55,24 @@ results and retries the current query. Cached results may remain visible after
 a refetch failure only for their own query key; the two-character threshold,
 large-graph gate, and full-graph escape remain independent.
 
+The single-article PDF response owns its download name (#1963). Both the
+toolbar and inspector consume its UTF-8 `Content-Disposition`; missing or
+malformed names use the legacy title fallback. See `docs/API.md`.
+
 ## Read these when relevant
 
 - `docs/claude/ui-ux.md`: REQUIRED before any frontend or styling change.
 - `docs/claude/testing-and-retrieval-eval.md`: REQUIRED before changing tests, the eval or shadow compare.
 - `docs/claude/llm-and-rag.md`: REQUIRED before changing providers, retrieval or image analysis.
 - `docs/claude/pages-and-confluence.md`: REQUIRED before changing trash, visibility, connections, search or the Confluence toggle.
-- `docs/claude/content-pipeline.md`: REQUIRED before changing conversion, import, attachments, article PDF font selection, or the MCP docs sidecar/client.
+- `docs/claude/content-pipeline.md`: REQUIRED before changing conversion, import, attachments, article PDF export, or the MCP docs sidecar/client.
   Successful relocation in either direction severs the Notion import binding;
   exact rollback retains its original value in operation-owned preparation.
 - `docs/claude/enterprise-and-baselines.md`: REQUIRED before changing EE hooks, baselines or page writers.
+
+Article PDF exports share one printed-code-row budget across authorized batch
+members. Reserve source rows before font selection and wrapped continuations
+before storing them; never return a partial download (#1962).
 
 ## Mandatory Rules
 

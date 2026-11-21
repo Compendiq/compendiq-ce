@@ -224,6 +224,12 @@ same value; the installer auto-generates it into `.env` on first install and
 
 ## PDF export fonts and SQL migrations
 
+The frontend image also serves the analytics renderer's four Noto faces,
+non-CJK SC subset and OFL notices at `/fonts/pdf/` (from `frontend/public`).
+These are static same-origin assets, not JS bundle payloads or runtime CDN
+dependencies. Only a report with non-WinAnsi glyphs needs its lazy Unicode
+module; the browser fetches only the faces needed by that report.
+
 The backend runtime image carries 18.1 MiB of article PDF fonts and licences
 in `dist/core/services/fonts` (Noto Sans, Mono, SC, KR, Armenian, Georgian,
 Symbols and Symbols 2; SIL OFL 1.1). The four additions in #1970 total

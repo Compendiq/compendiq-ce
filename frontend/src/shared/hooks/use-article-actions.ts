@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../lib/api';
+import { downloadArticlePdf } from '../lib/article-pdf-download';
 import { usePermission } from './use-permission';
 import { useResyncPage } from './use-pages';
 import { useExportPdf } from './use-standalone';
@@ -27,14 +28,7 @@ export function useArticleActions(id: string | undefined, pageTitle?: string | n
   const handleExportPdf = useCallback(async () => {
     if (!id) return;
     try {
-      const blob = await exportPdf.mutateAsync(parseInt(id, 10));
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${pageTitle?.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').toLowerCase() ?? 'page'}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadArticlePdf(await exportPdf.mutateAsync(parseInt(id, 10)), pageTitle);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'PDF export failed';
       toast.error(msg.includes('Chromium') ? 'PDF generation unavailable — Chromium not installed on the server' : msg);
