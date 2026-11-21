@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fontkit from '@pdf-lib/fontkit';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PDFDocument, rgb } from 'pdf-lib';
 import { getDocumentProxy } from 'unpdf';
@@ -19,7 +20,7 @@ describe('pdf-fonts (#1729)', () => {
 
   it('measures every face and fallback as wide as pdf.js reports it drawn', async () => {
     const doc = await PDFDocument.create();
-    const line = 'AVA office fi Установка 手順 한국어 → ✓ ع 😀';
+    const line = 'AVA office fi Установка 手順 한국어 → ✓ Հայաստան ქართული ᲥᲐᲠᲗᲣᲚᲘ ✔ ✡ ع 😀';
     const fonts = await embedFonts(doc, line);
     const page = doc.addPage([595.28, 841.89]);
     const faces = [fonts.font, fonts.fontBold, fonts.fontItalic, fonts.fontMono];
@@ -34,11 +35,13 @@ describe('pdf-fonts (#1729)', () => {
     });
   });
 
-  it('vendors six prepared Noto faces: no OpenType layout tables, even glyph records, OFL licences', () => {
+  it('vendors prepared Noto faces: no OpenType layout tables, even glyph records, OFL licences', () => {
     const files = existsSync(FONT_DIR) ? readdirSync(FONT_DIR).sort() : [];
     expect(files).toEqual([
-      'NotoSans-Bold.ttf', 'NotoSans-Italic.ttf', 'NotoSans-Regular.ttf', 'NotoSansKR-Regular.ttf',
-      'NotoSansMono-Regular.ttf', 'NotoSansSC-Regular.ttf', 'OFL-NotoSans.txt', 'OFL-NotoSansCJK.txt',
+      'NotoSans-Bold.ttf', 'NotoSans-Italic.ttf', 'NotoSans-Regular.ttf', 'NotoSansArmenian-Regular.ttf',
+      'NotoSansGeorgian-Regular.ttf', 'NotoSansKR-Regular.ttf', 'NotoSansMono-Regular.ttf', 'NotoSansSC-Regular.ttf',
+      'NotoSansSymbols-Regular.ttf', 'NotoSansSymbols2-Regular.ttf', 'OFL-NotoSans.txt', 'OFL-NotoSansArmenian.txt',
+      'OFL-NotoSansCJK.txt', 'OFL-NotoSansGeorgian.txt', 'OFL-NotoSansSymbols.txt',
     ]);
     for (const file of files.filter((name) => name.endsWith('.ttf'))) {
       const bytes = readFileSync(join(FONT_DIR, file));
@@ -77,6 +80,29 @@ describe('pdf-fonts (#1729)', () => {
         else shared.push(String.fromCodePoint(first, cp));
       }
       expect(shared, file).toEqual([]);
+    }
+  });
+
+  it('requires only the optional file selected for a visible scalar', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pdf-fonts-'));
+    try {
+      for (const base of ['NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular']) {
+        copyFileSync(join(FONT_DIR, `${base}.ttf`), join(dir, `${base}.ttf`));
+      }
+      // No optional file is present, even for fallback probes; no need for one
+      // to render an unsupported emoji, invisible variation selector or ZWJ.
+      const doc = await PDFDocument.create();
+      const text = 'Hello → 😀📷😐𐹠\uFE0F\u200D';
+      const { font } = await embedFonts(doc, text, dir);
+      drawText(doc.addPage(), text, { x: 10, y: 50, size: 12, font, color: rgb(0, 0, 0) });
+      const page = await (await getDocumentProxy(await doc.save())).getPage(1);
+      const { items } = await page.getTextContent();
+      expect(items.map((item) => 'str' in item ? item.str : '').join('')).toBe('Hello → ����');
+      for (const [char, family] of [['✓', 'SC'], ['한', 'KR'], ['Հ', 'Armenian'], ['Ქ', 'Georgian'], ['✡', 'Symbols'], ['✔', 'Symbols2']] as const) {
+        await expect(embedFonts(await PDFDocument.create(), char, dir)).rejects.toThrow(`PDF export font missing: ${dir}/NotoSans${family}-Regular.ttf`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

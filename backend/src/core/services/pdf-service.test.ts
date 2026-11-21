@@ -1125,11 +1125,11 @@ describe('pdf-service (pdf-lib)', () => {
       const { text, runs } = await drawn(
         `<table><tr><th>Параметр</th><th>手順</th></tr><tr><td>${ISSUE}</td><td>ع😀✔</td></tr></table>`,
       );
-      expect(text).toBe(`Параметр 手順 ${ISSUE} \uFFFD\uFFFD\uFFFD`);
+      expect(text).toBe(`Параметр 手順 ${ISSUE} \uFFFD\uFFFD✔`);
       expect(at(runs)).toEqual([
         ['Параметр', 'NotoSans-Bold', 56], ['手順', 'NotoSansSC-Regular', 303.64],
         ['ASCII Установка', 'NotoSans-Regular', 56], ['手順', 'NotoSansSC-Regular', 144.08], ['łść ğ', 'NotoSans-Regular', 168.94],
-        ['\uFFFD\uFFFD\uFFFD', 'NotoSans-Regular', 303.64],
+        ['\uFFFD\uFFFD', 'NotoSans-Regular', 303.64], ['✔', 'NotoSansSymbols2-Regular', 325.64],
       ]);
     });
 
@@ -1140,12 +1140,105 @@ describe('pdf-service (pdf-lib)', () => {
         '<h3>عربي</h3><p>Arabic عربي Hebrew עברית Thai ไทย emoji 😀 check ✔</p><table><tr><td>हिन्दी</td></tr></table>',
       );
       const fffd = (word: string): string => '\uFFFD'.repeat([...word].length);
-      expect(text).toBe(`${fffd('عربي')} Arabic ${fffd('عربي')} Hebrew ${fffd('עברית')} Thai ${fffd('ไทย')} emoji \uFFFD check \uFFFD ${fffd('हिन्दी')}`);
+      expect(text).toBe(`${fffd('عربي')} Arabic ${fffd('عربي')} Hebrew ${fffd('עברית')} Thai ${fffd('ไทย')} emoji \uFFFD check ✔ ${fffd('हिन्दी')}`);
       expect(at(runs)).toEqual([
         [fffd('عربي'), 'NotoSans-Bold', 50],
-        [`Arabic ${fffd('عربي')} Hebrew ${fffd('עברית')} Thai ${fffd('ไทย')} emoji \uFFFD check \uFFFD`, 'NotoSans-Regular', 50],
+        [`Arabic ${fffd('عربي')} Hebrew ${fffd('עברית')} Thai ${fffd('ไทย')} emoji \uFFFD check`, 'NotoSans-Regular', 50],
+        ['✔', 'NotoSansSymbols2-Regular', 372.06],
         [fffd('हिन्दी'), 'NotoSans-Regular', 56],
       ]);
+    });
+
+    function allTextContexts(word: string): string {
+      return `<p>${word}</p><h2>${word}</h2><table><tr><td>${word}</td></tr></table><ul><li>${word}</li></ul><pre>${word}</pre><img alt="${word}">`;
+    }
+
+    it.each([
+      ['Հայաստան', 'Հայաստան', 'Armenian', 63.00],
+      ['ქართული ᲥᲐᲠᲗᲣᲚᲘ', 'ქართული', 'Georgian', 55.96],
+      ['✡ ⚕', '✡', 'Symbols', 8.51],
+      ['✔ ✘ ☑ ➜ ❤', '✔', 'Symbols2', 10.23],
+      ['⠓⠑⠇⠇⠕', '⠓⠑⠇⠇⠕', 'Symbols2', 38.5], // English Braille: hello
+    ] as const)('extracts and positions %s across article text contexts (#1970)', async (word, first, family, width) => {
+      const { text, runs, pdf } = await drawn(allTextContexts(word));
+      expect(text).toBe(`${word} ${word} ${word} • ${word} ${word} [Image: ${word}]`);
+      const face = `NotoSans${family}-Regular`;
+      const starts = runs.filter((run) => run.str === first && run.font === face);
+      expect(starts).toHaveLength(6);
+      expect(starts.slice(0, 5).map((run) => run.x)).toEqual([50, 50, 56, 70, 60]);
+      expect(starts[0]!.width).toBeCloseTo(width, 2);
+      const label = runs.filter((run) => run.y === starts[5]!.y);
+      expect(label[0]!.x).toBeCloseTo(595.28 - label.at(-1)!.x - label.at(-1)!.width);
+      // The document needs only this one optional face, subset to these words.
+      const fonts = await embeddedFonts(pdf);
+      expect(fonts.map((f) => f.name)).toEqual(['NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular', face]);
+      const glyphs = fonts.at(-1)!.glyphs;
+      expect(new Set(glyphs.map((glyph) => glyph.char))).toEqual(new Set(word.replaceAll(' ', '')));
+      expect(glyphs.every((glyph) => glyph.inked && glyph.sameOutline)).toBe(true);
+    });
+
+    it('keeps deferred emoji and scripts visible as placeholders even with Symbols and Symbols 2 embedded', async () => {
+      // 😐 and 📷 have outlines in the symbol fonts but are default emoji.
+      // ⚽ already had an SC outline before #1970; it must keep that face.
+      // Symbols 2 also contains the Arabic-script Rumi numeral U+10E60.
+      const { text, runs } = await drawn(allTextContexts('عאअไ😀📷😐𐹠✔✡⚽'));
+      const expected = `${'\uFFFD'.repeat(8)}✔✡⚽`;
+      expect(text).toBe(`${expected} ${expected} ${expected} • ${expected} ${expected} [Image: ${expected}]`);
+      expect(runs.filter((run) => run.str === '⚽').map((run) => run.font)).toEqual(Array(6).fill('NotoSansSC-Regular'));
+    });
+
+    it.each([
+      '<p>≶</p><p>&#x338;</p>',
+      '<table><tr><td>≶</td><td>&#x338;</td></tr></table>',
+      '<ul><li>≶</li><li>&#x338;</li></ul>',
+    ])('does not compose across independently drawn text: %s', async (html) => {
+      const { runs } = await drawn(html);
+      expect(runs.filter((run) => run.str !== '•').map(({ str, font }) => [str, font])).toEqual([
+        ['≶', 'NotoSansSC-Regular'], ['\u0338', 'NotoSans-Regular'],
+      ]);
+    });
+
+    it('composes adjacent inline text before choosing a fallback', async () => {
+      const { runs, pdf } = await drawn('<p><b>ᄒ</b>ᅡᆫ</p><p>≶<b>&#x338;</b></p>');
+      // 한 needs KR; NFC(≶ + U+0338) is ≸, unsupported, not SC's ≶.
+      expect(runs.map(({ str, font }) => [str, font])).toEqual([
+        ['한', 'NotoSansKR-Regular'], ['\uFFFD', 'NotoSans-Regular'],
+      ]);
+      expect((await embeddedFonts(pdf)).map((font) => font.name)).not.toContain('NotoSansSC-Regular');
+    });
+
+    it('requires SC only when the ideographic space survives layout', async () => {
+      const fontDir = mkdtempSync(join(tmpdir(), 'pdf-base-faces-'));
+      try {
+        for (const name of ['NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular']) {
+          copyFileSync(join(FONT_DIR, `${name}.ttf`), join(fontDir, `${name}.ttf`));
+        }
+        const html = '<pre>\u3000</pre><p>Plain\u3000words</p><table><tr><td>Table\u3000cell</td></tr></table><pre>\u3000code\u3000</pre>';
+        const pdf = await generatePdf(html, { fontDir, title: 'A\u3000title' });
+        const { text } = await extractText(new Uint8Array(pdf), { mergePages: true });
+        expect(text).toContain('A title');
+        expect(text).toMatch(/Plain words\s+Table cell\s+code/);
+
+        for (const literal of ['<pre>a\u3000b</pre>', '<img alt="a\u3000b">']) {
+          await expect(generatePdf(literal, { fontDir })).rejects.toThrow(`PDF export font missing: ${join(fontDir, 'NotoSansSC-Regular.ttf')}`);
+        }
+      } finally {
+        rmSync(fontDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not embed an optional face for image labels consumed as paragraph or cell text', async () => {
+      const { text, pdf } = await drawn('<p>Plain<img alt="Հայաստան"></p><table><tr><td>Cell<img alt="საქართველო"></td></tr></table>');
+      expect(text).toBe('Plain Cell');
+      expect((await embeddedFonts(pdf)).map((font) => font.name)).toEqual([
+        'NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular',
+      ]);
+    });
+
+    it('selects optional fonts needed only in an image label or on the cover', async () => {
+      const { runs } = await drawn('<img alt="Հայաստան">', { title: 'ᲥᲐᲠᲗᲣᲚᲘ' });
+      expect(runs.filter((run) => run.font === 'NotoSansGeorgian-Regular').map((run) => [run.str, run.page])).toEqual([['ᲥᲐᲠᲗᲣᲚᲘ', 1]]);
+      expect(runs.filter((run) => run.font === 'NotoSansArmenian-Regular').map((run) => [run.str, run.page])).toEqual([['Հայաստան', 2]]);
     });
 
     it('draws nothing for controls and other invisible code points', async () => {

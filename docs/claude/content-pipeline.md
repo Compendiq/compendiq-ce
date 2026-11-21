@@ -14,16 +14,27 @@ Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, m
 PDF export draws text in fonts vendored under `backend/src/core/services/fonts`
 (SIL OFL 1.1, rebuilt by `tools/pdf-fonts/prepare.py`; the backend build copies
 them into `dist`): Noto Sans Regular, Bold and Italic, Noto Sans Mono for code,
-Noto Sans SC for Chinese and Japanese and Noto Sans KR for Hangul (both in their
-Regular weight, also in bold or italic text). A character its face lacks falls
-back to Noto Sans Mono (in code: Noto Sans Regular), then SC, then KR, so
-arrows, box drawing and similar symbols print as written. A character no
-bundled font covers prints as U+FFFD: Arabic, Hebrew, Armenian, Georgian, Indic
-and Thai scripts, emoji, symbols such as ✔ ✘ ☑ ➜ ❤, and rare CJK. Controls and
-other invisible characters print nothing. Text is composed (NFC) first, a tab
-is four spaces and, outside code blocks, a newline is a space; each run is
-measured in the font that draws it. Fonts are embedded as subsets, SC and KR
-only when the text needs them; a missing font file fails the export.
+Noto Sans SC for Chinese and Japanese, and Noto Sans KR for Hangul.
+A character its style lacks falls back to Mono (in code: Regular), then SC,
+KR, Armenian, Georgian, Symbols and Symbols 2, all in regular weight.
+Armenian words, Georgian including Mtavruli capitals, Braille patterns, and
+text symbols such as ✔ ✘ ☑ ➜ ❤ print and extract as written. Font selection
+uses the NFC text of each rendered block, list item and cell separately. Inline
+text within a block can compose; text in separate blocks cannot. Only rendered
+image labels count. Each document embeds fresh subsets; a missing required
+file fails export.
+An ideographic space collapsed in prose or trimmed from the ends of a code
+block needs no fallback font. Inside a code line or image label it keeps its
+printed width and still needs its font.
+
+Arabic, Hebrew, Indic scripts, Thai and emoji rendering are deferred to
+#2033. Unsupported visible code points print one U+FFFD each (in CE analytics
+PDFs, `?`). This includes uncovered rare CJK. Previously supported monochrome
+symbols such as ⚽ still print; new symbol faces do not claim default emoji
+presentation characters. Controls, variation selectors and other invisible
+characters print nothing. Text is composed (NFC) first; a tab is four spaces
+and, outside code blocks, a newline is a space. Each run is measured in the
+font that draws it.
 
 **Intentionally deferred (#2033):** unsupported Arabic, Hebrew, Indic, Thai
 and emoji still print U+FFFD in article PDFs and `?` in CE analytics PDFs.

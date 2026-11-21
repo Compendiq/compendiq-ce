@@ -1,10 +1,8 @@
 # pdf-fonts — the fonts article PDFs embed (#1729)
 
-`prepare.py` rebuilds `backend/src/core/services/fonts/`: four Noto faces for
-text and code, Noto Sans SC and Noto Sans KR for CJK and Hangul, and their SIL
-OFL 1.1 licences. `core/services/pdf-fonts.ts` reads them; `npm run build -w
-backend` copies them into `dist/`, so every image that ships the built backend
-has them.
+`prepare.py` rebuilds the article PDF fonts and SIL OFL 1.1 licences under
+`backend/src/core/services/fonts/`. The backend build copies the whole directory
+into `dist/`. No runtime downloads or system fonts are needed.
 
 Python because fontTools is the reference TrueType compiler and no Node library
 writes TrueType. Requires **Python 3.10 or newer**.
@@ -23,11 +21,18 @@ python3 -m venv .venv
 | `NotoSansMono-Regular.ttf` | same commit, `fonts/NotoSansMono/unhinted/ttf/` | 2.014 | `OFL-NotoSans.txt` |
 | `NotoSansSC-Regular.ttf` | npm `@expo-google-fonts/noto-sans-sc@0.4.4`, `400Regular/NotoSansSC_400Regular.ttf` (Google Fonts static instance) | 2.004-H2 | `OFL-NotoSansCJK.txt` (Adobe) |
 | `NotoSansKR-Regular.ttf` | npm `@expo-google-fonts/noto-sans-kr@0.4.4`, `400Regular/NotoSansKR_400Regular.ttf` | 2.004-H2 | `OFL-NotoSansCJK.txt` |
+| `NotoSansArmenian-Regular.ttf` | notofonts.github.io@4cf78353, `fonts/NotoSansArmenian/unhinted/ttf/` | 2.008 | `OFL-NotoSansArmenian.txt` |
+| `NotoSansGeorgian-Regular.ttf` | same commit, `fonts/NotoSansGeorgian/unhinted/ttf/` | 2.005 | `OFL-NotoSansGeorgian.txt` |
+| `NotoSansSymbols-Regular.ttf` | same commit, `fonts/NotoSansSymbols/unhinted/ttf/` | 2.003 | `OFL-NotoSansSymbols.txt` |
+| `NotoSansSymbols2-Regular.ttf` | same commit, `fonts/NotoSansSymbols2/unhinted/ttf/` | 2.008 | `OFL-NotoSansSymbols.txt` |
 
 `OFL-NotoSans.txt` is `OFL.txt` of
 [notofonts/latin-greek-cyrillic@4bc63d7e](https://github.com/notofonts/latin-greek-cyrillic/blob/4bc63d7ebca1faed49c6c685f380ba0abc2c1941/OFL.txt);
 `OFL-NotoSansCJK.txt` is the SC package's `LICENSE_FONT` (the KR package's is
 identical). Its Reserved Font Name "Source" is not used by these fonts' names.
+The Armenian, Georgian and Symbols projects name The Noto Project Authors and
+declare no Reserved Font Name. Both symbol families come from the same project
+and carry the same notice. The generator pins each project's OFL file.
 
 ## What it changes, and why
 
@@ -52,6 +57,16 @@ advance widths are unchanged (checked for every mapped code point).
    searched and copied as the first. Each code point but the lowest of a group
    now gets a composite of the shared glyph — same outline, same metrics —
    appended after the existing glyphs: 497 in SC, 723 in KR, 40 KB together.
+
+For optional faces, `prepare.py` also emits `pdf-fallback-ranges.ts` from
+the verified cmaps. Each range contains only code points not guaranteed by the
+four text faces or claimed by an earlier optional face. Article export can thus
+select a face without opening its file. The symbol faces supply Common,
+Latin, Greek and Braille patterns, not Arabic-script Rumi numerals or inherited
+combining marks that need shaping. The script data comes with pinned fontTools.
+Invisible characters do not select a face; default emoji presentation is
+excluded from the four additions (#2033), not from existing CJK coverage.
+Selected fonts are subset per document.
 
 Hinting is not added (the Noto Sans files are the unhinted builds): subsets stay
 about half the size.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Article PDFs print and preserve Armenian, Georgian (including Mtavruli), and text symbols such as ✔ ✘ ☑ ➜ ❤ in searchable text. Fonts are bundled and loaded on demand; shaping, bidirectional text and emoji rendering remain deferred (#1970, #2033).
+
 ### Documentation
 
 - [Accepted ADR-028](docs/ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports) selects PDFKit for a future article PDF writer. Article and analytics exports are unchanged (#2033).
