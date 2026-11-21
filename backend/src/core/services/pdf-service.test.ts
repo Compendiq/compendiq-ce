@@ -3,7 +3,8 @@ import { getDocumentProxy, extractText, getResolvedPDFJS } from 'unpdf';
 import { generatePdf, closeBrowser } from './pdf-service.js';
 import { PdfCodeBudget } from './pdf-code-budget.js';
 import fontkit from '@pdf-lib/fontkit';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream, type PDFObject } from 'pdf-lib';
 
@@ -61,6 +62,26 @@ describe('pdf-service (pdf-lib)', () => {
       const text = (await extractText(new Uint8Array(pdf), { mergePages: true })).text;
       expect(text).toMatch(/cell\s+text.*list\s+text.*first.*last/s);
       await expect(generatePdf(html, { codeBudget: new PdfCodeBudget(2) })).rejects.toMatchObject({ statusCode: 413 });
+    });
+
+    it('requires SC only when the ideographic space survives layout', async () => {
+      const fontDir = mkdtempSync(join(tmpdir(), 'pdf-base-faces-'));
+      try {
+        for (const name of ['NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular']) {
+          copyFileSync(join(import.meta.dirname, 'fonts', `${name}.ttf`), join(fontDir, `${name}.ttf`));
+        }
+        const html = '<pre>\u3000</pre><p>Plain\u3000words</p><pre>\u3000code\u3000</pre>';
+        const pdf = await generatePdf(html, { fontDir, title: 'A\u3000title', codeBudget: new PdfCodeBudget(1) });
+        const { text } = await extractText(new Uint8Array(pdf), { mergePages: true });
+        expect(text).toContain('A title');
+        expect(text).toMatch(/Plain words\s+code/);
+
+        for (const literal of ['<pre>a\u3000b</pre>', '<img alt="a\u3000b">']) {
+          await expect(generatePdf(literal, { fontDir })).rejects.toThrow(`PDF export font missing: ${join(fontDir, 'NotoSansSC-Regular.ttf')}`);
+        }
+      } finally {
+        rmSync(fontDir, { recursive: true, force: true });
+      }
     });
 
     it('admits exactly the remaining width-aware rows across multiple code blocks', async () => {

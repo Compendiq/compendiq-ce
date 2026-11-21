@@ -97,7 +97,7 @@ interface RenderContext {
 
 export async function generatePdf(
   html: string,
-  options: { title?: string; codeBudget?: PdfCodeBudget },
+  options: { title?: string; codeBudget?: PdfCodeBudget; fontDir?: string },
 ): Promise<Buffer> {
   try {
     const body = new JSDOM(html).window.document.body;
@@ -114,7 +114,7 @@ export async function generatePdf(
 
     const doc = await PDFDocument.create();
     const tables = new Map<Element, PreparedTable>();
-    const fonts = await embedFonts(doc, fontCharacters(body, options.title, tables));
+    const fonts = await embedFonts(doc, fontCharacters(body, options.title, tables), options.fontDir);
 
     const ctx: RenderContext = {
       doc,
@@ -274,16 +274,20 @@ function visitBlocks(
  * another whole-document string. Whitespace expansion adds no new glyphs. */
 function fontCharacters(body: Element, title: string | undefined, tables: Map<Element, PreparedTable>): string {
   const chars = new Set<string>();
-  const collect = (text: string) => {
-    // The four always-embedded faces cover printable ASCII; an ASCII-only
-    // code line of any length needs no font lookup or normalization here.
-    if (!/[^\p{ASCII}]/u.test(text)) return;
-    for (const ch of text.normalize('NFC')) if (ch.codePointAt(0)! > 127) chars.add(ch);
+  const collect = (text: string, preserveSpacing = false) => {
+    // wrapText replaces word separators with ASCII spaces. Code and image
+    // labels retain spacing except for the line breaks normalizeText replaces.
+    // Skip those scalars without expanding tabs or splitting long code lines.
+    const needsFont = preserveSpacing ? /[^\p{ASCII}\u0085\u2028\u2029]/u : /[^\p{ASCII}\s\u0085]/u;
+    if (!needsFont.test(text)) return;
+    for (const ch of text.normalize('NFC')) if (needsFont.test(ch)) chars.add(ch);
   };
   collect(title ?? '');
   visitBlocks(body, (el, render) => {
     if (render === renderImagePlaceholder) {
-      collect(el.getAttribute('alt') ?? '');
+      collect(el.getAttribute('alt') ?? '', true);
+    } else if (render === renderPre) {
+      collect(trimmedText(el), true);
     } else if (render === renderTable) {
       // A cell boundary can split an NFC sequence. Collect the exact cell
       // and caption text, and reuse that projection when drawing the grid.

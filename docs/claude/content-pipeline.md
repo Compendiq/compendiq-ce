@@ -81,6 +81,9 @@ and each row is placed and paginated like a source line. Tabs expand to four
 spaces before measuring; blank lines keep their row. Text is measured as drawn
 (pdf-lib applies no kerning), and a word wider than its line (URL, hash)
 breaks between characters in body text and table cells.
+Font selection follows that layout: an ideographic space collapsed in prose
+or trimmed from the ends of a code block needs no fallback font. Inside a
+code line or image label it keeps its printed width and still needs its font.
 
 **Article PDF export limit (#1962).** One request may print at most **1,000
 code rows**, including internal blank lines and wrapped continuations. Empty
