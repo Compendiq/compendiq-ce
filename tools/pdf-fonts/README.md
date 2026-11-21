@@ -62,3 +62,21 @@ Change a pin (URL and source SHA-256), run `prepare.py`, which then reports the
 new output SHA-256: pin that too, and run the backend PDF tests
 (`src/core/services/pdf-fonts.test.ts`, `pdf-service.test.ts`). Each update adds
 about 10 MB to the repository.
+
+## Browser analytics exports (#2032)
+
+After checking the article outputs, `prepare.py` calls `analytics.publish`.
+It copies Regular, Bold, SC, KR and both OFL notices byte-for-byte into
+`frontend/public/fonts/pdf/`. It generates the lazy `analytics-font-coverage.json`
+from their cmaps: inclusive range pairs plus each file's SHA-256, used to
+version its immutable URL and reject unexpected content. No font is bundled in JS.
+
+SC covers some non-CJK symbols neither sans style has (e.g. `✓ → ① Ⅷ`).
+The pipeline subsets this residual so a symbol does not require a full CJK
+download; if SC is needed in the same report, its original face serves both.
+`fonttools==4.68.0` supplies the Unicode 18.0 Script_Extensions tables:
+Han, Hiragana, Katakana and Hangul (including shared punctuation) stay in
+the full faces. SC precedes KR; these pins leave no KR-only non-CJK residual.
+The shard retains source outlines, advances, distinct cmap glyphs, even
+offsets and the CJK OFL. `analytics.py` checks its output digest; review a
+changed residual and its rendering before updating that pin.
