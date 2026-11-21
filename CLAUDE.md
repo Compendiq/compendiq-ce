@@ -50,6 +50,10 @@ results and retries the current query. Cached results may remain visible after
 a refetch failure only for their own query key; the two-character threshold,
 large-graph gate, and full-graph escape remain independent.
 
+The single-article PDF response owns its download name (#1963). Both the
+toolbar and inspector consume its UTF-8 `Content-Disposition`; missing or
+malformed names use the legacy title fallback. See `docs/API.md`.
+
 ## Read these when relevant
 
 - `docs/claude/ui-ux.md`: REQUIRED before any frontend or styling change.

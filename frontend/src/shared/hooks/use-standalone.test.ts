@@ -387,20 +387,24 @@ describe('use-standalone hooks', () => {
   });
 
   describe('useExportPdf', () => {
-    it('sends export request and returns a blob', async () => {
+    it('sends the export request and returns the PDF bytes and decoded filename', async () => {
       const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
       const mock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         new Response(pdfBytes, {
           status: 200,
-          headers: { 'Content-Type': 'application/pdf' },
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': "attachment; filename=ascii.pdf; filename*=UTF-8''%D1%8F.pdf",
+          },
         }),
       );
       const { result } = renderHook(() => useExportPdf(), { wrapper: createWrapper() });
-      const blob = await result.current.mutateAsync(42);
+      const { blob, filename } = await result.current.mutateAsync(42);
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
       expect(url).toContain('/pages/42/export/pdf');
       expect(opts.method).toBe('POST');
-      expect(blob.size).toBeGreaterThan(0);
+      expect(await blob.text()).toBe('%PDF');
+      expect(filename).toBe('я.pdf');
     });
   });
 
