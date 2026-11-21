@@ -934,14 +934,16 @@ describe('#1739 real page-ID route boundaries', () => {
   }
 
   it('#1739 CONTROL single export uses the real renderer and exact readable page', async () => {
-    const page = await seedPage({ title: 'Target Export', marker: 'Visible export body' });
+    const page = await seedPage({ title: 'Target Résumé', marker: 'Visible export body' });
     const response = await app.inject({ method: 'POST', url: `/api/pages/000${page.id}/export/pdf` });
     expect(response.statusCode, response.body).toBe(200);
     expect(response.headers['content-type']).toBe('application/pdf');
-    expect(response.headers['content-disposition']).toBe('attachment; filename="target-export.pdf"');
+    expect(response.headers['content-disposition']).toBe(
+      `attachment; filename="target-resume.pdf"; filename*=UTF-8''target-r%C3%A9sum%C3%A9.pdf`,
+    );
     const pdf = await extractPdf(response.rawPayload);
     expect(pdf.pages).toBeGreaterThan(0);
-    expect(pdf.text).toContain('Target Export');
+    expect(pdf.text).toContain('Target Résumé');
     expect(pdf.text).toContain('Visible export body');
     expect(pdf.text).not.toContain('ID decoy');
   });

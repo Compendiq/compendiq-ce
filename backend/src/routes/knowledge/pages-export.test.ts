@@ -103,7 +103,7 @@ describe('pages-export routes', () => {
   describe('POST /api/pages/:id/export/pdf', () => {
     it('should return a PDF for a standalone page owned by user', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [{ title: 'Test Article', body_html: '<p>Hello</p>', source: 'standalone', space_key: '_standalone', created_by_user_id: TEST_USER_ID, visibility: 'private' }],
+        rows: [{ title: 'Установка', body_html: '<p>Hello</p>', source: 'standalone', space_key: '_standalone', created_by_user_id: TEST_USER_ID, visibility: 'private' }],
         command: 'SELECT',
         rowCount: 1,
         oid: 0,
@@ -117,9 +117,10 @@ describe('pages-export routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toBe('application/pdf');
-      expect(response.headers['content-disposition']).toContain('attachment; filename=');
-      expect(response.headers['content-disposition']).toContain('.pdf');
-      expect(mockGeneratePdf).toHaveBeenCalledWith('<p>Hello</p>', { title: 'Test Article' });
+      expect(response.headers['content-disposition']).toBe(
+        `attachment; filename="article-42.pdf"; filename*=UTF-8''${encodeURIComponent('установка')}.pdf`,
+      );
+      expect(mockGeneratePdf).toHaveBeenCalledWith('<p>Hello</p>', { title: 'Установка' });
     });
 
     it('should return 404 for non-existent page', async () => {

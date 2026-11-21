@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { TrashListResponse, RestorePageBody, Template, TemplateSummary, CreateTemplateInput, UpdateTemplateInput } from '@compendiq/contracts';
 import { apiFetch, ApiError, refreshAccessTokenOnce } from '../lib/api';
 import { useAuthStore } from '../../stores/auth-store';
+import { parseArticlePdfFilename, type ArticlePdfDownload } from '../lib/article-pdf-download';
 
 // ======== Templates ========
 
@@ -217,7 +218,7 @@ export function useTrending() {
  * `apiFetch` because `apiFetch` only handles JSON responses — binary
  * content types like `application/pdf` would return `undefined`.
  */
-async function fetchPdfBlob(url: string, init?: RequestInit): Promise<Blob> {
+async function fetchPdfBlob(url: string, init?: RequestInit): Promise<ArticlePdfDownload> {
   const { accessToken } = useAuthStore.getState();
   const headers = new Headers(init?.headers);
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
@@ -240,7 +241,7 @@ async function fetchPdfBlob(url: string, init?: RequestInit): Promise<Blob> {
     throw new ApiError(res.status, body.message ?? 'PDF export failed');
   }
 
-  return res.blob();
+  return { blob: await res.blob(), filename: parseArticlePdfFilename(res.headers.get('Content-Disposition')) };
 }
 
 export function useExportPdf() {
