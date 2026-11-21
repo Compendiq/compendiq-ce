@@ -58,10 +58,23 @@ cells of the rows below shift left. A spanning cell wraps at the combined width
 of its columns within each band, with no border inside it. Grids wider than 14
 columns print in bands of at most 14 equal columns (at least 35.38 pt, two
 glyphs wide), one below the other. A later band holds only the rows with a
-cell starting in it (a crossing cell repeats there), plus the header row's
-share of the band; a header cell prints again in a later band only if its
-piece there would also repeat on a continuation page, so an oversized header
-cell prints once. A band in which no cell starts is skipped.
+cell starting in it (a crossing cell repeats there), plus the first row's
+share if that row starts with `th`. Its carried cell wraps once at the
+clipped band width; if it leaves no room for a body line on a fresh page,
+its piece stays blank there and in subsequent bands. Later `th`-first rows
+follow ordinary band rules. A `colspan` of 1000 can touch up to 73 bands
+when offset from the band edge. Bands with no cell starts are skipped,
+except the first, which preserves empty rows as bordered boxes.
+
+Article PDFs print a table's own `<caption>` once, above its first band, in
+regular body text at the full content width. Keep the caption with the first
+row when they fit a fresh page; otherwise keep its last line with at least
+the first row fragment. A caption needs no rows to print. An editor caption
+outside the table remains ordinary body content. In captions and cells,
+HTML block boundaries (including form legends and legacy `<center>`), `<br>`
+and nested table cells and rows separate words with a space. Inline marks
+preserve the word; author CSS does not determine these boundaries. Nested
+tables contribute text, not another grid (#1969).
 
 PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Noto Sans Mono
 cells): the rest of a long line continues flush left on the next row, unmarked,

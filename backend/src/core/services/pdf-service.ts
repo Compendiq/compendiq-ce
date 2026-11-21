@@ -363,11 +363,14 @@ function renderTextBlock(
   font: PDFFont,
   fontSize: number,
   color: ReturnType<typeof rgb>,
+  keepWithNext = 0,
 ): void {
   const lines = wrapText(text, font, fontSize, CONTENT_WIDTH);
-  for (const line of lines) {
-    ensureSpace(ctx, LINE_HEIGHT);
-    drawText(ctx.page, line, {
+  const height = lines.length * LINE_HEIGHT + keepWithNext;
+  if (keepWithNext && height <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM) ensureSpace(ctx, height);
+  for (let i = 0; i < lines.length; i++) {
+    ensureSpace(ctx, LINE_HEIGHT + (i === lines.length - 1 ? keepWithNext : 0));
+    drawText(ctx.page, lines[i]!, {
       x: MARGIN_LEFT,
       y: ctx.y,
       size: fontSize,
@@ -555,8 +558,13 @@ interface BandRow {
 
 function renderTable(ctx: RenderContext, el: Element): void {
   // thead rows, then tbody (and bare) rows, then tfoot rows; never a nested table's.
-  const rows = Array.from((el as HTMLTableElement).rows);
-  if (rows.length === 0) return;
+  const table = el as HTMLTableElement;
+  const caption = table.caption ? tableText(table.caption) : '';
+  const rows = Array.from(table.rows);
+  if (rows.length === 0) {
+    if (caption) renderTextBlock(ctx, caption, ctx.font, FONT_SIZE_BODY, COLOR_TEXT);
+    return;
+  }
   const { grid, width } = tableGrid(rows);
 
   // Narrow-column policy: no column is narrower than TABLE_MIN_COLUMN_WIDTH, so
@@ -580,10 +588,9 @@ function renderTable(ctx: RenderContext, el: Element): void {
     }
   });
   const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
-  // Header cells too tall to repeat print once, in the band they start in. A
-  // cell's later pieces are no wider (full bands, then its last piece), and
-  // wrapText gives a narrower width no fewer lines, so one check per cell holds.
-  const tooTall = new Set<GridCell>();
+  // A carried first-row header piece is checked at its actual width. After it
+  // fails, later pieces of the same cell can only be as wide or narrower.
+  let tooTall: GridCell | undefined;
   for (let from = 0; from < width; from += perBand) {
     const starting = startingRows.get(from / perBand) ?? [];
     if (from > 0 && starting.length === 0) continue;
@@ -598,19 +605,57 @@ function renderTable(ctx: RenderContext, el: Element): void {
       next[r] = i;
       const carried = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from ? row.cells[i - 1] : undefined;
       const startsHere = i < row.cells.length && row.cells[i]!.start < to;
-      if (from > 0 && r === 0 && row.isHeader && carried && !tooTall.has(carried)) {
-        const piece = sliceRow(ctx, row, i - 1, from, Math.min(carried.start + carried.span, to), colWidth);
-        if (!repeatsAsHeader(piece)) tooTall.add(carried);
+      const firstIsBlank = carried !== undefined && carried === tooTall;
+      if (from > 0 && !startsHere && (!carried || firstIsBlank)) continue;
+      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, firstIsBlank);
+      if (r === 0 && row.isHeader && carried && !firstIsBlank) {
+        const piece = slice.pieces[0]!;
+        if (!repeatsAsHeader(piece.lines.length)) {
+          tooTall = carried;
+          if (!startsHere) continue;
+          piece.lines = []; // Keep its column and the next cell's offset.
+          slice.count = Math.max(1, ...slice.pieces.map((p) => p.lines.length));
+        }
       }
-      // Only header cells are ever too tall: their piece here stays blank, and
-      // with no header cell starting here the header row has nothing to show.
-      const blank = carried !== undefined && tooTall.has(carried);
-      if (from > 0 && !startsHere && (!carried || blank)) continue;
-      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, blank);
       if (r === 0 && row.isHeader) header = slice;
       band.push(slice);
     }
-    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth);
+    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth, from === 0 ? caption : '');
+  }
+}
+
+// HTML's default block elements (including legacy import markup), plus the
+// table and explicit line boundaries. Inline marks and author CSS do not split words.
+const TABLE_TEXT_BREAKS: Record<string, true> = {
+  address: true, article: true, aside: true, blockquote: true, br: true, caption: true, center: true,
+  dd: true, details: true, dialog: true, dir: true, div: true, dl: true, dt: true, fieldset: true,
+  figcaption: true, figure: true, footer: true, form: true, h1: true, h2: true, h3: true,
+  h4: true, h5: true, h6: true, header: true, hgroup: true, hr: true, legend: true, li: true,
+  listing: true, main: true, menu: true, nav: true, ol: true, p: true, plaintext: true, pre: true,
+  search: true, section: true, summary: true, table: true, td: true, th: true, tr: true, ul: true, xmp: true,
+};
+
+/** Flatten blocks to word boundaries, not inline marks: `get<b>ting</b>` stays one word. */
+function tableText(root: Element): string {
+  if (!root.firstElementChild) return (root.textContent ?? '').trim();
+  let text = '';
+  // Walk enter/leave edges without recursing on the depth of imported markup.
+  let node: Node = root;
+  let leaving = false;
+  for (;;) {
+    if (node.nodeType === 1 && Object.hasOwn(TABLE_TEXT_BREAKS, (node as Element).localName)) text += ' ';
+    else if (!leaving && node.nodeType === 3) text += node.nodeValue;
+    if (!leaving && node.firstChild) {
+      node = node.firstChild;
+    } else if (node === root) {
+      return text.trim();
+    } else if (node.nextSibling) {
+      node = node.nextSibling;
+      leaving = false;
+    } else {
+      node = node.parentNode!;
+      leaving = true;
+    }
   }
 }
 
@@ -626,7 +671,7 @@ function tableGrid(rows: HTMLTableRowElement[]): { grid: GridRow[]; width: numbe
   const grid = rows.map((row): GridRow => {
     let column = 0;
     const cells = Array.from(row.cells, (cell): GridCell => {
-      const placed = { start: column, span: cell.colSpan, text: cell.textContent?.trim() ?? '' };
+      const placed = { start: column, span: cell.colSpan, text: tableText(cell) };
       column += cell.colSpan;
       return placed;
     });
@@ -662,15 +707,14 @@ function sliceRow(
 }
 
 /**
- * Whether a header slice repeats — on a continuation page, or as the header
- * row's share of a later band: only when a line of the row below still fits
- * under it on a fresh page. A header cell too tall for that prints once, in
- * the band it starts in.
+ * Only a th-first row at index zero can repeat on continuation pages. Its
+ * entire slice (or a carried piece in a later band) must leave room for one
+ * body line on a fresh page. Later th-first rows follow ordinary band rules.
  */
-function repeatsAsHeader(header: BandRow): boolean {
+function repeatsAsHeader(lines: number): boolean {
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
-  return header.count * lineHeight + padding + lineHeight + padding <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
+  return lines * lineHeight + padding + lineHeight + padding <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
 }
 
 /**
@@ -681,14 +725,23 @@ function repeatsAsHeader(header: BandRow): boolean {
  */
 function renderTableBand(
   ctx: RenderContext, prepared: BandRow[], header: BandRow | undefined, colWidth: number, bandWidth: number,
+  caption: string,
 ): void {
-  ensureSpace(ctx, LINE_HEIGHT * 2);
-  ctx.y -= 4;
-
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
   const pageCapacity = PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
-  const repeatHeader = header && repeatsAsHeader(header) ? header : undefined;
+  const repeatHeader = header && repeatsAsHeader(header.count) ? header : undefined;
+  const topGap = 4;
+  if (caption) {
+    const firstHeight = prepared[0]!.count * lineHeight + padding;
+    // If even one caption line and the full row cannot share a fresh page,
+    // keep its first fragment instead; the rest continues normally.
+    const keep = LINE_HEIGHT + topGap + firstHeight <= pageCapacity ? firstHeight : lineHeight + padding;
+    renderTextBlock(ctx, caption, ctx.font, FONT_SIZE_BODY, COLOR_TEXT, topGap + keep);
+  } else {
+    ensureSpace(ctx, LINE_HEIGHT * 2);
+  }
+  ctx.y -= topGap;
 
   const drawFragment = (row: BandRow, start: number, count: number): void => {
     const height = count * lineHeight + padding;
@@ -734,8 +787,8 @@ function renderTableBand(
     const row = prepared[r]!;
     const fullHeight = row.count * lineHeight + padding;
     const freshCapacity = pageCapacity - (r > 0 && repeatHeader ? repeatHeader.count * lineHeight + padding : 0);
-    // Keep ordinary rows together when they fit on a fresh page.
-    if (fullHeight <= freshCapacity && ctx.y - fullHeight < MARGIN_BOTTOM) continueTable(r);
+    // A caption already reserved its row (or a fragment); never orphan it by moving the row now.
+    if (!(r === 0 && caption) && fullHeight <= freshCapacity && ctx.y - fullHeight < MARGIN_BOTTOM) continueTable(r);
     let start = 0;
     while (start < row.count) {
       const available = Math.floor((ctx.y - MARGIN_BOTTOM - padding) / lineHeight);
