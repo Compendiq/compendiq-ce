@@ -534,9 +534,9 @@ of SC rather than either full CJK file. Downloads are shared within the
 session; each PDF embeds only its own subsets. Greek, Cyrillic, Han, kana
 and Hangul remain searchable and selectable. There is no bidi, complex
 shaping or emoji support: uncovered Arabic, Hebrew, Indic, Thai, emoji
-and rare symbols print as `?`. Non-WinAnsi control and format characters
-such as NUL, directional overrides and joiners also print as `?`, even if
-a font maps them. The cover discloses substitutions actually drawn, not
+and rare symbols print as `?`. Non-WinAnsi controls, format characters
+and default-ignorable characters (including the combining grapheme joiner)
+also print as `?`, even if a font maps them. The cover discloses substitutions actually drawn, not
 ones hidden by truncation. The hash always covers the original rows. A
 missing or corrupt required file rejects the export; the dashboard shows
 an error toast and downloads nothing (#1732, #2032).

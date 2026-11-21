@@ -50,10 +50,9 @@ export async function unicodeText(doc: PDFDocument, styles: [PDFFont, PDFFont], 
     const primary = index ? 'NotoSans-Bold' : 'NotoSans-Regular';
     const selected = new Map<number, Face | null>();
     for (const cp of points) {
-      // Whitespace was normalized before preflight. Remaining control/format
-      // characters (e.g. NUL, bidi overrides and joiners) have no drawable
-      // representation here, even when a Noto cmap assigns them a glyph.
-      if (/[\p{Cc}\p{Cf}]/u.test(String.fromCodePoint(cp))) {
+      // A cmap entry is not proof of printable text: Noto maps the combining
+      // grapheme joiner (U+034F) to a blank. Whitespace is normalized upstream.
+      if (/[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]/u.test(String.fromCodePoint(cp))) {
         selected.set(cp, null);
         continue;
       }

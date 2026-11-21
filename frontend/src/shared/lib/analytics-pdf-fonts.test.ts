@@ -99,6 +99,26 @@ it('discloses mapped but nonprinting controls only if they survive truncation', 
   expect(requests).not.toHaveBeenCalled();
 });
 
+it('discloses the combining grapheme joiner only when it appears in the printed cell', async () => {
+  const query = 'BEFORE\u034fAFTER';
+  const [cover, table] = await print([{ query }], { title: 'Report' });
+  expect(table).toContain('BEFORE?AFTER');
+  expect(cover).toContain('Some characters cannot be shown');
+
+  const [clippedCover, clippedTable] = await print([{ query: 'To'.repeat(200) + query }], { title: 'Report' });
+  expect(clippedTable).toMatch(/(?:To)+T?…/);
+  expect(clippedTable).not.toContain('?');
+  expect(clippedCover).not.toContain('Some characters cannot be shown');
+  expect(requests).not.toHaveBeenCalled();
+});
+
+it('retains a printable combining mark that NFC cannot compose', async () => {
+  const [cover, table] = await print([{ query: 'q\u0301' }], { title: 'Report' });
+  expect(table).toContain('q\u0301');
+  expect(cover).not.toContain('Some characters cannot be shown');
+  expect(requestedPaths()).toEqual(['/fonts/pdf/NotoSans-Regular.ttf']);
+});
+
 it.each(['NotoSans-Regular.ttf', 'NotoSans-Bold.ttf', 'NotoSansSC-Regular.ttf', 'NotoSansKR-Regular.ttf',
   'OFL-NotoSans.txt', 'OFL-NotoSansCJK.txt'])('ships the verified article asset %s unchanged', async name => {
   const digest = async (path: string) => createHash('sha256').update(await readFile(path)).digest('hex');
