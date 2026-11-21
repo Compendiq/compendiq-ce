@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- [Proposed ADR-028](docs/ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports) compares PDF text shaping, bidi and emoji strategies on the same article corpus. Export behavior is unchanged (#2033).
+
 ### Fixed
 
 - Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
