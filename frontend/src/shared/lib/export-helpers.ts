@@ -1,3 +1,5 @@
+import { fitWinAnsiColumn } from './fit-winansi-column';
+
 /**
  * Client-side export utilities for the analytics dashboards (#303).
  *
@@ -217,13 +219,14 @@ async function renderPdfCe(
     // layout (even below the minimum width) when the first row already fits
     // every key, so existing reports paginate exactly as before.
     const capacity = Math.floor((A4[1] - 2 * MARGIN) / MIN_COLUMN_WIDTH);
+    const fit = cols.length > firstKeys.length ? fitWinAnsiColumn : truncateToWidth;
     const bands = cols.length > firstKeys.length && cols.length > capacity
       ? Array.from({ length: Math.ceil(cols.length / capacity) }, (_, i) => cols.slice(i * capacity, (i + 1) * capacity))
       : [cols];
     for (const band of bands) {
       const layout = computeColumnLayout(band, rows, font, boldFont, { portraitSize: A4, margin: MARGIN });
       renderDataPages(doc, rows, band, title, layout,
-        { MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont, text: guard.text });
+        { MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont, text: guard.text, fit });
     }
   } else {
     const p = doc.addPage(A4);
@@ -315,6 +318,7 @@ interface RenderCtx {
   boldFont: Awaited<ReturnType<Awaited<ReturnType<typeof import('pdf-lib')['PDFDocument']['create']>>['embedFont']>>;
   /** Makes caller-supplied text drawable (`createTextGuard`). */
   text: (value: string) => string;
+  fit: typeof truncateToWidth;
 }
 
 /**
@@ -351,7 +355,7 @@ function renderDataPages(
     // Column headers
     cols.forEach((col, i) => {
       const x = MARGIN + colWidths.slice(0, i).reduce((a, b) => a + b, 0);
-      page.drawText(truncateToWidth(text(col), colWidths[i]! - 4, boldFont, 8), {
+      page.drawText(ctx.fit(text(col), colWidths[i]! - 4, boldFont, 8), {
         x, y, font: boldFont, size: 8, color: COLOR_TEXT,
       });
     });
@@ -367,7 +371,7 @@ function renderDataPages(
       cols.forEach((col, i) => {
         const x = MARGIN + colWidths.slice(0, i).reduce((a, b) => a + b, 0);
         const s = cellText(row, col);
-        page.drawText(truncateToWidth(text(s), colWidths[i]! - 4, font, 7), {
+        page.drawText(ctx.fit(text(s), colWidths[i]! - 4, font, 7), {
           x, y, font, size: 7, color: COLOR_MUTED,
         });
       });
