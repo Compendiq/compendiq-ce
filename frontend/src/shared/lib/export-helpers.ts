@@ -1,5 +1,6 @@
 import type { PDFDocument, PDFFont, PDFPage } from 'pdf-lib';
 import { normalized, type ReportText } from './analytics-pdf-text';
+import { fitWinAnsiColumn } from './fit-winansi-column';
 
 /**
  * Client-side export utilities for the analytics dashboards (#303).
@@ -134,7 +135,8 @@ async function renderPdfCe(
   const kpis = (meta.kpis ?? []).slice(0, 6).map(k => ({
     label: k.label, value: `${k.value}${k.unit ? ' ' + k.unit : ''}`,
   }));
-  const text = await reportText(doc, font, boldFont, rows, cols, title, range, generatedBy, instanceUrl, kpis);
+  const fit = cols.length > firstKeys.length ? fitWinAnsiColumn : truncateToWidth;
+  const text = await reportText(doc, font, boldFont, rows, cols, title, range, generatedBy, instanceUrl, kpis, fit);
 
   const A4: [number, number] = [595, 842];
   const MARGIN = 50;
@@ -256,6 +258,7 @@ async function reportText(
   doc: PDFDocument, font: PDFFont, bold: PDFFont, rows: Record<string, unknown>[],
   cols: string[], title: string, range: string | undefined, by: string | undefined,
   instance: string | undefined, kpis: { label: string; value: string }[],
+  fit: typeof truncateToWidth,
 ): Promise<ReportText> {
   const winAnsi = new Set(font.getCharacterSet());
   const missing = [new Set<number>(), new Set<number>()];
@@ -282,7 +285,7 @@ async function reportText(
     width: safeWidth, // Preserve the old raw-value estimate for decomposed Latin/whitespace.
     draw(page, value, opts, maxWidth) {
       const s = normalized(value);
-      page.drawText(maxWidth === undefined ? s : truncateToWidth(s, maxWidth, opts.font, opts.size), opts);
+      page.drawText(maxWidth === undefined ? s : fit(s, maxWidth, opts.font, opts.size), opts);
     },
   };
 }

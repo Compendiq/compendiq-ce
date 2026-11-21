@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { getDocumentProxy } from 'unpdf';
 import {
   PDFArray,
   PDFDocument,
@@ -189,6 +190,22 @@ describe('export-helpers (#303)', () => {
     expect(footers).toEqual(Array.from({ length: 6 }, (_, i) => `Page ${i + 1} of 6`));
     expect(strings.filter((s) => s === 'k19')).toHaveLength(2);
     expect(strings).toEqual(expect.arrayContaining(['v1-19', 'v79-19', 'v79-0', 'r78']));
+  });
+
+  it('keeps late WinAnsi headers and values inside the final band using actual PDF glyph advances', async () => {
+    const initial = Object.fromEntries(Array.from({ length: 18 }, (_, i) => [`k${i}`, 'x']));
+    await exportToPdf('late.pdf', [initial, { ['To'.repeat(100)]: 'VA'.repeat(100) }], 'Bands');
+    const pdf = await getDocumentProxy(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
+    try {
+      const band = await pdf.getPage(3);
+      const { items } = await band.getTextContent({ disableNormalization: true });
+      for (const prefix of ['To', 'VA']) {
+        const run = items.find(item => 'str' in item && item.str.startsWith(prefix));
+        if (!run || !('str' in run)) throw new Error(`Missing ${prefix} run on the final band`);
+        expect(run.str).toMatch(/…$/);
+        expect(run.transform[4]! + run.width).toBeLessThanOrEqual(band.view[2]! - 50);
+      }
+    } finally { await pdf.destroy(); }
   });
 
   it('default renderer produces cover + multi-page data PDF for >57 rows', async () => {
