@@ -836,7 +836,7 @@ describe('rtfToText', () => {
       ['expanded colour table', '{\\*\\expandedcolortbl;;\\cssrgb\\c0\\c0\\c0;}'],
       ['field instruction', '{\\*\\fldinst HYPERLINK "http://x"}'],
       ['panose', '{\\*\\panose 02020603050405020304}'],
-      ['rsid table', '{\\*\\rsidtbl \\rsid1405817\\rsid3871291}'],
+      ['rsid table', '{\\*\\rsidtbl \\rsid1405817 rsidsentinel\\rsid3871291}'],
       ['unlisted rsid-style table', '{\\*\\pgdsctbl{\\pgdsc0\\pgdscuse195 Default Page Style;}}'],
       ['list text', '{\\*\\listtext 1.\\tab}'],
       ['unknown destination', '{\\*\\x hidden {nested} text}'],
@@ -859,6 +859,42 @@ describe('rtfToText', () => {
       // An unknown ignorable group inside a kept shpinst is still dropped.
       expect(rtfFromSource('{\\rtf1 {\\*\\shpinst{\\*\\wrapelemhint x}{\\sp{\\sn fFlipH}{\\sv 0}}{\\shptxt Box}}}')).toBe('Box');
     });
+
+    const rawLineBreaks = [['LF', '\n'], ['CR', '\r'], ['CRLF', '\r\n']] as const;
+
+    it.each(rawLineBreaks)('drops a field instruction whose header wraps after { or \\* (%s)', (_name, nl) => {
+      for (const header of [`{${nl}\\*\\fldinst`, `{\\*${nl}\\fldinst`, `{${nl}${nl}\\*${nl}${nl}\\fldinst`]) {
+        expect(rtfFromSource(`{\\rtf1 A{\\field${header} HYPERLINK "http://x"}{\\fldrslt link}}B}`)).toBe('AlinkB');
+      }
+      expect(rtfFromSource(`{\\rtf1 A{${nl}\\*${nl}\\bkmkstart mark}B}`)).toBe('AB');
+    });
+
+    it.each(rawLineBreaks)('keeps a text box whose header wraps after \\* (%s)', (_name, nl) => {
+      // The group is kept, so its raw line breaks are body line breaks, as before.
+      const lineBreak = nl === '\r' ? '\r' : '\n';
+      for (const [header, count] of [[`{\\*${nl}\\shpinst`, 1], [`{${nl}\\*${nl}\\shpinst`, 2]] as const) {
+        const shape = `{\\shp${header}\\shpleft0{\\sp{\\sn shapeType}{\\sv 202}}{\\shptxt Box text}}}`;
+        expect(rtfFromSource(`{\\rtf1 A${shape}B}`)).toBe(`A${lineBreak.repeat(count)}Box textB`);
+      }
+    });
+
+    it('reads a group header past raw line breaks only', () => {
+      // A space or a backslash-newline still ends the header: no readable name, dropped.
+      expect(rtfFromSource('{\\rtf1 A{\\* \\shptxt Box}B}')).toBe('AB');
+      expect(rtfFromSource('{\\rtf1 A{\\*\\\nshptxt Box}B}')).toBe('AB');
+      expect(rtfFromSource('{\\rtf1 A{\\*\n junk}B}')).toBe('AB');
+      // A plain group past a wrap keeps the plain rule.
+      expect(rtfFromSource('{\\rtf1 A{\n\\fonttbl{\\f0 Arial;}}{\n\\x plain}B}')).toBe('A\nplainB');
+    });
+
+    it('reads wrapped group headers in linear time', () => {
+      const run = '\r\n'.repeat(5_000);
+      const groups = `{${run}\\*${run}\\x hidden}v`.repeat(200);
+      expect(groups.length).toBeGreaterThan(4_000_000);
+      expect(rtfFromSource(`{\\rtf1 ${groups}}`)).toBe('v'.repeat(200));
+      // Unclosed kept groups, each followed by a long run.
+      expect(rtfFromSource(`{\\rtf1 ${`{${run}`.repeat(200)}x`)).toBe('x');
+    }, 5_000);
 
     it('drops a {\\* group whose name cannot be read', () => {
       expect(rtfFromSource('{\\rtf1 A{\\* junk}B}')).toBe('AB');
@@ -952,6 +988,12 @@ describe('rtfToText', () => {
       if (bookmark !== undefined) expect(text).not.toContain(bookmark);
     };
 
+    const appKitText = [
+      'First paragraph of the Compendiq AppKit fixture.',
+      'Second paragraph with a fixture link inside.',
+      'Third paragraph ends the AppKit fixture.',
+    ].join('\n');
+
     it('extracts the AppKit (textutil) fixture as three paragraphs on three lines', async () => {
       const rtf = fixture('appkit-textutil.rtf');
       const source = rtf.toString('latin1');
@@ -961,12 +1003,16 @@ describe('rtfToText', () => {
       expect(source).toContain('{\\*\\expandedcolortbl;;');
 
       const { text } = await extractDocumentText(rtf, 'appkit-textutil.rtf');
-      expect(text).toBe([
-        'First paragraph of the Compendiq AppKit fixture.',
-        'Second paragraph with a fixture link inside.',
-        'Third paragraph ends the AppKit fixture.',
-      ].join('\n'));
+      expect(text).toBe(appKitText);
       expectNoMarkup(text, 'example.com');
+    });
+
+    it('extracts the AppKit fixture unchanged when its field header wraps after {', async () => {
+      const source = fixture('appkit-textutil.rtf').toString('latin1');
+      const wrapped = source.replace('{\\*\\fldinst', '{\r\n\\*\\fldinst');
+      expect(wrapped).not.toBe(source);
+      const { text } = await extractDocumentText(Buffer.from(wrapped, 'latin1'), 'appkit-textutil.rtf');
+      expect(text).toBe(appKitText);
     });
 
     it('extracts the LibreOffice fixture with its link text and text box and no markup', async () => {
@@ -1002,6 +1048,15 @@ describe('rtfToText', () => {
         'Text box line of the LibreOffice fixture. ' +
         'Third paragraph ends the LibreOffice fixture.',
       );
+      expectNoMarkup(text, 'example.com', 'lomark');
+    });
+
+    it('keeps the LibreOffice text box once when its shape header wraps after \\*', async () => {
+      const source = fixture('libreoffice-26.8.rtf').toString('latin1');
+      const wrapped = source.replace('{\\shp{\\*\\shpinst', '{\\shp{\\*\r\n\\shpinst');
+      expect(wrapped).not.toBe(source);
+      const { text } = await extractDocumentText(Buffer.from(wrapped, 'latin1'), 'libreoffice-26.8.rtf');
+      expect(text.split('Text box line of the LibreOffice fixture.')).toHaveLength(2);
       expectNoMarkup(text, 'example.com', 'lomark');
     });
   });

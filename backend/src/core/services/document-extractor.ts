@@ -925,16 +925,31 @@ function utf8SequenceLength(rtf: string, i: number, end: number): number {
   return length;
 }
 
+/** The first index at or after `i` that is not a raw CR or LF. */
+function skipRawLineBreaks(rtf: string, i: number): number {
+  let at = i;
+  while (rtf.charCodeAt(at) === 0x0d || rtf.charCodeAt(at) === 0x0a) at += 1;
+  return at;
+}
+
 /**
  * Whether the group that opens at `rtf[i]` (a `{`) is dropped whole. The
  * ignorable form `{\*\name` is dropped unless `name` is in
  * {@link RTF_KEPT_IGNORABLE_DESTINATIONS}, and also when no name can be read
  * after `{\*` (fail closed). A plain `{\name` is dropped only when `name` is in
- * {@link RTF_DESTINATIONS}. O(length of the name).
+ * {@link RTF_DESTINATIONS}.
+ *
+ * A reader ignores raw CR and LF, so a writer may wrap its source line right
+ * after the `{` or the `\*`: the header is read past those line breaks (only
+ * those; a space or a `\`+line break still ends it). The line breaks looked at
+ * belong to this header alone, since no `{` can sit inside them, so every one
+ * is looked at by at most one header and the scan stays linear.
  */
 function isSkippedGroup(rtf: string, i: number): boolean {
-  const ignorable = rtf.startsWith('\\*', i + 1);
-  RTF_GROUP_NAME.lastIndex = ignorable ? i + 3 : i + 1;
+  let at = skipRawLineBreaks(rtf, i + 1);
+  const ignorable = rtf.startsWith('\\*', at);
+  if (ignorable) at = skipRawLineBreaks(rtf, at + 2);
+  RTF_GROUP_NAME.lastIndex = at;
   const name = RTF_GROUP_NAME.exec(rtf)?.[1];
   if (ignorable) return name === undefined || !RTF_KEPT_IGNORABLE_DESTINATIONS.has(name);
   return name !== undefined && RTF_DESTINATIONS.has(name);

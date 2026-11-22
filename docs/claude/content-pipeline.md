@@ -387,8 +387,11 @@ plain `{\name …}` group is dropped only when `name` is a listed markup destina
 `colortbl`, `stylesheet`, `info`, `pict`, headers/footers, `footnote`, … and `sp`, a shape property
 pair). **Kept:** `\fldrslt` (a plain group, so a hyperlink keeps its visible text) and text-box text
 in `\shpinst`/`\shptxt`; an unknown ignorable group nested inside a kept `\shpinst` is still dropped.
-A raw source line break (without `\`) is kept as a line break, so a writer that wraps source lines
-inside a paragraph (LibreOffice) yields extra line breaks.
+A group's name is read past raw CR/LF right after its `{` and its `\*`, so a writer's source-line wrap
+inside a group header does not change whether the group is dropped.
+In visible body text, a raw source line break (without `\`) is kept as a line break outside a pending
+`\'hh` byte run (inside one it is ignored, so a multi-byte character is not split), so a writer that
+wraps source lines inside a paragraph (LibreOffice) yields extra line breaks.
 
 **Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
 never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format
