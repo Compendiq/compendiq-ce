@@ -1476,6 +1476,12 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         'SELECT setting_value FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY],
       )).rows[0]!.setting_value;
       const overflow = (count: number, sample: number[]) => ({ ids: [], overflow: true, count, sample });
+      // A too-large owner is always counted in the pass and lifetime counters too.
+      const tooLargeOne = {
+        tooLarge: 1,
+        passTotals: { ...valid.passTotals, page_too_large: 1 },
+        totals: { ...valid.totals, page_too_large: (valid.totals.page_too_large ?? 0) + 1 },
+      };
       const invalid: Partial<BodyTextBackfillState>[] = [
         { status: 'running', owner: null },
         { status: 'idle', owner: randomUUID() },
@@ -1483,43 +1489,143 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         { phase: 'retry' },
         { status: 'waiting', unresolved: empty, tooLarge: 0 },
         // The release writes idle/retry for an exact list, never `waiting`.
-        { status: 'waiting', unresolved: list([pageId]), tooLarge: 1, nextFullPassAfter: future },
-        { status: 'idle', unresolved: { ids: [pageId, pageId], overflow: false, count: 2, sample: [pageId, pageId] } },
-        { status: 'idle', unresolved: { ids: [pageId], overflow: false, count: 2, sample: [pageId] } },
-        { status: 'idle', unresolved: { ids: [pageId], overflow: false, count: 1, sample: [] } },
+        { status: 'waiting', unresolved: list([pageId]), ...tooLargeOne, nextFullPassAfter: future },
+        { status: 'idle', cursor: pageId, unresolved: { ids: [pageId, pageId], overflow: false, count: 2, sample: [pageId, pageId] } },
+        { status: 'idle', cursor: pageId, unresolved: { ids: [pageId], overflow: false, count: 2, sample: [pageId] } },
+        { status: 'idle', cursor: pageId, unresolved: { ids: [pageId], overflow: false, count: 1, sample: [] } },
         { status: 'idle', unresolved: list([valid.highWater + 1]) },
+        // A scan lists only owners the cursor has passed.
+        { status: 'idle', cursor: 0, unresolved: list([pageId]) },
         { status: 'idle', unresolved: overflow(0, []) },
-        // An overflow within the list bound, a sample beyond the horizon, out of order or duplicated.
         { status: 'waiting', unresolved: overflow(1, [valid.highWater + 1]), nextFullPassAfter: future },
         { status: 'waiting', unresolved: overflow(3, pageIds), nextFullPassAfter: future },
-        { status: 'idle', unresolved: overflow(3, [1, 1]) },
-        { status: 'idle', unresolved: overflow(201, [...pageIds].reverse()) },
-        { status: 'idle', unresolved: overflow(201, [pageIds[0]!, pageIds[1]!, valid.highWater + 1]) },
         { status: 'idle', phase: 'retry', unresolved: overflow(201, pageIds) },
         { pass: 0 },
-        { status: 'done', tooLarge: 1 },
+        { seq: 0 },
+        { status: 'done', ...tooLargeOne },
+        // Counters and stamps move together.
+        { tooLarge: 1, status: 'waiting', nextFullPassAfter: future },
+        { passTotals: { ...valid.passTotals, repaired: (valid.totals.repaired ?? 0) + 1 } },
+        { firstCompletedAt: null },
+        { firstCompletedAt: new Date(Date.parse(valid.completedAt!) + 1000).toISOString() },
       ];
-      for (const patch of invalid) {
+      const expectRejected = async (patch: Partial<BodyTextBackfillState>, limits: Partial<BodyTextBackfillLimits> = {}) => {
         await write({ ...valid, ...patch });
         const stored = await raw();
-        await expect(run(), `fast path ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
+        await expect(run({ limits }), `fast path ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
         expect(await raw()).toBe(stored);
-        await expect(run({ restart: true }), `restart ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
+        await expect(run({ restart: true, limits }), `restart ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
         expect(await raw()).toBe(stored);
-      }
-      // Scaled list bound 2: an overflow of 3 is valid only under that bound.
+      };
+      for (const patch of invalid) await expectRejected(patch);
+      // Overflow samples under list bound 2 (count 3, three ids): only the
+      // order, or only the last id's horizon, differs from the accepted control.
       const scaled = { transientListMax: 2 };
+      const [first, second, third] = pageIds as [number, number, number];
+      const waitingOverflow = (sample: number[]) => ({
+        status: 'waiting' as const, unresolved: overflow(3, sample), nextFullPassAfter: future,
+      });
+      await expectRejected(waitingOverflow([first, third, second]), scaled);
+      await expectRejected(waitingOverflow([first, second, valid.highWater + 1]), scaled);
       const accepted: [Partial<BodyTextBackfillState>, string, Partial<BodyTextBackfillLimits>][] = [
-        [{ status: 'idle', phase: 'scan', unresolved: list([pageId]) }, '0 seconds', {}],
-        [{ status: 'idle', phase: 'retry', unresolved: list([pageId]), tooLarge: 1 }, '0 seconds', {}],
-        [{ status: 'waiting', unresolved: overflow(3, pageIds), nextFullPassAfter: future }, '0 seconds', scaled],
-        [{ status: 'waiting', tooLarge: 1, nextFullPassAfter: future }, '0 seconds', {}],
+        [waitingOverflow([first, second, third]), '0 seconds', scaled],
+        [{ status: 'idle', phase: 'scan', cursor: pageId, unresolved: list([pageId]) }, '0 seconds', {}],
+        [{ status: 'idle', phase: 'retry', unresolved: list([pageId]), ...tooLargeOne }, '0 seconds', {}],
+        [{ status: 'waiting', ...tooLargeOne, nextFullPassAfter: future }, '0 seconds', {}],
         [{ status: 'running', owner: randomUUID(), phase: 'scan' }, '16 minutes', {}],
       ];
       for (const [patch, ago, limits] of accepted) {
         await write({ ...valid, ...patch }, ago);
         await expect(run({ limits }), JSON.stringify(patch)).resolves.toMatchObject({ runId: expect.any(String) });
       }
+    });
+
+    it('status new is accepted only in its canonical pre-claim shape: each independent bad field is state_invalid on the fast read and on a forced restart, the row byte-identical; the canonical row bootstraps and completes with the first +24 h re-check', async () => {
+      await insertPage();
+      // The canonical row as the bootstrap writes it: a refused first claim leaves it.
+      await run({
+        hooks: {
+          beforeCommit: async (step, _owner, client) => {
+            if (step !== 'claim') return;
+            const pid = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+            await query('SELECT pg_terminate_backend($1)', [pid]);
+          },
+        },
+      });
+      const canonical = await state();
+      expect(canonical).toMatchObject({ status: 'new', seq: 0, pass: 0 });
+      const stamp = '2001-01-01T00:00:00.000Z';
+      const bad: Partial<BodyTextBackfillState>[] = [
+        { seq: 1 },
+        { pass: 1, seq: 1 },
+        { lastOwner: randomUUID() },
+        { passStartedAt: stamp },
+        { highWater: 5 },
+        { phase: 'retry' },
+        { highWater: 5, cursor: 1 },
+        { unresolved: { ids: [], overflow: false, count: 0, sample: [1] } },
+        { highWater: 5, unresolved: { ids: [1], overflow: false, count: 1, sample: [1] } },
+        { tooLarge: 1, passTotals: { page_too_large: 1 }, totals: { page_too_large: 1 } },
+        { nextFullPassAfter: stamp },
+        { overflowBackoffMs: 3_600_000 },
+        { firstCompletedAt: stamp, completedAt: stamp },
+        { passTotals: { repaired: 1 }, totals: { repaired: 1 } },
+        { totals: { repaired: 1 } },
+      ];
+      const raw = async () => (await query<{ setting_value: string }>(
+        'SELECT setting_value FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY],
+      )).rows[0]!.setting_value;
+      for (const patch of bad) {
+        await query(`UPDATE admin_settings SET setting_value = $2 WHERE setting_key = $1`,
+          [BODY_TEXT_BACKFILL_STATE_KEY, JSON.stringify({ ...canonical, ...patch })]);
+        const stored = await raw();
+        await expect(run(), `fast path ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
+        expect(await raw()).toBe(stored);
+        await expect(run({ restart: true }), `restart ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
+        expect(await raw()).toBe(stored);
+      }
+      // Control: the canonical row is claimed and the first completion schedules the +24 h re-check.
+      await query(`UPDATE admin_settings SET setting_value = $2 WHERE setting_key = $1`,
+        [BODY_TEXT_BACKFILL_STATE_KEY, JSON.stringify(canonical)]);
+      expect((await run()).outcome).toBe('done');
+      const doc = await state();
+      expect(Date.parse(doc.nextFullPassAfter!) - Date.parse(doc.completedAt!)).toBe(24 * 3600_000);
+      expect(doc.firstCompletedAt).toBe(doc.completedAt);
+    });
+
+    it('a stop latched while a takeover claim of a stale running/retry image (empty list) waits on the state row: interrupted, released idle without completing the pass; the next run completes it', async () => {
+      const pageId = await insertPage();
+      const intent = await pendingIntent(pageId);
+      expect((await run()).outcome).toBe('retry');
+      await settleIntent(intent);
+      // The crash image between the last resolved retry owner and the release.
+      await patchState({
+        status: 'running', owner: randomUUID(), phase: 'retry', cursor: pageId,
+        unresolved: { ids: [], overflow: false, count: 0, sample: [] },
+      }, '16 minutes');
+      const holder = await withHeldClient();
+      let summary!: BodyTextBackfillSummary;
+      let released = false;
+      try {
+        await holder.client.query('SELECT 1 FROM admin_settings WHERE setting_key = $1 FOR UPDATE', [BODY_TEXT_BACKFILL_STATE_KEY]);
+        const running = run({ limits: { lockTimeoutMs: 30_000 } });
+        await expectBlockedBackend('%FROM admin_settings WHERE setting_key = $1 FOR UPDATE%');
+        // Latch the stop while the takeover claim waits, then let the claim through.
+        const stopping = stopBodyTextBackfill();
+        released = true;
+        await holder.done();
+        await stopping;
+        summary = await running;
+      } finally {
+        if (!released) await holder.done();
+      }
+      expect(summary).toMatchObject({ outcome: 'interrupted', interruptCode: 'stopped' });
+      expect(await state()).toMatchObject({
+        status: 'idle', phase: 'retry', owner: null, lastOwner: summary.runId, completedAt: null, firstCompletedAt: null,
+      });
+      armBodyTextBackfill();
+      expect((await run()).outcome).toBe('done');
+      expect((await state()).firstCompletedAt).not.toBeNull();
     });
 
     it('every invocation writes exactly one terminal line; whole-page decisions are logged only after their transaction committed', async () => {

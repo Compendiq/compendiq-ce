@@ -197,24 +197,43 @@ function ascendingWithin(ids: number[], highWater: number): boolean {
   return ids.every((id, index) => id >= 1 && id <= highWater && (index === 0 || id > ids[index - 1]!));
 }
 
+/** Every counter of a record is zero (an empty record included). */
+function allZero(counts: Counts): boolean {
+  return Object.values(counts).every((value) => value === 0);
+}
+
 /**
  * The invariants a completion relies on (F7): only status/owner/phase
  * combinations the job itself writes (the end-of-pass table included), the
- * cursor within the horizon, and a transient record that is either an exact
- * sorted unique list within its bound or an overflow beyond the bound with a
- * consistent sample.
+ * cursor within the horizon, counters and timestamps as its writers move
+ * them, and a transient record that is either an exact sorted unique list
+ * within its bound or an overflow beyond the bound with a consistent sample.
+ * Every status, `new` included, runs every check (no early acceptance).
  */
 function reachable(doc: BodyTextBackfillState, listMax: number): boolean {
   const list = doc.unresolved;
-  const empty = !list.overflow && list.ids.length === 0 && list.count === 0;
+  const empty = !list.overflow && list.ids.length === 0 && list.count === 0 && list.sample.length === 0;
   if ((doc.owner !== null) !== (doc.status === 'running')) return false;
   if (doc.cursor > doc.highWater) return false;
-  if (doc.completedAt !== null && doc.firstCompletedAt === null) return false;
-  if (doc.status === 'new') {
-    return doc.pass === 0 && doc.passStartedAt === null && doc.phase === 'scan' && doc.cursor === 0
-      && doc.highWater === 0 && empty && doc.tooLarge === 0;
+  // Both completion stamps are written together and never cleared; the first is never later.
+  if ((doc.completedAt === null) !== (doc.firstCompletedAt === null)) return false;
+  if (doc.completedAt !== null && Date.parse(doc.firstCompletedAt!) > Date.parse(doc.completedAt)) return false;
+  // Every claim advances seq; a fresh pass advances seq and pass together.
+  if (doc.seq < doc.pass) return false;
+  // Pass counters are a part of the lifetime counters; the too-large count is the pass's page_too_large.
+  for (const [key, value] of Object.entries(doc.passTotals) as [BodyTextBackfillCounter, number][]) {
+    if (value > (doc.totals[key] ?? 0)) return false;
   }
-  if (doc.pass < 1 || doc.passStartedAt === null) return false;
+  if (doc.tooLarge > (doc.passTotals.page_too_large ?? 0)) return false;
+  if (doc.status === 'new') {
+    // Only the canonical pre-claim document the bootstrap writes.
+    if (doc.seq !== 0 || doc.pass !== 0 || doc.lastOwner !== null || doc.passStartedAt !== null) return false;
+    if (doc.highWater !== 0 || doc.phase !== 'scan' || doc.cursor !== 0 || !empty || doc.tooLarge !== 0) return false;
+    if (doc.nextFullPassAfter !== null || doc.overflowBackoffMs !== null || doc.completedAt !== null) return false;
+    if (!allZero(doc.passTotals) || !allZero(doc.totals)) return false;
+  } else if (doc.seq < 1 || doc.pass < 1 || doc.passStartedAt === null) {
+    return false;
+  }
   if (doc.status === 'done') {
     if (doc.phase !== 'scan' || doc.cursor !== 0 || !empty || doc.tooLarge !== 0) return false;
     if (doc.nextFullPassAfter === null || doc.completedAt === null) return false;
@@ -226,14 +245,16 @@ function reachable(doc: BodyTextBackfillState, listMax: number): boolean {
     if (!list.overflow && (!empty || doc.tooLarge === 0)) return false;
   }
   if (doc.phase === 'retry' && (list.overflow || (doc.status !== 'idle' && doc.status !== 'running'))) return false;
+  // During a scan an owner joins the list only as the cursor moves past it.
+  const visitedLimit = doc.phase === 'scan' && (doc.status === 'idle' || doc.status === 'running') ? doc.cursor : doc.highWater;
   if (!list.overflow) {
     if (list.ids.length > listMax || list.count !== list.ids.length) return false;
-    if (!ascendingWithin(list.ids, doc.highWater)) return false;
+    if (!ascendingWithin(list.ids, visitedLimit)) return false;
     const sample = list.ids.slice(0, SAMPLE_SIZE);
     return list.sample.length === sample.length && list.sample.every((id, index) => id === sample[index]);
   }
   return list.ids.length === 0 && list.count > listMax && list.sample.length === Math.min(list.count, SAMPLE_SIZE)
-    && ascendingWithin(list.sample, doc.highWater);
+    && ascendingWithin(list.sample, visitedLimit);
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -2035,6 +2056,9 @@ async function release(ctx: RunContext, finished: boolean): Promise<BodyTextBack
 }
 
 async function nextOwnerId(ctx: RunContext): Promise<number | null> {
+  // Checked before either branch: "no next owner" ends the pass only when
+  // the run was not stopped (the retry branch reads no database to notice).
+  if (stopLatched) throw new StopSignal();
   const { doc } = ctx;
   if (doc.phase === 'retry') return doc.unresolved.ids.find((id) => id > doc.cursor) ?? null;
   const rows = await observe<{ id: number }>(ctx, 'read_only',
