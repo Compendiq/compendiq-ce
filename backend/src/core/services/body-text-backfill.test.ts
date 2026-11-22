@@ -43,6 +43,7 @@ function parser(overrides: Partial<BodyTextBackfillLimits> = {}, entry?: URL): B
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(parsers.splice(0).map((created) => created.terminate()));
   armBodyTextBackfill();
 });
@@ -317,12 +318,31 @@ describe('parser worker (§4)', () => {
     await settled;
   });
 
-  it('a request over the time limit fails, and the same client serves the next request on a fresh worker that passed the canary', async () => {
-    // A real slow parse: fifty thousand elements against a 20 ms limit.
+  it('a request over the time limit fails, the worker is terminated and awaited, and the same client serves the next request on a fresh worker that passed the canary', async () => {
+    // The client reads its limits per request: the slow request gets 20 ms
+    // (a real ~1.6 MiB parse, expected to expire), the next one a minute, so
+    // nothing depends on a trivial parse beating a few milliseconds.
     const slow = `<div>${'<span>&amp;lt;x&amp;gt;</span>'.repeat(50_000)}</div>`;
-    const client = parser({ requestTimeoutMs: 20 });
+    const own = limits({ requestTimeoutMs: 20 });
+    const client = new BodyTextBackfillParser(own);
+    parsers.push(client);
+    const events: string[] = [];
+    const terminate = Worker.prototype.terminate;
+    vi.spyOn(Worker.prototype, 'terminate').mockImplementation(async function (this: Worker) {
+      const code = await terminate.call(this);
+      events.push('exited');
+      return code;
+    });
+    const post = Worker.prototype.postMessage;
+    vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (this: Worker, message: unknown, ...rest: unknown[]) {
+      events.push(`post:${(message as { pairs: { key: string }[] }).pairs[0]!.key}`);
+      return (post as (...a: unknown[]) => void).call(this, message, ...rest);
+    });
     expect(await client.classify([{ key: 'slow', html: slow, text: 'x' }])).toBeNull();
+    own.requestTimeoutMs = 60_000;
     expect(await client.classify([{ key: 'ok', html: '<p>plain</p>', text: 'plain' }])).toEqual([{ key: 'ok', outcome: 'current' }]);
+    // Timed out → exited before the replacement proved itself with the canary.
+    expect(events).toEqual(['post:canary', 'post:slow', 'exited', 'post:canary', 'post:ok']);
   });
 
   it('a real allocation beyond the isolate limit fails that request only; the parent stays alive and the next pair is parsed by a fresh healthy worker', async () => {

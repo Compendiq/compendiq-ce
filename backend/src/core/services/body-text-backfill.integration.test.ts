@@ -8,10 +8,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { createServer as createHttpServer, type Server } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createConnection, createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
@@ -1375,7 +1376,8 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       it('the first-ever claim: reconciliation locks the committed row, waits for the COMMIT in flight and settles it claimed; the run completes and the next invocation is already_completed', async () => {
         const pageId = await insertPage();
         await withHeldCommit('UPDATE', async (hold) => {
-          const running = run();
+          // Generous deadlines: the held COMMIT and the reconciliation read must outlast the test's own steps.
+          const running = run({ limits: { lockTimeoutMs: 30_000, statementTimeoutMs: 30_000, transactionTimeoutMs: 60_000 } });
           await hold.dropClientInCommit();
           // The reconciliation read is blocked behind the COMMIT still in flight.
           await expectBlockedBackend('%FROM admin_settings WHERE setting_key = $1 FOR UPDATE%');
@@ -1391,7 +1393,7 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       it('the bootstrap insert: its repeat waits for the COMMIT in flight, finds the row, and the claim and the pass proceed', async () => {
         const pageId = await insertPage();
         await withHeldCommit('INSERT', async (hold) => {
-          const running = run();
+          const running = run({ limits: { lockTimeoutMs: 30_000, statementTimeoutMs: 30_000, transactionTimeoutMs: 60_000 } });
           await hold.dropClientInCommit();
           await expectBlockedBackend('%INSERT INTO admin_settings%');
           await hold.release();
@@ -2157,29 +2159,57 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         expect(await state()).toMatchObject({ cursor: 0, passTotals: {}, owner: null });
       });
 
-      it('a window over the request limit (scaled to 100 ms) is retried one pair per request on replaced workers: the slow pair is unevaluable, the other repaired', async () => {
-        const good = preFix();
-        const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
-        const slow = await insertVersion(pageId, { version: 2, html: slowHtml, text: 'x' });
-        const fast = await insertVersion(pageId, { version: 3, html: good.html, text: good.text });
-        const events: string[] = [];
-        recordExits(events);
-        const requests: string[][] = [];
-        const summary = await run({
-          limits: { requestTimeoutMs: 100 },
-          hooks: { beforeParserRequest: (_ownerId, keys) => { requests.push(keys); } },
-        });
-        const both = [`v:${fast}`, `v:${slow}`].sort();
-        expect(requests).toHaveLength(3);
-        expect([...requests[0]!].sort()).toEqual(both);
-        expect(requests.slice(1).map((keys) => keys.length)).toEqual([1, 1]);
-        expect(requests.slice(1).flat().sort()).toEqual(both);
-        expect(counts(summary)).toMatchObject({ unevaluable: 1, repaired: 1 });
-        expect((await versionRow(fast))!.body_text).toBe(good.fixed);
-        expect((await versionRow(slow))!.body_text).toBe('x');
-        // The timed-out window's worker and the slow pair's worker were replaced.
-        expect(events.filter((event) => event === 'exited').length).toBeGreaterThanOrEqual(2);
-      });
+      it('a window over the request limit is retried one pair per request on replaced workers: the pair that never answers is unevaluable, the other repaired (controlled entry, 3 s limit)', async () => {
+        // A controlled worker entry: the real classifyPair behind the real
+        // protocol, except that a request holding the marker text is never
+        // answered. The deadline only has to expire against that request; the
+        // ordinary pair has seconds of headroom on a fresh worker.
+        const marker = 'zz-stall-1965';
+        const dir = await mkdtemp(join(tmpdir(), 'bt-entry-'));
+        const entry = join(dir, 'stalling-parser.ts');
+        // An ES module scope for the entry (top-level await under tsx).
+        await writeFile(join(dir, 'package.json'), '{"type":"module"}');
+        await writeFile(entry, `
+          import { parentPort, workerData } from 'node:worker_threads';
+          import { getHeapStatistics } from 'node:v8';
+          // Keep the real module's own message loop inert; this entry speaks the protocol.
+          (workerData as { marker: string }).marker = 'inert';
+          const { classifyPair } = await import(${JSON.stringify(new URL('./body-text-backfill-parser.ts', import.meta.url).href)});
+          const port = parentPort!;
+          port.on('message', (request: { requestId: number; pairs: { key: string; html: string; text: string }[] }) => {
+            if (request.pairs.some((pair) => pair.text === ${JSON.stringify(marker)})) return;
+            port.postMessage({ type: 'result', requestId: request.requestId,
+              results: request.pairs.map((pair) => ({ ...classifyPair(pair.html, pair.text), key: pair.key })) });
+          });
+          port.postMessage({ type: 'ready', heapSizeLimitMb: getHeapStatistics().heap_size_limit / 1048576 });
+        `);
+        try {
+          const good = preFix();
+          const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+          const stalled = await insertVersion(pageId, { version: 2, html: '<p>&amp;lt;stall&amp;gt;</p>', text: marker });
+          const fast = await insertVersion(pageId, { version: 3, html: good.html, text: good.text });
+          const events: string[] = [];
+          recordExits(events);
+          const requests: string[][] = [];
+          const summary = await run({
+            limits: { requestTimeoutMs: 3_000 },
+            parserEntry: pathToFileURL(entry),
+            hooks: { beforeParserRequest: (_ownerId, keys) => { requests.push(keys); } },
+          });
+          const both = [`v:${fast}`, `v:${stalled}`].sort();
+          expect(requests).toHaveLength(3);
+          expect([...requests[0]!].sort()).toEqual(both);
+          expect(requests.slice(1).map((keys) => keys.length)).toEqual([1, 1]);
+          expect(requests.slice(1).flat().sort()).toEqual(both);
+          expect(counts(summary)).toMatchObject({ unevaluable: 1, repaired: 1 });
+          expect((await versionRow(fast))!.body_text).toBe(good.fixed);
+          expect((await versionRow(stalled))!.body_text).toBe(marker);
+          // The timed-out window's worker and the stalled pair's worker were replaced.
+          expect(events.filter((event) => event === 'exited').length).toBeGreaterThanOrEqual(2);
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      }, 60_000);
     });
 
     it('held hierarchy and lifecycle locks → busy within the lock deadline', async () => {
@@ -2213,7 +2243,8 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       try {
         await holder.client.query('SELECT pg_advisory_xact_lock(1965001)');
         const summary = await run({
-          limits: { transactionTimeoutMs: 1500, lockTimeoutMs: 10_000, statementTimeoutMs: 10_000 },
+          // 3 s: every other transaction of the run (claim, reads, release) must finish inside it.
+          limits: { transactionTimeoutMs: 3_000, lockTimeoutMs: 10_000, statementTimeoutMs: 10_000 },
           hooks: {
             beforeCommit: async (step, _owner, client) => {
               if (step === 'close') await client.query('SELECT pg_advisory_xact_lock(1965001)');
