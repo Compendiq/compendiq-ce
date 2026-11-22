@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- RTF extraction takes the file's bytes (`rtfToText(bytes: Uint8Array)`), so already-decoded text can no longer be corrupted by the UTF-8 re-decode. A raw non-ASCII character after a backslash or inside a `\ucN` fallback is skipped whole instead of leaving U+FFFD, and the cp949 private-use rows `C9`/`FE` are documented (#1960).
+
 - RTF extraction keeps line breaks written as a backslash followed by a newline (`\`+LF, CR or CRLF), as TextEdit and `textutil` write every paragraph, instead of running the lines together (#1966).
 
 - Wide article PDF tables no longer wrap fitting carried header text twice per band; text placement and borders are unchanged (#1959).

@@ -770,7 +770,9 @@ const RTF_LATIN1_DECODER: RtfByteDecoder = {
  * characters after them too. Those syllables are exactly the ones KS X 1001
  * lacks, in code point order, so their table is derived from the strict
  * decoder itself; the euro and registered signs are the two later Windows
- * additions it also lacks. Unmapped pairs follow the WHATWG EUC-KR decoder:
+ * additions it also lacks. Rows C9 and FE (C9A1-C9FE, FEA1-FEFE) are the
+ * user-defined area, which Windows cp949 and this decoder map to the private
+ * use area U+E000-U+E0BB. Unmapped pairs follow the WHATWG EUC-KR decoder:
  * U+FFFD, and an ASCII trail byte is read again.
  */
 function createCp949Decoder(eucKr: TextDecoder): RtfByteDecoder {
@@ -886,10 +888,38 @@ const RTF_SYMBOL_TEXT: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
+ * Length of the well-formed UTF-8 scalar sequence (RFC 3629) that starts at
+ * `rtf[i]`, reading no further than `end`: 2 to 4, else 1. An ASCII character,
+ * a stray continuation byte, an overlong or surrogate form, a byte above
+ * F4 and a sequence cut short by `end` are one byte each. O(1).
+ */
+function utf8SequenceLength(rtf: string, i: number, end: number): number {
+  const lead = rtf.charCodeAt(i);
+  if (lead < 0xc2 || lead > 0xf4) return 1;
+  const length = lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4;
+  if (i + length > end) return 1;
+  let low = 0x80;
+  let high = 0xbf;
+  if (lead === 0xe0) low = 0xa0;
+  else if (lead === 0xed) high = 0x9f;
+  else if (lead === 0xf0) low = 0x90;
+  else if (lead === 0xf4) high = 0x8f;
+  const second = rtf.charCodeAt(i + 1);
+  if (second < low || second > high) return 1;
+  for (let k = 2; k < length; k += 1) {
+    const next = rtf.charCodeAt(i + k);
+    if (next < 0x80 || next > 0xbf) return 1;
+  }
+  return length;
+}
+
+/**
  * Reads RTF token by token in one pass (RTF 1.9.1, "Conventions of an RTF
  * Reader") and returns the text it carries, before whitespace clean-up.
  * `rtf` holds the file's bytes, one per character, so `\binN` can skip
- * exactly N of them; raw non-ASCII text is read as UTF-8, as before.
+ * exactly N of them; raw non-ASCII text is read as UTF-8. A control symbol or
+ * a `\ucN` fallback unit covers a whole well-formed UTF-8 sequence (one
+ * character), and any other byte on its own.
  *
  * - `\uN` writes UTF-16 unit N (a negative N counts from 65536) and then
  *   skips its `\ucN` fallback: that many text characters, `\'hh` bytes,
@@ -998,10 +1028,13 @@ function scanRtf(rtf: string): string {
       RTF_TEXT_RUN.test(rtf);
       const end = RTF_TEXT_RUN.lastIndex;
       if (skippedDepth === 0) {
-        const dropped = Math.min(skip, end - i);
-        skip -= dropped;
-        if (i + dropped < end) {
-          const text = rtf.slice(i + dropped, end);
+        let start = i;
+        while (skip > 0 && start < end) {
+          start += utf8SequenceLength(rtf, start, end);
+          skip -= 1;
+        }
+        if (start < end) {
+          const text = rtf.slice(start, end);
           writeText(RTF_RAW_BYTE.test(text) ? Buffer.from(text, 'latin1').toString('utf8') : text);
         }
       }
@@ -1066,9 +1099,10 @@ function scanRtf(rtf: string): string {
       continue;
     }
 
-    // A control symbol: `\` and one character (none at the end of input).
+    // A control symbol: `\` and one character (none at the end of input). A raw
+    // non-ASCII character is the whole UTF-8 sequence, not its lead byte alone.
     const symbol = rtf.charAt(i + 1);
-    i += 2;
+    i += 1 + utf8SequenceLength(rtf, i + 1, rtf.length);
     if (skippedDepth > 0) continue;
     if (skip > 0) {
       skip -= 1;
@@ -1086,7 +1120,11 @@ function scanRtf(rtf: string): string {
 /**
  * Flattens RTF markup to text.
  *
- * `rtf` is the file's bytes, one per character (`buffer.toString('latin1')`).
+ * `bytes` is the file's bytes, never decoded text: raw non-ASCII text is read
+ * as UTF-8, so a string that was already decoded would be corrupted. A caller
+ * holding text encodes it first. The bytes are read through a Latin-1 view
+ * (one character per byte, no copy of the input) so {@link scanRtf} can skip
+ * `\binN` data exactly.
  * One linear pass reads the markup token by token ({@link scanRtf}): listed
  * destination groups are dropped whole, each `\uN` character replaces its
  * `\ucN` fallback, `\'hh` bytes decode in the `\ansicpgN` code page
@@ -1095,7 +1133,8 @@ function scanRtf(rtf: string): string {
  * control word disappears. Malformed input, unbalanced braces included, never
  * throws.
  */
-export function rtfToText(rtf: string): string {
+export function rtfToText(bytes: Uint8Array): string {
+  const rtf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('latin1');
   return scanRtf(rtf)
     .split('\n')
     .map((line) => line.trim())
@@ -1126,7 +1165,7 @@ export async function extractDocumentText(
     case 'odt':
       return extractOdt(buffer);
     case 'rtf':
-      return { format: 'rtf', text: rtfToText(buffer.toString('latin1')) };
+      return { format: 'rtf', text: rtfToText(buffer) };
     case 'md':
     case 'txt':
     case 'yaml':
