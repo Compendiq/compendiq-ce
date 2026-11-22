@@ -12,6 +12,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createConnection, createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import pg, { type PoolClient } from 'pg';
@@ -36,6 +37,7 @@ import {
   runBodyTextBackfill,
   startBodyTextBackfillWorker,
   stopBodyTextBackfill,
+  stopBodyTextBackfillWorker,
   type BodyTextBackfillLimits,
   type BodyTextBackfillOptions,
   type BodyTextBackfillState,
@@ -552,6 +554,27 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect(statements.filter((kind) => kind === 'write_page')).toHaveLength(1);
     });
 
+    it('§9 exception: published and draft whose corrected texts together exceed the statement budget are still one page update, reported with its real bytes', async () => {
+      const published = preFix('br');
+      const draft = preFix('em', 'Draft');
+      const pageId = await insertPage({ html: published.html, text: published.text, draftHtml: draft.html, draftText: draft.text });
+      const before = await pageRow(pageId);
+      // Each column fits the budget alone; the two corrected texts do not.
+      const statementBytes = 38;
+      const corrected = Buffer.byteLength(published.fixed) + Buffer.byteLength(draft.fixed);
+      expect(corrected).toBeGreaterThan(statementBytes);
+      const writes: number[] = [];
+      await run({
+        limits: { statementBytes },
+        hooks: { onStatement: (info) => { if (info.kind === 'write_page') writes.push(info.bytes); } },
+      });
+      const after = await pageRow(pageId);
+      expect(after.body_text).toBe(published.fixed);
+      expect(after.draft_body_text).toBe(draft.fixed);
+      expect(Number(after.content_revision)).toBe(Number(before.content_revision) + 1);
+      expect(writes).toEqual([corrected]);
+    });
+
     it('AC1/§9: corrects a page_versions row only — no page update, revision unchanged, page row identical', async () => {
       const pair = preFix('code');
       const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
@@ -857,6 +880,48 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect((await pageRow(pageId)).body_text).toBe(pair.fixed);
       expect((await versionRow(correct))!.body_text).toBe(pair.fixed);
     });
+
+    describe('history keyset on the uuid column', () => {
+      const NIL = '00000000-0000-0000-0000-000000000000';
+
+      it('an affected history row with the nil UUID is scanned and repaired', async () => {
+        const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+        await insertVersion(pageId, { id: NIL, version: 2, html: pair.html, text: pair.text });
+        const summary = await run();
+        expect(counts(summary)).toMatchObject({ repaired: 1 });
+        expect((await versionRow(NIL))!.body_text).toBe(pair.fixed);
+      });
+
+      it('a text-only witness with the nil UUID is found: paired_exempt, nothing written', async () => {
+        const pageId = await insertPage({ html: pair.html, text: pair.text });
+        await insertVersion(pageId, { id: NIL, source: 'confluence', version: 8, html: null, text: pair.text });
+        const before = { page: await pageRow(pageId), versions: await versionRows(pageId) };
+        const summary = await run();
+        expect(counts(summary)).toMatchObject({ paired_exempt: 1 });
+        expect({ page: await pageRow(pageId), versions: await versionRows(pageId) }).toEqual(before);
+      });
+
+      it('a witness in a later read window (window scaled to 2 rows, ids across the first hex digit) is found', async () => {
+        // Text order and uuid order agree under this database's collation; the
+        // query compares and orders `pv.id` as uuid, so a collation where
+        // they differ cannot move a witness out of the windows either.
+        const pageId = await insertPage({ html: pair.html, text: pair.text });
+        const decoys = ['02000000-0000-4000-8000-000000000000', '0a000000-0000-4000-8000-000000000000',
+          '0f000000-0000-4000-8000-000000000000'];
+        for (const [index, id] of decoys.entries()) {
+          await insertVersion(pageId, { id, source: 'confluence', version: 10 + index, html: null, text: 'Use <xx> here' });
+        }
+        await insertVersion(pageId, { id: '100aaaaa-0000-4000-8000-000000000000', source: 'confluence', version: 20, html: null, text: pair.text });
+        const windows: number[] = [];
+        const summary = await run({
+          limits: { scanRows: 2 },
+          hooks: { onStatement: (info) => { if (info.kind === 'witness_versions') windows.push(info.bytes); } },
+        });
+        expect(counts(summary)).toMatchObject({ paired_exempt: 1 });
+        expect(windows.length).toBeGreaterThanOrEqual(2);
+        expect((await pageRow(pageId)).body_text).toBe(pair.text);
+      });
+    });
   });
 
   // ─── 4. Pending intent ────────────────────────────────────────────────────
@@ -1138,6 +1203,214 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         await other.close();
       }
     });
+
+    it('a first claim behind an uncommitted insert of the state key waits at most its lock deadline; a stop during the wait returns within it; nothing is claimed and a later run claims', async () => {
+      const pageId = await insertPage();
+      const holder = await withHeldClient();
+      try {
+        await holder.client.query(
+          `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ($1, '{}', NOW())`,
+          [BODY_TEXT_BACKFILL_STATE_KEY],
+        );
+        const unstopped = await run({ limits: { lockTimeoutMs: 300 } });
+        expect(unstopped).toMatchObject({ outcome: 'interrupted', interruptCode: 'state_timeout' });
+        const started = performance.now();
+        const running = run({ limits: { lockTimeoutMs: 1_500 } });
+        await expectBlockedBackend('%admin_settings%');
+        await stopBodyTextBackfill();
+        expect(performance.now() - started).toBeLessThan(10_000);
+        expect((await running).outcome).toBe('interrupted');
+      } finally {
+        await holder.done();
+      }
+      expect((await query('SELECT 1 FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY])).rows).toEqual([]);
+      armBodyTextBackfill();
+      expect((await run()).outcome).toBe('done');
+      expect((await pageRow(pageId)).body_text).toBe(preFix().fixed);
+    });
+
+    it('uncertain commit of the claim: a lost COMMIT acknowledgment is settled as claimed and the run completes', async () => {
+      const pageId = await insertPage();
+      let summary!: BodyTextBackfillSummary;
+      const proxy = await withLostCommitAcknowledgment(async (arm) => {
+        summary = await run({ hooks: { beforeCommit: (step) => { if (step === 'claim') arm(); } } });
+      });
+      expect(proxy.dropped()).toBe(true);
+      expect(summary.outcome).toBe('done');
+      expect((await pageRow(pageId)).body_text).toBe(preFix().fixed);
+      expect(await state()).toMatchObject({ status: 'done', owner: null, lastOwner: summary.runId });
+    });
+
+    it('a claim found not committed (session ended before COMMIT) is never reported as another runner: interrupted, nothing claimed, the next run claims', async () => {
+      const pageId = await insertPage();
+      await run();
+      const before = await state();
+      const terminateOn = (wanted: string) => async (step: string, _owner: number | null, client: PoolClient) => {
+        if (step !== wanted) return;
+        const pid = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        await query('SELECT pg_terminate_backend($1)', [pid]);
+      };
+      const refused = await run({ restart: true, hooks: { beforeCommit: terminateOn('claim') } });
+      expect(refused).toMatchObject({ outcome: 'interrupted', interruptCode: 'claim_transaction_refused' });
+      expect(await state()).toEqual(before);
+      await query('UPDATE pages SET body_text = $2 WHERE id = $1', [pageId, preFix().text]);
+      const next = await run({ restart: true });
+      expect(next.outcome).toBe('done');
+      expect((await pageRow(pageId)).body_text).toBe(preFix().fixed);
+    });
+
+    it('a first claim found not committed leaves no state row; the next run claims it', async () => {
+      await insertPage();
+      const refused = await run({
+        hooks: {
+          beforeCommit: async (step, _owner, client) => {
+            if (step !== 'claim') return;
+            const pid = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+            await query('SELECT pg_terminate_backend($1)', [pid]);
+          },
+        },
+      });
+      expect(refused).toMatchObject({ outcome: 'interrupted', interruptCode: 'claim_transaction_refused' });
+      expect((await query('SELECT 1 FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY])).rows).toEqual([]);
+      expect((await run()).outcome).toBe('done');
+    });
+
+    it('a terminal release found not committed is retried within the run: done, owner = null, lastOwner = this run', async () => {
+      await insertPage();
+      let terminated = 0;
+      const summary = await run({
+        hooks: {
+          beforeCommit: async (step, _owner, client) => {
+            if (step !== 'release' || terminated > 0) return;
+            terminated += 1;
+            const pid = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+            await query('SELECT pg_terminate_backend($1)', [pid]);
+          },
+        },
+      });
+      expect(terminated).toBe(1);
+      expect(summary.outcome).toBe('done');
+      expect(await state()).toMatchObject({ status: 'done', owner: null, lastOwner: summary.runId });
+    });
+
+    it('a stop during the close of an unaffected owner (after its scan) ends the run interrupted with nothing recorded', async () => {
+      await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const summary = await run({ hooks: { afterScan: () => { void stopBodyTextBackfill(); } } });
+      expect(summary.outcome).toBe('interrupted');
+      expect(counts(summary)).toEqual({});
+      expect(await state()).toMatchObject({ cursor: 0, passTotals: {}, owner: null });
+    });
+
+    it('an unaffected page held FOR UPDATE by another session is busy within the lock deadline; a later affected page is repaired in the same run', async () => {
+      const held = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const affected = await insertPage();
+      const holder = await withHeldClient();
+      let summary!: BodyTextBackfillSummary;
+      try {
+        await holder.client.query('SELECT 1 FROM pages WHERE id = $1 FOR UPDATE', [held]);
+        summary = await run({ limits: { lockTimeoutMs: 300 } });
+      } finally {
+        await holder.done();
+      }
+      expect(counts(summary)).toMatchObject({ repaired: 1 });
+      expect(counts(summary).busy).toBeGreaterThanOrEqual(1);
+      expect((await pageRow(affected)).body_text).toBe(preFix().fixed);
+      expect((await state()).unresolved.ids).toContain(held);
+    });
+
+    it('an explicit restart before a stored future re-check carries it: kept when the restart is interrupted, and the earlier time wins at completion', async () => {
+      await insertPage();
+      await run();
+      const stored = (await state()).nextFullPassAfter!;
+      expect(Date.parse(stored)).toBeGreaterThan(await dbNow());
+      const interrupted = await run({ restart: true, hooks: { atOpen: () => { void stopBodyTextBackfill(); } } });
+      expect(interrupted.outcome).toBe('interrupted');
+      expect((await state()).nextFullPassAfter).toBe(stored);
+      armBodyTextBackfill();
+      expect((await run()).outcome).toBe('done');
+      expect((await state()).nextFullPassAfter).toBe(stored);
+    });
+
+    it('state invariants: an unreachable combination is state_invalid and the row is left byte-identical; the shapes the job writes are accepted', async () => {
+      const pageId = await insertPage();
+      await run();
+      const valid = await state();
+      const list = (ids: number[]) => ({ ids, overflow: false, count: ids.length, sample: ids.slice(0, 20) });
+      const empty = list([]);
+      const future = new Date(Date.now() + 3_600_000).toISOString();
+      const write = (doc: unknown, ago = '0 seconds') => query(
+        `UPDATE admin_settings SET setting_value = $2, updated_at = NOW() - $3::interval WHERE setting_key = $1`,
+        [BODY_TEXT_BACKFILL_STATE_KEY, JSON.stringify(doc), ago],
+      );
+      const raw = async () => (await query<{ setting_value: string }>(
+        'SELECT setting_value FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY],
+      )).rows[0]!.setting_value;
+      const invalid: Partial<BodyTextBackfillState>[] = [
+        { status: 'running', owner: null },
+        { status: 'idle', owner: randomUUID() },
+        { status: 'idle', cursor: valid.highWater + 1 },
+        { phase: 'retry' },
+        { status: 'waiting', unresolved: empty, tooLarge: 0 },
+        { status: 'idle', unresolved: { ids: [pageId, pageId], overflow: false, count: 2, sample: [pageId, pageId] } },
+        { status: 'idle', unresolved: { ids: [pageId], overflow: false, count: 2, sample: [pageId] } },
+        { status: 'idle', unresolved: { ids: [pageId], overflow: false, count: 1, sample: [] } },
+        { status: 'idle', unresolved: { ids: [valid.highWater + 1], overflow: false, count: 1, sample: [valid.highWater + 1] } },
+        { status: 'idle', unresolved: { ids: [], overflow: true, count: 0, sample: [] } },
+        { status: 'idle', unresolved: { ids: [], overflow: true, count: 3, sample: [1, 1] } },
+        { status: 'idle', phase: 'retry', unresolved: { ids: [], overflow: true, count: 3, sample: [1, 2, 3] } },
+        { pass: 0 },
+        { status: 'done', tooLarge: 1 },
+      ];
+      for (const patch of invalid) {
+        await write({ ...valid, ...patch });
+        const stored = await raw();
+        await expect(run({ restart: true }), JSON.stringify(patch)).rejects.toMatchObject({ code: 'state_invalid' });
+        expect(await raw()).toBe(stored);
+      }
+      const accepted: [Partial<BodyTextBackfillState>, string][] = [
+        [{ status: 'idle', phase: 'scan', unresolved: list([pageId]) }, '0 seconds'],
+        [{ status: 'idle', phase: 'retry', unresolved: list([pageId]), tooLarge: 1 }, '0 seconds'],
+        [{ status: 'waiting', unresolved: { ids: [], overflow: true, count: 3, sample: [1, 2, 3] }, nextFullPassAfter: future }, '0 seconds'],
+        [{ status: 'waiting', tooLarge: 1, nextFullPassAfter: future }, '0 seconds'],
+        [{ status: 'running', owner: randomUUID(), phase: 'scan' }, '16 minutes'],
+      ];
+      for (const [patch, ago] of accepted) {
+        await write({ ...valid, ...patch }, ago);
+        await expect(run(), JSON.stringify(patch)).resolves.toMatchObject({ runId: expect.any(String) });
+      }
+    });
+
+    it('every invocation writes exactly one terminal line; whole-page decisions are logged only after their transaction committed', async () => {
+      const exempt = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const member = await insertVersion(exempt, { version: 2, html: preFix().html, text: preFix().text });
+      const witness = await insertVersion(exempt, { version: 3, html: '<p>other</p>', text: preFix().text });
+      const info = vi.spyOn(logger, 'info');
+      const warn = vi.spyOn(logger, 'warn');
+      const terminal = () => info.mock.calls.filter((call) => call[1] === 'body_text backfill run finished').length;
+      const decisions = () => warn.mock.calls
+        .map((call) => call[0] as Record<string, unknown>)
+        .filter((fields) => fields.kind === 'decision');
+      // The close of the exempt page is refused at COMMIT: no decision line.
+      const refused = await run({
+        hooks: {
+          beforeCommit: async (step, ownerId, client) => {
+            if (step !== 'close' || ownerId !== exempt) return;
+            const pid = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+            await query('SELECT pg_terminate_backend($1)', [pid]);
+          },
+        },
+      });
+      expect(counts(refused).busy).toBeGreaterThanOrEqual(1);
+      expect(decisions()).toEqual([]);
+      expect(terminal()).toBe(1);
+      expect((await run()).outcome).toBe('done');
+      expect(decisions()).toEqual([expect.objectContaining({
+        pageId: exempt, reason: 'paired_exempt', rule: 'a', witness, member, copies: 1,
+      })]);
+      expect(terminal()).toBe(2);
+      expect((await run()).outcome).toBe('already_completed');
+      expect(terminal()).toBe(3);
+    });
   });
 
   // ─── 5. The close under its locks ────────────────────────────────────────
@@ -1236,19 +1509,20 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         });
       });
 
-      it('a member of A edited or deleted (retention) after the scan → changed', async () => {
-        const edited = await insertPage({ html: '<p>plain</p>', text: 'plain' });
-        const editedVersion = await insertVersion(edited, { version: 2, html: pair.html, text: pair.text });
-        await expectChangedThenResolved(edited, async () => {
-          await query(`UPDATE page_versions SET body_html = '<p>Use &amp;lt;br&amp;gt; here!</p>' WHERE id = $1`, [editedVersion]);
-        });
-        await truncateAllTables();
-        armBodyTextBackfill();
-        const deleted = await insertPage({ html: '<p>plain</p>', text: 'plain' });
-        const deletedVersion = await insertVersion(deleted, { version: 2, html: pair.html, text: pair.text });
-        await expectChangedThenResolved(deleted, async () => {
-          await query('DELETE FROM page_versions WHERE id = $1', [deletedVersion]);
-        });
+      it('a member of A edited (same-length html, same-length stored text) or deleted (retention) after the scan → changed', async () => {
+        // Same-length edits: only the digests under the row lock can see them.
+        const edits = [
+          `UPDATE page_versions SET body_html = '<p>Use &amp;lt;br&amp;gt; hers</p>' WHERE id = $1`,
+          `UPDATE page_versions SET body_text = 'Use <br> hare' WHERE id = $1`,
+          'DELETE FROM page_versions WHERE id = $1',
+        ];
+        for (const edit of edits) {
+          await truncateAllTables();
+          armBodyTextBackfill();
+          const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+          const member = await insertVersion(pageId, { version: 2, html: pair.html, text: pair.text });
+          await expectChangedThenResolved(pageId, async () => { await query(edit, [member]); });
+        }
       });
     });
 
@@ -1422,6 +1696,15 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
 
   describe('6. bounds', () => {
     const MIB = 1024 * 1024;
+    const KIB = 1024;
+    /**
+     * CI-scaled budgets: the same code paths as the production 32 MiB / 8 MiB /
+     * 4 MiB bounds, with data a hundred to a thousand times smaller. Real-size
+     * evidence: the measurements and the 1,024 MiB container run in the report.
+     */
+    const SCALED: Partial<BodyTextBackfillLimits> = {
+      statementBytes: 64 * KIB, largeColumnBytes: 16 * KIB, windowBytes: 32 * KIB, ceilingBytes: 128 * KIB,
+    };
 
     /** Server-side history rows (no client transfer): `count` affected copies of `<br>`. */
     async function affectedHistory(pageId: number, count: number, padding = 0): Promise<void> {
@@ -1460,41 +1743,44 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect(counts(second)).toMatchObject({ repaired: 3 });
     });
 
-    it('D12: 180 affected copies of 1.5 MiB html each with a few bytes of corrected text (283 MiB stored) → written, not page_too_large; no statement touches more than 32 MiB', async () => {
+    it('D12: 180 affected copies far above the statement budget (12 KiB html each, 2.1 MiB stored, budget scaled to 64 KiB) with a few bytes of corrected text → written, not page_too_large; no statement exceeds the budget', async () => {
       const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
-      await affectedHistory(pageId, 180, Math.round(1.5 * MIB));
+      await affectedHistory(pageId, 180, 12 * KIB);
       let maxBytes = 0;
-      const summary = await run({ hooks: { onStatement: (info) => { maxBytes = Math.max(maxBytes, info.bytes); } } });
+      const summary = await run({ limits: SCALED, hooks: { onStatement: (info) => { maxBytes = Math.max(maxBytes, info.bytes); } } });
       expect(counts(summary)).toMatchObject({ repaired: 180 });
       expect(counts(summary).page_too_large ?? 0).toBe(0);
-      expect(maxBytes).toBeLessThanOrEqual(32 * MIB);
-    }, 180_000);
+      expect(maxBytes).toBeGreaterThan(0);
+      expect(maxBytes).toBeLessThanOrEqual(SCALED.statementBytes!);
+    });
 
-    it('one affected copy beside 100,000 non-matching rows of the same text length → written; reads stay windowed and retained memory stays bounded', async () => {
+    it('one affected copy beside 10,000 non-matching rows of the same text length (read window scaled to 100) → written; reads and hashing stay windowed', async () => {
       const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
       await affectedHistory(pageId, 1);
       await query(
         `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
-         SELECT $1, 'confluence', n, 'v' || n, '<p>abcd</p>', 'abcd' FROM generate_series(1, 100000) AS n`,
+         SELECT $1, 'confluence', n, 'v' || n, '<p>abcd</p>', 'abcd' FROM generate_series(1, 10000) AS n`,
         [pageId],
       );
       const heapBefore = process.memoryUsage().heapUsed;
       let heapAtDecision = 0;
       const statements = new Map<string, number>();
       const summary = await run({
+        limits: { scanRows: 100 },
         hooks: {
           onStatement: (info) => { statements.set(info.kind, (statements.get(info.kind) ?? 0) + 1); },
           afterDecision: () => { heapAtDecision = process.memoryUsage().heapUsed; },
         },
       });
-      expect(counts(summary)).toMatchObject({ repaired: 1, no_ampersand: 100_001 });
-      // 100,000 candidates hashed in windows of at most 1,000 ids.
+      expect(counts(summary)).toMatchObject({ repaired: 1, no_ampersand: 10_001 });
+      // 10,000 candidates hashed in windows of at most 100 ids.
       expect(statements.get('witness_versions')).toBeGreaterThanOrEqual(100);
-      expect(heapAtDecision - heapBefore).toBeLessThan(96 * MIB);
-    }, 180_000);
+      expect(heapAtDecision - heapBefore).toBeLessThan(64 * MIB);
+    }, 60_000);
 
-    it('96 outside copies of 1 MiB with a text length occurring in A and the only witness in a late window → found; no statement touches more than 32 MiB', async () => {
-      const pad = MIB - 5;
+    it('96 outside copies of 16 KiB with a text length occurring in A and the only witness in a late hash group (budget scaled to 512 KiB) → found; no statement exceeds the budget', async () => {
+      const pad = 16 * KIB - 5;
+      const limits = { statementBytes: 512 * KIB };
       const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
       await query(
         `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
@@ -1514,6 +1800,7 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       const witnessStatements: number[] = [];
       let maxBytes = 0;
       const summary = await run({
+        limits,
         hooks: {
           onStatement: (info) => {
             maxBytes = Math.max(maxBytes, info.bytes);
@@ -1523,19 +1810,19 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       });
       expect(counts(summary)).toMatchObject({ paired_exempt: 1 });
       expect(witnessStatements.length).toBeGreaterThanOrEqual(3);
-      expect(maxBytes).toBeLessThanOrEqual(32 * MIB);
-    }, 120_000);
+      expect(maxBytes).toBeLessThanOrEqual(limits.statementBytes);
+    });
 
     it('a page with very many NULL placeholders is drained server-side and repaired', async () => {
       const pageId = await insertPage({ html: pair().html, text: pair().text, source: 'confluence', remoteVersion: 7 });
       await query(
         `INSERT INTO page_versions (page_id, source, version_number, title)
-         SELECT $1, 'confluence', n, 'v' || n FROM generate_series(1, 20000) AS n`,
+         SELECT $1, 'confluence', n, 'v' || n FROM generate_series(1, 5000) AS n`,
         [pageId],
       );
       const summary = await run();
       expect(counts(summary).repaired).toBe(1);
-    }, 60_000);
+    });
 
     it('a published column that grows past the ceiling between metadata and load is never transferred → changed', async () => {
       const pageId = await insertPage({ html: pair().html, text: pair().text });
@@ -1560,15 +1847,15 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
       await query(
         `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
-         SELECT $1, 'local', n, 'v' || n, '<p>A &amp; B ' || n || '</p>', 'A & B ' || n FROM generate_series(1, 3000) AS n`,
+         SELECT $1, 'local', n, 'v' || n, '<p>A &amp; B ' || n || '</p>', 'A & B ' || n FROM generate_series(1, 1000) AS n`,
         [pageId],
       );
       const heapBefore = process.memoryUsage().heapUsed;
       let heapAfterScan = 0;
-      const summary = await run({ hooks: { afterScan: () => { heapAfterScan = process.memoryUsage().heapUsed; } } });
-      expect(counts(summary)).toMatchObject({ current: 3000, owners: 1 });
+      const summary = await run({ limits: { scanRows: 100 }, hooks: { afterScan: () => { heapAfterScan = process.memoryUsage().heapUsed; } } });
+      expect(counts(summary)).toMatchObject({ current: 1000, owners: 1 });
       expect(heapAfterScan - heapBefore).toBeLessThan(64 * MIB);
-    }, 120_000);
+    }, 60_000);
 
     it('heartbeat during a long observation keeps the lease: no takeover while healthy', async () => {
       const pageId = await insertPage();
@@ -1595,13 +1882,13 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       }
     });
 
-    it('D4/D10: a column just over 4 MiB and one just under the 32 MiB ceiling are each parsed alone (repaired / unevaluable under the 256 MiB isolate); just over the ceiling is oversized and never loaded', async () => {
+    it('D4/D10 (bounds scaled: large 16 KiB, ceiling 128 KiB): a column one byte over the large bound and one exactly at the ceiling are each parsed alone and repaired; one byte over the ceiling is oversized and never loaded', async () => {
       const head = '<p>&amp;lt;br&amp;gt;</p><!--';
       const tail = '-->';
       const large = await insertPage({ html: '<p>plain</p>', text: 'plain' });
-      const under = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const atCeiling = await insertPage({ html: '<p>plain</p>', text: 'plain' });
       const over = await insertPage({ html: '<p>plain</p>', text: 'plain' });
-      for (const [pageId, total] of [[large, 4 * MIB + 1], [under, 32 * MIB], [over, 32 * MIB + 1]] as const) {
+      for (const [pageId, total] of [[large, 16 * KIB + 1], [atCeiling, 128 * KIB], [over, 128 * KIB + 1]] as const) {
         await query(
           `UPDATE pages SET body_html = $2 || repeat('x', $3) || $4, body_text = '<br>' WHERE id = $1`,
           [pageId, head, total - head.length - tail.length, tail],
@@ -1610,20 +1897,79 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       const requests: [number, string[]][] = [];
       const loaded: number[] = [];
       const summary = await run({
+        limits: SCALED,
         hooks: {
           beforeParserRequest: (ownerId, keys) => { requests.push([ownerId, keys]); },
           onLoad: (info) => { loaded.push(info.ownerId); },
         },
       });
       expect((await pageRow(large)).body_text).toBe('&lt;br&gt;');
-      // Measured: JSDOM needs more than the 256 MiB isolate for a 32 MiB body;
-      // the pair failed alone on a healthy worker and is a counted exemption.
-      expect((await pageRow(under)).body_text).toBe('<br>');
+      expect((await pageRow(atCeiling)).body_text).toBe('&lt;br&gt;');
       expect((await pageRow(over)).body_text).toBe('<br>');
-      expect(loaded).toEqual([large, under]);
-      expect(requests).toEqual([[large, ['p:']], [under, ['p:']]]);
-      expect(counts(summary)).toMatchObject({ oversized: 1, repaired: 1, unevaluable: 1 });
-    }, 180_000);
+      expect(loaded).toEqual([large, atCeiling]);
+      expect(requests).toEqual([[large, ['p:']], [atCeiling, ['p:']]]);
+      expect(counts(summary)).toMatchObject({ oversized: 1, repaired: 2 });
+    });
+
+    describe('the run-owned parser worker', () => {
+      /** About 1.6 MiB of html whose parse takes far longer than the scaled request limit. */
+      const slowHtml = `<div>${'<span>&amp;lt;x&amp;gt;</span>'.repeat(50_000)}</div>`;
+
+      /** Wraps Worker#terminate to record when each terminated worker has exited. */
+      function recordExits(events: string[]) {
+        const original = Worker.prototype.terminate;
+        return vi.spyOn(Worker.prototype, 'terminate').mockImplementation(async function (this: Worker) {
+          const code = await original.call(this);
+          events.push('exited');
+          return code;
+        });
+      }
+
+      it('stop during a parse terminates the run\'s worker and returns only after it exited; the run ends interrupted with nothing recorded', async () => {
+        const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+        await insertVersion(pageId, { version: 2, html: slowHtml, text: 'x' });
+        const events: string[] = [];
+        recordExits(events);
+        let stopped: Promise<number> | null = null;
+        const summary = await run({
+          hooks: {
+            beforeParserRequest: () => {
+              setImmediate(() => { stopped = stopBodyTextBackfill().then(() => events.push('stop returned')); });
+            },
+          },
+        });
+        await stopped;
+        expect(summary.outcome).toBe('interrupted');
+        expect(counts(summary)).toEqual({});
+        expect(events[0]).toBe('exited');
+        expect(events.at(-1)).toBe('stop returned');
+        expect(await state()).toMatchObject({ cursor: 0, passTotals: {}, owner: null });
+      });
+
+      it('a window over the request limit (scaled to 100 ms) is retried one pair per request on replaced workers: the slow pair is unevaluable, the other repaired', async () => {
+        const good = preFix();
+        const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+        const slow = await insertVersion(pageId, { version: 2, html: slowHtml, text: 'x' });
+        const fast = await insertVersion(pageId, { version: 3, html: good.html, text: good.text });
+        const events: string[] = [];
+        recordExits(events);
+        const requests: string[][] = [];
+        const summary = await run({
+          limits: { requestTimeoutMs: 100 },
+          hooks: { beforeParserRequest: (_ownerId, keys) => { requests.push(keys); } },
+        });
+        const both = [`v:${fast}`, `v:${slow}`].sort();
+        expect(requests).toHaveLength(3);
+        expect([...requests[0]!].sort()).toEqual(both);
+        expect(requests.slice(1).map((keys) => keys.length)).toEqual([1, 1]);
+        expect(requests.slice(1).flat().sort()).toEqual(both);
+        expect(counts(summary)).toMatchObject({ unevaluable: 1, repaired: 1 });
+        expect((await versionRow(fast))!.body_text).toBe(good.fixed);
+        expect((await versionRow(slow))!.body_text).toBe('x');
+        // The timed-out window's worker and the slow pair's worker were replaced.
+        expect(events.filter((event) => event === 'exited').length).toBeGreaterThanOrEqual(2);
+      });
+    });
 
     it('held hierarchy and lifecycle locks → busy within the lock deadline', async () => {
       const first = await insertPage();
@@ -1757,13 +2103,13 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect((await versionRows(large)).map((row) => row.body_text)).toEqual([preFix().fixed, preFix().fixed, preFix().fixed]);
     });
 
-    it('D12: 201 page_too_large owners and no transient one → the daily cadence, not the overflow backoff', async () => {
-      for (let index = 0; index < 201; index += 1) await insertPage();
-      await run({ limits: { maxAffectedCopies: 0 } });
+    it('D12: more page_too_large owners than the list bound and no transient one → the daily cadence, not the overflow backoff (list bound scaled from 200 to 2)', async () => {
+      for (let index = 0; index < 3; index += 1) await insertPage();
+      await run({ limits: { maxAffectedCopies: 0, transientListMax: 2 } });
       const doc = await state();
-      expect(doc).toMatchObject({ status: 'waiting', tooLarge: 201, overflowBackoffMs: null });
+      expect(doc).toMatchObject({ status: 'waiting', tooLarge: 3, overflowBackoffMs: null });
       expect(Date.parse(doc.nextFullPassAfter!)).toBe(Date.parse(doc.passStartedAt!) + DAY);
-    }, 60_000);
+    });
 
     it('a crash immediately after claiming a due pass and checkpointing one owner → the takeover resumes the same pass number, horizon and cursor', async () => {
       const first = await insertPage();
@@ -1865,11 +2211,11 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       await insertPage();
       await run();
       const before = await state();
-      const reads: string[] = [];
-      const pool = getPool();
-      const spy = vi.spyOn(pool, 'query');
+      // Every statement on every client: the pool, bootstrap and claim paths alike.
+      const spy = vi.spyOn(pg.Client.prototype, 'query');
       expect((await run()).outcome).toBe('already_completed');
-      reads.push(...spy.mock.calls.map((call) => String(call[0])));
+      const reads = spy.mock.calls.map((call) => String(typeof call[0] === 'string' ? call[0] : (call[0] as { text?: string }).text))
+        .filter((sql) => sql.includes('admin_settings'));
       spy.mockRestore();
       expect(reads).toHaveLength(1);
       expect(reads[0]).toContain('SELECT setting_value, NOW() AS now FROM admin_settings');
@@ -1935,13 +2281,22 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect((await pageRow(lowId)).body_text).toBe(preFix().fixed);
     });
 
-    it('premise: an old-style lazy fill before a close and an old-style draft save after it are repaired by the re-check pass', async () => {
+    it('premise: an old-style lazy fill committing after the scan and before the close, and an old-style draft save after the close, are repaired by the re-check pass', async () => {
       const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain', source: 'confluence', remoteVersion: 7 });
       await upsertVersionMetadata(pageId, 3, 'v3', { editedAt: null, author: null, message: null });
-      await run();
-      // A backend older than #1940 writes pre-fix text after the close.
-      await query(`UPDATE page_versions SET body_html = $2, body_text = $3 WHERE page_id = $1 AND version_number = 3`,
-        [pageId, preFix().html, preFix().text]);
+      // A backend older than #1940 fills the placeholder with pre-fix text
+      // between this owner's observation and its close.
+      const first = await run({
+        hooks: {
+          afterScan: async (ownerId) => {
+            if (ownerId !== pageId) return;
+            await query(`UPDATE page_versions SET body_html = $2, body_text = $3 WHERE page_id = $1 AND version_number = 3`,
+              [pageId, preFix().html, preFix().text]);
+          },
+        },
+      });
+      expect(first.outcome).toBe('done');
+      expect((await query('SELECT body_text FROM page_versions WHERE page_id = $1', [pageId])).rows).toEqual([{ body_text: preFix().text }]);
       await query('UPDATE pages SET draft_body_html = $2, draft_body_text = $3 WHERE id = $1', [pageId, preFix('em').html, preFix('em').text]);
       await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
       expect((await run()).outcome).toBe('done');
@@ -1977,15 +2332,37 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
   // ─── 10. Scheduling ───────────────────────────────────────────────────────
 
   describe('10. scheduling', () => {
-    it('legacy: a stop before the first run cancels it; a stop during an in-flight run awaits it', async () => {
+    it('legacy: a stop before the first run cancels it (its timer advanced past the deadline); the same timer without a stop starts a run; a stop during an in-flight run awaits it', async () => {
       await insertPage();
-      startBodyTextBackfillWorker(3_600_000, 3_600_000);
-      await stopBodyTextBackfill();
+      const timers = { toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] as const };
+      vi.useFakeTimers({ toFake: [...timers.toFake] });
+      try {
+        startBodyTextBackfillWorker(3_600_000, 1_000);
+        await stopBodyTextBackfill();
+        vi.advanceTimersByTime(2 * 3_600_000);
+      } finally {
+        vi.useRealTimers();
+      }
       expect((await query('SELECT 1 FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY])).rows).toEqual([]);
+      armBodyTextBackfill();
+      // Control: without the stop, the first-delay timer starts a run.
+      vi.useFakeTimers({ toFake: [...timers.toFake] });
+      try {
+        startBodyTextBackfillWorker(3_600_000, 1_000);
+        vi.advanceTimersByTime(1_000);
+        stopBodyTextBackfillWorker();
+      } finally {
+        vi.useRealTimers();
+      }
+      await expect.poll(async () => (await query<{ setting_value: string }>(
+        'SELECT setting_value FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY],
+      )).rows.map((row) => (JSON.parse(row.setting_value) as BodyTextBackfillState).status), { timeout: 30_000 }).toEqual(['done']);
+      // Settle the timer's run (stop awaits it), then pause a fresh pass in flight.
+      await stopBodyTextBackfill();
       armBodyTextBackfill();
       const opened = pause<[number]>();
       // The processor entry used by both modes, with a hook to pause in flight.
-      const inFlight = runBodyTextBackfill({ hooks: { atOpen: opened.hook } });
+      const inFlight = runBodyTextBackfill({ restart: true, hooks: { atOpen: opened.hook } });
       await opened.reached;
       const stopping = stopBodyTextBackfill();
       opened.release();

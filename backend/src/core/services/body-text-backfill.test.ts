@@ -4,6 +4,10 @@
  * §3–§4). Worker tests start real `worker_threads` workers; nothing sleeps.
  */
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import he from 'he';
 import { JSDOM } from 'jsdom';
@@ -38,10 +42,16 @@ function parser(overrides: Partial<BodyTextBackfillLimits> = {}, entry?: URL): B
   return created;
 }
 
-afterEach(() => {
-  for (const created of parsers.splice(0)) created.terminate();
+afterEach(async () => {
+  await Promise.all(parsers.splice(0).map((created) => created.terminate()));
   armBodyTextBackfill();
 });
+
+/** A fake worker's ready message: it announces the heap it really got. */
+const READY = `
+  import { getHeapStatistics } from 'node:v8';
+  parentPort.postMessage({ type: 'ready', heapSizeLimitMb: getHeapStatistics().heap_size_limit / 1048576 });
+`;
 
 describe('predicate (§3)', () => {
   it('classifies in order current → diverged → affected, with the current derivation as the new value', () => {
@@ -92,17 +102,25 @@ describe('frozen pre-fix derivation (1e908b20^)', () => {
     expect(preFix1e908b20('see ?id=1&reg=eu&copy=2')).toBe('see ?id=1®=eu©=2');
   });
 
-  it('is the algorithm recorded at commit 1e908b20^ in this repository', () => {
-    let source: string;
-    try {
-      source = execFileSync('git', ['show', '1e908b20^:backend/src/core/services/content-converter.ts'], {
-        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-    } catch {
-      // A shallow clone without that commit cannot check provenance.
-      return;
+  it('golden vectors: the exact outputs of the pre-#1940 derivation on its known edge cases', () => {
+    // Expected values recorded by running htmlToText as of 1e908b20^ (no
+    // repository history needed): legacy entities without `;`, numeric
+    // references, NBSP collapse and block boundaries.
+    const golden: [string, string][] = [
+      ['<p>Use &amp;lt;br&amp;gt;</p>', 'Use <br>'],
+      ['<p>Write &amp;amp; for an ampersand</p>', 'Write & for an ampersand'],
+      ['<p>&amp;#60; &amp;nbsp; x</p>', '< x'],
+      ['\n <p> a &amp;\tb </p>\n', 'a & b'],
+      ['<p>see https://x.test/?id=1&amp;reg=eu&amp;copy=2</p>', 'see https://x.test/?id=1®=eu©=2'],
+      ['<p>&amp;lt;</p>\n\n<p>x</p>', '< x'],
+      ['<p>A&nbsp;&nbsp;B</p>', 'A B'],
+      ['<p>plain</p>', 'plain'],
+      ['', ''],
+    ];
+    for (const [html, expected] of golden) {
+      const raw = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document.body.textContent ?? '';
+      expect(preFix1e908b20(raw), html).toBe(expected);
     }
-    expect(source).toContain("return he.decode(text).replace(/\\s+/g, ' ').trim();");
   });
 });
 
@@ -214,7 +232,7 @@ describe('parser worker (§4)', () => {
   it('a wrong canary answer ends the run (parser_unavailable)', async () => {
     const client = parser({}, moduleUrl(`
       import { parentPort } from 'node:worker_threads';
-      parentPort.postMessage({ type: 'ready' });
+      ${READY}
       parentPort.on('message', (m) => parentPort.postMessage({ type: 'result', requestId: m.requestId,
         results: m.pairs.map((p) => ({ key: p.key, outcome: 'current' })) }));
     `));
@@ -222,12 +240,58 @@ describe('parser worker (§4)', () => {
       .rejects.toMatchObject({ name: 'RunInterrupted', code: 'parser_unavailable' });
   });
 
+  it('a ready message without the announced heap ends the run (parser_protocol)', async () => {
+    const client = parser({}, moduleUrl(`
+      import { parentPort } from 'node:worker_threads';
+      parentPort.postMessage({ type: 'ready' });
+    `));
+    await expect(client.classify([{ key: 'a', html: '<p>&amp;</p>', text: '&' }]))
+      .rejects.toMatchObject({ name: 'RunInterrupted', code: 'parser_protocol' });
+  });
+
+  it('a worker announcing a heap other than its configured isolate ends the run before any row is parsed (parser_heap_limit)', async () => {
+    const client = parser({}, moduleUrl(`
+      import { parentPort } from 'node:worker_threads';
+      parentPort.postMessage({ type: 'ready', heapSizeLimitMb: 816 });
+    `));
+    await expect(client.classify([{ key: 'a', html: '<p>&amp;</p>', text: '&' }]))
+      .rejects.toMatchObject({ name: 'RunInterrupted', code: 'parser_heap_limit' });
+  });
+
+  it('a process started with --max-old-space-size (which overrides worker resourceLimits) refuses to parse: parser_heap_limit; without it the same script parses', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bt-heap-'));
+    try {
+      const script = join(dir, 'probe.mts');
+      const jobUrl = new URL('./body-text-backfill.ts', import.meta.url).href;
+      writeFileSync(script, `
+        import { BodyTextBackfillParser, BODY_TEXT_BACKFILL_LIMITS } from ${JSON.stringify(jobUrl)};
+        const parser = new BodyTextBackfillParser(BODY_TEXT_BACKFILL_LIMITS);
+        try {
+          const results = await parser.classify([{ key: 'a', html: '<p>Use &amp;lt;br&amp;gt;</p>', text: 'Use <br>' }]);
+          process.stdout.write(results ? results[0].outcome : 'failed');
+        } catch (error) {
+          process.stdout.write(error.code ?? String(error));
+        } finally {
+          await parser.terminate();
+        }
+      `);
+      const backendDir = fileURLToPath(new URL('../../..', import.meta.url));
+      const probe = (flags: string[]) => execFileSync(process.execPath, [...flags, '--import', 'tsx', script], {
+        cwd: backendDir, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', LOG_LEVEL: 'silent' }, timeout: 60_000,
+      });
+      expect(probe(['--max-old-space-size=768'])).toBe('parser_heap_limit');
+      expect(probe([])).toBe('affected');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('a protocol error after the canary ends the run (parser_protocol), never classifying the rows', async () => {
     const client = parser({}, moduleUrl(`
       import { createHash } from 'node:crypto';
       import { parentPort } from 'node:worker_threads';
       const sha = (v) => createHash('sha256').update(v, 'utf8').digest('hex');
-      parentPort.postMessage({ type: 'ready' });
+      ${READY}
       parentPort.on('message', (m) => {
         if (m.pairs[0].key === 'canary') {
           parentPort.postMessage({ type: 'result', requestId: m.requestId, results: [{ key: 'canary',
@@ -241,22 +305,24 @@ describe('parser worker (§4)', () => {
       .rejects.toMatchObject({ name: 'RunInterrupted', code: 'parser_protocol' });
   });
 
-  it('a stop during the handshake ends it at once', async () => {
+  // Stop of the run-owned worker (terminated by the stop itself, exit awaited)
+  // is driven at job level in the integration suite; here a client closed by
+  // its owner after the stop latch rejects what it still had pending.
+  it('a pending handshake of a client closed after the stop latch rejects with StopSignal', async () => {
     const client = parser({}, moduleUrl('setInterval(() => {}, 1000);'));
     const pending = client.classify([{ key: 'a', html: '<p>&amp;</p>', text: '&' }]);
     const settled = expect(pending).rejects.toMatchObject({ name: 'StopSignal' });
     await stopBodyTextBackfill();
-    client.terminate();
+    await client.terminate();
     await settled;
   });
 
-  it('a request over the time limit fails, and the next request is served by a fresh worker that passed the canary', async () => {
-    // A real slow parse: about two hundred thousand elements against a 20 ms limit.
-    const slow = `<div>${'<span>&amp;lt;x&amp;gt;</span>'.repeat(200_000)}</div>`;
+  it('a request over the time limit fails, and the same client serves the next request on a fresh worker that passed the canary', async () => {
+    // A real slow parse: fifty thousand elements against a 20 ms limit.
+    const slow = `<div>${'<span>&amp;lt;x&amp;gt;</span>'.repeat(50_000)}</div>`;
     const client = parser({ requestTimeoutMs: 20 });
     expect(await client.classify([{ key: 'slow', html: slow, text: 'x' }])).toBeNull();
-    const fast = parser();
-    expect(await fast.classify([{ key: 'ok', html: '<p>plain</p>', text: 'plain' }])).toEqual([{ key: 'ok', outcome: 'current' }]);
+    expect(await client.classify([{ key: 'ok', html: '<p>plain</p>', text: 'plain' }])).toEqual([{ key: 'ok', outcome: 'current' }]);
   });
 
   it('a real allocation beyond the isolate limit fails that request only; the parent stays alive and the next pair is parsed by a fresh healthy worker', async () => {
@@ -267,23 +333,23 @@ describe('parser worker (§4)', () => {
       .toMatchObject([{ key: 'next', outcome: 'affected', corrected: 'Use &lt;br&gt;' }]);
   });
 
-  it('stop terminates the worker during a request and it is not restarted', async () => {
+  it('a pending request of a client closed after the stop latch rejects with StopSignal and the client is not restarted', async () => {
     const client = parser();
     expect(await client.classify([{ key: 'warm', html: '<p>plain</p>', text: 'plain' }])).not.toBeNull();
-    const slow = `<div>${'<span>&amp;lt;x&amp;gt;</span>'.repeat(200_000)}</div>`;
+    const slow = `<div>${'<span>&amp;lt;x&amp;gt;</span>'.repeat(50_000)}</div>`;
     const pending = client.classify([{ key: 'slow', html: slow, text: 'x' }]);
     const settled = expect(pending).rejects.toMatchObject({ name: 'StopSignal' });
     await stopBodyTextBackfill();
-    client.terminate();
+    await client.terminate();
     await settled;
     await expect(client.classify([{ key: 'again', html: '<p>plain</p>', text: 'plain' }]))
       .rejects.toMatchObject({ name: 'StopSignal' });
   });
 
-  it('a large pair (a column above 4 MiB) is answered on its own request', async () => {
-    const big = `<p>${'Use &amp;lt;br&amp;gt; '.repeat(260_000)}</p>`;
-    expect(big.length).toBeGreaterThan(4 * 1024 * 1024);
-    const text = Array.from({ length: 260_000 }, () => 'Use <br>').join(' ');
+  it('a pair of about a megabyte of html is answered in one request (size scaled; the 4 MiB large-pair path is a job-level test)', async () => {
+    const big = `<p>${'Use &amp;lt;br&amp;gt; '.repeat(46_000)}</p>`;
+    expect(big.length).toBeGreaterThan(1024 * 1024);
+    const text = Array.from({ length: 46_000 }, () => 'Use <br>').join(' ');
     const client = parser();
     const [result] = (await client.classify([{ key: 'big', html: big, text }]))!;
     expect(result).toMatchObject({ key: 'big', outcome: 'affected' });

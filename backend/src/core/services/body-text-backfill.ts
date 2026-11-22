@@ -99,12 +99,13 @@ export const BODY_TEXT_BACKFILL_LIMITS: Readonly<BodyTextBackfillLimits> = Objec
 });
 
 const SAMPLE_SIZE = 20;
+/** Allowed gap between the announced worker heap limit and old + 1.5 × young. */
+const PARSER_HEAP_TOLERANCE_MB = 16;
 const OVERFLOW_BACKOFF_START_MS = HOUR_MS;
 const OVERFLOW_BACKOFF_MAX_MS = DAY_MS;
 const FIRST_RECHECK_MS = DAY_MS;
 const LATER_RECHECK_MS = 30 * DAY_MS;
 const SUMMARY_MAX = 500;
-const FIRST_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** The built-in pair a fresh parser must classify before any row is sent. */
 const CANARY = {
@@ -182,8 +183,44 @@ function parseState(raw: string): BodyTextBackfillState {
     throw new BodyTextBackfillError('state_invalid', 'state', null);
   }
   const parsed = StateSchema.safeParse(json);
-  if (!parsed.success) throw new BodyTextBackfillError('state_invalid', 'state', null);
+  if (!parsed.success || !reachable(parsed.data)) throw new BodyTextBackfillError('state_invalid', 'state', null);
   return parsed.data;
+}
+
+/**
+ * The invariants a completion relies on (F7): only status/owner/phase
+ * combinations the job itself writes, the cursor within the horizon, and a
+ * transient record that is either an exact sorted unique list within its
+ * bound or a consistent overflow count with its sample.
+ */
+function reachable(doc: BodyTextBackfillState): boolean {
+  const list = doc.unresolved;
+  const empty = !list.overflow && list.ids.length === 0 && list.count === 0;
+  if ((doc.owner !== null) !== (doc.status === 'running')) return false;
+  if (doc.cursor > doc.highWater) return false;
+  if (doc.completedAt !== null && doc.firstCompletedAt === null) return false;
+  if (doc.status === 'new') {
+    return doc.pass === 0 && doc.passStartedAt === null && doc.phase === 'scan' && doc.cursor === 0
+      && doc.highWater === 0 && empty && doc.tooLarge === 0;
+  }
+  if (doc.pass < 1 || doc.passStartedAt === null) return false;
+  if (doc.status === 'done') {
+    if (doc.phase !== 'scan' || doc.cursor !== 0 || !empty || doc.tooLarge !== 0) return false;
+    if (doc.nextFullPassAfter === null || doc.completedAt === null) return false;
+  }
+  if (doc.status === 'waiting') {
+    if (doc.phase !== 'scan' || doc.cursor !== 0 || doc.nextFullPassAfter === null) return false;
+    if (!list.overflow && doc.tooLarge === 0) return false;
+  }
+  if (doc.phase === 'retry' && (list.overflow || (doc.status !== 'idle' && doc.status !== 'running'))) return false;
+  if (!list.overflow) {
+    if (list.ids.length > BODY_TEXT_BACKFILL_LIMITS.transientListMax || list.count !== list.ids.length) return false;
+    if (list.ids.some((id, index) => id > doc.highWater || (index > 0 && id <= list.ids[index - 1]!))) return false;
+    const sample = list.ids.slice(0, SAMPLE_SIZE);
+    return list.sample.length === sample.length && list.sample.every((id, index) => id === sample[index]);
+  }
+  return list.ids.length === 0 && list.count >= 1 && list.sample.length === Math.min(list.count, SAMPLE_SIZE)
+    && new Set(list.sample).size === list.sample.length;
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -193,6 +230,8 @@ export class BodyTextBackfillError extends Error {
   readonly code: string;
   readonly phase: string;
   readonly ownerId: number | null;
+  /** The run's sanitized summary, for the terminal log line. */
+  summary?: BodyTextBackfillSummary;
 
   constructor(code: string, phase: string, ownerId: number | null) {
     super(`body_text backfill ${code} (phase ${phase}, owner ${ownerId ?? '-'})`);
@@ -225,6 +264,8 @@ class ConnectionLost extends Error {
 /** Outcome of one owner that does not close it. */
 class OwnerUnresolved extends Error {
   override readonly name = 'OwnerUnresolved';
+  /** Identifying sizes for a `page_too_large` refusal, logged after its checkpoint commits. */
+  detail?: Record<string, unknown>;
 
   constructor(readonly reason: 'busy' | 'changed' | 'gone' | 'page_too_large') {
     super(reason);
@@ -234,6 +275,16 @@ class OwnerUnresolved extends Error {
 function sqlState(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : undefined;
+}
+
+/**
+ * A failed COMMIT: an error answer from the server (an SQLSTATE, e.g. the
+ * FATAL of a terminated session) refused the transaction; a connection that
+ * closed without any answer lost the acknowledgment. Diagnostic only: both
+ * are settled by the reconciliation read.
+ */
+function commitAnswerLost(error: unknown): boolean {
+  return sqlState(error) === undefined;
 }
 
 /** A refusal by a deadline or lock wait: transient, the owner is `busy`. */
@@ -338,13 +389,24 @@ export class BodyTextBackfillParser {
     private readonly entry: URL = bodyTextBackfillParserEntry(),
   ) {}
 
-  terminate(): void {
+  /** Ends the worker and resolves once its thread (and its heap) is gone. */
+  async terminate(): Promise<void> {
     const worker = this.worker;
     this.worker = null;
     this.healthy = false;
     this.waiter?.reject(new ParserFailure('terminated'));
     this.waiter = null;
-    if (worker) void worker.terminate().catch(() => undefined);
+    if (worker) await worker.terminate().catch(() => undefined);
+  }
+
+  /**
+   * The isolate bound this worker must actually run under. V8 sizes a worker
+   * heap as old + 1.5 × young; a process-wide `--max-old-space-size` (argv or
+   * NODE_OPTIONS) overrides `resourceLimits` and cannot be undone per worker,
+   * so the handshake refuses to start rather than parse under another bound.
+   */
+  private expectedHeapMb(): number {
+    return this.limits.parserOldGenerationMb + 1.5 * this.limits.parserYoungGenerationMb;
   }
 
   private spawn(): Worker {
@@ -371,8 +433,9 @@ export class BodyTextBackfillParser {
     });
     const fail = () => {
       if (worker !== this.worker) return;
+      // Keep the reference: the next handshake (or stop) awaits its exit
+      // before anything else runs, so its heap is released first.
       this.healthy = false;
-      this.worker = null;
       const waiter = this.waiter;
       this.waiter = null;
       waiter?.reject(new ParserFailure('worker_failed'));
@@ -407,7 +470,8 @@ export class BodyTextBackfillParser {
 
   /** Start a worker, wait for `ready`, then prove it with the canary pair. */
   private async handshake(): Promise<void> {
-    this.terminate();
+    // The previous worker's heap is released before a replacement exists.
+    await this.terminate();
     this.assertUsable();
     try {
       this.worker = this.spawn();
@@ -417,7 +481,13 @@ export class BodyTextBackfillParser {
     try {
       const ready = await this.next(this.limits.handshakeTimeoutMs);
       this.assertUsable();
-      if ((ready as { type?: unknown } | null)?.type !== 'ready') throw new RunInterrupted('parser_protocol');
+      const announced = ready as { type?: unknown; heapSizeLimitMb?: unknown } | null;
+      if (announced?.type !== 'ready' || typeof announced.heapSizeLimitMb !== 'number') {
+        throw new RunInterrupted('parser_protocol');
+      }
+      if (Math.abs(announced.heapSizeLimitMb - this.expectedHeapMb()) > PARSER_HEAP_TOLERANCE_MB) {
+        throw new RunInterrupted('parser_heap_limit');
+      }
       const requestId = this.nextRequestId++;
       this.worker!.postMessage({
         type: 'classify', requestId, pairs: [{ key: 'canary', html: CANARY.html, text: CANARY.text }],
@@ -434,7 +504,7 @@ export class BodyTextBackfillParser {
       }
       this.healthy = true;
     } catch (error) {
-      this.terminate();
+      await this.terminate();
       if (stopLatched) throw new StopSignal();
       if (error instanceof RunInterrupted || error instanceof StopSignal) throw error;
       throw new RunInterrupted('parser_unavailable');
@@ -477,7 +547,7 @@ export class BodyTextBackfillParser {
     try {
       message = await response;
     } catch (error) {
-      this.terminate();
+      await this.terminate();
       if (stopLatched) throw new StopSignal();
       if (this.protocolBroken) throw new RunInterrupted('parser_protocol');
       if (error instanceof ParserFailure) return null;
@@ -531,12 +601,23 @@ async function beginTx(client: PoolClient, mode: TxMode, limits: BodyTextBackfil
  * A checked-out client whose connection errors are recorded instead of
  * escaping as process events, released with `discard` when broken.
  */
-async function withClient<T>(operation: (client: PoolClient, broken: () => boolean) => Promise<T>): Promise<T> {
+async function withClient<T>(
+  operation: (client: PoolClient, broken: () => boolean) => Promise<T>,
+  admission?: () => void,
+): Promise<T> {
+  admission?.();
   let client: PoolClient;
   try {
     client = await getPool().connect();
   } catch {
     throw new OwnerUnresolved('busy');
+  }
+  try {
+    // A checkout may have waited: re-check admission before any statement.
+    admission?.();
+  } catch (error) {
+    client.release();
+    throw error;
   }
   let discard: Error | undefined;
   const onError = (error: Error) => { discard = error; };
@@ -571,7 +652,7 @@ async function observe<T extends Record<string, unknown>>(
         await client.query('ROLLBACK').catch(() => undefined);
         throw error;
       }
-    });
+    }, assertNotStopped);
   } catch (error) {
     if (error instanceof OwnerUnresolved || error instanceof StopSignal || error instanceof RunInterrupted) throw error;
     // Observation commits nothing: a deadline, lock wait or lost connection
@@ -649,13 +730,30 @@ interface FencedResult {
   delta: Counts;
 }
 
+/** The step's COMMIT outcome was settled as not committed (§7 uncertain commit). */
+class StepNotCommitted extends Error {
+  override readonly name = 'StepNotCommitted';
+
+  constructor(readonly reason: 'transaction_refused' | 'acknowledgment_lost') {
+    super(reason);
+  }
+}
+
+function assertNotStopped(): void {
+  if (stopLatched) throw new StopSignal();
+}
+
 /**
  * A fenced transaction (§7): `admit` (the close's page-writer admission)
  * runs first, then the state row `FOR UPDATE` with ownership at `ctx.seq`,
  * then `body`, then `seq + 1` is written with its data and committed.
  * A connection-level failure anywhere (a transaction deadline ends the
  * session) is settled by the reconciliation read first: a step found
- * committed is applied, never redone; one found not committed is `busy`.
+ * committed is applied, never redone. One found not committed is reported
+ * with its cause — the session ended before COMMIT was sent (transaction
+ * refused, e.g. the deadline) or during COMMIT (acknowledgment lost) — and
+ * becomes `busy` for an owner step. Every step but the terminal release is
+ * refused once the stop latch is set, also after a checkout that waited.
  */
 async function fencedTransaction(
   ctx: RunContext, step: BodyTextBackfillStep, ownerId: number | null,
@@ -666,9 +764,10 @@ async function fencedTransaction(
   const apply = (result: FencedResult): FencedResult => {
     ctx.seq = result.doc.seq;
     ctx.doc = result.doc;
-    ctx.lastStateWriteAt = Date.now();
+    ctx.lastStateWriteAt = performance.now();
     return result;
   };
+  let acknowledgmentLost = false;
   try {
     return apply(await withClient(async (client, broken) => {
       try {
@@ -684,12 +783,13 @@ async function fencedTransaction(
           throw error;
         }
         pending.result = { doc: next, delta };
-        if (broken()) throw new ConnectionLost('broken');
         await ctx.hooks.beforeCommit?.(step, ownerId, client);
+        if (broken()) throw new ConnectionLost('broken');
         try {
           await client.query('COMMIT');
         } catch (error) {
           if (!isConnectionError(error)) throw error;
+          acknowledgmentLost = commitAnswerLost(error);
           throw new ConnectionLost('commit');
         }
         return pending.result;
@@ -700,12 +800,16 @@ async function fencedTransaction(
         await client.query('ROLLBACK').catch(() => undefined);
         throw error;
       }
-    }));
+    }, step === 'release' ? undefined : assertNotStopped));
   } catch (error) {
     if (!(error instanceof ConnectionLost)) throw error;
     const outcome = await reconcile(ctx, { owner: step === 'release' ? null : ctx.runId, seq: ctx.seq + 1 });
     if (outcome === 'committed' && pending.result) return apply(pending.result);
     if (outcome === 'committed') throw new RunInterrupted('reconciliation_failed');
+    const cause = acknowledgmentLost ? 'acknowledgment_lost' : 'transaction_refused';
+    logger.info({ job: 'body_text_backfill', pass: ctx.doc.pass, pageId: ownerId, step, cause },
+      'body_text backfill step not committed');
+    if (step === 'release') throw new StepNotCommitted(cause);
     throw new OwnerUnresolved('busy');
   }
 }
@@ -713,7 +817,8 @@ async function fencedTransaction(
 /** Between statements and parser requests: stop latch, then the lease heartbeat. */
 async function tick(ctx: RunContext): Promise<void> {
   if (stopLatched) throw new StopSignal();
-  if (Date.now() - ctx.lastStateWriteAt < ctx.limits.heartbeatMs) return;
+  // Eligibility uses a monotonic clock; the lease itself is judged on the database clock.
+  if (performance.now() - ctx.lastStateWriteAt < ctx.limits.heartbeatMs) return;
   try {
     await fencedTransaction(ctx, 'heartbeat', null, async (_client, { doc }) => ({ doc, delta: {} }));
   } catch (error) {
@@ -780,6 +885,11 @@ function pageColumn(ref: CopyRef): Column {
   return ref.column;
 }
 
+/** A copy's name in logs: the page column or the history row id. */
+function copyName(ref: CopyRef): string {
+  return ref.kind === 'page' ? ref.column : ref.id;
+}
+
 function count(counts: Counts, reason: BodyTextBackfillCounter, by = 1): void {
   counts[reason] = (counts[reason] ?? 0) + by;
 }
@@ -790,9 +900,16 @@ function toNumber(value: unknown): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function logResidual(ctx: RunContext, ownerId: number, reason: string, detail: Record<string, unknown>): void {
+/**
+ * Residual lines. `observation`: a per-copy scan reason as observed (no lock,
+ * nothing recorded yet). `decision`: a whole-page outcome, logged only after
+ * the transaction that records it is known committed.
+ */
+function logResidual(
+  ctx: RunContext, ownerId: number, kind: 'observation' | 'decision', reason: string, detail: Record<string, unknown>,
+): void {
   logger.warn(
-    { job: 'body_text_backfill', pass: ctx.doc.pass, pageId: ownerId, reason, ...detail },
+    { job: 'body_text_backfill', pass: ctx.doc.pass, pageId: ownerId, kind, reason, ...detail },
     'body_text backfill residual',
   );
 }
@@ -990,7 +1107,7 @@ class OwnerScan {
 
   private unevaluable(pair: PendingPair): void {
     count(this.counts, 'unevaluable');
-    logResidual(this.ctx, this.ownerId, 'unevaluable', describeCopy(pair));
+    logResidual(this.ctx, this.ownerId, 'observation', 'unevaluable', describeCopy(pair));
   }
 
   private record(window: PendingPair[], results: PairResult[]): void {
@@ -1021,7 +1138,7 @@ class OwnerScan {
         count(this.counts, 'frozen');
       } else if (htmlBytes > this.ctx.limits.ceilingBytes || textBytes > this.ctx.limits.ceilingBytes) {
         count(this.counts, 'oversized');
-        logResidual(this.ctx, this.ownerId, 'oversized', { column, htmlBytes, textBytes });
+        logResidual(this.ctx, this.ownerId, 'observation', 'oversized', { column, htmlBytes, textBytes });
       } else {
         candidates.push({ key: keyFor({ kind: 'page', column }), ref: { kind: 'page', column }, htmlBytes, textBytes });
       }
@@ -1033,12 +1150,16 @@ class OwnerScan {
       const published = want('published');
       const draft = want('draft');
       await this.statement('ampersand_page', group.reduce((sum, pair) => sum + pair.htmlBytes, 0));
+      // Like every byte-touching statement: both lengths rechecked, else changed.
       const rows = await observe<{ p: boolean | null; d: boolean | null }>(this.ctx, 'read_only',
-        `SELECT CASE WHEN $2::bigint IS NOT NULL AND octet_length(body_html) = $2 THEN strpos(body_html, '&') > 0 END AS p,
-                CASE WHEN $3::bigint IS NOT NULL AND octet_length(draft_body_html) = $3
+        `SELECT CASE WHEN $2::bigint IS NOT NULL AND octet_length(body_html) = $2 AND octet_length(body_text) = $3
+                     THEN strpos(body_html, '&') > 0 END AS p,
+                CASE WHEN $4::bigint IS NOT NULL AND octet_length(draft_body_html) = $4
+                          AND octet_length(draft_body_text) = $5
                      THEN strpos(draft_body_html, '&') > 0 END AS d
            FROM pages WHERE id = $1`,
-        [this.ownerId, published?.htmlBytes ?? null, draft?.htmlBytes ?? null]);
+        [this.ownerId, published?.htmlBytes ?? null, published?.textBytes ?? null,
+          draft?.htmlBytes ?? null, draft?.textBytes ?? null]);
       const row = rows[0];
       if (!row) throw new OwnerUnresolved('changed');
       if (published) {
@@ -1058,13 +1179,15 @@ class OwnerScan {
 
   /** History: keyset reads of ids, lengths and the link flag; no body access. */
   async scanHistory(): Promise<void> {
-    let after = FIRST_UUID;
+    // Keyset on the uuid column itself: no lower bound on the first read (the
+    // nil UUID is a legal key), compared and ordered as uuid, never as text.
+    let after: string | null = null;
     for (;;) {
-      const rows = await observe<{ id: string; hl: string | null; tl: string | null; linked: boolean }>(this.ctx, 'read_only',
+      const rows: { id: string; hl: string | null; tl: string | null; linked: boolean }[] = await observe<{ id: string; hl: string | null; tl: string | null; linked: boolean }>(this.ctx, 'read_only',
         `SELECT pv.id::text AS id, octet_length(pv.body_html) AS hl, octet_length(pv.body_text) AS tl,
                 EXISTS (SELECT 1 FROM page_baselines b WHERE b.version_snapshot_id = pv.id) AS linked
            FROM page_versions pv
-          WHERE pv.page_id = $1 AND pv.id > $2::uuid
+          WHERE pv.page_id = $1 AND ($2::uuid IS NULL OR pv.id > $2::uuid)
           ORDER BY pv.id
           LIMIT $3`,
         [this.ownerId, after, this.ctx.limits.scanRows]);
@@ -1080,7 +1203,7 @@ class OwnerScan {
           count(this.counts, 'baseline_referenced');
         } else if (htmlBytes > this.ctx.limits.ceilingBytes || textBytes > this.ctx.limits.ceilingBytes) {
           count(this.counts, 'oversized');
-          logResidual(this.ctx, this.ownerId, 'oversized', { versionId: row.id, htmlBytes, textBytes });
+          logResidual(this.ctx, this.ownerId, 'observation', 'oversized', { versionId: row.id, htmlBytes, textBytes });
         } else {
           const ref: CopyRef = { kind: 'version', id: row.id };
           candidates.push({ key: keyFor(ref), ref, htmlBytes, textBytes });
@@ -1090,10 +1213,13 @@ class OwnerScan {
         await this.statement('ampersand_versions', group.reduce((sum, pair) => sum + pair.htmlBytes, 0));
         const flags = await observe<{ id: string; amp: boolean | null }>(this.ctx, 'read_only',
           `SELECT e.id::text AS id,
-                  CASE WHEN octet_length(pv.body_html) = e.hl THEN strpos(pv.body_html, '&') > 0 END AS amp
-             FROM unnest($1::uuid[], $2::bigint[]) AS e(id, hl)
-             JOIN page_versions pv ON pv.id = e.id AND pv.page_id = $3`,
-          [group.map((pair) => versionId(pair.ref)), group.map((pair) => pair.htmlBytes), this.ownerId]);
+                  CASE WHEN octet_length(pv.body_html) = e.hl AND octet_length(pv.body_text) = e.tl
+                            AND NOT EXISTS (SELECT 1 FROM page_baselines b WHERE b.version_snapshot_id = pv.id)
+                       THEN strpos(pv.body_html, '&') > 0 END AS amp
+             FROM unnest($1::uuid[], $2::bigint[], $3::bigint[]) AS e(id, hl, tl)
+             JOIN page_versions pv ON pv.id = e.id AND pv.page_id = $4`,
+          [group.map((pair) => versionId(pair.ref)), group.map((pair) => pair.htmlBytes),
+            group.map((pair) => pair.textBytes), this.ownerId]);
         if (flags.length !== group.length) throw new OwnerUnresolved('changed');
         const byId = new Map(flags.map((flag) => [flag.id, flag.amp]));
         for (const pair of group) {
@@ -1125,9 +1251,7 @@ async function observeOwner(ctx: RunContext, ownerId: number): Promise<Observati
     await scan.scanHistory();
   } catch (error) {
     if (error instanceof OwnerUnresolved && error.reason === 'page_too_large') {
-      logResidual(ctx, ownerId, 'page_too_large', {
-        affectedCopies: scan.affected.length, correctedBytes: scan.correctedBytes,
-      });
+      error.detail = { affectedCopies: scan.affected.length, correctedBytes: scan.correctedBytes };
     }
     throw error;
   }
@@ -1142,7 +1266,6 @@ interface LockedPage {
   l: string;
   version: number;
   frozen: boolean;
-  title: string;
   source: string;
   remote_version: number | null;
   has_modified_by: boolean;
@@ -1160,7 +1283,8 @@ const DIGEST = (column: string) => `encode(sha256(convert_to(${column}, 'UTF8'))
 class CloseTransaction {
   private readonly pageMembers: Map<Column, Affected>;
   private readonly versionMembers: Affected[];
-  private witness: string | null = null;
+  /** The rows or columns a whole-page refusal rests on (logged after commit). */
+  evidence: Record<string, unknown> = {};
 
   constructor(
     private readonly ctx: RunContext,
@@ -1204,7 +1328,7 @@ class CloseTransaction {
   async lockPage(): Promise<LockedPage> {
     const result = await this.client.query<LockedPage>(
       `SELECT content_revision::text AS c, lifecycle_revision::text AS l, version, baseline_id IS NOT NULL AS frozen,
-              title, source, remote_version, local_modified_by IS NOT NULL AS has_modified_by,
+              source, remote_version, local_modified_by IS NOT NULL AS has_modified_by,
               local_modified_at IS NULL AS modified_at_null,
               octet_length(body_html) AS phl, octet_length(body_text) AS ptl,
               octet_length(draft_body_html) AS dhl, octet_length(draft_body_text) AS dtl
@@ -1285,21 +1409,24 @@ class CloseTransaction {
     }
   }
 
-  /** Rule (b): equal stored text, different corrected text. */
+  /** Rule (b): equal stored text, different corrected text; records both members. */
   splitByEqualText(): boolean {
-    const corrected = new Map<string, string>();
+    const first = new Map<string, Affected>();
     for (const member of this.observation.affected) {
       const id = `${member.textBytes}:${member.textSha256}`;
-      const seen = corrected.get(id);
-      if (seen !== undefined && seen !== member.corrected) return true;
-      corrected.set(id, member.corrected);
+      const seen = first.get(id);
+      if (seen !== undefined && seen.corrected !== member.corrected) {
+        this.evidence = { rule: 'b', members: [copyName(seen.ref), copyName(member.ref)] };
+        return true;
+      }
+      if (!seen) first.set(id, member);
     }
     return false;
   }
 
   /** Rule (a): a copy outside A with stored text byte-equal to a member's. */
   async findWitness(page: LockedPage): Promise<boolean> {
-    const memberTexts = new Set(this.observation.affected.map((m) => `${m.textBytes}:${m.textSha256}`));
+    const memberTexts = new Map(this.observation.affected.map((m) => [`${m.textBytes}:${m.textSha256}`, copyName(m.ref)]));
     const lengths = [...new Set(this.observation.affected.map((m) => m.textBytes))];
     for (const column of ['published', 'draft'] as const) {
       if (this.pageMembers.has(column)) continue;
@@ -1309,20 +1436,24 @@ class CloseTransaction {
       const row = (await this.client.query<{ t: string }>(
         `SELECT ${DIGEST(PAGE_COLUMNS[column].text)} AS t FROM pages WHERE id = $1`, [this.ownerId],
       )).rows[0];
-      if (row && memberTexts.has(`${textBytes}:${row.t}`)) {
-        this.witness = column;
+      const member = row ? memberTexts.get(`${textBytes}:${row.t}`) : undefined;
+      if (member !== undefined) {
+        this.evidence = { rule: 'a', witness: column, member };
         return true;
       }
     }
     const memberIds = this.versionMembers.map((m) => versionId(m.ref));
-    let after = FIRST_UUID;
+    // Same keyset rules as the scan: nullable first cursor, uuid comparison
+    // and uuid order on the qualified column (the text alias would sort by
+    // the database collation and could skip a witness at a window boundary).
+    let after: string | null = null;
     for (;;) {
-      const window = (await this.client.query<{ id: string; tl: string }>(
-        `SELECT id::text AS id, octet_length(body_text) AS tl
-           FROM page_versions
-          WHERE page_id = $1 AND id > $2::uuid AND body_text IS NOT NULL
-            AND octet_length(body_text) = ANY($3::bigint[]) AND NOT (id = ANY($4::uuid[]))
-          ORDER BY id
+      const window: { id: string; tl: string }[] = (await this.client.query<{ id: string; tl: string }>(
+        `SELECT pv.id::text AS id, octet_length(pv.body_text) AS tl
+           FROM page_versions pv
+          WHERE pv.page_id = $1 AND ($2::uuid IS NULL OR pv.id > $2::uuid) AND pv.body_text IS NOT NULL
+            AND octet_length(pv.body_text) = ANY($3::bigint[]) AND NOT (pv.id = ANY($4::uuid[]))
+          ORDER BY pv.id
           LIMIT $5`,
         [this.ownerId, after, lengths, memberIds, this.ctx.limits.scanRows],
       )).rows;
@@ -1348,7 +1479,7 @@ class CloseTransaction {
             [digest.id, Number(digest.tl), digest.t],
           );
           if (locked.rows.length === 1) {
-            this.witness = digest.id;
+            this.evidence = { rule: 'a', witness: digest.id, member: memberTexts.get(`${digest.tl}:${digest.t}`) };
             return true;
           }
         }
@@ -1373,21 +1504,24 @@ class CloseTransaction {
       local_modified_at: ruleA || !page.modified_at_null ? new Date(0) : null,
     });
     if (after.source === before.source && after.versionNumber === before.versionNumber) return false;
+    // The slot's title is compared in the database: only the boolean leaves it.
     const slot = (await this.client.query<{
-      id: string; title: string; hl: string | null; tl: string | null; linked: boolean;
+      id: string; same_title: boolean; hl: string | null; tl: string | null; linked: boolean;
     }>(
-      `SELECT pv.id::text AS id, pv.title, octet_length(pv.body_html) AS hl, octet_length(pv.body_text) AS tl,
+      `SELECT pv.id::text AS id, pv.title = p.title AS same_title,
+              octet_length(pv.body_html) AS hl, octet_length(pv.body_text) AS tl,
               EXISTS (SELECT 1 FROM page_baselines b WHERE b.version_snapshot_id = pv.id) AS linked
-         FROM page_versions pv
+         FROM page_versions pv JOIN pages p ON p.id = pv.page_id
         WHERE pv.page_id = $1 AND pv.source = $2 AND pv.version_number = $3
         FOR UPDATE OF pv NOWAIT`,
       [this.ownerId, after.source, after.versionNumber],
     )).rows[0];
     if (!slot) return false;
+    this.evidence = { rule: 'e', column: 'published', slot: slot.id };
     const hl = toNumber(slot.hl);
     const tl = toNumber(slot.tl);
-    if (hl === null && tl === null) return !(slot.title === page.title && !slot.linked);
-    if (slot.title !== page.title || hl !== published.htmlBytes) return true;
+    if (hl === null && tl === null) return !(slot.same_title && !slot.linked);
+    if (!slot.same_title || hl !== published.htmlBytes) return true;
     await this.statement('identity_html', hl);
     const html = (await this.client.query<{ h: string }>(
       `SELECT ${DIGEST('body_html')} AS h FROM page_versions WHERE id = $1::uuid`, [slot.id],
@@ -1464,14 +1598,6 @@ class CloseTransaction {
     else if (await this.identityConflict(page)) decision = 'identity_conflict';
     await hooks.afterDecision?.(this.ownerId, this.client, decision);
     if (decision === 'write' && await this.write() === 'unindexable') decision = 'unindexable';
-    if (decision !== 'write') {
-      logResidual(this.ctx, this.ownerId, decision, {
-        copies: this.observation.affected.length,
-        ...(this.witness ? { witness: this.witness } : {}),
-        ...(decision === 'identity_conflict' ? { column: 'published' } : {}),
-        ...(decision === 'unindexable' ? { column: 'published' } : {}),
-      });
-    }
     return decision;
   }
 }
@@ -1525,7 +1651,9 @@ function progress(ctx: RunContext, ownerId: number | null, step: string, delta: 
   }, 'body_text backfill progress');
 }
 
-async function checkpointUnresolved(ctx: RunContext, ownerId: number, reason: OwnerUnresolved['reason']): Promise<void> {
+async function checkpointUnresolved(
+  ctx: RunContext, ownerId: number, reason: OwnerUnresolved['reason'], detail: Record<string, unknown> = {},
+): Promise<void> {
   const { delta } = await fencedTransaction(ctx, 'checkpoint', ownerId, async (client, { doc, now }) => {
     const next = pastOwner(doc, ownerId);
     if (reason === 'gone') {
@@ -1556,6 +1684,7 @@ async function checkpointUnresolved(ctx: RunContext, ownerId: number, reason: Ow
     };
   });
   progress(ctx, ownerId, Object.keys(delta)[0] ?? reason, delta);
+  if (reason === 'page_too_large') logResidual(ctx, ownerId, 'decision', 'page_too_large', detail);
 }
 
 /** A empty: lock the page row FOR SHARE and close only if nothing moved since Open. */
@@ -1563,10 +1692,19 @@ async function fencedCloseEmpty(ctx: RunContext, observation: Observation): Prom
   const { opened } = observation;
   const delta: Counts = { ...observation.counts, owners: 1 };
   await fencedTransaction(ctx, 'fenced_close', opened.pageId, async (client, { doc }) => {
-    const row = (await client.query<{ c: string; l: string; version: number }>(
-      `SELECT content_revision::text AS c, lifecycle_revision::text AS l, version FROM pages WHERE id = $1 FOR SHARE`,
-      [opened.pageId],
-    )).rows[0];
+    let row: { c: string; l: string; version: number } | undefined;
+    try {
+      row = (await client.query<{ c: string; l: string; version: number }>(
+        `SELECT content_revision::text AS c, lifecycle_revision::text AS l, version FROM pages WHERE id = $1 FOR SHARE`,
+        [opened.pageId],
+      )).rows[0];
+    } catch (error) {
+      // Contention on this page's row is the owner's, as in the closing
+      // transaction (the state row is already locked: its timeouts stay run
+      // failures). Rolled back, then recorded by a `busy` checkpoint.
+      if (isBusyState(sqlState(error))) throw new OwnerUnresolved('busy');
+      throw error;
+    }
     if (!row) throw new OwnerUnresolved('gone');
     if (row.c !== opened.c0 || row.l !== opened.l0 || row.version !== opened.version) throw new OwnerUnresolved('changed');
     return { doc: withCounts(withoutTransient(pastOwner(doc, opened.pageId), opened.pageId), delta), delta };
@@ -1601,11 +1739,13 @@ async function closeOwner(ctx: RunContext, observation: Observation): Promise<vo
   const ownerId = observation.opened.pageId;
   await tick(ctx);
   let result: FencedResult;
+  let decided: { decision: Decision; evidence: Record<string, unknown> } | undefined;
   try {
     result = await withPageWriterOperation(() => {
       let close: CloseTransaction | null = null;
       return fencedTransaction(ctx, 'close', ownerId, async (_client, { doc }) => {
         const decision = await close!.run();
+        decided = { decision, evidence: close!.evidence };
         const delta: Counts = { ...observation.counts, owners: 1 };
         count(delta, decision === 'write' ? 'repaired' : decision, observation.affected.length);
         return { doc: withCounts(withoutTransient(pastOwner(doc, ownerId), ownerId), delta), delta };
@@ -1622,6 +1762,13 @@ async function closeOwner(ctx: RunContext, observation: Observation): Promise<vo
     throw error;
   }
   progress(ctx, ownerId, 'closed', result.delta);
+  // A whole-page refusal is reported only now that its record is committed.
+  if (decided && decided.decision !== 'write') {
+    logResidual(ctx, ownerId, 'decision', decided.decision, {
+      copies: observation.affected.length,
+      ...(decided.decision === 'unindexable' ? { column: 'published' } : decided.evidence),
+    });
+  }
 }
 
 async function processOwner(ctx: RunContext, ownerId: number): Promise<void> {
@@ -1632,7 +1779,7 @@ async function processOwner(ctx: RunContext, ownerId: number): Promise<void> {
     else await closeOwner(ctx, observation);
   } catch (error) {
     if (!(error instanceof OwnerUnresolved)) throw error;
-    await checkpointUnresolved(ctx, ownerId, error.reason);
+    await checkpointUnresolved(ctx, ownerId, error.reason, error.detail);
   }
 }
 
@@ -1640,89 +1787,192 @@ async function processOwner(ctx: RunContext, ownerId: number): Promise<void> {
 
 type Claim =
   | { kind: 'claimed'; doc: BodyTextBackfillState; fresh: boolean }
-  | { kind: 'already_running' | 'already_completed' | 'waiting'; doc: BodyTextBackfillState };
+  | { kind: 'already_running' | 'already_completed' | 'waiting'; doc: BodyTextBackfillState }
+  | { kind: 'not_committed'; doc: BodyTextBackfillState | null; reason: 'transaction_refused' | 'acknowledgment_lost' };
 
-async function ensureStateRow(): Promise<void> {
-  await getPool().query(
-    `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, NOW())
-     ON CONFLICT (setting_key) DO NOTHING`,
-    [BODY_TEXT_BACKFILL_STATE_KEY, JSON.stringify(initialState())],
-  );
+/** Read once per process; every later transaction can then set its whole-transaction deadline. */
+let serverVersion: number | null = null;
+
+/**
+ * Open a bootstrap transaction (fast path, claim, claim reconciliation) with
+ * the job's lock and statement deadlines, and its transaction deadline once
+ * the server version is known. No bootstrap statement runs on a bare pool
+ * query: an uncommitted first insert of the state key or a table lock can
+ * only delay the job by its own deadlines.
+ */
+async function beginBootstrap(client: PoolClient, mode: 'read_committed' | 'read_only', limits: BodyTextBackfillLimits): Promise<number> {
+  await beginTx(client, mode, limits, serverVersion ?? 0);
+  if (serverVersion === null) {
+    const version = Number((await client.query<{ v: string }>("SELECT current_setting('server_version_num') AS v")).rows[0]?.v ?? 0);
+    serverVersion = version;
+    if (version >= 170000) {
+      await client.query(`SET LOCAL transaction_timeout = '${assertInteger(limits.transactionTimeoutMs)}ms'`);
+    }
+  }
+  return serverVersion;
 }
 
 function due(doc: BodyTextBackfillState, now: Date): boolean {
   return doc.nextFullPassAfter !== null && Date.parse(doc.nextFullPassAfter) <= now.getTime();
 }
 
-async function claim(
-  runId: string, restart: boolean, limits: BodyTextBackfillLimits, pgVersion: number, hooks: BodyTextBackfillHooks,
-): Promise<Claim> {
-  return withClient(async (client) => {
-    await beginTx(client, 'read_committed', limits, pgVersion);
-    try {
-      const state = await readStateForUpdate(client);
-      if (!state) throw new BodyTextBackfillError('state_invalid', 'claim', null);
-      const { doc, now, updatedAt } = state;
-      const live = doc.owner !== null && now.getTime() - updatedAt.getTime() < limits.leaseMs;
-      const stale = doc.owner !== null && !live;
-      const scanUnfinished = !(doc.status === 'done' || doc.status === 'waiting'
-        || (doc.phase === 'retry' && (doc.status === 'idle' || (doc.status === 'running' && stale))));
-      let next: BodyTextBackfillState;
-      let fresh = false;
-      if (live) {
-        await client.query('ROLLBACK');
-        return { kind: 'already_running', doc };
+/**
+ * The claim (§7): the first-owner insert and the state row `FOR UPDATE` are
+ * separate commands of one deadline-bounded transaction. A connection lost
+ * around COMMIT is reconciled against the attempted owner and sequence: our
+ * run id at the attempted `seq` → claimed; the previously locked owner and
+ * `seq` still there → not committed (a first claim had no owner); anything
+ * else → another runner holds it.
+ */
+async function claim(runId: string, restart: boolean, limits: BodyTextBackfillLimits, hooks: BodyTextBackfillHooks): Promise<Claim> {
+  const attempted: { value?: { next: BodyTextBackfillState; previous: { owner: string | null; seq: number }; fresh: boolean } } = {};
+  let acknowledgmentLost = false;
+  try {
+    return await withClient(async (client, broken) => {
+      try {
+        await beginBootstrap(client, 'read_committed', limits);
+        await client.query(
+          `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, NOW())
+           ON CONFLICT (setting_key) DO NOTHING`,
+          [BODY_TEXT_BACKFILL_STATE_KEY, JSON.stringify(initialState())],
+        );
+        const state = await readStateForUpdate(client);
+        if (!state) throw new BodyTextBackfillError('state_invalid', 'claim', null);
+        const { doc, now, updatedAt } = state;
+        const live = doc.owner !== null && now.getTime() - updatedAt.getTime() < limits.leaseMs;
+        const stale = doc.owner !== null && !live;
+        const scanUnfinished = !(doc.status === 'done' || doc.status === 'waiting'
+          || (doc.phase === 'retry' && (doc.status === 'idle' || (doc.status === 'running' && stale))));
+        let next: BodyTextBackfillState;
+        let fresh = false;
+        if (live) {
+          await client.query('ROLLBACK');
+          return { kind: 'already_running', doc };
+        }
+        const owed = due(doc, now) && !scanUnfinished;
+        if (restart || owed || doc.status === 'new') {
+          const highWater = (await client.query<{ max: number | null }>('SELECT max(id) AS max FROM pages')).rows[0]?.max ?? 0;
+          fresh = true;
+          next = {
+            ...doc, status: 'running', owner: runId, seq: doc.seq + 1, pass: doc.pass + 1,
+            passStartedAt: now.toISOString(), highWater, phase: 'scan', cursor: 0,
+            unresolved: { ids: [], overflow: false, count: 0, sample: [] }, tooLarge: 0, passTotals: {},
+            // A due trigger is consumed by this pass. An explicit restart
+            // before a stored, still-future trigger carries it: the re-check
+            // it stands for is still owed after this pass (endOfPass keeps
+            // the earlier of the two), also when this pass is interrupted.
+            nextFullPassAfter: restart && !owed && doc.nextFullPassAfter !== null && !due(doc, now)
+              ? doc.nextFullPassAfter : null,
+          };
+        } else if (doc.status === 'done' || doc.status === 'waiting') {
+          await client.query('ROLLBACK');
+          return { kind: doc.status === 'done' ? 'already_completed' : 'waiting', doc };
+        } else {
+          next = { ...doc, status: 'running', owner: runId, seq: doc.seq + 1 };
+        }
+        attempted.value = { next, previous: { owner: doc.owner, seq: doc.seq }, fresh };
+        await writeState(client, next);
+        await hooks.beforeCommit?.('claim', null, client);
+        if (broken()) throw new ConnectionLost('broken');
+        try {
+          await client.query('COMMIT');
+        } catch (error) {
+          if (!isConnectionError(error)) throw error;
+          acknowledgmentLost = commitAnswerLost(error);
+          throw new ConnectionLost('commit');
+        }
+        return { kind: 'claimed', doc: next, fresh };
+      } catch (error) {
+        if (error instanceof ConnectionLost || broken() || isConnectionError(error)) {
+          throw error instanceof ConnectionLost ? error : new ConnectionLost('statement');
+        }
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
       }
-      if (restart || (due(doc, now) && !scanUnfinished) || doc.status === 'new') {
-        const highWater = (await client.query<{ max: number | null }>('SELECT max(id) AS max FROM pages')).rows[0]?.max ?? 0;
-        fresh = true;
-        next = {
-          ...doc, status: 'running', owner: runId, seq: doc.seq + 1, pass: doc.pass + 1,
-          passStartedAt: now.toISOString(), highWater, phase: 'scan', cursor: 0,
-          unresolved: { ids: [], overflow: false, count: 0, sample: [] }, tooLarge: 0,
-          nextFullPassAfter: null, passTotals: {},
-        };
-      } else if (doc.status === 'done' || doc.status === 'waiting') {
-        await client.query('ROLLBACK');
-        return { kind: doc.status === 'done' ? 'already_completed' : 'waiting', doc };
-      } else {
-        next = { ...doc, status: 'running', owner: runId, seq: doc.seq + 1 };
-      }
-      await writeState(client, next);
-      await hooks.beforeCommit?.('claim', null, client);
-      await client.query('COMMIT');
-      return { kind: 'claimed', doc: next, fresh };
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw error;
+    }, assertNotStopped);
+  } catch (error) {
+    if (!(error instanceof ConnectionLost)) throw error;
+    const reason = acknowledgmentLost ? 'acknowledgment_lost' : 'transaction_refused';
+    const tried = attempted.value;
+    if (!tried) return { kind: 'not_committed', doc: null, reason };
+    const current = await reconcileClaim(limits);
+    // No row: the first-owner insert rolled back with the claim.
+    if (current === null) return { kind: 'not_committed', doc: null, reason };
+    if (current.owner === runId && current.seq === tried.next.seq) {
+      return { kind: 'claimed', doc: tried.next, fresh: tried.fresh };
     }
-  });
+    if (current.owner === tried.previous.owner && current.seq === tried.previous.seq) {
+      return { kind: 'not_committed', doc: current, reason };
+    }
+    return { kind: 'already_running', doc: current };
+  }
 }
 
-/** The end-of-pass table of §8. */
+/** Reconciliation read for an uncertain claim: the state row `FOR UPDATE` (or its absence), nothing written. */
+async function reconcileClaim(limits: BodyTextBackfillLimits): Promise<BodyTextBackfillState | null> {
+  try {
+    return await withClient(async (client) => {
+      await beginBootstrap(client, 'read_committed', limits);
+      try {
+        const state = await readStateForUpdate(client);
+        await client.query('ROLLBACK');
+        return state?.doc ?? null;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (error instanceof BodyTextBackfillError) throw error;
+    throw new RunInterrupted('reconciliation_failed');
+  }
+}
+
+function earliest(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Date.parse(left) <= Date.parse(right) ? left : right;
+}
+
+/**
+ * The end-of-pass table of §8. A trigger carried by an explicit restart
+ * (still stored in `nextFullPassAfter`) is kept when it is earlier.
+ */
 function endOfPass(doc: BodyTextBackfillState, now: Date): BodyTextBackfillState {
   const daily = new Date(Date.parse(doc.passStartedAt ?? now.toISOString()) + DAY_MS).toISOString();
+  const carried = doc.nextFullPassAfter;
   const transient = doc.unresolved;
   if (!transient.overflow && transient.ids.length === 0) {
-    if (doc.tooLarge > 0) return { ...doc, status: 'waiting', phase: 'scan', cursor: 0, nextFullPassAfter: daily };
+    if (doc.tooLarge > 0) {
+      return { ...doc, status: 'waiting', phase: 'scan', cursor: 0, nextFullPassAfter: earliest(daily, carried) };
+    }
+    const recheck = new Date(now.getTime() + (doc.firstCompletedAt === null ? FIRST_RECHECK_MS : LATER_RECHECK_MS))
+      .toISOString();
     return {
       ...doc, status: 'done', phase: 'scan', cursor: 0, overflowBackoffMs: null,
       completedAt: now.toISOString(),
       firstCompletedAt: doc.firstCompletedAt ?? now.toISOString(),
-      nextFullPassAfter: new Date(now.getTime() + (doc.firstCompletedAt === null ? FIRST_RECHECK_MS : LATER_RECHECK_MS))
-        .toISOString(),
+      nextFullPassAfter: earliest(recheck, carried),
     };
   }
   if (!transient.overflow) {
-    return { ...doc, status: 'idle', phase: 'retry', cursor: 0, nextFullPassAfter: doc.tooLarge > 0 ? daily : null };
+    return {
+      ...doc, status: 'idle', phase: 'retry', cursor: 0,
+      nextFullPassAfter: earliest(doc.tooLarge > 0 ? daily : null, carried),
+    };
   }
-  if (doc.tooLarge > 0) return { ...doc, status: 'waiting', phase: 'scan', cursor: 0, nextFullPassAfter: daily };
+  if (doc.tooLarge > 0) {
+    return { ...doc, status: 'waiting', phase: 'scan', cursor: 0, nextFullPassAfter: earliest(daily, carried) };
+  }
   const backoff = Math.min((doc.overflowBackoffMs ?? OVERFLOW_BACKOFF_START_MS / 2) * 2, OVERFLOW_BACKOFF_MAX_MS);
   return {
     ...doc, status: 'waiting', phase: 'scan', cursor: 0, overflowBackoffMs: backoff,
-    nextFullPassAfter: new Date(now.getTime() + backoff).toISOString(),
+    nextFullPassAfter: earliest(new Date(now.getTime() + backoff).toISOString(), carried),
   };
 }
+
+/** Attempts for a terminal release that was settled as not committed while this run still owns the row. */
+const RELEASE_ATTEMPTS = 3;
 
 async function release(ctx: RunContext, finished: boolean): Promise<BodyTextBackfillState> {
   const { doc } = await fencedTransaction(ctx, 'release', null, async (_client, { doc: current, now }) => {
@@ -1746,10 +1996,6 @@ function outcomeOf(doc: BodyTextBackfillState): BodyTextBackfillOutcome {
   return doc.phase === 'retry' ? 'retry' : 'idle';
 }
 
-function logSummary(summary: BodyTextBackfillSummary): void {
-  logger.info({ job: 'body_text_backfill', ...summary }, 'body_text backfill run finished');
-}
-
 /** The ≤ 500-character result BullMQ stores in `job_history`. */
 export function formatBodyTextBackfillSummary(summary: BodyTextBackfillSummary): string {
   const counts = COUNTERS.filter((key) => summary.counts[key]).map((key) => `${key}=${summary.counts[key]}`).join(' ');
@@ -1758,17 +2004,25 @@ export function formatBodyTextBackfillSummary(summary: BodyTextBackfillSummary):
   return text.length <= SUMMARY_MAX ? text : `${text.slice(0, SUMMARY_MAX - 1)}…`;
 }
 
-async function readPgVersion(): Promise<number> {
-  const result = await getPool().query<{ v: string }>("SELECT current_setting('server_version_num') AS v");
-  return Number(result.rows[0]?.v ?? 0);
-}
-
-/** The unlocked fast path: a tick on `done`/`waiting` with nothing due is one settings read. */
-async function nothingDue(): Promise<{ doc: BodyTextBackfillState; kind: 'already_completed' | 'waiting' } | null> {
-  const row = (await getPool().query<{ setting_value: string; now: Date }>(
-    'SELECT setting_value, NOW() AS now FROM admin_settings WHERE setting_key = $1',
-    [BODY_TEXT_BACKFILL_STATE_KEY],
-  )).rows[0];
+/**
+ * The unlocked fast path: a tick on `done`/`waiting` with nothing due is one
+ * settings read, in a read-only transaction bound by the job's deadlines.
+ */
+async function nothingDue(limits: BodyTextBackfillLimits): Promise<{ doc: BodyTextBackfillState; kind: 'already_completed' | 'waiting' } | null> {
+  const row = await withClient(async (client) => {
+    await beginBootstrap(client, 'read_only', limits);
+    try {
+      const result = await client.query<{ setting_value: string; now: Date }>(
+        'SELECT setting_value, NOW() AS now FROM admin_settings WHERE setting_key = $1',
+        [BODY_TEXT_BACKFILL_STATE_KEY],
+      );
+      await client.query('COMMIT');
+      return result.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    }
+  }, assertNotStopped);
   if (!row) return null;
   const doc = parseState(row.setting_value);
   if ((doc.status === 'done' || doc.status === 'waiting') && !due(doc, row.now)) {
@@ -1777,36 +2031,47 @@ async function nothingDue(): Promise<{ doc: BodyTextBackfillState; kind: 'alread
   return null;
 }
 
+/** A failure before or around the claim: a fixed code; nothing was claimed. */
+function bootstrapCode(error: unknown): string {
+  if (error instanceof StopSignal) return 'stopped';
+  if (error instanceof RunInterrupted) return error.code;
+  if (error instanceof OwnerUnresolved) return 'pool_unavailable';
+  if (isBusyState(sqlState(error))) return 'state_timeout';
+  if (isConnectionError(error)) return 'connection_lost';
+  return 'claim_failed';
+}
+
 async function execute(options: BodyTextBackfillOptions): Promise<BodyTextBackfillSummary> {
   const limits: BodyTextBackfillLimits = { ...BODY_TEXT_BACKFILL_LIMITS, ...options.limits };
   const hooks = options.hooks ?? {};
   const runId = randomUUID();
   const restart = options.restart === true;
-  const empty = (outcome: BodyTextBackfillOutcome, doc: BodyTextBackfillState): BodyTextBackfillSummary => ({
-    outcome, runId, pass: doc.pass, phase: doc.phase, counts: {}, bytesLoaded: 0,
+  const empty = (outcome: BodyTextBackfillOutcome, doc: BodyTextBackfillState | null, interruptCode?: string): BodyTextBackfillSummary => ({
+    outcome, runId, pass: doc?.pass ?? 0, phase: doc?.phase ?? 'scan', counts: {}, bytesLoaded: 0,
+    ...(interruptCode ? { interruptCode } : {}),
   });
-  if (stopLatched) return { ...empty('interrupted', initialState()), interruptCode: 'stopped' };
-  if (!restart) {
-    const fast = await nothingDue();
-    if (fast) return empty(fast.kind, fast.doc);
-  }
-  await ensureStateRow();
-  const pgVersion = await readPgVersion();
   let claimed: Claim;
   try {
-    claimed = await claim(runId, restart, limits, pgVersion, hooks);
+    assertNotStopped();
+    if (!restart) {
+      const fast = await nothingDue(limits);
+      if (fast) return empty(fast.kind, fast.doc);
+    }
+    claimed = await claim(runId, restart, limits, hooks);
   } catch (error) {
     if (error instanceof BodyTextBackfillError) throw error;
-    if (isBusyState(sqlState(error))) return { ...empty('interrupted', initialState()), interruptCode: 'state_timeout' };
-    throw new BodyTextBackfillError('claim_failed', 'claim', null);
+    const code = bootstrapCode(error);
+    if (code === 'claim_failed') throw new BodyTextBackfillError(code, 'claim', null);
+    return empty('interrupted', null, code);
   }
+  if (claimed.kind === 'not_committed') return empty('interrupted', claimed.doc, `claim_${claimed.reason}`);
   if (claimed.kind !== 'claimed') return empty(claimed.kind, claimed.doc);
 
   const parser = new BodyTextBackfillParser(limits, options.parserEntry);
   activeParser = parser;
   const ctx: RunContext = {
-    runId, seq: claimed.doc.seq, doc: claimed.doc, limits, hooks, pgVersion, lastStateWriteAt: Date.now(),
-    parser, counts: {}, bytesLoaded: 0,
+    runId, seq: claimed.doc.seq, doc: claimed.doc, limits, hooks, pgVersion: serverVersion ?? 0,
+    lastStateWriteAt: performance.now(), parser, counts: {}, bytesLoaded: 0,
   };
   let finished = false;
   let interruptCode: string | undefined;
@@ -1836,17 +2101,23 @@ async function execute(options: BodyTextBackfillOptions): Promise<BodyTextBackfi
       failure = new BodyTextBackfillError(interruptCode, ctx.doc.phase, ownerId);
     }
   } finally {
-    parser.terminate();
+    await parser.terminate();
     if (activeParser === parser) activeParser = null;
   }
 
   let releasedDoc = ctx.doc;
   if (interruptCode !== 'ownership_lost') {
-    try {
-      releasedDoc = await release(ctx, finished);
-    } catch {
-      // The lease expires; a later claim takes the pass over.
-      interruptCode ??= 'release_failed';
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        releasedDoc = await release(ctx, finished);
+        break;
+      } catch (error) {
+        // Retried only while the reconciliation read proved this run still
+        // owns the row at its sequence; never another owner's lease.
+        if (error instanceof StepNotCommitted && attempt < RELEASE_ATTEMPTS) continue;
+        interruptCode ??= error instanceof RunInterrupted ? error.code : 'release_failed';
+        break;
+      }
     }
   }
   const summary: BodyTextBackfillSummary = {
@@ -1854,9 +2125,19 @@ async function execute(options: BodyTextBackfillOptions): Promise<BodyTextBackfi
     runId, pass: releasedDoc.pass, phase: releasedDoc.phase, counts: ctx.counts, bytesLoaded: ctx.bytesLoaded,
     ...(interruptCode ? { interruptCode } : {}),
   };
-  logSummary(summary);
-  if (failure) throw failure;
+  if (failure) {
+    failure.summary = summary;
+    throw failure;
+  }
   return summary;
+}
+
+/** One sanitized terminal line for every invocation, in both queue modes. */
+function logTerminal(summary: BodyTextBackfillSummary, failure?: BodyTextBackfillError): void {
+  logger.info({
+    job: 'body_text_backfill', ...summary,
+    ...(failure ? { outcome: 'failed', code: failure.code, failedPhase: failure.phase, failedPageId: failure.ownerId } : {}),
+  }, 'body_text backfill run finished');
 }
 
 /**
@@ -1865,16 +2146,25 @@ async function execute(options: BodyTextBackfillOptions): Promise<BodyTextBackfi
  */
 export async function runBodyTextBackfill(options: BodyTextBackfillOptions = {}): Promise<BodyTextBackfillSummary> {
   if (activeRun) {
-    return { outcome: 'already_running', runId: '', pass: 0, phase: 'scan', counts: {}, bytesLoaded: 0 };
+    const summary: BodyTextBackfillSummary = { outcome: 'already_running', runId: '', pass: 0, phase: 'scan', counts: {}, bytesLoaded: 0 };
+    logTerminal(summary);
+    return summary;
   }
   const run = execute(options);
   activeRun = run;
   try {
-    return await run;
+    const summary = await run;
+    logTerminal(summary);
+    return summary;
   } catch (error) {
-    if (error instanceof BodyTextBackfillError) throw error;
     // Never let raw PostgreSQL or parser text leave the job.
-    throw new BodyTextBackfillError(sqlState(error) ? `sql_${sqlState(error)}` : 'internal', 'run', null);
+    const failure = error instanceof BodyTextBackfillError
+      ? error
+      : new BodyTextBackfillError(sqlState(error) ? `sql_${sqlState(error)}` : 'internal', 'run', null);
+    const summary = failure.summary
+      ?? { outcome: 'interrupted' as const, runId: '', pass: 0, phase: 'scan' as const, counts: {}, bytesLoaded: 0, interruptCode: failure.code };
+    logTerminal(summary, failure);
+    throw failure;
   } finally {
     if (activeRun === run) activeRun = null;
   }
@@ -1901,7 +2191,8 @@ export function armBodyTextBackfill(): void {
 export async function stopBodyTextBackfill(): Promise<void> {
   stopLatched = true;
   stopBodyTextBackfillWorker();
-  activeParser?.terminate();
+  const parser = activeParser;
+  if (parser) await parser.terminate();
   const run = activeRun;
   if (run) await run.catch(() => undefined);
 }

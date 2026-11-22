@@ -11,6 +11,7 @@
  * The predicate is exported for unit tests; production calls it only here.
  */
 import { createHash } from 'node:crypto';
+import { getHeapStatistics } from 'node:v8';
 import { isMainThread, parentPort, workerData } from 'node:worker_threads';
 import he from 'he';
 import { VirtualConsole } from 'jsdom';
@@ -37,7 +38,8 @@ export type PairResult = ({ key: string } & Classification) | { key: string; out
 export type ParserRequest = { type: 'classify'; requestId: number; pairs: PairInput[] };
 
 export type ParserResponse =
-  | { type: 'ready' }
+  /** `heapSizeLimitMb`: the isolate's effective V8 heap limit, checked by the job. */
+  | { type: 'ready'; heapSizeLimitMb: number }
   | { type: 'result'; requestId: number; results: PairResult[] };
 
 /**
@@ -109,5 +111,7 @@ if (!isMainThread && port && (workerData as { marker?: unknown } | null)?.marker
     }
     port.postMessage(answer(request as ParserRequest));
   });
-  port.postMessage({ type: 'ready' } satisfies ParserResponse);
+  port.postMessage({
+    type: 'ready', heapSizeLimitMb: getHeapStatistics().heap_size_limit / (1024 * 1024),
+  } satisfies ParserResponse);
 }
