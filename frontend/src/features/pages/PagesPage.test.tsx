@@ -1329,41 +1329,51 @@ describe('PagesPage', () => {
     });
 
     // #1964: the backend returns `snippet` as an HTML-safe fragment (escaped
-    // page text plus `<mark>`). These are exact snippets it returns, rendered
-    // through the real result row: the excerpt must read as the page's text,
-    // with only the highlight tags as markup.
-    it('renders escaped snippets as the page text, with mark the only element (#1964)', async () => {
+    // page text plus `<mark>` where PostgreSQL highlighted). These are exact
+    // snippets it returns, rendered through the real result row: the excerpt
+    // must read as the snippet's text, with only the highlight tags as markup.
+    it('renders escaped snippets as text, with mark the only element (#1964)', async () => {
       const cases = [
         {
+          // Keyword full-text row over the text `Use &lt;br&gt; for a line break`.
           title: 'Escaped Entity',
           snippet: 'Use &amp;lt;<mark>br</mark>&amp;gt; for a line break',
           text: 'Use &lt;br&gt; for a line break',
           marks: ['br'],
         },
         {
-          title: 'Tag As Text',
-          snippet: 'Use &lt;<mark>br</mark>&gt; for a <mark>line</mark> break',
-          text: 'Use <br> for a line break',
-          marks: ['br', 'line'],
-        },
-        {
-          title: 'Script Example',
-          snippet: '<mark>Example</mark>: &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; is blocked',
-          text: 'Example: <script>alert("x")</script> is blocked',
+          // Keyword full-text rows omit tag-shaped text, as PostgreSQL does.
+          title: 'Tag Omitted',
+          snippet: '<mark>Example</mark>:  alert(&quot;x&quot;)  is blocked',
+          text: 'Example:  alert("x")  is blocked',
           marks: ['Example'],
         },
         {
+          // Fuzzy-title, semantic and hybrid rows show it as text.
+          title: 'Script Shown',
+          snippet: 'Example: &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; is blocked',
+          text: 'Example: <script>alert("x")</script> is blocked',
+          marks: [],
+        },
+        {
           title: 'Literal Mark',
-          snippet: '<mark>Wrap</mark> the term in &lt;mark&gt;important&lt;/mark&gt; tags',
+          snippet: 'Wrap the term in &lt;mark&gt;important&lt;/mark&gt; tags',
           text: 'Wrap the term in <mark>important</mark> tags',
-          marks: ['Wrap'],
+          marks: [],
+        },
+        {
+          // Control characters in the stored text never become a mark.
+          title: 'Control Characters',
+          snippet: '\u0001needle\u0002 text &amp; more',
+          text: '\u0001needle\u0002 text & more',
+          marks: [],
         },
       ];
       renderSearchWith(cases.map((c, index) => ({
         id: 300 + index, title: c.title, spaceKey: 'DEV', snippet: c.snippet, rank: 0.5, similarity: 0.6,
       })));
 
-      expect(await screen.findByText('Literal Mark', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(await screen.findByText('Control Characters', undefined, { timeout: 2000 })).toBeInTheDocument();
       for (const c of cases) {
         const excerpt = screen.getByText((_, element) => element?.tagName === 'DIV' && element.textContent === c.text);
         const elements = Array.from(excerpt.querySelectorAll('*'));

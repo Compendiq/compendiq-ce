@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Article PDFs print imported table captions above the first row and separate words in adjacent paragraphs, list items, line breaks and nested cells (#1969).
 - Article PDF downloads keep non-Latin titles and accents in the filename, from both the read toolbar and the inspector (#1963). A title with no usable characters saves as `article-<id>.pdf`.
 - Analytics PDFs include columns introduced by later rows, with wide column sets continued on additional pages (#1961).
-- Search result snippets show page text as written in every search mode: `<br>`, `<mark>` or `&lt;` in the text no longer render as markup or decode, and matched words stay highlighted (#1964).
+- Search result snippets are HTML-safe in every search mode (#1964): escaped examples such as `&lt;br&gt;` show as written instead of decoded, and markup-like page text never renders as markup. Keyword snippets keep PostgreSQL's passage and highlights and, as before, omit tag-shaped text such as `<br>`; typo-tolerant title, semantic and hybrid snippets show it as text and are cut at 300 characters without splitting one.
 - Analytics PDFs preserve covered Cyrillic, Greek, Chinese, Japanese, Korean and symbols with on-demand local fonts. Missing fonts stop the download; nonprinting joiners appear as `?` with a cover notice only if printed (#2032).
 
 - Article PDF exports that exceed 1,000 printed code rows now return HTTP 413 instead of risking a backend crash. The limit includes wrapped rows and applies across the whole batch (#1962).

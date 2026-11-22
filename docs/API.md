@@ -363,22 +363,32 @@ Every search item includes `source: "standalone" | "confluence"`, taken from
 the current page record in every search mode and fallback path. A named
 `spaceKey` or historical `confluenceId` does not determine provenance.
 
-Every item's `snippet` is an HTML-safe fragment in every mode (keyword
-full-text, keyword typo-tolerant title, semantic, hybrid): page text with
-`&`, `<`, `>`, `"` and `'` escaped as `&amp;`, `&lt;`, `&gt;`, `&quot;` and
-`&#39;`, plus `<mark>`/`</mark>` around matched words in full-text matches.
-Those two tags are the only markup; text that shows `<br>` or `<mark>` on the
-page arrives escaped and renders as that text. Render it as HTML through a
-sanitizer that allows only `mark`, or strip the tags and decode the five
-entities for plain text. Full-text snippets are a `ts_headline` excerpt; it
-never cuts inside a text-search token (an escaped entity is one token or part
-of one, such as a URL), but punctuation at its edges can be clipped
-(`<mark>br</mark>&gt; for a line break` when `br` opens the excerpt).
-Title-match snippets are the first 300 characters of the page text, and
-semantic/hybrid snippets the first 300 characters of the matched chunk as
-plain text; both are cut before escaping. Words inside tag-shaped text
-(`<br>`) are not indexed, so such a page is found by its other words, not by
-`br` alone.
+Every item's `snippet` is a string holding an HTML-safe fragment, in every
+mode (keyword full-text, keyword typo-tolerant title, semantic, hybrid); it is
+an empty string when the page has no text.
+
+1. **Text is text.** Every character of the excerpt passes once through one
+   mapping (`&`, `<`, `>`, `"`, `'` become `&amp;`, `&lt;`, `&gt;`, `&quot;`,
+   `&#39;`); authored `<mark>`, `<script>`, entities, quotes and control
+   characters arrive escaped and render as written. The only markup is
+   `<mark>`/`</mark>` where PostgreSQL highlighted a match, without
+   attributes and never nested. Render it as HTML through a sanitizer that
+   allows only `mark`, or strip the two tags and decode the five entities for
+   plain text.
+2. **Keyword full-text snippets are PostgreSQL's.** They keep the passage and
+   highlights `ts_headline` selects over the unmodified page text (up to 30
+   words, a limit on words, not characters; punctuation at the excerpt's edges
+   can be clipped), including a partial or no highlight when the page matched
+   through its title.
+3. **Limitation: keyword full-text snippets omit text PostgreSQL's parser
+   treats as a tag.** For the page text `Use <br> for a line break` the
+   snippet is `Use   for a <mark>line</mark> break`, and words inside such text
+   are not indexed, so the page is not found by `br` alone. Typo-tolerant
+   title snippets (the first 300 characters of the page text) and semantic and
+   hybrid snippets (the first 300 characters of the matched chunk, flattened
+   from Markdown) can display such text when it falls in the excerpt, but never
+   add a highlight for it. Both cuts count Unicode code points and happen
+   before escaping.
 
 In `mode=keyword`, `spaceKey`, `author`, `dateFrom`, `dateTo`, `tags` and
 `aiPolicy` apply to every returned item, including typo-tolerant title

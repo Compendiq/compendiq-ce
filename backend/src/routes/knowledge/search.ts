@@ -25,7 +25,15 @@ import {
 import { computeRetrievalConfidence } from '../../domains/llm/services/retrieval-confidence.js';
 import { getRagFetchWidth, RAG_FETCH_WIDTH_MAX } from '../../core/services/admin-settings-service.js';
 import { markdownToSnippetText } from '../../core/services/content-converter.js';
-import { escapeSnippetHtml, sqlEscapeSnippetHtml } from '../../core/utils/snippet-html.js';
+import {
+  escapeSnippetHtml,
+  HEADLINE_ALT_OPTIONS_SQL,
+  HEADLINE_OPTIONS_SQL,
+  headlineNeedsAlternateSql,
+  keywordHeadlineHtml,
+  SNIPPET_MAX_CODE_POINTS,
+  takeCodePoints,
+} from '../../core/utils/snippet-html.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
 import { formatQueryForEmbedding } from '../../domains/llm/services/query-instruction.js';
@@ -379,9 +387,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // range is [-1,1], not [0,1]; see `SearchResult.vectorScore` in
         // rag-service.ts (#1117).
         rank: r.score,
-        // chunk_text is Markdown-shaped since #1265; flatten for display, cut,
-        // then escape (#1964): `snippet` is an HTML-safe fragment in every mode.
-        snippet: escapeSnippetHtml(markdownToSnippetText(r.chunkText).slice(0, 300)),
+        // chunk_text is Markdown-shaped since #1265; flatten for display, cut
+        // at 300 code points, then escape (#1964): `snippet` is an HTML-safe
+        // fragment in every mode.
+        snippet: escapeSnippetHtml(takeCodePoints(markdownToSnippetText(r.chunkText), SNIPPET_MAX_CODE_POINTS)),
         score: r.score,
         similarity: r.vectorScore,
       }));
@@ -490,7 +499,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         rank: r.score,
         // Flatten, cut, then escape — same `snippet` contract as the semantic
         // branch above (#1964).
-        snippet: escapeSnippetHtml(markdownToSnippetText(r.chunkText).slice(0, 300)),
+        snippet: escapeSnippetHtml(takeCodePoints(markdownToSnippetText(r.chunkText), SNIPPET_MAX_CODE_POINTS)),
         score: r.score,
         similarity: r.vectorScore,
       }));
@@ -635,7 +644,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
       last_modified_at: Date | null;
       labels: string[];
       rank: number;
-      snippet: string;
+      fuzzy: boolean;
+      fuzzy_text: string | null;
+      headline: string | null;
+      headline_alternate: string | null;
       total_count: string;
       icon_kind: string | null;
       icon_value: string | null;
@@ -677,15 +689,23 @@ export async function searchRoutes(fastify: FastifyInstance) {
        )
        SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
-              cp.baseline_id, cp.frozen_version, hits.rank,
-              -- #1964: snippet is an HTML-safe fragment. Fuzzy rows cut, then escape;
-              -- full-text rows escape BEFORE ts_headline, whose parser drops tag-shaped
-              -- text and never splits a token, so only its two <mark> tags are markup.
-              CASE WHEN hits.fuzzy THEN ${sqlEscapeSnippetHtml('substring(cp.body_text, 1, 300)')}
-                   ELSE ts_headline('${ftsLang}', ${sqlEscapeSnippetHtml("COALESCE(cp.body_text, '')")},
-                                    ${parser}('${ftsLang}', $1),
-                                    'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>')
-              END AS snippet,
+              cp.baseline_id, cp.frozen_version, hits.rank, hits.fuzzy,
+              -- #1964: snippet text only; the route renders the HTML fragment. Fuzzy
+              -- rows take the first characters of the stored text. Full-text rows
+              -- keep PostgreSQL's headline over the unmodified body, with
+              -- one-character selectors; the alternate pair is requested only when
+              -- the body itself contains a primary selector character.
+              CASE WHEN hits.fuzzy
+                   THEN substring(COALESCE(cp.body_text, ''), 1, ${SNIPPET_MAX_CODE_POINTS})
+              END AS fuzzy_text,
+              CASE WHEN NOT hits.fuzzy
+                   THEN ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
+                                    ${HEADLINE_OPTIONS_SQL})
+              END AS headline,
+              CASE WHEN NOT hits.fuzzy AND ${headlineNeedsAlternateSql("COALESCE(cp.body_text, '')")}
+                   THEN ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
+                                    ${HEADLINE_ALT_OPTIONS_SQL})
+              END AS headline_alternate,
               hits.total_count
        FROM paged hits
        JOIN pages cp ON cp.id = hits.id
@@ -761,7 +781,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
       lastModifiedAt: row.last_modified_at,
       labels: row.labels,
       rank: row.rank,
-      snippet: row.snippet,
+      // The row kind decides which projection is read: a fuzzy row never
+      // reaches the headline decoder.
+      snippet: row.fuzzy
+        ? escapeSnippetHtml(row.fuzzy_text ?? '')
+        : keywordHeadlineHtml(row.headline ?? '', row.headline_alternate),
       icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
     }));
 
