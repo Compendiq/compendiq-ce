@@ -215,9 +215,10 @@ function reachable(doc: BodyTextBackfillState, listMax: number): boolean {
   const empty = !list.overflow && list.ids.length === 0 && list.count === 0 && list.sample.length === 0;
   if ((doc.owner !== null) !== (doc.status === 'running')) return false;
   if (doc.cursor > doc.highWater) return false;
-  // Both completion stamps are written together and never cleared; the first is never later.
+  // Both completion stamps are written together and never cleared. Their
+  // order is not checked: they are database wall-clock times, and a clock
+  // stepping back between two completions is legitimate.
   if ((doc.completedAt === null) !== (doc.firstCompletedAt === null)) return false;
-  if (doc.completedAt !== null && Date.parse(doc.firstCompletedAt!) > Date.parse(doc.completedAt)) return false;
   // Every claim advances seq; a fresh pass advances seq and pass together.
   if (doc.seq < doc.pass) return false;
   // Pass counters are a part of the lifetime counters; the too-large count is the pass's page_too_large.

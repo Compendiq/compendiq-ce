@@ -1501,13 +1501,13 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         { status: 'waiting', unresolved: overflow(3, pageIds), nextFullPassAfter: future },
         { status: 'idle', phase: 'retry', unresolved: overflow(201, pageIds) },
         { pass: 0 },
-        { seq: 0 },
+        // Only seq < pass: both positive.
+        { seq: 1, pass: 2 },
         { status: 'done', ...tooLargeOne },
         // Counters and stamps move together.
         { tooLarge: 1, status: 'waiting', nextFullPassAfter: future },
         { passTotals: { ...valid.passTotals, repaired: (valid.totals.repaired ?? 0) + 1 } },
         { firstCompletedAt: null },
-        { firstCompletedAt: new Date(Date.parse(valid.completedAt!) + 1000).toISOString() },
       ];
       const expectRejected = async (patch: Partial<BodyTextBackfillState>, limits: Partial<BodyTextBackfillLimits> = {}) => {
         await write({ ...valid, ...patch });
@@ -1569,6 +1569,8 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         { nextFullPassAfter: stamp },
         { overflowBackoffMs: 3_600_000 },
         { firstCompletedAt: stamp, completedAt: stamp },
+        // Only the first-completion stamp: the paired-null invariant, not the canonical checks, rejects it.
+        { firstCompletedAt: stamp },
         { passTotals: { repaired: 1 }, totals: { repaired: 1 } },
         { totals: { repaired: 1 } },
       ];
@@ -1591,6 +1593,33 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       const doc = await state();
       expect(Date.parse(doc.nextFullPassAfter!) - Date.parse(doc.completedAt!)).toBe(24 * 3600_000);
       expect(doc.firstCompletedAt).toBe(doc.completedAt);
+    });
+
+    it('a database clock stepping back between two completions leaves the state usable: completion stamps are not ordered; a tick and a forced restart both still run', async () => {
+      await insertPage();
+      expect((await run()).outcome).toBe('done');
+      const first = await state();
+      // The database clock this job sees runs five minutes behind for the second completion.
+      const original = pg.Client.prototype.query;
+      const behind = (sql: string) => sql.replace(/NOW\(\)/g, "(NOW() - interval '5 minutes')");
+      vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, config: unknown, ...rest: unknown[]) {
+        const shifted = typeof config === 'string' ? behind(config)
+          : config && typeof (config as { text?: unknown }).text === 'string'
+            ? { ...(config as object), text: behind((config as { text: string }).text) } : config;
+        return (original as (...a: unknown[]) => unknown).call(this, shifted, ...rest);
+      } as never);
+      try {
+        expect((await run({ restart: true })).outcome).toBe('done');
+      } finally {
+        vi.mocked(pg.Client.prototype.query).mockRestore();
+      }
+      const second = await state();
+      expect(second.firstCompletedAt).toBe(first.firstCompletedAt);
+      expect(Date.parse(second.completedAt!)).toBeLessThan(Date.parse(second.firstCompletedAt!));
+      // Clock restored: the stored pair is still valid for both paths.
+      expect((await run()).outcome).toBe('already_completed');
+      expect((await run({ restart: true })).outcome).toBe('done');
+      expect(await state()).toMatchObject({ status: 'done', firstCompletedAt: first.firstCompletedAt });
     });
 
     it('a stop latched while a takeover claim of a stale running/retry image (empty list) waits on the state row: interrupted, released idle without completing the pass; the next run completes it', async () => {
