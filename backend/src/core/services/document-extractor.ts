@@ -1122,9 +1122,10 @@ function scanRtf(rtf: string): string {
  *
  * `bytes` is the file's bytes, never decoded text: raw non-ASCII text is read
  * as UTF-8, so a string that was already decoded would be corrupted. A caller
- * holding text encodes it first. The bytes are read through a Latin-1 view
- * (one character per byte, no copy of the input) so {@link scanRtf} can skip
- * `\binN` data exactly.
+ * holding text encodes it first. The bytes are read as a Buffer view over the
+ * supplied byte range (no extra input Buffer is allocated), converted to a
+ * one-character-per-byte Latin-1 string that {@link scanRtf} reads so it can
+ * skip `\binN` data exactly.
  * One linear pass reads the markup token by token ({@link scanRtf}): listed
  * destination groups are dropped whole, each `\uN` character replaces its
  * `\ucN` fallback, `\'hh` bytes decode in the `\ansicpgN` code page
