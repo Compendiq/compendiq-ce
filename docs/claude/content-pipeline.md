@@ -370,6 +370,9 @@ box splits its paragraph in document order, at most 64 paragraphs are tracked op
 character references are decoded once (invalid code points become U+FFFD). It never loads
 or interprets a DTD and expands only the five XML entities and numeric references; do not
 swap in an XML/DOM parser that expands declared entities (jsdom's XML mode does).
+ODT `text:tracked-changes` is skipped whole: text deleted under change tracking lives only there
+(`text:deletion`), inserted text stays inline in the body and is kept, and `text:track-changes="false"`
+needs no special case.
 ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
 the existing entry limit; do not expand each run without a shared budget.
 RTF is one linear token scan over the file's bytes: `\uN` replaces its group-scoped `\ucN`
