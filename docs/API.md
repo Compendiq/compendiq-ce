@@ -363,9 +363,12 @@ Every search item includes `source: "standalone" | "confluence"`, taken from
 the current page record in every search mode and fallback path. A named
 `spaceKey` or historical `confluenceId` does not determine provenance.
 
-Every item's `snippet` is a string holding an HTML-safe fragment, in every
-mode (keyword full-text, keyword typo-tolerant title, semantic, hybrid); it is
-an empty string when the page has no text.
+Every item's `snippet` is always a string holding an HTML-safe fragment, in
+every mode (keyword full-text, keyword typo-tolerant title, semantic, hybrid).
+For keyword rows (full-text and typo-tolerant title) it is empty when the page
+has no body text. Semantic and hybrid snippets come from the matched chunk, so
+they can be non-empty for a page whose `body_text` is empty (for example an
+image-only page with descriptive alt text).
 
 1. **Text is text.** Every character of the excerpt passes once through one
    mapping (`&`, `<`, `>`, `"`, `'` become `&amp;`, `&lt;`, `&gt;`, `&quot;`,
