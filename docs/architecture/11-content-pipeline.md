@@ -1056,31 +1056,44 @@ overflow, or with an empty exact list beside a too-large owner); no overflow in
 the retry phase; an exact list within the list bound, strictly ascending,
 within `highWater`, its count and 20-id sample matching; an overflow with a
 count above the list bound and a strictly ascending sample within `highWater`
-of `min(count, 20)` ids. It runs on the fast path and in every claim, a forced
+of `min(count, 20)` ids; during a scan, listed owners at or below the cursor;
+both completion stamps set together, the first not later than the last;
+`seq ≥ pass`; pass counters within the lifetime counters and `tooLarge` within
+the pass's `page_too_large`; `new` only in the canonical bootstrap shape. Every
+status runs every check. It runs on the fast path and in every claim, a forced
 restart included, so an invalid document fails before it is used or replaced.
-Every state write
+Every state write except the bootstrap insert
 is fenced (row `FOR UPDATE`, own `owner` and `seq`, `seq + 1`); the lease is 15
 minutes, kept alive by a heartbeat after 60 s without a state write; a stale
-owner is taken over and the pass resumed. **Bootstrap:** the `new` document is
-inserted with `ON CONFLICT DO NOTHING` in its own committed transaction under
-the lock, statement and transaction deadlines; an uncertain outcome is settled
-by repeating it (three attempts; a repeat waits for an insert still
-committing). The claim then locks that committed row in a separate
-deadline-bounded transaction. Every uncertain `COMMIT` (the acknowledgment
-lost, or the session refused or ended) is settled by a reconciliation read that
-locks the row again, so it waits for a `COMMIT` still in flight (advanced `seq`
-→ committed; previous `seq` → not committed; a missing row, an expired deadline
-or anything else → stop, `reconciliation_failed`, the lease then expiring as
-any other). Not committed: an owner step is recorded `busy` and redone, the
-terminal release is retried (three attempts), a claim ends the run
-`interrupted` (`claim_transaction_refused` or `claim_acknowledgment_lost`),
-never `already_running`. **Stop during the bootstrap or claim:** if the lock
+owner is taken over and the pass resumed. **Bootstrap → neutral row:** the
+canonical `new` document (no owner, seq 0, pass 0) is inserted with
+`ON CONFLICT DO NOTHING` in its own committed transaction under the lock,
+statement and transaction deadlines. It is the one state write without an
+owner/sequence fence and it grants no ownership; an uncertain outcome is
+settled by repeating it (three attempts; a repeat waits for an insert still
+committing). **Claim → leased row → release:** the claim then locks that
+committed row in a separate deadline-bounded transaction and writes the lease
+(owner, `seq + 1`); the release clears it. Every uncertain `COMMIT` (the
+acknowledgment lost, or the session refused or ended) is settled by a
+reconciliation read that locks the row again, so it waits for a `COMMIT` still
+in flight. A read showing this attempt's owner and `seq` → committed; the
+previous owner and `seq` → not committed; another owner or sequence →
+`already_running` for a claim, `ownership_lost` for a fenced step. Only an
+unreadable or unsettled result (a missing row, an expired deadline, a lost
+connection) is `reconciliation_failed`; the lease then expires as any other.
+Not committed: an owner step is recorded `busy` and redone, the terminal
+release is retried (three attempts), a claim ends the run `interrupted`
+(`claim_transaction_refused` or `claim_acknowledgment_lost`). **Stop:** during
+the bootstrap, nothing is claimed (the row stays neutral `new`, seq 0, pass 0,
+and the stopped run makes no further checkout). During a claim, if the lock
 deadline expires first, the run ends `interrupted` and nothing is claimed; if
-the lock frees before the deadline, the transaction already open completes
-(the claim commits) and the run then releases at once on the stop latch:
-`interrupted`, owner NULL, no owner processed. An invalid document is never
-overwritten: the run fails with `state_invalid`. One pooled connection at a
-time; no session-level lock (works with `PG_POOL_MAX=1`).
+the lock frees before the deadline, the claim already open commits and the run
+releases at once on the stop latch (checked before the next owner is chosen,
+in the scan and the retry phase alike): `interrupted`, owner NULL, the phase
+kept, no owner processed, no completion recorded. An invalid document is never
+overwritten: the run fails with `state_invalid`; a `new` document is valid
+only in the bootstrap's canonical shape. One pooled connection at a time; no
+session-level lock (works with `PG_POOL_MAX=1`).
 
 **Completion and re-checks.** End of a pass: no transient owner and no
 too-large owner → `done`, next full pass after 24 h (first completion ever)
