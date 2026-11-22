@@ -964,6 +964,13 @@ describe('rtfToText', () => {
    * Real application-written RTF (#1967), self-authored content only. Each
    * source document sits next to its fixture (`*.source.*`).
    *
+   * Maintainer decision of 2026-11-22 (issue #1967): the AppKit/`textutil`
+   * file is accepted for TextEdit, and the real Word-written fixture is
+   * waived (Word is not available). The second LibreOffice specimen below,
+   * from a DOCX source, is not a Word-written file and is not evidence of how
+   * Word writes RTF; the Word-shaped cases stay covered by the synthetic
+   * hand-written test above.
+   *
    * - `appkit-textutil.rtf` (624 bytes): written by the AppKit RTF writer that
    *   TextEdit uses, through `textutil` on macOS 27.2.1 (26B131):
    *   `textutil -convert rtf -output appkit-textutil.rtf appkit-textutil.source.html`.
@@ -977,6 +984,17 @@ describe('rtfToText', () => {
    *   the three paragraphs below, "fixture link" linking to
    *   https://example.com/compendiq-libreoffice, a bookmark `lomark` on "ends",
    *   and a text frame holding "Text box line of the LibreOffice fixture.".
+   * - `libreoffice-26.8-from-docx.rtf` (4945 bytes): LibreOffice, from a DOCX
+   *   source. LibreOffice 26.8.3.1 (macOS AArch64) wrote the DOCX
+   *   (`soffice -env:UserInstallation=file:///tmp/e2029-rtf/lo-profile --headless
+   *   --convert-to docx libreoffice-26.8-from-docx.source.fodt`, giving
+   *   `libreoffice-26.8-from-docx.source.docx`) and then the RTF from that DOCX
+   *   (same profile, `--convert-to rtf libreoffice-26.8-from-docx.source.docx`).
+   *   Typed content: the three paragraphs below, "round trip link" linking to
+   *   https://example.com/compendiq-libreoffice-docx, a bookmark `docxmark` on
+   *   "marks", and a text frame holding "Framed note of the DOCX round trip.".
+   *   Through DOCX the frame comes back as a drawing shape inside a field,
+   *   `{\field{\*\fldinst SHAPE }{\fldrslt{\shp{\*\shpinst …{\shptxt …}}}}}`.
    */
   describe('application-written fixtures (#1967)', () => {
     const fixture = (name: string): Buffer => readFileSync(new URL(`./__fixtures__/rtf/${name}`, import.meta.url));
@@ -1058,6 +1076,44 @@ describe('rtfToText', () => {
       const { text } = await extractDocumentText(Buffer.from(wrapped, 'latin1'), 'libreoffice-26.8.rtf');
       expect(text.split('Text box line of the LibreOffice fixture.')).toHaveLength(2);
       expectNoMarkup(text, 'example.com', 'lomark');
+    });
+
+    it('extracts the LibreOffice fixture from a DOCX source with its link text and text box and no markup', async () => {
+      const rtf = fixture('libreoffice-26.8-from-docx.rtf');
+      const source = rtf.toString('latin1');
+      expect(source).toContain('{\\*\\generator LibreOffice/26.8.3.1');
+      expect(source).toContain(
+        '{\\field{\\*\\fldinst HYPERLINK "https://example.com/compendiq-libreoffice-docx" }{\\fldrslt ',
+      );
+      expect(source).toContain('{\\*\\bkmkstart docxmark}');
+      expect(source).toContain('{\\field{\\*\\fldinst SHAPE }{\\fldrslt{\\shp{\\*\\shpinst');
+      expect(source).toContain('{\\shptxt');
+
+      const { text } = await extractDocumentText(rtf, 'libreoffice-26.8-from-docx.rtf');
+      // Raw source line breaks inside a paragraph are kept, as in the fixture above.
+      expect(text).toBe([
+        'Opening paragraph of the Compendiq DOCX round trip.',
+        '',
+        'Middle paragraph carrying a',
+        'round trip link',
+        'for readers.',
+        '',
+        'Closing paragraph',
+        'marks',
+        'the DOCX round trip.',
+        '',
+        'Framed note of the DOCX round trip.',
+      ].join('\n'));
+      // The words of each paragraph, in order, and the text box once.
+      expect(text.replace(/\s+/g, ' ')).toBe(
+        'Opening paragraph of the Compendiq DOCX round trip. ' +
+        'Middle paragraph carrying a round trip link for readers. ' +
+        'Closing paragraph marks the DOCX round trip. ' +
+        'Framed note of the DOCX round trip.',
+      );
+      expectNoMarkup(text, 'example.com', 'docxmark');
+      // Neither the SHAPE field instruction nor shape property names or values.
+      expect(text).not.toMatch(/SHAPE|RoundTripFrame|pVerticies|16777215/);
     });
   });
 

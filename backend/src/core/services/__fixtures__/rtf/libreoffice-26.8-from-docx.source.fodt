@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+  xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:body>
+  <office:text>
+   <text:p>Opening paragraph of the Compendiq DOCX round trip.</text:p>
+   <text:p>Middle paragraph carrying a <text:a xlink:type="simple" xlink:href="https://example.com/compendiq-libreoffice-docx">round trip link</text:a> for readers.</text:p>
+   <text:p>Closing paragraph <text:bookmark-start text:name="docxmark"/>marks<text:bookmark-end text:name="docxmark"/> the DOCX round trip.<draw:frame draw:name="RoundTripFrame" text:anchor-type="paragraph" svg:width="6cm" svg:height="2cm" svg:x="0cm" svg:y="0cm"><draw:text-box><text:p>Framed note of the DOCX round trip.</text:p></draw:text-box></draw:frame></text:p>
+  </office:text>
+ </office:body>
+</office:document>
