@@ -720,7 +720,7 @@ describe('rtfToText', () => {
   });
 
   it('ends a pending \\uN fallback at a backslash-newline break (#1966)', () => {
-    expect(rtfFromSource('{\\rtf1 \\u1055\\\nb}')).toBe('П\nb');
+    expect(rtfFromSource('{\\rtf1\\uc2 \\u1055\\\nb}')).toBe('П\nb');
     expect(rtfFromSource('{\\rtf1 \\u1055?\\\nb}')).toBe('П\nb');
   });
 
@@ -793,6 +793,7 @@ describe('rtfToText', () => {
       ['E0 80 80 (overlong)', hex(0xe0, 0x80, 0x80), 2],
       ['ED A0 80 (surrogate)', hex(0xed, 0xa0, 0x80), 2],
       ['F0 80 80 80 (overlong)', hex(0xf0, 0x80, 0x80, 0x80), 3],
+      ['F5 80 80 80 (lead above F4)', hex(0xf5, 0x80, 0x80, 0x80), 3],
       ['F4 90 80 80 (above U+10FFFF)', hex(0xf4, 0x90, 0x80, 0x80), 3],
       ['C0 AF (overlong)', hex(0xc0, 0xaf), 1],
       ['E6 97 (truncated at the run end)', hex(0xe6, 0x97), 1],
