@@ -97,6 +97,15 @@ revision only rejects the result when the embedded title or `body_html` differs
 from the locked row; a stale result rolls back without clearing the new page's
 dirty flag. Keep the separate image-analysis revision and schema-epoch fences.
 
+The `body_text` backfill (#1965, `core/services/body-text-backfill.ts`) keeps
+the pre-#1940 `he.decode(textContent)` derivation frozen in
+`body-text-backfill-parser.ts`; never update it to the current converter, or
+affected rows stop matching. A page's stored texts (published, draft, history)
+are only ever rewritten together in one transaction under the page-writer
+admission and row locks, or not at all; never repair one copy alone. Every
+parse runs in the job's worker thread (256 MiB isolate, 240 s per request,
+canary handshake); columns above 32 MiB are never loaded.
+
 Backup archive members are connected with callback `pipeline`, never `.pipe()`
 (#1709): a source error must reach the archive, not crash the process. Compose
 the `pg_dump` chain synchronously after spawning it (a spawn failure arrives on

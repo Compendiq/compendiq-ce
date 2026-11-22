@@ -926,6 +926,187 @@ path; decide there.) Until the sweep runs, the index mixes blob-shaped and
 section-shaped chunks under one model — comparable scores, but
 `section_title` is only trustworthy on re-embedded pages.
 
+## `body_text` backfill of pre-#1735 rows (#1965)
+
+Rows written before #1735 hold the twice-decoded text of their own HTML (an
+escaped `&amp;lt;br&amp;gt;` stored as `<br>`), so FTS, snippets and restores
+keep the wrong text until the next write. `core/services/body-text-backfill.ts`
+repairs them: `pages.body_text`, `pages.draft_body_text` and
+`page_versions.body_text`, live and trashed pages alike. It adds no route, env
+var, migration or trigger bypass; every write is an ordinary protected write.
+
+**Predicate (per copy, in order, one counter each).** `no_text` (html or text
+NULL; history rows with a NULL column are outside the job and not counted) →
+`oversized` (either column above 32 MiB: never loaded, never scanned) →
+`no_ampersand` (html without `&`: nothing can have been decoded twice; not a
+claim that the text is current) → parsed in the worker: `unevaluable` (time or
+memory limit, or the parse threw, on a worker that passed its canary) →
+`current` (stored = `htmlToText(html)`) → `diverged` (the text content holds no
+`&`, or stored ≠ the frozen pre-#1940 derivation `he.decode(textContent)`,
+collapsed) → **affected**, new value `htmlToText(html)`. The pre-fix function is
+frozen in `body-text-backfill-parser.ts`; Notion-joined, folder (`''`) and
+manually diverged rows therefore never match. `page_baselines`, any
+baseline-linked snapshot, `page_relocation_preparations` and
+`pending_sync_versions` are never read for repair and never written.
+
+**A page is repaired as a whole, or not at all (D11).** An *owner* is a page with
+its history; its *copies* are the published and draft columns and every
+history row with text. **A** = the writable affected copies (page columns of a
+page that is not frozen; complete, unlinked history rows). The closing
+transaction writes all of A or nothing. It writes nothing when:
+
+| Rule | Condition | Recorded as |
+|---|---|---|
+| (a) | a copy outside A has stored text byte-equal to a member of A (a *witness*: linked or text-only snapshot, a frozen page's own text, a diverged/current/no-`&` copy, a copy with over-ceiling html — only its text is hashed) | `paired_exempt` (every member) |
+| (b) | two members of A have equal stored text but different corrected texts | `paired_exempt` |
+| (c) | more than 200 members, or more than 64 MiB of corrected text (D12) | `page_too_large`, unresolved |
+| (d) | PostgreSQL refuses the corrected published text (`54000` + routine `make_tsvector`, D9) | `unindexable` |
+| (e) | writing the published text of a row with `local_modified_by` set and `local_modified_at` NULL turns its identity (`livePageVersion`) into `local:V`, and that key holds anything but the page's own content; an absent row, or an unlinked bodyless row with exactly the page's title, is free (D13) | `identity_conflict` |
+
+*Why this is sufficient.* The job changes stored text and, through migration
+060's Rule A, can set the edit marker — nothing else. Every later writer that
+compares or forwards stored text (`snapshotLocalVersionBeforeOverwrite`, the
+remote restore completion, baseline `reconcileVersionSnapshot`, draft publish,
+restore, relocation) relates two copies of the same page whose stored texts are
+equal; after a whole-page repair any two copies that were equal still are. The
+identity key is (`source`, `version`); the job never changes `version`,
+`source` or `remote_version`, and rule (e) covers the one input it can move.
+Scope: collisions and link decisions among a page's own copies. Not covered:
+the exempt stores above, comparisons against recomputed text (the relocation
+verifier), digests captured before the repair (a semantic-diff or baseline
+preview stale-input refusal stays as it is), and SQL outside the CE code
+(migration 157's legacy archival inserts, EE archival).
+
+```mermaid
+flowchart TD
+  Claim["claim / resume (state row FOR UPDATE, owner + seq)"] --> Next{"next owner\n(scan: cursor < id <= highWater\nretry: listed ids)"}
+  Next -->|none| Release["release: end-of-pass table"]
+  Next --> Open["Open: REPEATABLE READ READ ONLY\nC0, L0, V, column lengths"]
+  Open -->|absent| Gone["checkpoint: gone"]
+  Open --> Scan["Scan: ids, lengths, link flag (keyset, 1,000)\n& flags (<= 32 MiB per statement)\nloads (<= 8 MiB windows) -> parser worker"]
+  Scan -->|A > 200 or > 64 MiB| TooLarge["checkpoint: page_too_large"]
+  Scan -->|A empty| Fenced["fenced close: page FOR SHARE,\nC0/L0/V unchanged"]
+  Scan --> Close["closing transaction (READ COMMITTED):\nadmission -> state row -> page FOR UPDATE ->\nNULL-html rows FOR UPDATE NOWAIT -> members FOR UPDATE NOWAIT ->\nrules (b), (a), (e) -> write (D9 savepoint) -> state row"]
+  Close -->|refused / moved| Unresolved["rollback -> checkpoint: busy or changed"]
+  Fenced --> Next
+  Close --> Next
+  Unresolved --> Next
+  TooLarge --> Next
+  Gone --> Next
+```
+
+**Owner steps.** *Open* reads the page's `content_revision` (C0),
+`lifecycle_revision` (L0), `version` (V) and its column lengths
+(`octet_length`, no detoast). *Scan* never holds a lock or a body across a
+transaction: each observation statement is its own short read-only transaction,
+each body-touching statement selects ids whose expected bytes fit 32 MiB (a
+larger column alone) and re-checks the current lengths and the fresh
+"not linked" predicate, so a row that changed is not returned and the owner is
+`changed`. Memory held for an owner is A only (ids, lengths, two SHA-256
+digests and the corrected text). *Close* takes, in this order, the writer
+runtime epoch, hierarchy share and owner lifecycle lock (`lockPageWrites`, or
+for a frozen page `lockPageWrites([])` + `lockPageLifecycle` + a pending-intent
+test), the state row, the page row `FOR UPDATE` (C0, L0, V verified; this also
+blocks every `page_versions` insert through the foreign key), every history row
+with `body_html IS NULL` `FOR UPDATE NOWAIT` (the only rows a lazy fill can
+change), and the members of A by id and digests. The witness search then runs
+in new `READ COMMITTED` commands against that frozen state (only ids and
+digests leave the database; a found witness is locked too). A page with nothing
+to write closes with its row `FOR SHARE` after the same revision check. Every
+transaction sets `lock_timeout 5s`, `statement_timeout 10s` and, on PostgreSQL
+17 or later, `transaction_timeout 30s`; on an older server the close is bounded
+only by its statement count times the statement timeout. A lock not available
+at once, a deadlock or an expired deadline rolls back and records `busy` (the
+cursor moves on; retried from Open); a moved revision or a frozen page records
+`changed`; a vanished page `gone`; a quiesced, fenced or unknown writer runtime
+ends the run `interrupted` without advancing anything.
+
+**What a close and `done` state.** Under the premise that every producer of
+stored text contains the #1940 fix: at a page's closing instant, every copy that
+still exists is current or a counted exemption, and the page was repaired whole
+or not touched; whole-page decisions rest on rows locked in that transaction.
+Per-copy scan reasons are observations. A pass's cohort is every page committed
+before its claim (`id <= highWater`); pages created later are written by fixed
+code. `done` is not a snapshot of the database at one instant, and says nothing
+about history rows with a NULL column. **Rolling upgrades:** while a backend
+older than #1940 still serves, it can write pre-fix text before or after a close;
+treat the first completion after an upgrade as provisional and the 24-hour
+re-check pass as the first made entirely by fixed writers (assuming the rollout
+finished within that day). Old text can also return from the exempt stores, a
+later thaw, a row whose exemption no longer applies, or SQL outside the CE code;
+re-check passes exist for all of these (D8).
+
+**State row.** `admin_settings` key `body_text_backfill_1735`, a strictly
+validated versioned JSON document (`v`, `status` new/idle/running/waiting/done,
+`owner`, `lastOwner`, `seq`, `pass`, `passStartedAt`, `highWater`, `phase`
+scan/retry, `cursor`, `unresolved` {exact ids ≤ 200, or `overflow` + count +
+sample}, `tooLarge`, `nextFullPassAfter`, `overflowBackoffMs`,
+`firstCompletedAt`, `completedAt`, pass and lifetime counters). Every state write
+is fenced (row `FOR UPDATE`, own `owner` and `seq`, `seq + 1`); the lease is 15
+minutes, kept alive by a heartbeat after 60 s without a state write; a stale
+owner is taken over and the pass resumed. A lost `COMMIT` acknowledgment is
+settled by a reconciliation read (advanced `seq` → committed; previous `seq` →
+not committed, redone; anything else → stop). An invalid document is never
+overwritten: the run fails with `state_invalid`. One pooled connection at a
+time; no session-level lock (works with `PG_POOL_MAX=1`).
+
+**Completion and re-checks.** End of a pass: no transient owner and no
+too-large owner → `done`, next full pass after 24 h (first completion ever)
+or 30 days; too-large owners → `waiting` until `passStartedAt + 24 h`; an exact
+transient list (`busy`, `changed`) → hourly retries of exactly those owners
+(plus the daily pass when a too-large owner exists); an overflowing list →
+`waiting` with a 1 h → 24 h doubling backoff (the daily cadence when a
+too-large owner exists). `status` is never `done` while a page is over the D12
+limit. **Clearing a blocked page** means reducing its history (retention,
+`RETENTION_VERSIONS_MAX`) or raising the limit in code; the daily full pass
+re-examines it.
+
+**Parser worker and budget.** Every parse runs in a `worker_threads` worker
+(`body-text-backfill-parser.ts`, isolate `maxOldGenerationSizeMb = 256`,
+`maxYoungGenerationSizeMb = 32`) that must post `ready` and classify a built-in
+canary pair (30 s each) before any row is sent; it has no database access, logs
+nothing and parses with a `VirtualConsole` that forwards nothing. Windows carry
+at most 8 MiB of bodies; a column above 4 MiB is parsed alone. A request over
+240 s, a crash or the memory limit replaces the worker; the pairs of a failed
+window are retried one per request, and a pair that fails alone is
+`unevaluable`. Measured: JSDOM needs more memory than the 256 MiB isolate for
+bodies from roughly 4–8 MiB upward (a single 8 MiB text node or comment, or a
+4 MiB body of short paragraphs, exceeds it), so such columns are in practice
+counted `unevaluable`. The compiled job loads the compiled worker next to it;
+source runs (`tsx`, vitest) load the TypeScript entry with `--import tsx`.
+
+**Schedule.** BullMQ: queue `body-text-backfill`, concurrency 1, repeat every
+60 min, plus one non-throwing startup kick (an existing scheduler keeps its next
+slot across restarts). Legacy (`USE_BULLMQ=false`): first run after 30 s, then
+hourly. A tick on `done`/`waiting` with nothing due is one settings read.
+`stopQueueWorkers()` (both modes, before workers and the pool close) latches the
+job, clears the legacy timers, terminates the parser and awaits the run.
+
+**Reporting.** One progress line per commit (pass, phase, page id, step, bytes
+loaded, counter deltas); residual lines with ids and lengths for `oversized`,
+`unevaluable` (as observed) and `unindexable`, `paired_exempt`,
+`identity_conflict`, `page_too_large` (per page); one summary line per run. The
+BullMQ processor returns a summary of at most 500 characters (stored in
+`job_history`; legacy mode stores nothing). Errors leaving the job carry a fixed
+code, phase and page id only — no page text and no raw parser or PostgreSQL
+error text.
+
+**Consequences of a write.** Published text: `content_revision + 1`, `tsv`
+rebuilt (049), relationship-dirty marker (111), summary and quality operation
+ids reset (144/145), the `embedding_ai_operations` row deleted (147), and on a
+row with a local edit migration 060 advances (Rule B) or sets (Rule A)
+`local_modified_at` (D2). Draft only: `content_revision + 1` and the three
+operation resets; `tsv`, the relationship marker and `local_modified_at`
+untouched. History only: no trigger effect. Never written: `body_html`, `title`,
+`version`, `remote_version`, `local_modified_*` (by the job's own statements),
+labels, `embedding_dirty`, status columns. An embedding in flight when its page
+is repaired is refused at its publication fence (row version, deleted operation
+row) and a dirty page is embedded again by the normal cycle; a force-embed of a
+clean page has to be run again by the operator (D1). The moved revision may make
+later summary/quality/sync work re-run for affected pages; no model call is
+scheduled by the job. The embedding coverage probe's `char_length(body_text)`
+reads the corrected length.
+
 ## Client-side Markdown → HTML (inline selection improve, #708)
 
 `markdownToHtml()` normally runs on the **backend** when an `/ai`-page
