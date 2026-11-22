@@ -1056,8 +1056,10 @@ overflow, or with an empty exact list beside a too-large owner); no overflow in
 the retry phase; an exact list within the list bound, strictly ascending,
 within `highWater`, its count and 20-id sample matching; an overflow with a
 count above the list bound and a strictly ascending sample within `highWater`
-of `min(count, 20)` ids; during a scan, listed owners at or below the cursor;
-both completion stamps set together, the first not later than the last;
+of `min(count, 20)` ids; in an idle or running scan, listed owners and an
+overflow sample at or below the cursor (a `waiting` scan sits at cursor 0 and
+its overflow sample keeps its ids); both completion stamps set or both unset
+(their order is not checked: they are database wall-clock times);
 `seq ≥ pass`; pass counters within the lifetime counters and `tooLarge` within
 the pass's `page_too_large`; `new` only in the canonical bootstrap shape. Every
 status runs every check. It runs on the fast path and in every claim, a forced
@@ -1079,13 +1081,17 @@ reconciliation read that locks the row again, so it waits for a `COMMIT` still
 in flight. A read showing this attempt's owner and `seq` → committed; the
 previous owner and `seq` → not committed; another owner or sequence →
 `already_running` for a claim, `ownership_lost` for a fenced step. Only an
-unreadable or unsettled result (a missing row, an expired deadline, a lost
-connection) is `reconciliation_failed`; the lease then expires as any other.
+unreadable or unsettled result (an expired deadline, a lost connection) is
+`reconciliation_failed`; a physically missing row is `reconciliation_failed` on
+a claim and `ownership_lost` on a fenced step. The lease then expires as any
+other.
 Not committed: an owner step is recorded `busy` and redone, the terminal
 release is retried (three attempts), a claim ends the run `interrupted`
 (`claim_transaction_refused` or `claim_acknowledgment_lost`). **Stop:** during
-the bootstrap, nothing is claimed (the row stays neutral `new`, seq 0, pass 0,
-and the stopped run makes no further checkout). During a claim, if the lock
+the bootstrap, nothing is claimed: a stopped first insertion leaves the neutral
+`new` row (seq 0, pass 0), and a forced restart's bootstrap on an existing
+document leaves that document as it is (`ON CONFLICT DO NOTHING`, not
+necessarily `new`); the stopped run makes no further checkout. During a claim, if the lock
 deadline expires first, the run ends `interrupted` and nothing is claimed; if
 the lock frees before the deadline, the claim already open commits and the run
 releases at once on the stop latch (checked before the next owner is chosen,
