@@ -269,11 +269,9 @@ export interface BodyTextBackfillHooks {
   afterMembersLocked?(ownerId: number, client: PoolClient): Promise<void> | void;
   afterDecision?(ownerId: number, client: PoolClient, decision: string): Promise<void> | void;
   beforeCommit?(step: BodyTextBackfillStep, ownerId: number | null, client: PoolClient): Promise<void> | void;
-  /** Runs after COMMIT returned. Throwing simulates a lost acknowledgment. */
-  afterCommit?(step: BodyTextBackfillStep, ownerId: number | null): Promise<void> | void;
   beforeParserRequest?(ownerId: number, keys: string[]): Promise<void> | void;
   /** Every statement that touches body bytes, with the bytes it may touch. */
-  onStatement?(info: { kind: string; ownerId: number; bytes: number }): void;
+  onStatement?(info: { kind: string; ownerId: number; bytes: number }): Promise<void> | void;
   /** Every pair handed to the parser. */
   onLoad?(info: { ownerId: number; key: string; htmlBytes: number; textBytes: number }): void;
 }
@@ -546,7 +544,8 @@ async function withClient<T>(operation: (client: PoolClient, broken: () => boole
   try {
     return await operation(client, () => discard !== undefined);
   } catch (error) {
-    if (!discard && isConnectionError(error)) {
+    // A lost connection (or an unknown COMMIT outcome) never goes back to the pool.
+    if (!discard && (error instanceof ConnectionLost || isConnectionError(error))) {
       discard = error instanceof Error ? error : new Error('connection');
     }
     throw error;
@@ -692,11 +691,6 @@ async function fencedTransaction(
         } catch (error) {
           if (!isConnectionError(error)) throw error;
           throw new ConnectionLost('commit');
-        }
-        try {
-          await ctx.hooks.afterCommit?.(step, ownerId);
-        } catch {
-          throw new ConnectionLost('acknowledgment');
         }
         return pending.result;
       } catch (error) {
@@ -891,8 +885,8 @@ class OwnerScan {
     await this.classifyWindow(window, false);
   }
 
-  private statement(kind: string, bytes: number): void {
-    this.ctx.hooks.onStatement?.({ kind, ownerId: this.ownerId, bytes });
+  private async statement(kind: string, bytes: number): Promise<void> {
+    await this.ctx.hooks.onStatement?.({ kind, ownerId: this.ownerId, bytes });
   }
 
   /** Load the bodies of `pairs` under their SQL contract; a pair that no longer matches makes the owner `changed`. */
@@ -907,7 +901,7 @@ class OwnerScan {
         : [['html'], ['text']];
       const input: PairInput = { key: pair.key, html: '', text: '' };
       for (const part of parts) {
-        this.statement('load_page', part.reduce((sum, p) => sum + (p === 'html' ? pair.htmlBytes : pair.textBytes), 0));
+        await this.statement('load_page', part.reduce((sum, p) => sum + (p === 'html' ? pair.htmlBytes : pair.textBytes), 0));
         const rows = await observe<{ html: string | null; text: string | null }>(this.ctx, 'read_only',
           `SELECT ${part.includes('html') ? column.html : 'NULL::text'} AS html,
                   ${part.includes('text') ? column.text : 'NULL::text'} AS text
@@ -940,7 +934,7 @@ class OwnerScan {
   }
 
   private async loadVersions(group: PendingPair[], parts: ('html' | 'text')[], loaded: Map<string, PairInput>): Promise<void> {
-    this.statement('load_versions', group.reduce((sum, pair) => sum
+    await this.statement('load_versions', group.reduce((sum, pair) => sum
       + (parts.includes('html') ? pair.htmlBytes : 0) + (parts.includes('text') ? pair.textBytes : 0), 0));
     const ids = group.map((pair) => versionId(pair.ref));
     const rows = await observe<{ id: string; html: string | null; text: string | null }>(this.ctx, 'read_only',
@@ -1038,7 +1032,7 @@ class OwnerScan {
       const want = (column: Column) => group.find((pair) => pageColumn(pair.ref) === column);
       const published = want('published');
       const draft = want('draft');
-      this.statement('ampersand_page', group.reduce((sum, pair) => sum + pair.htmlBytes, 0));
+      await this.statement('ampersand_page', group.reduce((sum, pair) => sum + pair.htmlBytes, 0));
       const rows = await observe<{ p: boolean | null; d: boolean | null }>(this.ctx, 'read_only',
         `SELECT CASE WHEN $2::bigint IS NOT NULL AND octet_length(body_html) = $2 THEN strpos(body_html, '&') > 0 END AS p,
                 CASE WHEN $3::bigint IS NOT NULL AND octet_length(draft_body_html) = $3
@@ -1093,7 +1087,7 @@ class OwnerScan {
         }
       }
       for (const group of budgeted(candidates, (pair) => pair.htmlBytes, this.ctx.limits.statementBytes)) {
-        this.statement('ampersand_versions', group.reduce((sum, pair) => sum + pair.htmlBytes, 0));
+        await this.statement('ampersand_versions', group.reduce((sum, pair) => sum + pair.htmlBytes, 0));
         const flags = await observe<{ id: string; amp: boolean | null }>(this.ctx, 'read_only',
           `SELECT e.id::text AS id,
                   CASE WHEN octet_length(pv.body_html) = e.hl THEN strpos(pv.body_html, '&') > 0 END AS amp
@@ -1183,8 +1177,8 @@ class CloseTransaction {
     return this.observation.opened.pageId;
   }
 
-  private statement(kind: string, bytes: number): void {
-    this.ctx.hooks.onStatement?.({ kind, ownerId: this.ownerId, bytes });
+  private async statement(kind: string, bytes: number): Promise<void> {
+    await this.ctx.hooks.onStatement?.({ kind, ownerId: this.ownerId, bytes });
   }
 
   private changed(): never {
@@ -1231,7 +1225,7 @@ class CloseTransaction {
         ? [[names.html, names.text]] : [[names.html], [names.text]];
       const digests: Record<string, string> = {};
       for (const part of parts) {
-        this.statement('digest_page', part.reduce((sum, name) => sum
+        await this.statement('digest_page', part.reduce((sum, name) => sum
           + (name === names.html ? member.htmlBytes : member.textBytes), 0));
         const row = (await this.client.query<Record<string, string>>(
           `SELECT ${part.map((name) => `${DIGEST(name)} AS ${name}`).join(', ')} FROM pages WHERE id = $1`,
@@ -1259,7 +1253,7 @@ class CloseTransaction {
     const singles = this.versionMembers.filter((m) => m.htmlBytes + m.textBytes > this.ctx.limits.statementBytes);
     const batched = this.versionMembers.filter((m) => m.htmlBytes + m.textBytes <= this.ctx.limits.statementBytes);
     const verify = async (group: Affected[], parts: ('html' | 'text')[]) => {
-      this.statement('lock_members', group.reduce((sum, m) => sum
+      await this.statement('lock_members', group.reduce((sum, m) => sum
         + (parts.includes('html') ? m.htmlBytes : 0) + (parts.includes('text') ? m.textBytes : 0), 0));
       const rows = (await this.client.query<{ id: string; h: string | null; t: string | null; linked: boolean }>(
         `SELECT pv.id::text AS id,
@@ -1311,7 +1305,7 @@ class CloseTransaction {
       if (this.pageMembers.has(column)) continue;
       const textBytes = toNumber(column === 'published' ? page.ptl : page.dtl);
       if (textBytes === null || !lengths.includes(textBytes)) continue;
-      this.statement('witness_page', textBytes);
+      await this.statement('witness_page', textBytes);
       const row = (await this.client.query<{ t: string }>(
         `SELECT ${DIGEST(PAGE_COLUMNS[column].text)} AS t FROM pages WHERE id = $1`, [this.ownerId],
       )).rows[0];
@@ -1336,7 +1330,7 @@ class CloseTransaction {
       after = window[window.length - 1]!.id;
       const candidates = window.map((row) => ({ id: row.id, tl: Number(row.tl) }));
       for (const group of budgeted(candidates, (row) => row.tl, this.ctx.limits.statementBytes)) {
-        this.statement('witness_versions', group.reduce((sum, row) => sum + row.tl, 0));
+        await this.statement('witness_versions', group.reduce((sum, row) => sum + row.tl, 0));
         const digests = (await this.client.query<{ id: string; tl: string; t: string | null }>(
           `SELECT e.id::text AS id, e.tl::text AS tl,
                   CASE WHEN octet_length(pv.body_text) = e.tl THEN ${DIGEST('pv.body_text')} END AS t
@@ -1394,7 +1388,7 @@ class CloseTransaction {
     const tl = toNumber(slot.tl);
     if (hl === null && tl === null) return !(slot.title === page.title && !slot.linked);
     if (slot.title !== page.title || hl !== published.htmlBytes) return true;
-    this.statement('identity_html', hl);
+    await this.statement('identity_html', hl);
     const html = (await this.client.query<{ h: string }>(
       `SELECT ${DIGEST('body_html')} AS h FROM page_versions WHERE id = $1::uuid`, [slot.id],
     )).rows[0];
@@ -1402,7 +1396,7 @@ class CloseTransaction {
     const member = this.versionMembers.find((m) => versionId(m.ref) === slot.id);
     if (member) return member.corrected !== published.corrected;
     if (tl !== published.correctedBytes) return true;
-    this.statement('identity_text', tl);
+    await this.statement('identity_text', tl);
     const text = (await this.client.query<{ t: string }>(
       `SELECT ${DIGEST('body_text')} AS t FROM page_versions WHERE id = $1::uuid`, [slot.id],
     )).rows[0];
@@ -1423,7 +1417,7 @@ class CloseTransaction {
       const params = published && draft
         ? [this.ownerId, published.corrected, draft.corrected]
         : [this.ownerId, (published ?? draft)!.corrected];
-      this.statement('write_page', (published?.correctedBytes ?? 0) + (draft?.correctedBytes ?? 0));
+      await this.statement('write_page', (published?.correctedBytes ?? 0) + (draft?.correctedBytes ?? 0));
       try {
         const updated = await this.client.query(sql, params);
         if (updated.rowCount !== 1) this.changed();
@@ -1439,7 +1433,7 @@ class CloseTransaction {
     }
     const returned = new Set<string>();
     for (const group of budgeted(this.versionMembers, (m) => m.correctedBytes, this.ctx.limits.statementBytes)) {
-      this.statement('write_versions', group.reduce((sum, m) => sum + m.correctedBytes, 0));
+      await this.statement('write_versions', group.reduce((sum, m) => sum + m.correctedBytes, 0));
       const rows = (await this.client.query<{ id: string }>(
         `UPDATE page_versions pv SET body_text = v.t
            FROM unnest($1::uuid[], $2::text[]) AS v(id, t)
