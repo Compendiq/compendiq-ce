@@ -104,7 +104,9 @@ affected rows stop matching. A page's stored texts (published, draft, history)
 are only ever rewritten together in one transaction under the page-writer
 admission and row locks, or not at all; never repair one copy alone. Every
 parse runs in the job's worker thread (256 MiB isolate, 240 s per request,
-canary handshake); columns above 32 MiB are never loaded.
+canary handshake); columns above 32 MiB are never loaded. Do not start the
+backend with `--max-old-space-size`: it overrides the worker isolate
+process-wide and the job refuses to parse (`parser_heap_limit`).
 
 Backup archive members are connected with callback `pipeline`, never `.pipe()`
 (#1709): a source error must reach the archive, not crash the process. Compose

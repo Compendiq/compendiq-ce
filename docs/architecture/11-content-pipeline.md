@@ -961,7 +961,7 @@ transaction writes all of A or nothing. It writes nothing when:
 | (b) | two members of A have equal stored text but different corrected texts | `paired_exempt` |
 | (c) | more than 200 members, or more than 64 MiB of corrected text (D12) | `page_too_large`, unresolved |
 | (d) | PostgreSQL refuses the corrected published text (`54000` + routine `make_tsvector`, D9) | `unindexable` |
-| (e) | writing the published text of a row with `local_modified_by` set and `local_modified_at` NULL turns its identity (`livePageVersion`) into `local:V`, and that key holds anything but the page's own content; an absent row, or an unlinked bodyless row with exactly the page's title, is free (D13) | `identity_conflict` |
+| (e) | writing the published text of a row with `local_modified_by` set and `local_modified_at` NULL turns its identity (`livePageVersion`) into `local:V`, and that key holds anything but the page's own content; an absent row, or an unlinked bodyless row with exactly the page's title (compared in the database; no title leaves it), is free (D13) | `identity_conflict` |
 
 *Why this is sufficient.* The job changes stored text and, through migration
 060's Rule A, can set the edit marker — nothing else. Every later writer that
@@ -999,10 +999,15 @@ flowchart TD
 `lifecycle_revision` (L0), `version` (V) and its column lengths
 (`octet_length`, no detoast). *Scan* never holds a lock or a body across a
 transaction: each observation statement is its own short read-only transaction,
-each body-touching statement selects ids whose expected bytes fit 32 MiB (a
-larger column alone) and re-checks the current lengths and the fresh
-"not linked" predicate, so a row that changed is not returned and the owner is
-`changed`. Memory held for an owner is A only (ids, lengths, two SHA-256
+each body-touching statement (the `&` flags, loads, digests) selects ids whose
+expected bytes fit 32 MiB (a larger column alone) and re-checks both current
+lengths and, for history rows, the fresh "not linked" predicate, so a row that
+changed is not returned and the owner is `changed`. History is read by keyset
+on the uuid column itself (no lower bound on the first read, compared and
+ordered as uuid). The one statement that may exceed the budget is the page
+update: the corrected published and draft texts are written in one statement
+(one `content_revision` step) and it carries their sum. Memory held for an
+owner is A only (ids, lengths, two SHA-256
 digests and the corrected text). *Close* takes, in this order, the writer
 runtime epoch, hierarchy share and owner lifecycle lock (`lockPageWrites`, or
 for a frozen page `lockPageWrites([])` + `lockPageLifecycle` + a pending-intent
@@ -1016,10 +1021,12 @@ to write closes with its row `FOR SHARE` after the same revision check. Every
 transaction sets `lock_timeout 5s`, `statement_timeout 10s` and, on PostgreSQL
 17 or later, `transaction_timeout 30s`; on an older server the close is bounded
 only by its statement count times the statement timeout. A lock not available
-at once, a deadlock or an expired deadline rolls back and records `busy` (the
-cursor moves on; retried from Open); a moved revision or a frozen page records
-`changed`; a vanished page `gone`; a quiesced, fenced or unknown writer runtime
-ends the run `interrupted` without advancing anything.
+at once or within the lock deadline (the page row `FOR SHARE` included), a
+deadlock or an expired deadline rolls back and records `busy` (the cursor moves
+on; retried from Open); a moved revision or a frozen page records `changed`; a
+vanished page `gone`; a stop, a quiesced, fenced or unknown writer runtime ends
+the run `interrupted` without advancing anything (checked before and after each
+connection checkout, the empty close included).
 
 **What a close and `done` state.** Under the premise that every producer of
 stored text contains the #1940 fix: at a page's closing instant, every copy that
@@ -1041,14 +1048,27 @@ validated versioned JSON document (`v`, `status` new/idle/running/waiting/done,
 `owner`, `lastOwner`, `seq`, `pass`, `passStartedAt`, `highWater`, `phase`
 scan/retry, `cursor`, `unresolved` {exact ids ≤ 200, or `overflow` + count +
 sample}, `tooLarge`, `nextFullPassAfter`, `overflowBackoffMs`,
-`firstCompletedAt`, `completedAt`, pass and lifetime counters). Every state write
+`firstCompletedAt`, `completedAt`, pass and lifetime counters). Validation also
+rejects combinations the job never writes: an owner exactly when `running`;
+`cursor ≤ highWater`; `done`/`waiting` only in the scan phase at cursor 0 with a
+next time (`done` with no unresolved or too-large owner, `waiting` with an
+overflow or a too-large owner); no overflow in the retry phase; an exact list
+strictly ascending, within `highWater`, its count and 20-id sample matching;
+an overflow with a count and a consistent sample. Every state write
 is fenced (row `FOR UPDATE`, own `owner` and `seq`, `seq + 1`); the lease is 15
 minutes, kept alive by a heartbeat after 60 s without a state write; a stale
-owner is taken over and the pass resumed. A lost `COMMIT` acknowledgment is
-settled by a reconciliation read (advanced `seq` → committed; previous `seq` →
-not committed, redone; anything else → stop). An invalid document is never
-overwritten: the run fails with `state_invalid`. One pooled connection at a
-time; no session-level lock (works with `PG_POOL_MAX=1`).
+owner is taken over and the pass resumed. The claim inserts the first-owner
+row and locks the state row as separate commands in one transaction under the
+same lock, statement and transaction deadlines (a stop or an expired deadline
+ends the run `interrupted`, nothing claimed). Every uncertain `COMMIT` (the
+acknowledgment lost, or the session refused or ended) is settled by a
+reconciliation read (advanced `seq` → committed; previous `seq` → not
+committed; anything else → stop). Not committed: an owner step is recorded
+`busy` and redone, the terminal release is retried (three attempts), a claim
+ends the run `interrupted` (`claim_transaction_refused` or
+`claim_acknowledgment_lost`), never `already_running`. An invalid document is
+never overwritten: the run fails with `state_invalid`. One pooled connection at
+a time; no session-level lock (works with `PG_POOL_MAX=1`).
 
 **Completion and re-checks.** End of a pass: no transient owner and no
 too-large owner → `done`, next full pass after 24 h (first completion ever)
@@ -1059,16 +1079,24 @@ transient list (`busy`, `changed`) → hourly retries of exactly those owners
 too-large owner exists). `status` is never `done` while a page is over the D12
 limit. **Clearing a blocked page** means reducing its history (retention,
 `RETENTION_VERSIONS_MAX`) or raising the limit in code; the daily full pass
-re-examines it.
+re-examines it. An explicit restart before a stored, still-future re-check
+keeps it: the earlier of that time and the new pass's own next time wins, also
+after the restarted pass is interrupted.
 
 **Parser worker and budget.** Every parse runs in a `worker_threads` worker
 (`body-text-backfill-parser.ts`, isolate `maxOldGenerationSizeMb = 256`,
 `maxYoungGenerationSizeMb = 32`) that must post `ready` and classify a built-in
 canary pair (30 s each) before any row is sent; it has no database access, logs
-nothing and parses with a `VirtualConsole` that forwards nothing. Windows carry
+nothing and parses with a `VirtualConsole` that forwards nothing. `ready`
+announces the worker's V8 heap limit; anything but old + 1.5 × young (±16 MiB)
+ends the run `parser_heap_limit` before a row is parsed. That happens when the
+process runs with `--max-old-space-size` (argv or `NODE_OPTIONS`): V8 flags are
+process-wide and override worker `resourceLimits` (measured on Node 24 and 26;
+no per-worker override exists). Windows carry
 at most 8 MiB of bodies; a column above 4 MiB is parsed alone. A request over
-240 s, a crash or the memory limit replaces the worker; the pairs of a failed
-window are retried one per request, and a pair that fails alone is
+240 s, a crash or the memory limit replaces the worker (its exit is awaited
+first; a stop terminates it and returns only after it exited); the pairs of a
+failed window are retried one per request, and a pair that fails alone is
 `unevaluable`. Measured: JSDOM needs more memory than the 256 MiB isolate for
 bodies from roughly 4–8 MiB upward (a single 8 MiB text node or comment, or a
 4 MiB body of short paragraphs, exceeds it), so such columns are in practice
@@ -1082,10 +1110,17 @@ hourly. A tick on `done`/`waiting` with nothing due is one settings read.
 `stopQueueWorkers()` (both modes, before workers and the pool close) latches the
 job, clears the legacy timers, terminates the parser and awaits the run.
 
-**Reporting.** One progress line per commit (pass, phase, page id, step, bytes
-loaded, counter deltas); residual lines with ids and lengths for `oversized`,
-`unevaluable` (as observed) and `unindexable`, `paired_exempt`,
-`identity_conflict`, `page_too_large` (per page); one summary line per run. The
+**Reporting.** One progress line per committed owner transaction (close, empty
+close, checkpoint: pass, phase, page id, step, bytes loaded, counter deltas);
+the claim, heartbeat and release are reported by the terminal line. Residual
+lines carry `kind`: `observation` for per-copy scan reasons as observed
+(`oversized`, `unevaluable`), `decision` for whole-page outcomes
+(`paired_exempt` with the witness and the matched member or the two rule-(b)
+members, `identity_conflict` with the occupied slot, `unindexable`,
+`page_too_large`), each logged only after the transaction recording it
+committed. Exactly one terminal line per invocation, including
+`already_running`, `already_completed`, `waiting`, interruptions and failures
+(outcome `failed` with code, phase and page id). The
 BullMQ processor returns a summary of at most 500 characters (stored in
 `job_history`; legacy mode stores nothing). Errors leaving the job carry a fixed
 code, phase and page id only — no page text and no raw parser or PostgreSQL
