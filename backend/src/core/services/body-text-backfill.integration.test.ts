@@ -7,6 +7,7 @@
  * maintainer decision (D1–D13) they prove.
  */
 import { randomUUID } from 'node:crypto';
+import { createServer as createHttpServer, type Server } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createConnection, createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -41,8 +42,8 @@ import {
   type BodyTextBackfillState,
   type BodyTextBackfillSummary,
 } from './body-text-backfill.js';
-import { htmlToText } from './content-converter.js';
-import { setPageBaselineReadinessProvider } from './page-baseline-governance.js';
+import { assignTaskIds, hasOnlyUncarriedTasks, htmlToText } from './content-converter.js';
+import { PAGE_WRITER_ENFORCEMENT_VERSION, setPageBaselineReadinessProvider } from './page-baseline-governance.js';
 import {
   freezePage,
   previewPageBaseline,
@@ -53,13 +54,18 @@ import {
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
   lockPageLifecycle,
+  reconcilePageWriteIntent,
   reservePageWriteIntent,
   runPageWriteIntentEffect,
   withPageHierarchyWriteTransaction,
 } from './page-write-admission.js';
 import { setRedisClient } from './redis-cache.js';
 import { fillVersionBody, snapshotLocalVersionBeforeOverwrite, upsertVersionMetadata } from './version-snapshot.js';
+import { encryptPat } from '../utils/crypto.js';
+import { confluencePagePutDigest, registerConfluencePagePutIntentReconcilers } from '../../domains/confluence/services/page-put-intent-reconciler.js';
+import { recordConfluenceVersionObservation } from '../../domains/confluence/services/sync-service.js';
 import { restoreVersion } from '../../domains/knowledge/services/version-tracker.js';
+import { buildKnowledgeTestApp } from '../../routes/knowledge/pages.test-helpers.js';
 import { searchRoutes } from '../../routes/knowledge/search.js';
 
 const dbAvailable = await isDbAvailable();
@@ -214,6 +220,15 @@ async function expectBlockedBackend(match: string): Promise<void> {
         WHERE datname = current_database() AND query LIKE $1 AND cardinality(pg_blocking_pids(pid)) > 0
      ) AS waiting`, [match],
   )).rows[0]!.waiting, { timeout: 15_000, interval: 20 }).toBe(true);
+}
+
+async function withClient<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    return await operation(client);
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -2050,9 +2065,305 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
     });
   });
 
+  // ─── 3b. Whole page or nothing: real later writers, each against a no-job control ──
+
+  describe.skipIf(!redisAvailable)('3b. later writers behave as in the no-job control', () => {
+    const pair = preFix();
+    let confluence: Server;
+    let confluenceUrl = '';
+    const remote = new Map<string, { id: string; title: string; version: { number: number }; body: { storage: { value: string } } }>();
+    let app: FastifyInstance;
+    let currentUser = '';
+
+    beforeAll(async () => {
+      registerConfluencePagePutIntentReconcilers();
+      confluence = createHttpServer((request, response) => {
+        void (async () => {
+          const id = decodeURIComponent((request.url ?? '').split('?')[0]!.replace('/rest/api/content/', ''));
+          if (request.method === 'PUT') {
+            const chunks: Buffer[] = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+              title: string; version: { number: number }; body: { storage: { value: string } };
+            };
+            remote.set(id, { id, title: body.title, version: { number: body.version.number }, body: { storage: { value: body.body.storage.value } } });
+          }
+          const page = remote.get(id);
+          if (!page) { response.writeHead(404).end(); return; }
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify(page));
+        })();
+      });
+      await new Promise<void>((resolve) => confluence.listen(0, '127.0.0.1', resolve));
+      confluenceUrl = `http://127.0.0.1:${(confluence.address() as AddressInfo).port}`;
+      app = await buildKnowledgeTestApp(() => currentUser, async (instance) => {
+        instance.redis = redis!;
+        const { pagesCrudRoutes } = await import('../../routes/knowledge/pages-crud.js');
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
+      });
+    });
+
+    afterAll(async () => {
+      await app.close();
+      await new Promise<void>((resolve, reject) => confluence.close((error) => error ? reject(error) : resolve()));
+    });
+
+    beforeEach(() => {
+      remote.clear();
+    });
+
+    /** A writer with Confluence credentials and write access to space REC, plus a recovery admin. */
+    async function confluenceWriter(enabled = true): Promise<{ writer: string; admin: string }> {
+      const writer = await insertUser();
+      const admin = await insertUser('admin');
+      await query(`INSERT INTO spaces (space_key, space_name) VALUES ('REC', 'Recovery') ON CONFLICT DO NOTHING`);
+      const role = await query<{ id: number }>(
+        `INSERT INTO roles (name, display_name, permissions) VALUES ($1, 'Writer', ARRAY['read', 'write']) RETURNING id`,
+        [`backfill-writer-${randomUUID()}`],
+      );
+      await query(
+        `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id) VALUES ('REC', 'user', $1, $2)`,
+        [writer, role.rows[0]!.id],
+      );
+      await query(
+        `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled) VALUES ($1, $2, $3, $4)`,
+        [writer, confluenceUrl, encryptPat('backfill-writer-pat'), enabled],
+      );
+      await query('INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)', [admin]);
+      currentUser = writer;
+      return { writer, admin };
+    }
+
+    async function confluenceId(pageId: number): Promise<string> {
+      return (await pageRow(pageId)).confluence_id as string;
+    }
+
+    /**
+     * The real remote "restore version" completion: a pending
+     * `page.version_restore` intent of a fenced writer, the provider at E+1
+     * with the intended state, settled by `reconcilePageWriteIntent`.
+     */
+    async function remoteRestore(pageId: number, users: { writer: string; admin: string }): Promise<string> {
+      const id = await confluenceId(pageId);
+      const page = (await query<{ c: string; l: string; remote_version: number }>(
+        'SELECT content_revision::text AS c, lifecycle_revision::text AS l, remote_version FROM pages WHERE id = $1', [pageId],
+      )).rows[0]!;
+      await query(
+        `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+         VALUES ($1, 'confluence', 2, 'Intended title', '<p>intended storage</p>', 'intended storage')
+         ON CONFLICT DO NOTHING`,
+        [pageId],
+      );
+      const runtimeId = `restore-runtime-${randomUUID()}`;
+      const acknowledgmentId = randomUUID();
+      await query(
+        `INSERT INTO page_writer_runtimes
+           (runtime_id, deployment_identity, quiesced_at, quiescence_ack, fenced_at, fenced_by, fence_reason, fence_proof,
+            enforcement_version)
+         VALUES ($1, '{"host":"restore-test"}'::jsonb, NOW(), $2, NOW(), $3,
+                 'Owner runtime quiesced before conditional recovery', $4::jsonb, $5)`,
+        [runtimeId, acknowledgmentId, users.admin,
+          JSON.stringify({ kind: 'owner_quiescence_ack', acknowledgmentId, deploymentIdentity: { host: 'restore-test' } }),
+          PAGE_WRITER_ENFORCEMENT_VERSION],
+      );
+      const digest = confluencePagePutDigest({
+        pageId, confluenceId: id, title: 'Intended title', bodyStorage: '<p>intended storage</p>',
+        expectedRemoteVersion: page.remote_version,
+      });
+      const intent = await query<{ id: string }>(
+        `INSERT INTO page_write_intents (runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect)
+         VALUES ($1, 'page.version_restore', $2, ARRAY[$3]::integer[], $4::jsonb, 'remote_conditional', $5::jsonb)
+         RETURNING id`,
+        [runtimeId, users.writer, pageId,
+          JSON.stringify({ [pageId]: { contentRevision: page.c, lifecycleRevision: page.l } }),
+          JSON.stringify({ effectClass: 'remote', pageId, confluenceId: id, expectedRemoteVersion: String(page.remote_version),
+            intendedStateDigest: digest, targetVersion: 2 })],
+      );
+      remote.set(id, {
+        id, title: 'Intended title', version: { number: page.remote_version + 1 },
+        body: { storage: { value: '<p>intended storage</p>' } },
+      });
+      try {
+        await reconcilePageWriteIntent(intent.rows[0]!.id, {
+          actorId: users.admin, reason: 'Recover the remote restore after the backfill test',
+        });
+      } catch (error) {
+        return (error as { reason?: string }).reason ?? 'error';
+      }
+      return (await query<{ status: string }>('SELECT status FROM page_write_intents WHERE id = $1', [intent.rows[0]!.id]))
+        .rows[0]!.status;
+    }
+
+    /** Run `scenario` without the job, then on a fresh database with the job first; both outcomes must match. */
+    async function withControl<T>(scenario: (job: boolean) => Promise<T>): Promise<{ control: T; job: T }> {
+      const control = await scenario(false);
+      await truncateAllTables();
+      armBodyTextBackfill();
+      const job = await scenario(true);
+      return { control, job };
+    }
+
+    it('live v7 and an unlinked identical local:8; a kept-local observation of remote v8, then the real overwrite path → no local_edit_snapshot_conflict, as in the control', async () => {
+      const outcomes = await withControl(async (job) => {
+        const { writer } = await confluenceWriter(false);
+        const pageId = await insertPage({
+          html: pair.html, text: pair.text, source: 'confluence', spaceKey: 'REC', version: 7, remoteVersion: 7,
+          localModifiedBy: writer, localModifiedAt: new Date(),
+        });
+        await insertVersion(pageId, { version: 8, title: 'Neutral title', html: pair.html, text: pair.text });
+        if (job) expect(counts(await run()).repaired).toBe(2);
+        return withClient(async (client) => {
+          await client.query('BEGIN');
+          try {
+            await recordConfluenceVersionObservation(client, pageId, 8);
+            const row = (await client.query<{ id: number; version: number; title: string; body_html: string | null; body_text: string | null }>(
+              'SELECT id, version, title, body_html, body_text FROM pages WHERE id = $1 FOR UPDATE', [pageId],
+            )).rows[0]!;
+            await snapshotLocalVersionBeforeOverwrite(client, row, 'local');
+            await client.query('COMMIT');
+            return 'stored';
+          } catch (error) {
+            await client.query('ROLLBACK');
+            return (error as { reason?: string }).reason ?? 'error';
+          }
+        });
+      });
+      expect(outcomes).toEqual({ control: 'stored', job: 'stored' });
+    });
+
+    it('live pair A, draft B, unlinked local:8 with pair B: publish the draft (integration off), then the real version-jump overwrite → succeeds, as in the control', async () => {
+      const a = preFix('br');
+      const b = preFix('em', 'Draft');
+      const outcomes = await withControl(async (job) => {
+        const { writer } = await confluenceWriter(false);
+        const pageId = await insertPage({
+          html: a.html, text: a.text, draftHtml: b.html, draftText: b.text, source: 'confluence', spaceKey: 'REC',
+          version: 7, remoteVersion: 7,
+        });
+        await query('UPDATE pages SET draft_updated_by = $2, draft_updated_at = NOW() WHERE id = $1', [pageId, writer]);
+        await insertVersion(pageId, { version: 8, title: 'Neutral title', html: b.html, text: b.text });
+        if (job) expect(counts(await run()).repaired).toBe(3);
+        const published = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+        expect(published.statusCode, published.body).toBe(200);
+        return withClient(async (client) => {
+          await client.query('BEGIN');
+          try {
+            const row = (await client.query<{ id: number; version: number; title: string; body_html: string | null; body_text: string | null }>(
+              'SELECT id, version, title, body_html, body_text FROM pages WHERE id = $1 FOR UPDATE', [pageId],
+            )).rows[0]!;
+            expect(row.version).toBe(8);
+            await snapshotLocalVersionBeforeOverwrite(client, row, 'local');
+            await client.query('COMMIT');
+            return 'stored';
+          } catch (error) {
+            await client.query('ROLLBACK');
+            return (error as { reason?: string }).reason ?? 'error';
+          }
+        });
+      });
+      expect(outcomes).toEqual({ control: 'stored', job: 'stored' });
+    });
+
+    it('a task-list draft without ids holding `&amp;lt;br&amp;gt;` and a complete unlinked confluence:8 with the post-assignTaskIds html and the old text: remote publish returning v8, then a real remote restore completion → no intent_restore_history_unavailable, as in the control', async () => {
+      const draftHtml = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false">Use &amp;lt;br&amp;gt; here</li></ul>';
+      const outcomes = await withControl(async (job) => {
+        const users = await confluenceWriter(true);
+        const pageId = await insertPage({
+          title: 'Guide', html: '<p>live</p>', text: 'live', draftHtml, draftText: 'Use <br> here',
+          source: 'confluence', spaceKey: 'REC', version: 7, remoteVersion: 7,
+        });
+        await query('UPDATE pages SET draft_updated_by = $2, draft_updated_at = NOW() WHERE id = $1', [pageId, users.writer]);
+        const live = await pageRow(pageId);
+        const withIds = assignTaskIds(draftHtml, {
+          previousStorage: live.body_storage as string, legacyTasks: hasOnlyUncarriedTasks(live.body_html as string),
+        }).html;
+        await insertVersion(pageId, { source: 'confluence', version: 8, title: 'Guide', html: withIds, text: 'Use <br> here' });
+        const id = await confluenceId(pageId);
+        remote.set(id, { id, title: 'Guide', version: { number: 7 }, body: { storage: { value: '<p>live</p>' } } });
+        if (job) expect(counts(await run()).repaired).toBe(2);
+        const published = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+        expect(published.statusCode, published.body).toBe(200);
+        expect(await pageRow(pageId)).toMatchObject({ version: 8, remote_version: 8, body_html: withIds });
+        return remoteRestore(pageId, users);
+      });
+      expect(outcomes).toEqual({ control: 'reconciled_applied', job: 'reconciled_applied' });
+    });
+
+    for (const mirror of [false, true]) {
+      it(`standalone v7, ${mirror ? 'linked local:8 and unlinked local:3' : 'linked local:3 and unlinked local:8'} with the same pair: nothing written; restore v3, then freeze → the baseline links the exact v8 snapshot, as in the control`, async () => {
+        const outcomes = await withControl(async (job) => {
+          const admin = await freezingAdmin();
+          const pageId = await insertPage({ html: pair.html, text: pair.text, createdBy: admin, visibility: 'private', version: 7 });
+          const v3 = await insertVersion(pageId, { version: 3, title: 'Neutral title', html: pair.html, text: pair.text });
+          const v8 = await insertVersion(pageId, { version: 8, title: 'Neutral title', html: pair.html, text: pair.text });
+          await insertBaseline(pageId, admin, mirror ? v8 : v3);
+          if (job) {
+            const before = { page: await pageRow(pageId), versions: await versionRows(pageId) };
+            expect(counts(await run()).paired_exempt).toBe(2);
+            expect({ page: await pageRow(pageId), versions: await versionRows(pageId) }).toEqual(before);
+          }
+          await restoreVersion(pageId, 3, { source: 'local', actorId: admin });
+          const frozen = await realFreeze(pageId, admin);
+          const linked = (await query<{ version_snapshot_id: string | null }>(
+            'SELECT version_snapshot_id FROM page_baselines WHERE id = $1', [frozen.baselineId],
+          )).rows[0]!.version_snapshot_id;
+          return linked === v8 ? 'v8' : String(linked);
+        });
+        expect(outcomes).toEqual({ control: 'v8', job: 'v8' });
+      });
+    }
+
+    describe('D13: identity switch onto an occupied key', () => {
+      interface Slot { title: string; html: string | null; text: string | null; linked?: boolean }
+
+      async function d13(slot: Slot | null, job: boolean): Promise<{ restore: string; written: boolean; reason?: number }> {
+        const users = await confluenceWriter(true);
+        const pageId = await insertPage({
+          title: 'Guide', html: pair.html, text: pair.text, source: 'confluence', spaceKey: 'REC', version: 7, remoteVersion: 7,
+          localModifiedBy: users.writer, localModifiedAt: null,
+        });
+        if (slot) {
+          const slotId = await insertVersion(pageId, { source: 'local', version: 7, ...slot });
+          if (slot.linked) await insertBaseline(pageId, users.writer, slotId);
+        }
+        let written = false;
+        let reason: number | undefined;
+        if (job) {
+          const summary = await run();
+          written = (summary.counts.repaired ?? 0) > 0;
+          reason = summary.counts.identity_conflict;
+          const row = await pageRow(pageId);
+          if (written) expect(row.local_modified_at).not.toBeNull();
+          else expect(row).toMatchObject({ body_text: pair.text, local_modified_at: null });
+        }
+        return { restore: await remoteRestore(pageId, users), written, ...(reason === undefined ? {} : { reason }) };
+      }
+
+      const cases: { name: string; slot: Slot | null; written: boolean }[] = [
+        { name: 'a complete local:7 with unrelated html and text → nothing written, identity_conflict', slot: { title: 'Guide', html: '<p>unrelated</p>', text: 'unrelated' }, written: false },
+        { name: 'no local:7 row → repaired, marker set (D2)', slot: null, written: true },
+        { name: 'an unlinked bodyless local:7 of the same title → repaired', slot: { title: 'Guide', html: null, text: null }, written: true },
+        { name: 'a bodyless local:7 titled `Manual` → nothing written, identity_conflict', slot: { title: 'Manual', html: null, text: null }, written: false },
+        { name: 'a bodyless local:7 titled `v7` → nothing written, identity_conflict', slot: { title: 'v7', html: null, text: null }, written: false },
+        { name: 'a same-titled but linked bodyless local:7 → nothing written, identity_conflict', slot: { title: 'Guide', html: null, text: null, linked: true }, written: false },
+        { name: "local:7 being the page's own content in A → repaired together", slot: { title: 'Guide', html: pair.html, text: pair.text }, written: true },
+        { name: 'local:7 with the same title and html and the already-correct text (not in A, not a witness) → repaired', slot: { title: 'Guide', html: pair.html, text: pair.fixed }, written: true },
+      ];
+
+      for (const testCase of cases) {
+        it(`D13: ${testCase.name}; the real remote restore completion then succeeds as in the control`, async () => {
+          const outcomes = await withControl((job) => d13(testCase.slot, job));
+          expect(outcomes.control).toEqual({ restore: 'reconciled_applied', written: false });
+          expect(outcomes.job).toEqual(testCase.written
+            ? { restore: 'reconciled_applied', written: true }
+            : { restore: 'reconciled_applied', written: false, reason: 1 });
+        });
+      }
+    });
+  });
+
   it.skip('helpers referenced', () => {
     void cancelPageWriteIntentBeforeEffect; void lockPageLifecycle; void withPageHierarchyWriteTransaction;
-    void snapshotLocalVersionBeforeOverwrite;
     const unused: BodyTextBackfillHooks[] = [];
     void unused;
   });
