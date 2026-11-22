@@ -175,7 +175,12 @@ function initialState(): BodyTextBackfillState {
   };
 }
 
-function parseState(raw: string): BodyTextBackfillState {
+/**
+ * Parse and validate the state document. `listMax` is the transient-list
+ * bound of the run reading it (the production bound unless a test scales it):
+ * an exact list never exceeds it and an overflow always does.
+ */
+function parseState(raw: string, listMax: number): BodyTextBackfillState {
   let json: unknown;
   try {
     json = JSON.parse(raw);
@@ -183,17 +188,23 @@ function parseState(raw: string): BodyTextBackfillState {
     throw new BodyTextBackfillError('state_invalid', 'state', null);
   }
   const parsed = StateSchema.safeParse(json);
-  if (!parsed.success || !reachable(parsed.data)) throw new BodyTextBackfillError('state_invalid', 'state', null);
+  if (!parsed.success || !reachable(parsed.data, listMax)) throw new BodyTextBackfillError('state_invalid', 'state', null);
   return parsed.data;
+}
+
+/** Strictly ascending page ids inside the pass horizon. */
+function ascendingWithin(ids: number[], highWater: number): boolean {
+  return ids.every((id, index) => id >= 1 && id <= highWater && (index === 0 || id > ids[index - 1]!));
 }
 
 /**
  * The invariants a completion relies on (F7): only status/owner/phase
- * combinations the job itself writes, the cursor within the horizon, and a
- * transient record that is either an exact sorted unique list within its
- * bound or a consistent overflow count with its sample.
+ * combinations the job itself writes (the end-of-pass table included), the
+ * cursor within the horizon, and a transient record that is either an exact
+ * sorted unique list within its bound or an overflow beyond the bound with a
+ * consistent sample.
  */
-function reachable(doc: BodyTextBackfillState): boolean {
+function reachable(doc: BodyTextBackfillState, listMax: number): boolean {
   const list = doc.unresolved;
   const empty = !list.overflow && list.ids.length === 0 && list.count === 0;
   if ((doc.owner !== null) !== (doc.status === 'running')) return false;
@@ -210,17 +221,19 @@ function reachable(doc: BodyTextBackfillState): boolean {
   }
   if (doc.status === 'waiting') {
     if (doc.phase !== 'scan' || doc.cursor !== 0 || doc.nextFullPassAfter === null) return false;
-    if (!list.overflow && doc.tooLarge === 0) return false;
+    // The release writes `waiting` for an overflow, or for an empty exact
+    // list beside a too-large owner; an exact list is always idle/retry.
+    if (!list.overflow && (!empty || doc.tooLarge === 0)) return false;
   }
   if (doc.phase === 'retry' && (list.overflow || (doc.status !== 'idle' && doc.status !== 'running'))) return false;
   if (!list.overflow) {
-    if (list.ids.length > BODY_TEXT_BACKFILL_LIMITS.transientListMax || list.count !== list.ids.length) return false;
-    if (list.ids.some((id, index) => id > doc.highWater || (index > 0 && id <= list.ids[index - 1]!))) return false;
+    if (list.ids.length > listMax || list.count !== list.ids.length) return false;
+    if (!ascendingWithin(list.ids, doc.highWater)) return false;
     const sample = list.ids.slice(0, SAMPLE_SIZE);
     return list.sample.length === sample.length && list.sample.every((id, index) => id === sample[index]);
   }
-  return list.ids.length === 0 && list.count >= 1 && list.sample.length === Math.min(list.count, SAMPLE_SIZE)
-    && new Set(list.sample).size === list.sample.length;
+  return list.ids.length === 0 && list.count > listMax && list.sample.length === Math.min(list.count, SAMPLE_SIZE)
+    && ascendingWithin(list.sample, doc.highWater);
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -668,14 +681,14 @@ interface LockedState {
   updatedAt: Date;
 }
 
-async function readStateForUpdate(client: PoolClient): Promise<LockedState | null> {
+async function readStateForUpdate(client: PoolClient, listMax: number): Promise<LockedState | null> {
   const result = await client.query<{ setting_value: string; updated_at: Date; now: Date }>(
     `SELECT setting_value, updated_at, NOW() AS now FROM admin_settings WHERE setting_key = $1 FOR UPDATE`,
     [BODY_TEXT_BACKFILL_STATE_KEY],
   );
   const row = result.rows[0];
   if (!row) return null;
-  return { doc: parseState(row.setting_value), now: row.now, updatedAt: row.updated_at };
+  return { doc: parseState(row.setting_value, listMax), now: row.now, updatedAt: row.updated_at };
 }
 
 async function writeState(client: PoolClient, doc: BodyTextBackfillState): Promise<void> {
@@ -689,7 +702,7 @@ async function writeState(client: PoolClient, doc: BodyTextBackfillState): Promi
 async function lockOwnState(ctx: RunContext, client: PoolClient): Promise<LockedState> {
   let state: LockedState | null;
   try {
-    state = await readStateForUpdate(client);
+    state = await readStateForUpdate(client, ctx.limits.transientListMax);
   } catch (error) {
     if (error instanceof BodyTextBackfillError) throw error;
     if (isBusyState(sqlState(error))) throw new RunInterrupted('state_timeout');
@@ -705,7 +718,7 @@ async function reconcile(ctx: RunContext, expected: { owner: string | null; seq:
     return await withClient(async (client) => {
       await beginTx(client, 'read_committed', ctx.limits, ctx.pgVersion);
       try {
-        const state = await readStateForUpdate(client);
+        const state = await readStateForUpdate(client, ctx.limits.transientListMax);
         await client.query('ROLLBACK');
         if (!state) throw new RunInterrupted('ownership_lost');
         const { doc } = state;
@@ -1666,14 +1679,16 @@ async function checkpointUnresolved(
     }
     if (reason === 'page_too_large') {
       // A refusal, not an exemption: counted once, never in the transient
-      // list, and it schedules the daily full pass from this pass's start.
+      // list, and it schedules the daily full pass from this pass's start —
+      // unless an earlier trigger is already stored (one an explicit restart
+      // carried), which this checkpoint must not postpone.
       const passStart = Date.parse(doc.passStartedAt ?? now.toISOString());
       const refused = withoutTransient(next, ownerId);
       return {
         doc: withCounts({
           ...refused,
           tooLarge: refused.tooLarge + 1,
-          nextFullPassAfter: new Date(passStart + DAY_MS).toISOString(),
+          nextFullPassAfter: earliest(refused.nextFullPassAfter, new Date(passStart + DAY_MS).toISOString()),
         }, { page_too_large: 1 }),
         delta: { page_too_large: 1 },
       };
@@ -1816,13 +1831,47 @@ function due(doc: BodyTextBackfillState, now: Date): boolean {
   return doc.nextFullPassAfter !== null && Date.parse(doc.nextFullPassAfter) <= now.getTime();
 }
 
+/** Attempts for the idempotent first-row insert whose outcome was uncertain. */
+const BOOTSTRAP_ATTEMPTS = 3;
+
 /**
- * The claim (§7): the first-owner insert and the state row `FOR UPDATE` are
- * separate commands of one deadline-bounded transaction. A connection lost
- * around COMMIT is reconciled against the attempted owner and sequence: our
- * run id at the attempted `seq` → claimed; the previously locked owner and
- * `seq` still there → not committed (a first claim had no owner); anything
- * else → another runner holds it.
+ * The bootstrap (§7): the `new` document is inserted with `ON CONFLICT DO
+ * NOTHING` in its own committed, deadline-bounded transaction before any
+ * claim. Idempotent, so an uncertain outcome (connection lost, also inside
+ * COMMIT) is settled by repeating it: a repeat waits on the unique key for an
+ * insert still committing, and a repeat that commits proves the row exists.
+ */
+async function ensureStateRow(limits: BodyTextBackfillLimits): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await withClient(async (client) => {
+        await beginBootstrap(client, 'read_committed', limits);
+        try {
+          await client.query(
+            `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, NOW())
+             ON CONFLICT (setting_key) DO NOTHING`,
+            [BODY_TEXT_BACKFILL_STATE_KEY, JSON.stringify(initialState())],
+          );
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        }
+      }, assertNotStopped);
+      return;
+    } catch (error) {
+      if (!isConnectionError(error) || attempt >= BOOTSTRAP_ATTEMPTS) throw error;
+    }
+  }
+}
+
+/**
+ * The claim (§7): the committed state row `FOR UPDATE` in one
+ * deadline-bounded transaction. A connection lost around COMMIT is
+ * reconciled by locking that row again, which waits for a COMMIT still in
+ * flight: our run id at the attempted `seq` → claimed; the previously locked
+ * owner and `seq` still there → not committed; anything else → another runner
+ * holds it. The row's absence is never read as "not committed".
  */
 async function claim(runId: string, restart: boolean, limits: BodyTextBackfillLimits, hooks: BodyTextBackfillHooks): Promise<Claim> {
   const attempted: { value?: { next: BodyTextBackfillState; previous: { owner: string | null; seq: number }; fresh: boolean } } = {};
@@ -1831,12 +1880,9 @@ async function claim(runId: string, restart: boolean, limits: BodyTextBackfillLi
     return await withClient(async (client, broken) => {
       try {
         await beginBootstrap(client, 'read_committed', limits);
-        await client.query(
-          `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, NOW())
-           ON CONFLICT (setting_key) DO NOTHING`,
-          [BODY_TEXT_BACKFILL_STATE_KEY, JSON.stringify(initialState())],
-        );
-        const state = await readStateForUpdate(client);
+        // Validation barrier for every claim, a forced restart included: an
+        // invalid document fails here and is never replaced.
+        const state = await readStateForUpdate(client, limits.transientListMax);
         if (!state) throw new BodyTextBackfillError('state_invalid', 'claim', null);
         const { doc, now, updatedAt } = state;
         const live = doc.owner !== null && now.getTime() - updatedAt.getTime() < limits.leaseMs;
@@ -1896,8 +1942,6 @@ async function claim(runId: string, restart: boolean, limits: BodyTextBackfillLi
     const tried = attempted.value;
     if (!tried) return { kind: 'not_committed', doc: null, reason };
     const current = await reconcileClaim(limits);
-    // No row: the first-owner insert rolled back with the claim.
-    if (current === null) return { kind: 'not_committed', doc: null, reason };
     if (current.owner === runId && current.seq === tried.next.seq) {
       return { kind: 'claimed', doc: tried.next, fresh: tried.fresh };
     }
@@ -1908,15 +1952,21 @@ async function claim(runId: string, restart: boolean, limits: BodyTextBackfillLi
   }
 }
 
-/** Reconciliation read for an uncertain claim: the state row `FOR UPDATE` (or its absence), nothing written. */
-async function reconcileClaim(limits: BodyTextBackfillLimits): Promise<BodyTextBackfillState | null> {
+/**
+ * Reconciliation read for an uncertain claim: the committed state row
+ * `FOR UPDATE` under the lock deadline (so a COMMIT still in flight is
+ * waited for), nothing written. A missing row or an expired deadline stops
+ * the run without a verdict.
+ */
+async function reconcileClaim(limits: BodyTextBackfillLimits): Promise<BodyTextBackfillState> {
+  let state: LockedState | null;
   try {
-    return await withClient(async (client) => {
+    state = await withClient(async (client) => {
       await beginBootstrap(client, 'read_committed', limits);
       try {
-        const state = await readStateForUpdate(client);
+        const locked = await readStateForUpdate(client, limits.transientListMax);
         await client.query('ROLLBACK');
-        return state?.doc ?? null;
+        return locked;
       } catch (error) {
         await client.query('ROLLBACK').catch(() => undefined);
         throw error;
@@ -1926,6 +1976,8 @@ async function reconcileClaim(limits: BodyTextBackfillLimits): Promise<BodyTextB
     if (error instanceof BodyTextBackfillError) throw error;
     throw new RunInterrupted('reconciliation_failed');
   }
+  if (!state) throw new RunInterrupted('reconciliation_failed');
+  return state.doc;
 }
 
 function earliest(left: string | null, right: string | null): string | null {
@@ -2006,9 +2058,12 @@ export function formatBodyTextBackfillSummary(summary: BodyTextBackfillSummary):
 
 /**
  * The unlocked fast path: a tick on `done`/`waiting` with nothing due is one
- * settings read, in a read-only transaction bound by the job's deadlines.
+ * settings read, in a read-only transaction bound by the job's deadlines. The
+ * document is validated here too (an invalid one fails, never skipped).
  */
-async function nothingDue(limits: BodyTextBackfillLimits): Promise<{ doc: BodyTextBackfillState; kind: 'already_completed' | 'waiting' } | null> {
+async function nothingDue(limits: BodyTextBackfillLimits): Promise<
+  { doc: BodyTextBackfillState; kind: 'already_completed' | 'waiting' } | { kind: 'absent' } | null
+> {
   const row = await withClient(async (client) => {
     await beginBootstrap(client, 'read_only', limits);
     try {
@@ -2023,8 +2078,8 @@ async function nothingDue(limits: BodyTextBackfillLimits): Promise<{ doc: BodyTe
       throw error;
     }
   }, assertNotStopped);
-  if (!row) return null;
-  const doc = parseState(row.setting_value);
+  if (!row) return { kind: 'absent' };
+  const doc = parseState(row.setting_value, limits.transientListMax);
   if ((doc.status === 'done' || doc.status === 'waiting') && !due(doc, row.now)) {
     return { doc, kind: doc.status === 'done' ? 'already_completed' : 'waiting' };
   }
@@ -2053,10 +2108,11 @@ async function execute(options: BodyTextBackfillOptions): Promise<BodyTextBackfi
   let claimed: Claim;
   try {
     assertNotStopped();
-    if (!restart) {
-      const fast = await nothingDue(limits);
-      if (fast) return empty(fast.kind, fast.doc);
-    }
+    // A restart skips the fast path but not validation: the claim reads and
+    // validates the document before it would replace anything.
+    const fast = restart ? { kind: 'absent' as const } : await nothingDue(limits);
+    if (fast && fast.kind !== 'absent') return empty(fast.kind, fast.doc);
+    if (fast) await ensureStateRow(limits);
     claimed = await claim(runId, restart, limits, hooks);
   } catch (error) {
     if (error instanceof BodyTextBackfillError) throw error;
@@ -2134,10 +2190,14 @@ async function execute(options: BodyTextBackfillOptions): Promise<BodyTextBackfi
 
 /** One sanitized terminal line for every invocation, in both queue modes. */
 function logTerminal(summary: BodyTextBackfillSummary, failure?: BodyTextBackfillError): void {
-  logger.info({
-    job: 'body_text_backfill', ...summary,
-    ...(failure ? { outcome: 'failed', code: failure.code, failedPhase: failure.phase, failedPageId: failure.ownerId } : {}),
-  }, 'body_text backfill run finished');
+  if (failure) {
+    logger.error({
+      job: 'body_text_backfill', ...summary,
+      outcome: 'failed', code: failure.code, failedPhase: failure.phase, failedPageId: failure.ownerId,
+    }, 'body_text backfill run finished');
+    return;
+  }
+  logger.info({ job: 'body_text_backfill', ...summary }, 'body_text backfill run finished');
 }
 
 /**
@@ -2198,12 +2258,9 @@ export async function stopBodyTextBackfill(): Promise<void> {
 }
 
 function legacyTick(): void {
-  void processBodyTextBackfillJob({}).catch((error: unknown) => {
-    logger.error(
-      { job: 'body_text_backfill', code: error instanceof BodyTextBackfillError ? error.code : 'internal' },
-      'body_text backfill run failed',
-    );
-  });
+  // runBodyTextBackfill already logged this invocation's single terminal line
+  // (a failure included); the timer only consumes the rejection.
+  void processBodyTextBackfillJob({}).catch(() => undefined);
 }
 
 /** Legacy (USE_BULLMQ=false): first run after 30 s, then hourly. */

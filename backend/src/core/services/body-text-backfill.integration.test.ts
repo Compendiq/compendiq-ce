@@ -921,6 +921,46 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         expect(windows.length).toBeGreaterThanOrEqual(2);
         expect((await pageRow(pageId)).body_text).toBe(pair.text);
       });
+
+      it('collation-sensitive: under a numeric ICU text order a text-ordered walk skips the witness at 02000000-…; the job walks uuid order, finds it and writes nothing', async () => {
+        // A discriminating text order, as a database default collation could
+        // impose on the `id::text` alias: digits compare as numbers.
+        await query(`CREATE COLLATION IF NOT EXISTS zz_bt_numeric (provider = icu, locale = 'en-u-kn-true')`);
+        try {
+          const pageId = await insertPage({ html: pair.html, text: pair.text });
+          const witness = '02000000-0000-4000-8000-000000000000';
+          const decoys = ['0a000000-0000-4000-8000-000000000000', '0f000000-0000-4000-8000-000000000000',
+            '100aaaaa-0000-4000-8000-000000000000'];
+          for (const [index, id] of decoys.entries()) {
+            await insertVersion(pageId, { id, source: 'confluence', version: 10 + index, html: null, text: 'Use <xx> here' });
+          }
+          await insertVersion(pageId, { id: witness, source: 'confluence', version: 20, html: null, text: pair.text });
+          // The fixture discriminates: the same two-row keyset walk (uuid comparison) visits
+          // the witness in uuid order and skips it in numeric text order.
+          const walk = async (order: string) => {
+            const seen: string[] = [];
+            let after: string | null = null;
+            for (;;) {
+              const rows: { id: string }[] = (await query<{ id: string }>(
+                `SELECT pv.id::text AS id FROM page_versions pv
+                  WHERE pv.page_id = $1 AND ($2::uuid IS NULL OR pv.id > $2::uuid) ORDER BY ${order} LIMIT 2`,
+                [pageId, after],
+              )).rows;
+              seen.push(...rows.map((row) => row.id));
+              if (rows.length < 2) return seen;
+              after = rows[rows.length - 1]!.id;
+            }
+          };
+          expect(await walk('pv.id')).toContain(witness);
+          expect(await walk('pv.id::text COLLATE zz_bt_numeric')).not.toContain(witness);
+          const before = { page: await pageRow(pageId), versions: await versionRows(pageId) };
+          const summary = await run({ limits: { scanRows: 2 } });
+          expect(counts(summary)).toMatchObject({ paired_exempt: 1 });
+          expect({ page: await pageRow(pageId), versions: await versionRows(pageId) }).toEqual(before);
+        } finally {
+          await query('DROP COLLATION IF EXISTS zz_bt_numeric');
+        }
+      });
     });
   });
 
@@ -1259,7 +1299,7 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect((await pageRow(pageId)).body_text).toBe(preFix().fixed);
     });
 
-    it('a first claim found not committed leaves no state row; the next run claims it', async () => {
+    it('true rollback of a first claim (session ended before COMMIT): interrupted claim_transaction_refused; the committed `new` row is unchanged and owned by nobody; the next run claims and completes', async () => {
       await insertPage();
       const refused = await run({
         hooks: {
@@ -1271,8 +1311,95 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         },
       });
       expect(refused).toMatchObject({ outcome: 'interrupted', interruptCode: 'claim_transaction_refused' });
-      expect((await query('SELECT 1 FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY])).rows).toEqual([]);
+      expect(await state()).toMatchObject({ status: 'new', owner: null, seq: 0, pass: 0 });
       expect((await run()).outcome).toBe('done');
+    });
+
+    describe('a connection lost while PostgreSQL is still inside COMMIT (a deferred trigger holds the COMMIT)', () => {
+      const HOLD_KEY = 19_651_965;
+
+      /**
+       * Holds the COMMIT of the next state-row INSERT or UPDATE inside the
+       * server: a deferred constraint trigger waits on an advisory lock this
+       * test holds. Every pg client that runs a query is recorded so the one
+       * whose backend sits in that COMMIT can have its socket closed.
+       */
+      async function withHeldCommit(event: 'INSERT' | 'UPDATE', body: (hold: {
+        dropClientInCommit: () => Promise<void>;
+        release: () => Promise<void>;
+      }) => Promise<void>): Promise<void> {
+        const clients = new Set<pg.Client>();
+        const original = pg.Client.prototype.query;
+        vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+          clients.add(this);
+          return (original as (...a: unknown[]) => unknown).apply(this, args);
+        } as never);
+        const holder = new pg.Client({ connectionString: process.env.POSTGRES_URL });
+        await holder.connect();
+        await holder.query('SELECT pg_advisory_lock($1)', [HOLD_KEY]);
+        await query(`CREATE OR REPLACE FUNCTION zz_bt_hold_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN PERFORM pg_advisory_xact_lock(${HOLD_KEY}); RETURN NULL; END $$`);
+        await query(`CREATE CONSTRAINT TRIGGER zz_bt_hold_commit AFTER ${event} ON admin_settings
+          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.setting_key = '${BODY_TEXT_BACKFILL_STATE_KEY}')
+          EXECUTE FUNCTION zz_bt_hold_commit()`);
+        let released = false;
+        const release = async () => {
+          if (released) return;
+          released = true;
+          await holder.query('SELECT pg_advisory_unlock($1)', [HOLD_KEY]);
+        };
+        try {
+          await body({
+            dropClientInCommit: async () => {
+              let pid = 0;
+              await expect.poll(async () => {
+                pid = (await query<{ pid: number }>(
+                  `SELECT pid FROM pg_stat_activity
+                    WHERE datname = current_database() AND query = 'COMMIT' AND wait_event_type = 'Lock'`,
+                )).rows[0]?.pid ?? 0;
+                return pid;
+              }, { timeout: 15_000, interval: 20 }).toBeGreaterThan(0);
+              const victim = [...clients].find((client) => (client as unknown as { processID: number }).processID === pid)!;
+              (victim as unknown as { connection: { stream: Socket } }).connection.stream.destroy();
+            },
+            release,
+          });
+        } finally {
+          await release();
+          await holder.end();
+          await query('DROP TRIGGER IF EXISTS zz_bt_hold_commit ON admin_settings');
+          await query('DROP FUNCTION IF EXISTS zz_bt_hold_commit()');
+        }
+      }
+
+      it('the first-ever claim: reconciliation locks the committed row, waits for the COMMIT in flight and settles it claimed; the run completes and the next invocation is already_completed', async () => {
+        const pageId = await insertPage();
+        await withHeldCommit('UPDATE', async (hold) => {
+          const running = run();
+          await hold.dropClientInCommit();
+          // The reconciliation read is blocked behind the COMMIT still in flight.
+          await expectBlockedBackend('%FROM admin_settings WHERE setting_key = $1 FOR UPDATE%');
+          await hold.release();
+          const summary = await running;
+          expect(summary.outcome).toBe('done');
+          expect(await state()).toMatchObject({ status: 'done', owner: null, lastOwner: summary.runId });
+        });
+        expect((await pageRow(pageId)).body_text).toBe(preFix().fixed);
+        expect((await run()).outcome).toBe('already_completed');
+      });
+
+      it('the bootstrap insert: its repeat waits for the COMMIT in flight, finds the row, and the claim and the pass proceed', async () => {
+        const pageId = await insertPage();
+        await withHeldCommit('INSERT', async (hold) => {
+          const running = run();
+          await hold.dropClientInCommit();
+          await expectBlockedBackend('%INSERT INTO admin_settings%');
+          await hold.release();
+          expect((await running).outcome).toBe('done');
+        });
+        expect((await pageRow(pageId)).body_text).toBe(preFix().fixed);
+        expect(await state()).toMatchObject({ status: 'done', owner: null, pass: 1 });
+      });
     });
 
     it('a terminal release found not committed is retried within the run: done, owner = null, lastOwner = this run', async () => {
@@ -1331,8 +1458,9 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect((await state()).nextFullPassAfter).toBe(stored);
     });
 
-    it('state invariants: an unreachable combination is state_invalid and the row is left byte-identical; the shapes the job writes are accepted', async () => {
-      const pageId = await insertPage();
+    it('state invariants: an unreachable combination is state_invalid on the fast path and before a forced restart, the row byte-identical; the shapes the job writes are accepted under their list bound', async () => {
+      const pageIds = [await insertPage(), await insertPage(), await insertPage()];
+      const [pageId] = pageIds as [number];
       await run();
       const valid = await state();
       const list = (ids: number[]) => ({ ids, overflow: false, count: ids.length, sample: ids.slice(0, 20) });
@@ -1345,38 +1473,50 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       const raw = async () => (await query<{ setting_value: string }>(
         'SELECT setting_value FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY],
       )).rows[0]!.setting_value;
+      const overflow = (count: number, sample: number[]) => ({ ids: [], overflow: true, count, sample });
       const invalid: Partial<BodyTextBackfillState>[] = [
         { status: 'running', owner: null },
         { status: 'idle', owner: randomUUID() },
         { status: 'idle', cursor: valid.highWater + 1 },
         { phase: 'retry' },
         { status: 'waiting', unresolved: empty, tooLarge: 0 },
+        // The release writes idle/retry for an exact list, never `waiting`.
+        { status: 'waiting', unresolved: list([pageId]), tooLarge: 1, nextFullPassAfter: future },
         { status: 'idle', unresolved: { ids: [pageId, pageId], overflow: false, count: 2, sample: [pageId, pageId] } },
         { status: 'idle', unresolved: { ids: [pageId], overflow: false, count: 2, sample: [pageId] } },
         { status: 'idle', unresolved: { ids: [pageId], overflow: false, count: 1, sample: [] } },
-        { status: 'idle', unresolved: { ids: [valid.highWater + 1], overflow: false, count: 1, sample: [valid.highWater + 1] } },
-        { status: 'idle', unresolved: { ids: [], overflow: true, count: 0, sample: [] } },
-        { status: 'idle', unresolved: { ids: [], overflow: true, count: 3, sample: [1, 1] } },
-        { status: 'idle', phase: 'retry', unresolved: { ids: [], overflow: true, count: 3, sample: [1, 2, 3] } },
+        { status: 'idle', unresolved: list([valid.highWater + 1]) },
+        { status: 'idle', unresolved: overflow(0, []) },
+        // An overflow within the list bound, a sample beyond the horizon, out of order or duplicated.
+        { status: 'waiting', unresolved: overflow(1, [valid.highWater + 1]), nextFullPassAfter: future },
+        { status: 'waiting', unresolved: overflow(3, pageIds), nextFullPassAfter: future },
+        { status: 'idle', unresolved: overflow(3, [1, 1]) },
+        { status: 'idle', unresolved: overflow(201, [...pageIds].reverse()) },
+        { status: 'idle', unresolved: overflow(201, [pageIds[0]!, pageIds[1]!, valid.highWater + 1]) },
+        { status: 'idle', phase: 'retry', unresolved: overflow(201, pageIds) },
         { pass: 0 },
         { status: 'done', tooLarge: 1 },
       ];
       for (const patch of invalid) {
         await write({ ...valid, ...patch });
         const stored = await raw();
-        await expect(run({ restart: true }), JSON.stringify(patch)).rejects.toMatchObject({ code: 'state_invalid' });
+        await expect(run(), `fast path ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
+        expect(await raw()).toBe(stored);
+        await expect(run({ restart: true }), `restart ${JSON.stringify(patch)}`).rejects.toMatchObject({ code: 'state_invalid' });
         expect(await raw()).toBe(stored);
       }
-      const accepted: [Partial<BodyTextBackfillState>, string][] = [
-        [{ status: 'idle', phase: 'scan', unresolved: list([pageId]) }, '0 seconds'],
-        [{ status: 'idle', phase: 'retry', unresolved: list([pageId]), tooLarge: 1 }, '0 seconds'],
-        [{ status: 'waiting', unresolved: { ids: [], overflow: true, count: 3, sample: [1, 2, 3] }, nextFullPassAfter: future }, '0 seconds'],
-        [{ status: 'waiting', tooLarge: 1, nextFullPassAfter: future }, '0 seconds'],
-        [{ status: 'running', owner: randomUUID(), phase: 'scan' }, '16 minutes'],
+      // Scaled list bound 2: an overflow of 3 is valid only under that bound.
+      const scaled = { transientListMax: 2 };
+      const accepted: [Partial<BodyTextBackfillState>, string, Partial<BodyTextBackfillLimits>][] = [
+        [{ status: 'idle', phase: 'scan', unresolved: list([pageId]) }, '0 seconds', {}],
+        [{ status: 'idle', phase: 'retry', unresolved: list([pageId]), tooLarge: 1 }, '0 seconds', {}],
+        [{ status: 'waiting', unresolved: overflow(3, pageIds), nextFullPassAfter: future }, '0 seconds', scaled],
+        [{ status: 'waiting', tooLarge: 1, nextFullPassAfter: future }, '0 seconds', {}],
+        [{ status: 'running', owner: randomUUID(), phase: 'scan' }, '16 minutes', {}],
       ];
-      for (const [patch, ago] of accepted) {
+      for (const [patch, ago, limits] of accepted) {
         await write({ ...valid, ...patch }, ago);
-        await expect(run(), JSON.stringify(patch)).resolves.toMatchObject({ runId: expect.any(String) });
+        await expect(run({ limits }), JSON.stringify(patch)).resolves.toMatchObject({ runId: expect.any(String) });
       }
     });
 
@@ -1743,11 +1883,24 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect(counts(second)).toMatchObject({ repaired: 3 });
     });
 
-    it('D12: 180 affected copies far above the statement budget (12 KiB html each, 2.1 MiB stored, budget scaled to 64 KiB) with a few bytes of corrected text → written, not page_too_large; no statement exceeds the budget', async () => {
+    it('D12: 180 affected copies far above the statement budget (12 KiB html each, 2.1 MiB stored, budget scaled to 64 KiB) with a few bytes of corrected text → written, not page_too_large, under a corrected-text limit (4 KiB) between their corrected total and their raw input; no statement exceeds the budget', async () => {
       const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
       await affectedHistory(pageId, 180, 12 * KIB);
+      // D12 limits corrected output only: a raw-input cap at the same value
+      // would refuse this page (180 × 10 B corrected, 180 × ~12 KiB raw).
+      const maxCorrectedBytes = 4 * KIB;
+      const sizes = (await query<{ corrected: string; raw: string }>(
+        `SELECT (count(*) * octet_length('&lt;br&gt;'))::text AS corrected,
+                sum(octet_length(body_html) + octet_length(body_text))::text AS raw
+           FROM page_versions WHERE page_id = $1`, [pageId],
+      )).rows[0]!;
+      expect(Number(sizes.corrected)).toBeLessThan(maxCorrectedBytes);
+      expect(Number(sizes.raw)).toBeGreaterThan(maxCorrectedBytes);
       let maxBytes = 0;
-      const summary = await run({ limits: SCALED, hooks: { onStatement: (info) => { maxBytes = Math.max(maxBytes, info.bytes); } } });
+      const summary = await run({
+        limits: { ...SCALED, maxCorrectedBytes },
+        hooks: { onStatement: (info) => { maxBytes = Math.max(maxBytes, info.bytes); } },
+      });
       expect(counts(summary)).toMatchObject({ repaired: 180 });
       expect(counts(summary).page_too_large ?? 0).toBe(0);
       expect(maxBytes).toBeGreaterThan(0);
@@ -1911,6 +2064,23 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       expect(counts(summary)).toMatchObject({ oversized: 1, repaired: 2 });
     });
 
+    it('D4 (scaled): on one owner a large + 1 B pair and a small pair that together fit the ordinary window are still two parser requests, the large one alone', async () => {
+      const head = '<p>&amp;lt;br&amp;gt;</p><!--';
+      const tail = '-->';
+      const small = preFix('em', 'Draft');
+      const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain', draftHtml: small.html, draftText: small.text });
+      await query(
+        `UPDATE pages SET body_html = $2 || repeat('x', $3) || $4, body_text = '<br>' WHERE id = $1`,
+        [pageId, head, 16 * KIB + 1 - head.length - tail.length, tail],
+      );
+      const together = 16 * KIB + 1 + Buffer.byteLength('<br>') + Buffer.byteLength(small.html) + Buffer.byteLength(small.text);
+      expect(together).toBeLessThanOrEqual(SCALED.windowBytes!);
+      const requests: string[][] = [];
+      const summary = await run({ limits: SCALED, hooks: { beforeParserRequest: (_ownerId, keys) => { requests.push(keys); } } });
+      expect(requests).toEqual([['p:'], ['d:']]);
+      expect(counts(summary)).toMatchObject({ repaired: 2 });
+    });
+
     describe('the run-owned parser worker', () => {
       /** About 1.6 MiB of html whose parse takes far longer than the scaled request limit. */
       const slowHtml = `<div>${'<span>&amp;lt;x&amp;gt;</span>'.repeat(50_000)}</div>`;
@@ -1925,11 +2095,24 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         });
       }
 
-      it('stop during a parse terminates the run\'s worker and returns only after it exited; the run ends interrupted with nothing recorded', async () => {
+      /** Records every message the parent posts to a real worker. */
+      function recordPosts(onPost: (message: { type: string; pairs?: { key: string }[] }) => void) {
+        const original = Worker.prototype.postMessage;
+        return vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (this: Worker, message: unknown, ...rest: unknown[]) {
+          onPost(message as { type: string; pairs?: { key: string }[] });
+          return (original as (...a: unknown[]) => void).call(this, message, ...rest);
+        });
+      }
+
+      it('stop during the handshake (before any row is posted) terminates the cold worker, returns after its exit; nothing recorded', async () => {
         const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
         await insertVersion(pageId, { version: 2, html: slowHtml, text: 'x' });
         const events: string[] = [];
         recordExits(events);
+        const rowRequests: string[][] = [];
+        recordPosts((message) => {
+          if (message.type === 'classify' && message.pairs?.[0]?.key !== 'canary') rowRequests.push(message.pairs!.map((p) => p.key));
+        });
         let stopped: Promise<number> | null = null;
         const summary = await run({
           hooks: {
@@ -1939,6 +2122,34 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
           },
         });
         await stopped;
+        expect(rowRequests).toEqual([]);
+        expect(summary.outcome).toBe('interrupted');
+        expect(counts(summary)).toEqual({});
+        expect(events[0]).toBe('exited');
+        expect(events.at(-1)).toBe('stop returned');
+        expect(await state()).toMatchObject({ cursor: 0, passTotals: {}, owner: null });
+      });
+
+      it('stop after a healthy worker received the row request terminates it mid-parse and returns only after it exited; no owner checkpoint', async () => {
+        const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+        await insertVersion(pageId, { version: 2, html: slowHtml, text: 'x' });
+        const events: string[] = [];
+        recordExits(events);
+        const posted: string[] = [];
+        let stopped: Promise<number> | null = null;
+        recordPosts((message) => {
+          if (message.type !== 'classify') return;
+          const key = message.pairs?.[0]?.key ?? '';
+          posted.push(key);
+          // The canary answered (the worker is healthy) and the row request is posted.
+          if (key !== 'canary' && !stopped) {
+            setImmediate(() => { stopped = stopBodyTextBackfill().then(() => events.push('stop returned')); });
+          }
+        });
+        const summary = await run();
+        await stopped;
+        expect(posted[0]).toBe('canary');
+        expect(posted.filter((key) => key !== 'canary')).toHaveLength(1);
         expect(summary.outcome).toBe('interrupted');
         expect(counts(summary)).toEqual({});
         expect(events[0]).toBe('exited');
@@ -2108,6 +2319,36 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       await run({ limits: { maxAffectedCopies: 0, transientListMax: 2 } });
       const doc = await state();
       expect(doc).toMatchObject({ status: 'waiting', tooLarge: 3, overflowBackoffMs: null });
+      expect(Date.parse(doc.nextFullPassAfter!)).toBe(Date.parse(doc.passStartedAt!) + DAY);
+    });
+
+    it('D12 after an explicit restart: the too-large checkpoint keeps the earlier carried re-check — at the waiting release and across an interruption and resume; a consumed due trigger starts its pass with NULL and the daily time', async () => {
+      await insertPage();
+      await run();
+      const carried = new Date((await dbNow()) + 3_600_000).toISOString();
+      await patchState({ nextFullPassAfter: carried });
+      const big = await insertPage();
+      const later = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const limits = { maxAffectedCopies: 0 };
+      // Immediate release: waiting, and the carried time is still the next one.
+      expect((await run({ restart: true, limits })).outcome).toBe('waiting');
+      expect(await state()).toMatchObject({ status: 'waiting', tooLarge: 1, nextFullPassAfter: carried });
+      // Interrupted after the checkpoint: the stored time is already the carried one.
+      const interrupted = await run({
+        restart: true, limits, hooks: { atOpen: (ownerId) => { if (ownerId === later) void stopBodyTextBackfill(); } },
+      });
+      expect(interrupted.outcome).toBe('interrupted');
+      expect(await state()).toMatchObject({ status: 'idle', cursor: big, tooLarge: 1, nextFullPassAfter: carried });
+      armBodyTextBackfill();
+      expect((await run({ limits })).outcome).toBe('waiting');
+      expect((await state()).nextFullPassAfter).toBe(carried);
+      // A due trigger is consumed: the fresh pass starts with NULL; the checkpoint stores the daily time.
+      await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
+      const atOpen: (string | null)[] = [];
+      await run({ limits, hooks: { atOpen: async () => { atOpen.push((await state()).nextFullPassAfter); } } });
+      expect(atOpen[0]).toBeNull();
+      const doc = await state();
+      expect(doc.status).toBe('waiting');
       expect(Date.parse(doc.nextFullPassAfter!)).toBe(Date.parse(doc.passStartedAt!) + DAY);
     });
 
@@ -2332,8 +2573,22 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
   // ─── 10. Scheduling ───────────────────────────────────────────────────────
 
   describe('10. scheduling', () => {
-    it('legacy: a stop before the first run cancels it (its timer advanced past the deadline); the same timer without a stop starts a run; a stop during an in-flight run awaits it', async () => {
+    /** Every job terminal outcome line (`run finished`, and any other run outcome line), at any level. */
+    function recordOutcomeLines(): { level: string; message: string; fields: Record<string, unknown> }[] {
+      const lines: { level: string; message: string; fields: Record<string, unknown> }[] = [];
+      for (const level of ['info', 'warn', 'error'] as const) {
+        vi.spyOn(logger, level).mockImplementation(((fields: Record<string, unknown>, message?: string) => {
+          if (fields?.job === 'body_text_backfill' && /^body_text backfill run /.test(String(message))) {
+            lines.push({ level, message: String(message), fields });
+          }
+        }) as never);
+      }
+      return lines;
+    }
+
+    it('legacy: a stop before the first run cancels it (zero invocations while its timer is advanced through the first deadline); the same timer without a stop starts a run; a stop during an in-flight run awaits it', async () => {
       await insertPage();
+      const lines = recordOutcomeLines();
       const timers = { toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] as const };
       vi.useFakeTimers({ toFake: [...timers.toFake] });
       try {
@@ -2343,6 +2598,10 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       } finally {
         vi.useRealTimers();
       }
+      // A fired callback would invoke the job (refused by the latch, but
+      // still one terminal line); a cancelled one invokes nothing.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(lines).toEqual([]);
       expect((await query('SELECT 1 FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY])).rows).toEqual([]);
       armBodyTextBackfill();
       // Control: without the stop, the first-delay timer starts a run.
@@ -2369,6 +2628,28 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
       await stopping;
       expect((await inFlight).outcome).toBe('interrupted');
       expect((await state()).owner).toBeNull();
+    });
+
+    it('legacy: a failed timer invocation logs exactly one terminal outcome line (failed, fixed code, error level)', async () => {
+      await insertPage();
+      await run();
+      await query(`UPDATE admin_settings SET setting_value = '{"v":2}' WHERE setting_key = $1`, [BODY_TEXT_BACKFILL_STATE_KEY]);
+      const lines = recordOutcomeLines();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+      try {
+        startBodyTextBackfillWorker(3_600_000, 1_000);
+        vi.advanceTimersByTime(1_000);
+        stopBodyTextBackfillWorker();
+      } finally {
+        vi.useRealTimers();
+      }
+      await expect.poll(() => lines.length, { timeout: 15_000 }).toBeGreaterThan(0);
+      await stopBodyTextBackfill();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(lines).toEqual([expect.objectContaining({
+        level: 'error', message: 'body_text backfill run finished',
+        fields: expect.objectContaining({ outcome: 'failed', code: 'state_invalid' }),
+      })]);
     });
 
     it('the BullMQ/legacy processor returns the summary string', async () => {
