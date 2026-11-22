@@ -905,6 +905,9 @@ const RTF_SYMBOL_TEXT: ReadonlyMap<string, string> = new Map([
  *   charsets (`\fcharsetN`) are not read: bytes in a font whose charset
  *   differs from the document's decode wrongly, and on a double-byte page a
  *   letter after such a byte can be swallowed as its trail byte.
+ * - `\` plus a line break (CR, LF or CRLF as one) is a paragraph break like
+ *   `\par`, and ends a pending `\ucN` fallback the same way. It is silent in a
+ *   skipped group. A `\` at the end of input is dropped.
  * - `\binN` and the N raw bytes after it (one fallback unit) are skipped,
  *   even inside a skipped group, so binary data never reads as markup.
  * - Listed destination groups are skipped whole. Unbalanced braces are
@@ -1049,6 +1052,17 @@ function scanRtf(rtf: string): string {
       if (skippedDepth > 0) continue;
       if (skip > 0) skip -= 1;
       else bytes.push(parseInt(rtf.slice(i - 2, i), 16));
+      continue;
+    }
+
+    // `\` and a source line break (CR, LF or CRLF as one) is `\par`, which
+    // AppKit writers (TextEdit, `textutil`) use for every paragraph.
+    const next = rtf.charAt(i + 1);
+    if (next === '\r' || next === '\n') {
+      i += next === '\r' && rtf.charAt(i + 2) === '\n' ? 3 : 2;
+      if (skippedDepth > 0) continue;
+      writeText('\n');
+      skip = 0;
       continue;
     }
 
