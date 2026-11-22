@@ -719,7 +719,7 @@ describe('rtfToText', () => {
   });
 
   it('ends a pending \\uN fallback at a backslash-newline break (#1966)', () => {
-    expect(rtfFromSource('{\\rtf1 \\u1055\\\nb}')).toBe('П\nb');
+    expect(rtfFromSource('{\\rtf1\\uc2 \\u1055\\\nb}')).toBe('П\nb');
     expect(rtfFromSource('{\\rtf1 \\u1055?\\\nb}')).toBe('П\nb');
   });
 
