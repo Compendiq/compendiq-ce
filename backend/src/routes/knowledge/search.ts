@@ -25,6 +25,7 @@ import {
 import { computeRetrievalConfidence } from '../../domains/llm/services/retrieval-confidence.js';
 import { getRagFetchWidth, RAG_FETCH_WIDTH_MAX } from '../../core/services/admin-settings-service.js';
 import { markdownToSnippetText } from '../../core/services/content-converter.js';
+import { escapeSnippetHtml, sqlEscapeSnippetHtml } from '../../core/utils/snippet-html.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
 import { formatQueryForEmbedding } from '../../domains/llm/services/query-instruction.js';
@@ -378,9 +379,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // range is [-1,1], not [0,1]; see `SearchResult.vectorScore` in
         // rag-service.ts (#1117).
         rank: r.score,
-        // chunk_text is Markdown-shaped since #1265; flatten for display so
-        // vector snippets match the keyword rows' plain-text shape.
-        snippet: markdownToSnippetText(r.chunkText).slice(0, 300),
+        // chunk_text is Markdown-shaped since #1265; flatten for display, cut,
+        // then escape (#1964): `snippet` is an HTML-safe fragment in every mode.
+        snippet: escapeSnippetHtml(markdownToSnippetText(r.chunkText).slice(0, 300)),
         score: r.score,
         similarity: r.vectorScore,
       }));
@@ -487,9 +488,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // Same three-field contract as the semantic branch above: `rank` orders,
         // `similarity` is the renderable cosine or null (#1117).
         rank: r.score,
-        // chunk_text is Markdown-shaped since #1265; flatten for display so
-        // vector snippets match the keyword rows' plain-text shape.
-        snippet: markdownToSnippetText(r.chunkText).slice(0, 300),
+        // Flatten, cut, then escape — same `snippet` contract as the semantic
+        // branch above (#1964).
+        snippet: escapeSnippetHtml(markdownToSnippetText(r.chunkText).slice(0, 300)),
         score: r.score,
         similarity: r.vectorScore,
       }));
@@ -677,8 +678,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
        SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
               cp.baseline_id, cp.frozen_version, hits.rank,
-              CASE WHEN hits.fuzzy THEN substring(cp.body_text, 1, 300)
-                   ELSE ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
+              -- #1964: snippet is an HTML-safe fragment. Fuzzy rows cut, then escape;
+              -- full-text rows escape BEFORE ts_headline, whose parser drops tag-shaped
+              -- text and never splits a token, so only its two <mark> tags are markup.
+              CASE WHEN hits.fuzzy THEN ${sqlEscapeSnippetHtml('substring(cp.body_text, 1, 300)')}
+                   ELSE ts_headline('${ftsLang}', ${sqlEscapeSnippetHtml("COALESCE(cp.body_text, '')")},
+                                    ${parser}('${ftsLang}', $1),
                                     'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>')
               END AS snippet,
               hits.total_count

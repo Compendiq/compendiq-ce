@@ -1327,6 +1327,51 @@ describe('PagesPage', () => {
       fireEvent.click(screen.getByTestId('bulk-clear-btn'));
       expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
     });
+
+    // #1964: the backend returns `snippet` as an HTML-safe fragment (escaped
+    // page text plus `<mark>`). These are exact snippets it returns, rendered
+    // through the real result row: the excerpt must read as the page's text,
+    // with only the highlight tags as markup.
+    it('renders escaped snippets as the page text, with mark the only element (#1964)', async () => {
+      const cases = [
+        {
+          title: 'Escaped Entity',
+          snippet: 'Use &amp;lt;<mark>br</mark>&amp;gt; for a line break',
+          text: 'Use &lt;br&gt; for a line break',
+          marks: ['br'],
+        },
+        {
+          title: 'Tag As Text',
+          snippet: 'Use &lt;<mark>br</mark>&gt; for a <mark>line</mark> break',
+          text: 'Use <br> for a line break',
+          marks: ['br', 'line'],
+        },
+        {
+          title: 'Script Example',
+          snippet: '<mark>Example</mark>: &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; is blocked',
+          text: 'Example: <script>alert("x")</script> is blocked',
+          marks: ['Example'],
+        },
+        {
+          title: 'Literal Mark',
+          snippet: '<mark>Wrap</mark> the term in &lt;mark&gt;important&lt;/mark&gt; tags',
+          text: 'Wrap the term in <mark>important</mark> tags',
+          marks: ['Wrap'],
+        },
+      ];
+      renderSearchWith(cases.map((c, index) => ({
+        id: 300 + index, title: c.title, spaceKey: 'DEV', snippet: c.snippet, rank: 0.5, similarity: 0.6,
+      })));
+
+      expect(await screen.findByText('Literal Mark', undefined, { timeout: 2000 })).toBeInTheDocument();
+      for (const c of cases) {
+        const excerpt = screen.getByText((_, element) => element?.tagName === 'DIV' && element.textContent === c.text);
+        const elements = Array.from(excerpt.querySelectorAll('*'));
+        expect(elements.map((element) => element.tagName)).toEqual(c.marks.map(() => 'MARK'));
+        expect(elements.map((element) => element.textContent)).toEqual(c.marks);
+        expect(elements.flatMap((element) => element.getAttributeNames())).toEqual([]);
+      }
+    });
   });
 
   // --- Semantic search empty state (#938, review follow-up on #993) ---
