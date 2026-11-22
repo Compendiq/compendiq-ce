@@ -275,6 +275,31 @@ async function freezeFixture(pageId: number, actorId: string): Promise<void> {
   );
 }
 
+/** An administrator with the Confluence integration off and baseline creation enabled. */
+async function freezingAdmin(): Promise<string> {
+  const admin = await insertUser('admin');
+  await query('INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)', [admin]);
+  await setPageBaselineCreationEnabled(admin, true);
+  return admin;
+}
+
+/** The real freeze: preview, then publish (lifecycle_revision + 1, local snapshot link). */
+async function realFreeze(pageId: number, actorId: string): Promise<{ baselineId: string; lifecycleRevision: string }> {
+  const prepared = await previewPageBaseline(pageId, actorId);
+  const frozen = await freezePage({
+    pageId, actorId, reason: 'Freeze the reviewed page for the backfill test',
+    expectedContentRevision: prepared.contentRevision, expectedManifestDigest: prepared.manifestDigest,
+  });
+  return { baselineId: frozen.baselineId!, lifecycleRevision: frozen.lifecycleRevision };
+}
+
+async function realThaw(pageId: number, actorId: string, frozen: { baselineId: string; lifecycleRevision: string }): Promise<void> {
+  await unfreezePage(pageId, actorId, {
+    reason: 'Thaw the page again for the backfill test',
+    expectedBaselineId: frozen.baselineId, expectedLifecycleRevision: frozen.lifecycleRevision,
+  });
+}
+
 /** A pending external write intent covering `pageId` (the page is `busy`). */
 async function pendingIntent(pageId: number, kind = 'page.relocate'): Promise<string> {
   const runtimeId = await insertTestRuntime();
@@ -1104,13 +1129,930 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
     });
   });
 
-  // keep helpers referenced while sections grow
-  it.skip('placeholder', () => {
-    void htmlToText; void logger; void formatBodyTextBackfillSummary; void processBodyTextBackfillJob;
-    void startBodyTextBackfillWorker; void freezePage; void previewPageBaseline; void setPageBaselineCreationEnabled;
-    void unfreezePage; void cancelPageWriteIntentBeforeEffect; void lockPageLifecycle; void withPageHierarchyWriteTransaction;
-    void fillVersionBody; void snapshotLocalVersionBeforeOverwrite; void upsertVersionMetadata; void restoreVersion;
-    void dbNow; void PAGE_HIERARCHY_LOCK_ID; void PAGE_LIFECYCLE_LOCK_KEY;
+  // ─── 5. The close under its locks ────────────────────────────────────────
+
+  describe('5. the close under its locks', () => {
+    const pair = preFix();
+
+    it('§6: with the connection default set to REPEATABLE READ, a metadata insert and a fixed lazy fill committing after admission and before the page lock are found as witness; the close runs READ COMMITTED', async () => {
+      const pageId = await insertPage({ html: pair.html, text: pair.text, source: 'confluence', remoteVersion: 7 });
+      const database = (await query<{ db: string }>('SELECT current_database() AS db')).rows[0]!.db;
+      await query(`ALTER DATABASE "${database}" SET default_transaction_isolation TO 'repeatable read'`);
+      await closePool();
+      let isolation = '';
+      try {
+        expect((await query<{ transaction_isolation: string }>('SHOW transaction_isolation')).rows[0]!.transaction_isolation)
+          .toBe('repeatable read');
+        const before = await pageRow(pageId);
+        const summary = await run({
+          hooks: {
+            afterAdmission: async (_owner, client) => {
+              isolation = (await client.query<{ transaction_isolation: string }>('SHOW transaction_isolation')).rows[0]!
+                .transaction_isolation;
+              const lazyHtml = '<p>Use &lt;br&gt; here</p>';
+              await upsertVersionMetadata(pageId, 9, 'v9', { editedAt: null, author: null, message: null });
+              await fillVersionBody(pageId, 9, lazyHtml, htmlToText(lazyHtml));
+            },
+          },
+        });
+        expect(isolation).toBe('read committed');
+        expect(counts(summary).paired_exempt).toBe(1);
+        expect(await pageRow(pageId)).toEqual(before);
+        expect((await query('SELECT body_text FROM page_versions WHERE page_id = $1', [pageId])).rows)
+          .toEqual([{ body_text: pair.text }]);
+      } finally {
+        await query(`ALTER DATABASE "${database}" RESET default_transaction_isolation`);
+        await closePool();
+      }
+    });
+
+    describe('a protected writer between Open and the close → nothing written, changed, resolved by a later tick', () => {
+      async function expectChangedThenResolved(pageId: number, writer: () => Promise<void>): Promise<void> {
+        const first = await run({ hooks: { afterScan: async (ownerId) => { if (ownerId === pageId) await writer(); } } });
+        expect(counts(first)).toMatchObject({ changed: 1 });
+        expect(counts(first).repaired ?? 0).toBe(0);
+        expect((await state()).unresolved.ids).toEqual([pageId]);
+        const later = await run();
+        expect(later.outcome).toBe('done');
+        expect((await state()).unresolved.ids).toEqual([]);
+      }
+
+      it('restore (real restoreVersion)', async () => {
+        const actor = await insertUser();
+        const pageId = await insertPage({ html: pair.html, text: pair.text, createdBy: actor });
+        await insertVersion(pageId, { version: 3, html: '<p>version three</p>', text: 'version three' });
+        await expectChangedThenResolved(pageId, async () => {
+          await restoreVersion(pageId, 3, { source: 'local', actorId: actor });
+        });
+        // The restore stored the pre-fix live text as local:7; the later tick repaired it.
+        const snapshot = (await query<{ body_text: string }>(
+          `SELECT body_text FROM page_versions WHERE page_id = $1 AND source = 'local' AND version_number = 7`, [pageId],
+        )).rows[0]!;
+        expect(snapshot.body_text).toBe(pair.fixed);
+      });
+
+      it('freeze (real) and thaw (real) move lifecycle_revision', async () => {
+        const admin = await freezingAdmin();
+        const freezing = await insertPage({ html: pair.html, text: pair.text, createdBy: admin, visibility: 'private' });
+        await expectChangedThenResolved(freezing, async () => { await realFreeze(freezing, admin); });
+        await truncateAllTables();
+        armBodyTextBackfill();
+        const admin2 = await freezingAdmin();
+        const thawing = await insertPage({ html: pair.html, text: pair.text, createdBy: admin2, visibility: 'private' });
+        const frozen = await realFreeze(thawing, admin2);
+        await expectChangedThenResolved(thawing, async () => { await realThaw(thawing, admin2, frozen); });
+      });
+
+      it('draft publish, sync overwrite and relocation compensation (their protected page updates)', async () => {
+        const draft = await insertPage({ html: pair.html, text: pair.text, draftHtml: '<p>draft</p>', draftText: 'draft' });
+        await expectChangedThenResolved(draft, async () => {
+          await query(`UPDATE pages SET body_html = draft_body_html, body_text = draft_body_text, version = version + 1,
+                         draft_body_html = NULL, draft_body_text = NULL WHERE id = $1`, [draft]);
+        });
+        await truncateAllTables();
+        armBodyTextBackfill();
+        const synced = await insertPage({ html: pair.html, text: pair.text, source: 'confluence', remoteVersion: 7 });
+        await expectChangedThenResolved(synced, async () => {
+          await query(`UPDATE pages SET body_html = '<p>upstream</p>', body_text = 'upstream',
+                         version = GREATEST(version + 1, 9), remote_version = 9 WHERE id = $1`, [synced]);
+        });
+        await truncateAllTables();
+        armBodyTextBackfill();
+        const relocated = await insertPage({ html: pair.html, text: pair.text });
+        await expectChangedThenResolved(relocated, async () => {
+          await query(`UPDATE pages SET source = 'standalone', body_html = $2, body_text = $3 WHERE id = $1`,
+            [relocated, '<p>original</p>', 'original']);
+        });
+      });
+
+      it('a member of A edited or deleted (retention) after the scan → changed', async () => {
+        const edited = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+        const editedVersion = await insertVersion(edited, { version: 2, html: pair.html, text: pair.text });
+        await expectChangedThenResolved(edited, async () => {
+          await query(`UPDATE page_versions SET body_html = '<p>Use &amp;lt;br&amp;gt; here!</p>' WHERE id = $1`, [editedVersion]);
+        });
+        await truncateAllTables();
+        armBodyTextBackfill();
+        const deleted = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+        const deletedVersion = await insertVersion(deleted, { version: 2, html: pair.html, text: pair.text });
+        await expectChangedThenResolved(deleted, async () => {
+          await query('DELETE FROM page_versions WHERE id = $1', [deletedVersion]);
+        });
+      });
+    });
+
+    it('a lazy fill of the same id (text-only `xxxx`, filled after the scan and before admission with `<p>&lt;br&gt;</p>` / `<br>`) is found as witness under the lock; page untouched', async () => {
+      const pageId = await insertPage({ html: '<p>&amp;lt;br&amp;gt;</p>', text: '<br>', source: 'confluence', remoteVersion: 7 });
+      const textOnly = await insertVersion(pageId, { source: 'confluence', version: 5, html: null, text: 'xxxx' });
+      const before = await pageRow(pageId);
+      const summary = await run({
+        hooks: {
+          beforeAdmission: async () => { await fillVersionBody(pageId, 5, '<p>&lt;br&gt;</p>', '<br>'); },
+        },
+      });
+      expect(counts(summary).paired_exempt).toBe(1);
+      expect(await pageRow(pageId)).toEqual(before);
+      expect(await versionRow(textOnly)).toMatchObject({ body_html: '<p>&lt;br&gt;</p>', body_text: '<br>' });
+    });
+
+    it('a lazy fill of an all-NULL placeholder after the witness decision blocks on the row lock until commit, then proceeds; a metadata-only insert in that window blocks on the page row and proceeds after commit', async () => {
+      const pageId = await insertPage({ html: pair.html, text: pair.text, source: 'confluence', remoteVersion: 7 });
+      await upsertVersionMetadata(pageId, 6, 'v6', { editedAt: null, author: null, message: null });
+      let fill: Promise<void> | null = null;
+      let insert: Promise<void> | null = null;
+      const summary = await run({
+        hooks: {
+          afterDecision: async () => {
+            fill = fillVersionBody(pageId, 6, '<p>six</p>', 'six');
+            await expectBlockedBackend('%UPDATE page_versions SET body_html%');
+            insert = upsertVersionMetadata(pageId, 10, 'v10', { editedAt: null, author: null, message: null });
+            await expectBlockedBackend('%INSERT INTO page_versions%');
+            const rows = (await query<{ version_number: number; body_html: string | null }>(
+              'SELECT version_number, body_html FROM page_versions WHERE page_id = $1 ORDER BY version_number', [pageId],
+            )).rows;
+            expect(rows).toEqual([{ version_number: 6, body_html: null }]);
+          },
+        },
+      });
+      await fill;
+      await insert;
+      expect(counts(summary).repaired).toBe(1);
+      expect((await pageRow(pageId)).body_text).toBe(pair.fixed);
+      expect((await query('SELECT version_number, body_text FROM page_versions WHERE page_id = $1 ORDER BY version_number', [pageId])).rows)
+        .toEqual([{ version_number: 6, body_text: 'six' }, { version_number: 10, body_text: null }]);
+    });
+
+    it('no-write proof: A = {h `<br>`, published `<em>`}, linked witness `<br>`; retention deletes h before the close → changed; the next attempt repairs the published text', async () => {
+      const actor = await insertUser();
+      const em = preFix('em');
+      const br = preFix('br');
+      const pageId = await insertPage({ html: em.html, text: em.text });
+      const h = await insertVersion(pageId, { version: 2, html: br.html, text: br.text });
+      const w = await insertVersion(pageId, { version: 1, html: br.html, text: br.text });
+      await insertBaseline(pageId, actor, w);
+      const first = await run({
+        hooks: { afterScan: async () => { await query('DELETE FROM page_versions WHERE id = $1', [h]); } },
+      });
+      expect(counts(first)).toMatchObject({ changed: 1 });
+      expect((await pageRow(pageId)).body_text).toBe(em.text);
+      const second = await run();
+      expect(second.outcome).toBe('done');
+      expect((await pageRow(pageId)).body_text).toBe(em.fixed);
+      expect((await versionRow(w))!.body_text).toBe(br.text);
+    });
+
+    it('no-write proof, rule (b) variant: one half of an equal-text split deleted after the scan, a third repairable copy → changed, then repaired', async () => {
+      const third = preFix('em', 'Third');
+      const pageId = await insertPage({ html: '<p>&amp;lt;br&amp;gt;</p>', text: '<br>' });
+      const half = await insertVersion(pageId, { version: 2, html: '<p>&amp;#60;br&amp;#62;</p>', text: '<br>' });
+      const thirdId = await insertVersion(pageId, { version: 3, html: third.html, text: third.text });
+      const first = await run({
+        hooks: { afterScan: async () => { await query('DELETE FROM page_versions WHERE id = $1', [half]); } },
+      });
+      expect(counts(first)).toMatchObject({ changed: 1 });
+      expect((await run()).outcome).toBe('done');
+      expect((await pageRow(pageId)).body_text).toBe('&lt;br&gt;');
+      expect((await versionRow(thirdId))!.body_text).toBe(third.fixed);
+    });
+
+    it('retention attempting to delete the locked h during the close blocks until commit', async () => {
+      const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const h = await insertVersion(pageId, { version: 2, html: pair.html, text: pair.text });
+      let deleting: Promise<unknown> | null = null;
+      const summary = await run({
+        hooks: {
+          afterMembersLocked: async () => {
+            deleting = query('DELETE FROM page_versions WHERE id = $1', [h]);
+            await expectBlockedBackend('DELETE FROM page_versions WHERE id = $1');
+          },
+        },
+      });
+      expect(counts(summary).repaired).toBe(1);
+      await deleting;
+      expect(await versionRow(h)).toBeUndefined();
+    });
+
+    for (const order of ['retention holds a row of A', 'retention holds a placeholder'] as const) {
+      it(`${order} → the close rolls back at once: zero repair effects and zero success deltas at rollback; after the busy checkpoint the owner is listed, the cursor is past it and a later owner is served`, async () => {
+        const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+        const member = await insertVersion(pageId, { version: 2, html: pair.html, text: pair.text });
+        const placeholder = await insertVersion(pageId, { source: 'confluence', version: 3, html: null, text: null });
+        const later = await insertPage();
+        const holder = await withHeldClient();
+        try {
+          await holder.client.query('SELECT 1 FROM page_versions WHERE id = $1 FOR UPDATE',
+            [order === 'retention holds a row of A' ? member : placeholder]);
+          const pageBefore = await pageRow(pageId);
+          const memberBefore = await versionRow(member);
+          let atRollback: { page: unknown; member: unknown; totals: unknown } | null = null;
+          const summary = await run({
+            hooks: {
+              beforeCommit: async (step, ownerId) => {
+                if (step !== 'checkpoint' || ownerId !== pageId) return;
+                atRollback = { page: await pageRow(pageId), member: await versionRow(member), totals: (await state()).passTotals };
+              },
+            },
+          });
+          expect(atRollback).toEqual({ page: pageBefore, member: memberBefore, totals: {} });
+          const doc = await state();
+          expect(doc.unresolved.ids).toEqual([pageId]);
+          expect(doc.passTotals).toMatchObject({ busy: 1, repaired: 1 });
+          expect(summary.outcome).toBe('retry');
+          expect((await pageRow(later)).body_text).toBe(preFix().fixed);
+        } finally {
+          await holder.done();
+        }
+      });
+    }
+
+    it('A empty: a protected write between Open and the fenced close → changed; none → closed with the page row held FOR SHARE', async () => {
+      const quiet = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const outsider = await withHeldClient();
+      let refusal: string | undefined;
+      try {
+        const summary = await run({
+          hooks: {
+            beforeCommit: async (step, ownerId) => {
+              if (step !== 'fenced_close' || ownerId !== quiet) return;
+              refusal = await outsider.client.query('SELECT 1 FROM pages WHERE id = $1 FOR UPDATE NOWAIT', [quiet])
+                .then(() => 'acquired', (error: { code?: string }) => error.code);
+            },
+          },
+        });
+        expect(summary.outcome).toBe('done');
+        expect(refusal).toBe('55P03');
+      } finally {
+        await outsider.done();
+      }
+      await truncateAllTables();
+      armBodyTextBackfill();
+      const moving = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const summary = await run({
+        hooks: { afterScan: async () => { await query(`UPDATE pages SET title = 'Renamed' WHERE id = $1`, [moving]); } },
+      });
+      expect(counts(summary)).toMatchObject({ changed: 1 });
+    });
+
+    it('an interrupted owner is observed again from Open and ends correct', async () => {
+      const pageId = await insertPage({ html: pair.html, text: pair.text });
+      const interrupted = await run({ hooks: { afterScan: () => { void stopBodyTextBackfill(); } } });
+      expect(interrupted).toMatchObject({ outcome: 'interrupted', interruptCode: 'stopped', counts: {} });
+      expect((await pageRow(pageId)).body_text).toBe(pair.text);
+      armBodyTextBackfill();
+      const opened: number[] = [];
+      const resumed = await run({ hooks: { atOpen: (ownerId) => { opened.push(ownerId); } } });
+      expect(opened).toEqual([pageId]);
+      expect(resumed.outcome).toBe('done');
+      expect((await pageRow(pageId)).body_text).toBe(pair.fixed);
+    });
+  });
+
+  // ─── 6. Bounds ────────────────────────────────────────────────────────────
+
+  describe('6. bounds', () => {
+    const MIB = 1024 * 1024;
+
+    /** Server-side history rows (no client transfer): `count` affected copies of `<br>`. */
+    async function affectedHistory(pageId: number, count: number, padding = 0): Promise<void> {
+      await query(
+        `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+         SELECT $1, 'local', n, 'v' || n, '<p>&amp;lt;br&amp;gt;</p>' || CASE WHEN $3 > 0 THEN '<!--' || repeat('x', $3) || '-->' ELSE '' END,
+                '<br>'
+           FROM generate_series(1, $2) AS n`,
+        [pageId, count, padding],
+      );
+    }
+
+    it('D12: 201 affected copies → nothing written, page_too_large, status never done; exactly 200 → written', async () => {
+      const tooLarge = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await affectedHistory(tooLarge, 201);
+      const atLimit = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await affectedHistory(atLimit, 200);
+      const before = await versionRows(tooLarge);
+      const summary = await run();
+      expect(await versionRows(tooLarge)).toEqual(before);
+      expect(counts(summary)).toMatchObject({ page_too_large: 1, repaired: 200 });
+      const doc = await state();
+      expect(doc).toMatchObject({ status: 'waiting', tooLarge: 1 });
+      expect(Date.parse(doc.nextFullPassAfter!)).toBe(Date.parse(doc.passStartedAt!) + 24 * 3600_000);
+    });
+
+    it('D12: corrected text one byte over the limit → nothing written, page_too_large; exactly at the limit → written (limit scaled from 64 MiB)', async () => {
+      const corrected = Buffer.byteLength('&lt;br&gt;');
+      const over = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await affectedHistory(over, 3);
+      const limits = { maxCorrectedBytes: corrected * 3 - 1 };
+      const first = await run({ limits });
+      expect(counts(first)).toMatchObject({ page_too_large: 1 });
+      expect((await versionRows(over)).map((row) => row.body_text)).toEqual(['<br>', '<br>', '<br>']);
+      const second = await run({ restart: true, limits: { maxCorrectedBytes: corrected * 3 } });
+      expect(counts(second)).toMatchObject({ repaired: 3 });
+    });
+
+    it('D12: 180 affected copies of 1.5 MiB html each with a few bytes of corrected text (283 MiB stored) → written, not page_too_large; no statement touches more than 32 MiB', async () => {
+      const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await affectedHistory(pageId, 180, Math.round(1.5 * MIB));
+      let maxBytes = 0;
+      const summary = await run({ hooks: { onStatement: (info) => { maxBytes = Math.max(maxBytes, info.bytes); } } });
+      expect(counts(summary)).toMatchObject({ repaired: 180 });
+      expect(counts(summary).page_too_large ?? 0).toBe(0);
+      expect(maxBytes).toBeLessThanOrEqual(32 * MIB);
+    }, 180_000);
+
+    it('one affected copy beside 100,000 non-matching rows of the same text length → written; reads stay windowed and retained memory stays bounded', async () => {
+      const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await affectedHistory(pageId, 1);
+      await query(
+        `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+         SELECT $1, 'confluence', n, 'v' || n, '<p>abcd</p>', 'abcd' FROM generate_series(1, 100000) AS n`,
+        [pageId],
+      );
+      const heapBefore = process.memoryUsage().heapUsed;
+      let heapAtDecision = 0;
+      const statements = new Map<string, number>();
+      const summary = await run({
+        hooks: {
+          onStatement: (info) => { statements.set(info.kind, (statements.get(info.kind) ?? 0) + 1); },
+          afterDecision: () => { heapAtDecision = process.memoryUsage().heapUsed; },
+        },
+      });
+      expect(counts(summary)).toMatchObject({ repaired: 1, no_ampersand: 100_001 });
+      // 100,000 candidates hashed in windows of at most 1,000 ids.
+      expect(statements.get('witness_versions')).toBeGreaterThanOrEqual(100);
+      expect(heapAtDecision - heapBefore).toBeLessThan(96 * MIB);
+    }, 180_000);
+
+    it('96 outside copies of 1 MiB with a text length occurring in A and the only witness in a late window → found; no statement touches more than 32 MiB', async () => {
+      const pad = MIB - 5;
+      const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await query(
+        `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+         VALUES ($1, 'local', 1, 'A', '<p>&amp;lt;br&amp;gt; ' || repeat('y', $2) || '</p>', '<br> ' || repeat('y', $2))`,
+        [pageId, pad],
+      );
+      await query(
+        `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+         SELECT $1, 'confluence', n, 'v' || n, '<p>z</p>', repeat('q', $2 + 5) FROM generate_series(1, 95) AS n`,
+        [pageId, pad],
+      );
+      await query(
+        `INSERT INTO page_versions (id, page_id, source, version_number, title, body_html, body_text)
+         VALUES ('ffffffff-ffff-4fff-bfff-ffffffffffff', $1, 'confluence', 200, 'late', '<p>z</p>', '<br> ' || repeat('y', $2))`,
+        [pageId, pad],
+      );
+      const witnessStatements: number[] = [];
+      let maxBytes = 0;
+      const summary = await run({
+        hooks: {
+          onStatement: (info) => {
+            maxBytes = Math.max(maxBytes, info.bytes);
+            if (info.kind === 'witness_versions') witnessStatements.push(info.bytes);
+          },
+        },
+      });
+      expect(counts(summary)).toMatchObject({ paired_exempt: 1 });
+      expect(witnessStatements.length).toBeGreaterThanOrEqual(3);
+      expect(maxBytes).toBeLessThanOrEqual(32 * MIB);
+    }, 120_000);
+
+    it('a page with very many NULL placeholders is drained server-side and repaired', async () => {
+      const pageId = await insertPage({ html: pair().html, text: pair().text, source: 'confluence', remoteVersion: 7 });
+      await query(
+        `INSERT INTO page_versions (page_id, source, version_number, title)
+         SELECT $1, 'confluence', n, 'v' || n FROM generate_series(1, 20000) AS n`,
+        [pageId],
+      );
+      const summary = await run();
+      expect(counts(summary).repaired).toBe(1);
+    }, 60_000);
+
+    it('a published column that grows past the ceiling between metadata and load is never transferred → changed', async () => {
+      const pageId = await insertPage({ html: pair().html, text: pair().text });
+      const loaded: string[] = [];
+      const summary = await run({
+        limits: { ceilingBytes: 4096 },
+        hooks: {
+          onStatement: async (info) => {
+            if (info.kind === 'load_page' && info.ownerId === pageId) {
+              await query(`UPDATE pages SET body_html = $2 WHERE id = $1`, [pageId, `<p>&amp;${'g'.repeat(5000)}</p>`]);
+            }
+          },
+          onLoad: (info) => { loaded.push(info.key); },
+        },
+      });
+      expect(loaded).toEqual([]);
+      expect(summary.bytesLoaded).toBe(0);
+      expect(counts(summary)).toMatchObject({ changed: 1 });
+    });
+
+    it('an owner with very many current rows does not block and keeps memory bounded', async () => {
+      const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await query(
+        `INSERT INTO page_versions (page_id, source, version_number, title, body_html, body_text)
+         SELECT $1, 'local', n, 'v' || n, '<p>A &amp; B ' || n || '</p>', 'A & B ' || n FROM generate_series(1, 3000) AS n`,
+        [pageId],
+      );
+      const heapBefore = process.memoryUsage().heapUsed;
+      let heapAfterScan = 0;
+      const summary = await run({ hooks: { afterScan: () => { heapAfterScan = process.memoryUsage().heapUsed; } } });
+      expect(counts(summary)).toMatchObject({ current: 3000, owners: 1 });
+      expect(heapAfterScan - heapBefore).toBeLessThan(64 * MIB);
+    }, 120_000);
+
+    it('heartbeat during a long observation keeps the lease: no takeover while healthy', async () => {
+      const pageId = await insertPage();
+      await insertVersion(pageId, { version: 2, html: pair().html, text: pair().text });
+      const other = await replica();
+      try {
+        let seqBefore = 0;
+        let takeover: BodyTextBackfillSummary | null = null;
+        const summary = await run({
+          limits: { heartbeatMs: 0 },
+          hooks: {
+            atOpen: async () => { seqBefore = (await state()).seq; },
+            afterScan: async () => {
+              await patchState({}, '14 minutes');
+              takeover = await other.run();
+            },
+          },
+        });
+        expect(takeover).toMatchObject({ outcome: 'already_running' });
+        expect(summary.outcome).toBe('done');
+        expect((await state()).seq).toBeGreaterThan(seqBefore + 2);
+      } finally {
+        await other.close();
+      }
+    });
+
+    it('D4/D10: a column just over 4 MiB and one just under the 32 MiB ceiling are each parsed alone (repaired / unevaluable under the 256 MiB isolate); just over the ceiling is oversized and never loaded', async () => {
+      const head = '<p>&amp;lt;br&amp;gt;</p><!--';
+      const tail = '-->';
+      const large = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const under = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const over = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      for (const [pageId, total] of [[large, 4 * MIB + 1], [under, 32 * MIB], [over, 32 * MIB + 1]] as const) {
+        await query(
+          `UPDATE pages SET body_html = $2 || repeat('x', $3) || $4, body_text = '<br>' WHERE id = $1`,
+          [pageId, head, total - head.length - tail.length, tail],
+        );
+      }
+      const requests: [number, string[]][] = [];
+      const loaded: number[] = [];
+      const summary = await run({
+        hooks: {
+          beforeParserRequest: (ownerId, keys) => { requests.push([ownerId, keys]); },
+          onLoad: (info) => { loaded.push(info.ownerId); },
+        },
+      });
+      expect((await pageRow(large)).body_text).toBe('&lt;br&gt;');
+      // Measured: JSDOM needs more than the 256 MiB isolate for a 32 MiB body;
+      // the pair failed alone on a healthy worker and is a counted exemption.
+      expect((await pageRow(under)).body_text).toBe('<br>');
+      expect((await pageRow(over)).body_text).toBe('<br>');
+      expect(loaded).toEqual([large, under]);
+      expect(requests).toEqual([[large, ['p:']], [under, ['p:']]]);
+      expect(counts(summary)).toMatchObject({ oversized: 1, repaired: 1, unevaluable: 1 });
+    }, 180_000);
+
+    it('held hierarchy and lifecycle locks → busy within the lock deadline', async () => {
+      const first = await insertPage();
+      const second = await insertPage();
+      const holder = await withHeldClient();
+      try {
+        await holder.client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+        const hierarchy = await run({ limits: { lockTimeoutMs: 300 } });
+        expect(counts(hierarchy)).toMatchObject({ busy: 2 });
+      } finally {
+        await holder.done();
+      }
+      const lifecycle = await withHeldClient();
+      try {
+        await lifecycle.client.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, first]);
+        const retried = await run({ limits: { lockTimeoutMs: 300 } });
+        expect(counts(retried)).toMatchObject({ busy: 1, repaired: 1 });
+        expect((await state()).unresolved.ids).toEqual([first]);
+      } finally {
+        await lifecycle.done();
+      }
+      expect((await pageRow(second)).body_text).toBe(preFix().fixed);
+    });
+
+    it('a slow last statement past the transaction deadline ends the session; the uncertain-commit rule settles it (not committed → busy)', async () => {
+      const server = (await query<{ v: string }>("SELECT current_setting('server_version_num') AS v")).rows[0]!.v;
+      if (Number(server) < 170000) return;
+      const pageId = await insertPage();
+      const holder = await withHeldClient();
+      try {
+        await holder.client.query('SELECT pg_advisory_xact_lock(1965001)');
+        const summary = await run({
+          limits: { transactionTimeoutMs: 1500, lockTimeoutMs: 10_000, statementTimeoutMs: 10_000 },
+          hooks: {
+            beforeCommit: async (step, _owner, client) => {
+              if (step === 'close') await client.query('SELECT pg_advisory_xact_lock(1965001)');
+            },
+          },
+        });
+        expect(counts(summary)).toMatchObject({ busy: 1 });
+        expect(counts(summary).repaired ?? 0).toBe(0);
+      } finally {
+        await holder.done();
+      }
+      expect((await pageRow(pageId)).body_text).toBe(preFix().text);
+    });
+
+    it('stop during nested admission, a lock wait, a parse and the scan ends the run interrupted with consistent state', async () => {
+      // nested admission: the close in progress completes; the next statement stops.
+      const admitted = await insertPage();
+      await insertPage();
+      const duringAdmission = await run({ hooks: { afterAdmission: () => { void stopBodyTextBackfill(); } } });
+      expect(duringAdmission).toMatchObject({ outcome: 'interrupted', interruptCode: 'stopped' });
+      expect((await state()).cursor).toBe(admitted);
+      armBodyTextBackfill();
+      // lock wait: bounded by the lock deadline.
+      await truncateAllTables();
+      const waiting = await insertPage();
+      const holder = await withHeldClient();
+      try {
+        await holder.client.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, waiting]);
+        const duringLock = await run({
+          limits: { lockTimeoutMs: 500 },
+          hooks: { beforeAdmission: () => { void stopBodyTextBackfill(); } },
+        });
+        expect(duringLock.outcome).toBe('interrupted');
+      } finally {
+        await holder.done();
+      }
+      armBodyTextBackfill();
+      // a parse: the request is refused, nothing counted.
+      await truncateAllTables();
+      await insertPage();
+      const duringParse = await run({ hooks: { beforeParserRequest: () => { void stopBodyTextBackfill(); } } });
+      expect(duringParse).toMatchObject({ outcome: 'interrupted', counts: {} });
+      armBodyTextBackfill();
+      // the scan.
+      await truncateAllTables();
+      await insertPage();
+      const duringScan = await run({ hooks: { afterScan: () => { void stopBodyTextBackfill(); } } });
+      expect(duringScan).toMatchObject({ outcome: 'interrupted', counts: {} });
+      expect((await state())).toMatchObject({ status: 'idle', owner: null, cursor: 0 });
+    });
+
+    it('works with PG_POOL_MAX=1 (one pooled connection at a time)', async () => {
+      const original = process.env.PG_POOL_MAX;
+      const pageId = await insertPage({ draftHtml: preFix('em').html, draftText: preFix('em').text });
+      await insertVersion(pageId, { version: 2, html: preFix('code').html, text: preFix('code').text });
+      await closePool();
+      process.env.PG_POOL_MAX = '1';
+      try {
+        const summary = await run();
+        expect(summary.outcome).toBe('done');
+        expect(counts(summary).repaired).toBe(3);
+      } finally {
+        await closePool();
+        if (original === undefined) delete process.env.PG_POOL_MAX;
+        else process.env.PG_POOL_MAX = original;
+      }
+    });
+
+    function pair() {
+      return preFix();
+    }
+  });
+
+  // ─── 9. Completion and schedule ──────────────────────────────────────────
+
+  describe('9. completion and schedule (controlled database clock)', () => {
+    const DAY = 24 * 3600_000;
+
+    it('D12: a permanently busy owner beside a page_too_large owner whose history is then reduced → the full pass runs on the daily cadence, repairs the reduced page, never reports done early', async () => {
+      const limits = { maxAffectedCopies: 3 };
+      const busy = await insertPage();
+      await pendingIntent(busy);
+      const large = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      const ids = await Promise.all([1, 2, 3, 4].map((version) => insertVersion(large, { version, ...preFix() })));
+      const first = await run({ limits });
+      expect(first.outcome).toBe('retry');
+      let doc = await state();
+      expect(doc).toMatchObject({ status: 'idle', phase: 'retry', tooLarge: 1, unresolved: { ids: [busy] } });
+      expect(Date.parse(doc.nextFullPassAfter!)).toBe(Date.parse(doc.passStartedAt!) + DAY);
+      expect((await run({ limits })).outcome).toBe('retry');
+      await query('DELETE FROM page_versions WHERE id = $1', [ids[0]]);
+      await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
+      const daily = await run({ limits });
+      doc = await state();
+      expect(doc.pass).toBe(2);
+      expect(daily.outcome).toBe('retry');
+      expect(doc.status).not.toBe('done');
+      expect((await versionRows(large)).map((row) => row.body_text)).toEqual([preFix().fixed, preFix().fixed, preFix().fixed]);
+    });
+
+    it('D12: 201 page_too_large owners and no transient one → the daily cadence, not the overflow backoff', async () => {
+      for (let index = 0; index < 201; index += 1) await insertPage();
+      await run({ limits: { maxAffectedCopies: 0 } });
+      const doc = await state();
+      expect(doc).toMatchObject({ status: 'waiting', tooLarge: 201, overflowBackoffMs: null });
+      expect(Date.parse(doc.nextFullPassAfter!)).toBe(Date.parse(doc.passStartedAt!) + DAY);
+    }, 60_000);
+
+    it('a crash immediately after claiming a due pass and checkpointing one owner → the takeover resumes the same pass number, horizon and cursor', async () => {
+      const first = await insertPage();
+      const second = await insertPage();
+      await run();
+      await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
+      await query('UPDATE pages SET body_text = $2 WHERE id = ANY($1::int[])', [[first, second], preFix().text]);
+      await run({ hooks: { atOpen: (ownerId) => { if (ownerId === second) void stopBodyTextBackfill(); } } });
+      armBodyTextBackfill();
+      const crashed = await state();
+      expect(crashed).toMatchObject({ pass: 2, cursor: first, nextFullPassAfter: null });
+      await patchState({ status: 'running', owner: randomUUID() }, '20 minutes');
+      const opened: number[] = [];
+      await run({ hooks: { atOpen: (ownerId) => { opened.push(ownerId); } } });
+      const resumed = await state();
+      expect(opened).toEqual([second]);
+      expect(resumed).toMatchObject({ pass: 2, highWater: crashed.highWater, status: 'done' });
+    });
+
+    it('201 transient owners plus one too-large owner → the stored next time is passStartedAt + 24 h (overflow scaled: list limit 2)', async () => {
+      const limits = { transientListMax: 2, maxAffectedCopies: 1 };
+      for (let index = 0; index < 3; index += 1) await pendingIntent(await insertPage());
+      const large = await insertPage({ html: '<p>plain</p>', text: 'plain' });
+      await insertVersion(large, { version: 1, ...preFix() });
+      await insertVersion(large, { version: 2, ...preFix() });
+      await run({ limits });
+      const doc = await state();
+      expect(doc).toMatchObject({ status: 'waiting', tooLarge: 1, unresolved: { overflow: true, count: 3 } });
+      expect(Date.parse(doc.nextFullPassAfter!)).toBe(Date.parse(doc.passStartedAt!) + DAY);
+    });
+
+    it('at one clock instant with the daily time due: stale running/retry → fresh full pass; stale running/scan → resumed; idle/retry → fresh full pass', async () => {
+      await insertPage();
+      await run();
+      const base = await state();
+      const due = new Date((await dbNow()) - 1000).toISOString();
+      for (const [status, phase, fresh] of [
+        ['running', 'retry', true], ['running', 'scan', false], ['idle', 'retry', true],
+      ] as const) {
+        await query(`UPDATE admin_settings SET setting_value = $2, updated_at = NOW() - interval '20 minutes' WHERE setting_key = $1`, [
+          BODY_TEXT_BACKFILL_STATE_KEY,
+          JSON.stringify({ ...base, status, phase, owner: status === 'running' ? randomUUID() : null, nextFullPassAfter: due,
+            cursor: 0, unresolved: { ids: [], overflow: false, count: 0, sample: [] } }),
+        ]);
+        const summary = await run();
+        expect({ status, phase, pass: summary.pass }).toEqual({ status, phase, pass: fresh ? base.pass + 1 : base.pass });
+      }
+    });
+
+    it('an owner found too large in the retry phase is counted once and leaves the list', async () => {
+      const pageId = await insertPage();
+      const intent = await pendingIntent(pageId);
+      await run({ limits: { maxAffectedCopies: 1 } });
+      expect((await state()).unresolved.ids).toEqual([pageId]);
+      await settleIntent(intent);
+      await insertVersion(pageId, { version: 1, ...preFix() });
+      await run({ limits: { maxAffectedCopies: 1 } });
+      const doc = await state();
+      expect(doc).toMatchObject({ tooLarge: 1, unresolved: { ids: [] }, status: 'waiting' });
+      expect(doc.passTotals.page_too_large).toBe(1);
+    });
+
+    it('busy → released → done; a permanently refused owner never lets the pass report done while others are served', async () => {
+      const refused = await insertPage();
+      await pendingIntent(refused);
+      const served = await insertPage();
+      for (let tick = 0; tick < 3; tick += 1) {
+        const summary = await run();
+        expect(summary.outcome).toBe('retry');
+      }
+      expect((await pageRow(served)).body_text).toBe(preFix().fixed);
+      await query(`UPDATE page_write_intents SET status = 'cancelled', settled_at = NOW(), settlement_reason = 'test_settled',
+                     settlement_proof = '{"assertion":"no_remote_io_began"}'::jsonb WHERE page_ids && ARRAY[$1]::int[]`, [refused]);
+      expect((await run()).outcome).toBe('done');
+    });
+
+    it('K+1 unresolved with a small K: overflow → spaced pass → done; a crash mid-overflow resumes', async () => {
+      const limits = { transientListMax: 1 };
+      const a = await insertPage();
+      const b = await insertPage();
+      const intents = [await pendingIntent(a), await pendingIntent(b)];
+      expect((await run({ limits })).outcome).toBe('waiting');
+      let doc = await state();
+      expect(doc).toMatchObject({ unresolved: { overflow: true, count: 2 }, overflowBackoffMs: 3600_000 });
+      expect(Date.parse(doc.nextFullPassAfter!) - (await dbNow())).toBeGreaterThan(3500_000);
+      expect((await run({ limits })).outcome).toBe('waiting');
+      for (const intent of intents) await settleIntent(intent);
+      await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
+      // crash mid-overflow pass: claimed, one owner done, process gone.
+      await run({ limits, hooks: { atOpen: (ownerId) => { if (ownerId === b) void stopBodyTextBackfill(); } } });
+      armBodyTextBackfill();
+      await patchState({ status: 'running', owner: randomUUID() }, '20 minutes');
+      expect((await run({ limits })).outcome).toBe('done');
+      doc = await state();
+      expect(doc.overflowBackoffMs).toBeNull();
+    });
+
+    it('ticks before a due time are one settings read; at the due time a fresh pass starts; simultaneous due claimants start it once', async () => {
+      await insertPage();
+      await run();
+      const before = await state();
+      const reads: string[] = [];
+      const pool = getPool();
+      const spy = vi.spyOn(pool, 'query');
+      expect((await run()).outcome).toBe('already_completed');
+      reads.push(...spy.mock.calls.map((call) => String(call[0])));
+      spy.mockRestore();
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).toContain('SELECT setting_value, NOW() AS now FROM admin_settings');
+      expect((await state()).seq).toBe(before.seq);
+      await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
+      const other = await replica();
+      try {
+        const claimPaused = pause<[string, number | null, PoolClient]>();
+        const first = run({ hooks: { beforeCommit: async (step) => { if (step === 'claim') await claimPaused.hook(); } } });
+        await claimPaused.reached;
+        const second = other.run();
+        await expectBlockedBackend('%admin_settings%');
+        claimPaused.release();
+        const results = await Promise.all([first, second]);
+        expect(results.map((result) => result.outcome)).toEqual(['done', 'already_running']);
+        expect((await state()).pass).toBe(before.pass + 1);
+      } finally {
+        await other.close();
+      }
+    });
+
+    it('a page deleted mid-owner is gone; a trashed page is not gone', async () => {
+      const deleted = await insertPage();
+      const trashed = await insertPage();
+      const summary = await run({
+        hooks: {
+          afterScan: async (ownerId) => {
+            if (ownerId === deleted) await query('DELETE FROM pages WHERE id = $1', [deleted]);
+            if (ownerId === trashed) await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [trashed]);
+          },
+        },
+      });
+      expect(counts(summary)).toMatchObject({ gone: 1, changed: 1 });
+      expect((await run()).outcome).toBe('done');
+      expect((await pageRow(trashed)).body_text).toBe(preFix().fixed);
+    });
+
+    it('a lower page id committing behind the cursor is outside the cohort; pages above highWater are not visited; the re-check pass repairs them', async () => {
+      const writer = await withHeldClient();
+      let lowId = 0;
+      try {
+        lowId = (await writer.client.query<{ id: number }>(
+          `INSERT INTO pages (title, body_html, body_text, source, version, visibility) VALUES ('late', $1, $2, 'standalone', 1, 'shared') RETURNING id`,
+          [preFix().html, preFix().text],
+        )).rows[0]!.id;
+        const committed = await insertPage();
+        const above: number[] = [];
+        const summary = await run({
+          hooks: {
+            afterScan: async () => { above.push(await insertPage()); },
+          },
+        });
+        expect(summary.outcome).toBe('done');
+        expect((await pageRow(committed)).body_text).toBe(preFix().fixed);
+        expect(above).toHaveLength(1);
+        await writer.client.query('COMMIT');
+        expect((await pageRow(lowId)).body_text).toBe(preFix().text);
+        expect((await pageRow(above[0]!)).body_text).toBe(preFix().text);
+      } finally {
+        await writer.done();
+      }
+      expect((await run({ restart: true })).outcome).toBe('done');
+      expect((await pageRow(lowId)).body_text).toBe(preFix().fixed);
+    });
+
+    it('premise: an old-style lazy fill before a close and an old-style draft save after it are repaired by the re-check pass', async () => {
+      const pageId = await insertPage({ html: '<p>plain</p>', text: 'plain', source: 'confluence', remoteVersion: 7 });
+      await upsertVersionMetadata(pageId, 3, 'v3', { editedAt: null, author: null, message: null });
+      await run();
+      // A backend older than #1940 writes pre-fix text after the close.
+      await query(`UPDATE page_versions SET body_html = $2, body_text = $3 WHERE page_id = $1 AND version_number = 3`,
+        [pageId, preFix().html, preFix().text]);
+      await query('UPDATE pages SET draft_body_html = $2, draft_body_text = $3 WHERE id = $1', [pageId, preFix('em').html, preFix('em').text]);
+      await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
+      expect((await run()).outcome).toBe('done');
+      expect((await pageRow(pageId)).draft_body_text).toBe(preFix('em').fixed);
+      expect((await query('SELECT body_text FROM page_versions WHERE page_id = $1', [pageId])).rows).toEqual([{ body_text: preFix().fixed }]);
+    });
+
+    it('D8: first completion → re-check after 24 h → then every 30 days, across a restart, on the database clock', async () => {
+      await insertPage();
+      const t0 = await dbNow();
+      await run();
+      let doc = await state();
+      expect(doc.status).toBe('done');
+      expect(doc.firstCompletedAt).not.toBeNull();
+      expect(Date.parse(doc.nextFullPassAfter!) - Date.parse(doc.completedAt!)).toBe(DAY);
+      expect(Date.parse(doc.completedAt!)).toBeGreaterThanOrEqual(t0 - 1000);
+      const first = doc.firstCompletedAt;
+      // A process restart: the next tick decides from the stored row only.
+      await patchState({ nextFullPassAfter: new Date((await dbNow()) - 1000).toISOString() });
+      expect((await run()).outcome).toBe('done');
+      doc = await state();
+      expect(doc.pass).toBe(2);
+      expect(doc.firstCompletedAt).toBe(first);
+      expect(Date.parse(doc.nextFullPassAfter!) - Date.parse(doc.completedAt!)).toBe(30 * DAY);
+    });
+
+    it('first-ever claim on an empty installation completes', async () => {
+      expect((await run()).outcome).toBe('done');
+      expect(await state()).toMatchObject({ status: 'done', pass: 1, highWater: 0 });
+    });
+  });
+
+  // ─── 10. Scheduling ───────────────────────────────────────────────────────
+
+  describe('10. scheduling', () => {
+    it('legacy: a stop before the first run cancels it; a stop during an in-flight run awaits it', async () => {
+      await insertPage();
+      startBodyTextBackfillWorker(3_600_000, 3_600_000);
+      await stopBodyTextBackfill();
+      expect((await query('SELECT 1 FROM admin_settings WHERE setting_key = $1', [BODY_TEXT_BACKFILL_STATE_KEY])).rows).toEqual([]);
+      armBodyTextBackfill();
+      const opened = pause<[number]>();
+      // The processor entry used by both modes, with a hook to pause in flight.
+      const inFlight = runBodyTextBackfill({ hooks: { atOpen: opened.hook } });
+      await opened.reached;
+      const stopping = stopBodyTextBackfill();
+      opened.release();
+      await stopping;
+      expect((await inFlight).outcome).toBe('interrupted');
+      expect((await state()).owner).toBeNull();
+    });
+
+    it('the BullMQ/legacy processor returns the summary string', async () => {
+      await insertPage();
+      const text = await processBodyTextBackfillJob({});
+      expect(text).toMatch(/^body_text backfill done; pass 1 scan; /);
+    });
+  });
+
+  // ─── 11. Reporting ────────────────────────────────────────────────────────
+
+  describe('11. reporting', () => {
+    it('per-commit progress, residual and final lines for ordinary, all-skip and interrupted runs; summary ≤ 500 characters; canary and raw error text absent from logs, errors and the stored result', async () => {
+      const canary = 'zz-private-canary-1965';
+      const lines: { level: string; message: string; payload: string }[] = [];
+      for (const level of ['info', 'warn', 'error', 'debug'] as const) {
+        vi.spyOn(logger, level).mockImplementation(((payload: unknown, message?: string) => {
+          lines.push({ level, message: String(message), payload: JSON.stringify(payload) });
+        }) as never);
+      }
+      // Run 1, ordinary: a repaired page whose HTML carries the canary, and an oversized residual.
+      const html = `<style>@import "${canary}";</style><p>Use &amp;lt;br&amp;gt;</p>`;
+      const canaryPage = await insertPage({ html, text: `@import "${canary}";Use <br>` });
+      const oversized = await insertPage({ html: `<p>&amp;${'w'.repeat(5000)}</p>`, text: 'x' });
+      const ordinary = await runBodyTextBackfill({ limits: { ceilingBytes: 4096 } });
+      expect((await pageRow(canaryPage)).body_text).toBe(`@import "${canary}";Use &lt;br&gt;`);
+      // Run 2, all-skip: the re-check pass finds nothing to write.
+      const allSkip = await processBodyTextBackfillJob({ restart: true });
+      // Run 3, interrupted by a raw PostgreSQL error that quotes page text.
+      await query(`CREATE OR REPLACE FUNCTION zz_backfill_test_raw() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'raw failure %', '${canary}'; END $$ LANGUAGE plpgsql`);
+      await query(`CREATE TRIGGER zz_backfill_test_raw BEFORE UPDATE OF body_text ON pages FOR EACH ROW EXECUTE FUNCTION zz_backfill_test_raw()`);
+      await insertPage();
+      let thrown: unknown;
+      try {
+        await processBodyTextBackfillJob({ restart: true });
+      } catch (error) {
+        thrown = error;
+      } finally {
+        await query('DROP TRIGGER zz_backfill_test_raw ON pages');
+        await query('DROP FUNCTION zz_backfill_test_raw()');
+      }
+      const progress = lines.filter((line) => line.message === 'body_text backfill progress');
+      expect(progress.length).toBeGreaterThanOrEqual(4);
+      expect(lines.filter((line) => line.message === 'body_text backfill run finished')).toHaveLength(3);
+      const residual = lines.filter((line) => line.message === 'body_text backfill residual');
+      expect(residual.map((line) => JSON.parse(line.payload) as Record<string, unknown>)).toEqual([
+        expect.objectContaining({ reason: 'oversized', pageId: oversized, column: 'published', htmlBytes: 5012, textBytes: 1 }),
+      ]);
+      expect(ordinary.outcome).toBe('done');
+      expect(allSkip).toMatch(/^body_text backfill done; pass 2 scan; .*current=1/);
+      expect(allSkip).not.toContain('repaired=');
+      expect(thrown).toMatchObject({ name: 'BodyTextBackfillError', code: 'sql_P0001' });
+      // What BullMQ would store in job_history: the returned summary or the error message.
+      const stored = [formatBodyTextBackfillSummary(ordinary), allSkip, String((thrown as Error).message)];
+      const everything = [...stored, ...lines.map((line) => `${line.message} ${line.payload}`)].join('\n');
+      expect(everything).not.toContain(canary);
+      expect(everything).not.toContain('raw failure');
+      const huge = formatBodyTextBackfillSummary({
+        outcome: 'interrupted', runId: randomUUID(), pass: 99999, phase: 'retry', bytesLoaded: Number.MAX_SAFE_INTEGER,
+        interruptCode: 'reconciliation_failed',
+        counts: Object.fromEntries(['repaired', 'current', 'diverged', 'no_ampersand', 'no_text', 'oversized', 'unevaluable',
+          'frozen', 'baseline_referenced', 'paired_exempt', 'identity_conflict', 'unindexable', 'owners', 'gone', 'busy',
+          'changed', 'page_too_large'].map((key) => [key, Number.MAX_SAFE_INTEGER])),
+      });
+      expect(huge.length).toBeLessThanOrEqual(500);
+    });
+  });
+
+  it.skip('helpers referenced', () => {
+    void cancelPageWriteIntentBeforeEffect; void lockPageLifecycle; void withPageHierarchyWriteTransaction;
+    void snapshotLocalVersionBeforeOverwrite;
     const unused: BodyTextBackfillHooks[] = [];
     void unused;
   });
