@@ -1052,23 +1052,35 @@ sample}, `tooLarge`, `nextFullPassAfter`, `overflowBackoffMs`,
 rejects combinations the job never writes: an owner exactly when `running`;
 `cursor ≤ highWater`; `done`/`waiting` only in the scan phase at cursor 0 with a
 next time (`done` with no unresolved or too-large owner, `waiting` with an
-overflow or a too-large owner); no overflow in the retry phase; an exact list
-strictly ascending, within `highWater`, its count and 20-id sample matching;
-an overflow with a count and a consistent sample. Every state write
+overflow, or with an empty exact list beside a too-large owner); no overflow in
+the retry phase; an exact list within the list bound, strictly ascending,
+within `highWater`, its count and 20-id sample matching; an overflow with a
+count above the list bound and a strictly ascending sample within `highWater`
+of `min(count, 20)` ids. It runs on the fast path and in every claim, a forced
+restart included, so an invalid document fails before it is used or replaced.
+Every state write
 is fenced (row `FOR UPDATE`, own `owner` and `seq`, `seq + 1`); the lease is 15
 minutes, kept alive by a heartbeat after 60 s without a state write; a stale
-owner is taken over and the pass resumed. The claim inserts the first-owner
-row and locks the state row as separate commands in one transaction under the
-same lock, statement and transaction deadlines (a stop or an expired deadline
-ends the run `interrupted`, nothing claimed). Every uncertain `COMMIT` (the
-acknowledgment lost, or the session refused or ended) is settled by a
-reconciliation read (advanced `seq` → committed; previous `seq` → not
-committed; anything else → stop). Not committed: an owner step is recorded
-`busy` and redone, the terminal release is retried (three attempts), a claim
-ends the run `interrupted` (`claim_transaction_refused` or
-`claim_acknowledgment_lost`), never `already_running`. An invalid document is
-never overwritten: the run fails with `state_invalid`. One pooled connection at
-a time; no session-level lock (works with `PG_POOL_MAX=1`).
+owner is taken over and the pass resumed. **Bootstrap:** the `new` document is
+inserted with `ON CONFLICT DO NOTHING` in its own committed transaction under
+the lock, statement and transaction deadlines; an uncertain outcome is settled
+by repeating it (three attempts; a repeat waits for an insert still
+committing). The claim then locks that committed row in a separate
+deadline-bounded transaction. Every uncertain `COMMIT` (the acknowledgment
+lost, or the session refused or ended) is settled by a reconciliation read that
+locks the row again, so it waits for a `COMMIT` still in flight (advanced `seq`
+→ committed; previous `seq` → not committed; a missing row, an expired deadline
+or anything else → stop, `reconciliation_failed`, the lease then expiring as
+any other). Not committed: an owner step is recorded `busy` and redone, the
+terminal release is retried (three attempts), a claim ends the run
+`interrupted` (`claim_transaction_refused` or `claim_acknowledgment_lost`),
+never `already_running`. **Stop during the bootstrap or claim:** if the lock
+deadline expires first, the run ends `interrupted` and nothing is claimed; if
+the lock frees before the deadline, the transaction already open completes
+(the claim commits) and the run then releases at once on the stop latch:
+`interrupted`, owner NULL, no owner processed. An invalid document is never
+overwritten: the run fails with `state_invalid`. One pooled connection at a
+time; no session-level lock (works with `PG_POOL_MAX=1`).
 
 **Completion and re-checks.** End of a pass: no transient owner and no
 too-large owner → `done`, next full pass after 24 h (first completion ever)
@@ -1080,8 +1092,10 @@ too-large owner exists). `status` is never `done` while a page is over the D12
 limit. **Clearing a blocked page** means reducing its history (retention,
 `RETENTION_VERSIONS_MAX`) or raising the limit in code; the daily full pass
 re-examines it. An explicit restart before a stored, still-future re-check
-keeps it: the earlier of that time and the new pass's own next time wins, also
-after the restarted pass is interrupted.
+keeps it: a too-large checkpoint stores the earlier of that time and
+`passStartedAt + 24 h`, and the release keeps the earlier of it and its own
+next time, also after the restarted pass is interrupted. A trigger that is due
+is consumed: its fresh pass starts with no stored time.
 
 **Parser worker and budget.** Every parse runs in a `worker_threads` worker
 (`body-text-backfill-parser.ts`, isolate `maxOldGenerationSizeMb = 256`,
@@ -1120,7 +1134,8 @@ members, `identity_conflict` with the occupied slot, `unindexable`,
 `page_too_large`), each logged only after the transaction recording it
 committed. Exactly one terminal line per invocation, including
 `already_running`, `already_completed`, `waiting`, interruptions and failures
-(outcome `failed` with code, phase and page id). The
+(at error level, outcome `failed` with code, phase and page id; a legacy timer
+invocation adds no second line). The
 BullMQ processor returns a summary of at most 500 characters (stored in
 `job_history`; legacy mode stores nothing). Errors leaving the job carry a fixed
 code, phase and page id only — no page text and no raw parser or PostgreSQL
