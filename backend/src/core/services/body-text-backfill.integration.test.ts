@@ -36,7 +36,6 @@ import {
   runBodyTextBackfill,
   startBodyTextBackfillWorker,
   stopBodyTextBackfill,
-  type BodyTextBackfillHooks,
   type BodyTextBackfillLimits,
   type BodyTextBackfillOptions,
   type BodyTextBackfillState,
@@ -51,13 +50,10 @@ import {
   unfreezePage,
 } from './page-baseline-service.js';
 import {
-  cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
-  lockPageLifecycle,
   reconcilePageWriteIntent,
   reservePageWriteIntent,
   runPageWriteIntentEffect,
-  withPageHierarchyWriteTransaction,
 } from './page-write-admission.js';
 import { setRedisClient } from './redis-cache.js';
 import { fillVersionBody, snapshotLocalVersionBeforeOverwrite, upsertVersionMetadata } from './version-snapshot.js';
@@ -2360,11 +2356,5 @@ describe.skipIf(!dbAvailable)('body_text backfill (#1965) — real PostgreSQL', 
         });
       }
     });
-  });
-
-  it.skip('helpers referenced', () => {
-    void cancelPageWriteIntentBeforeEffect; void lockPageLifecycle; void withPageHierarchyWriteTransaction;
-    const unused: BodyTextBackfillHooks[] = [];
-    void unused;
   });
 });
