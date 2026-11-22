@@ -713,16 +713,28 @@ function extractOdt(buffer: Buffer): ExtractedDocument {
 
 /**
  * RTF destination groups whose payload is markup, not body text. Each is
- * dropped whole, with everything nested inside it. Names come from the
- * upload, so this and the tables below are a Set or Map rather than object
- * literals: `\constructor` must not find `Object.prototype`.
+ * dropped whole, with everything nested inside it, whether it opens as a plain
+ * group (`{\name`) or an ignorable one (`{\*\name`). `sp` is a shape property
+ * pair (`{\sp{\sn shapeType}{\sv 202}}`), which a kept `shpinst` nests beside
+ * its text box. Names come from the upload, so this and the tables below are a
+ * Set or Map rather than object literals: `\constructor` must not find
+ * `Object.prototype`.
  */
 const RTF_DESTINATIONS: ReadonlySet<string> = new Set([
   'fonttbl', 'colortbl', 'stylesheet', 'info', 'pict', 'object',
   'header', 'headerl', 'headerr', 'headerf', 'footer', 'footerl', 'footerr', 'footerf', 'footnote',
   'xmlnstbl', 'listtable', 'listoverridetable', 'rsidtbl', 'generator', 'datastore', 'themedata',
-  'colorschememapping', 'latentstyles',
+  'colorschememapping', 'latentstyles', 'sp',
 ]);
+
+/**
+ * The ignorable destinations (`{\*\name`) whose text is kept (#1967): a shape
+ * instance and its text box, so text-box text survives. Every other `{\*\name`
+ * group (bookmarks, `\fldinst` field codes, `\expandedcolortbl`, `\panose`,
+ * `\listtext`, unknown names) is dropped whole, as the RTF spec tells a reader
+ * to drop a destination it does not know.
+ */
+const RTF_KEPT_IGNORABLE_DESTINATIONS: ReadonlySet<string> = new Set(['shpinst', 'shptxt']);
 
 /** RTF's `\ansi` code page, read when `\ansicpgN` is absent or not listed below. */
 const RTF_DEFAULT_ENCODING = 'windows-1252';
@@ -850,8 +862,8 @@ function createRtfDecoder(encoding: string): RtfByteDecoder {
   }
 }
 
-/** `{\name` or `{\*\name`: a group whose first word may name a destination. */
-const RTF_GROUP_START = /\{\\(?:\*\\)?([a-zA-Z]+)/y;
+/** The control word that names a group: `\name`, read just after `{` or `{\*`. */
+const RTF_GROUP_NAME = /\\([a-zA-Z]+)/y;
 /** A control word, its optional signed parameter and the one space that may end it. */
 const RTF_CONTROL_WORD = /\\([a-zA-Z]+)(-?\d+)? ?/y;
 /** `\'hh`: one byte in the document's code page. */
@@ -914,6 +926,21 @@ function utf8SequenceLength(rtf: string, i: number, end: number): number {
 }
 
 /**
+ * Whether the group that opens at `rtf[i]` (a `{`) is dropped whole. The
+ * ignorable form `{\*\name` is dropped unless `name` is in
+ * {@link RTF_KEPT_IGNORABLE_DESTINATIONS}, and also when no name can be read
+ * after `{\*` (fail closed). A plain `{\name` is dropped only when `name` is in
+ * {@link RTF_DESTINATIONS}. O(length of the name).
+ */
+function isSkippedGroup(rtf: string, i: number): boolean {
+  const ignorable = rtf.startsWith('\\*', i + 1);
+  RTF_GROUP_NAME.lastIndex = ignorable ? i + 3 : i + 1;
+  const name = RTF_GROUP_NAME.exec(rtf)?.[1];
+  if (ignorable) return name === undefined || !RTF_KEPT_IGNORABLE_DESTINATIONS.has(name);
+  return name !== undefined && RTF_DESTINATIONS.has(name);
+}
+
+/**
  * Reads RTF token by token in one pass (RTF 1.9.1, "Conventions of an RTF
  * Reader") and returns the text it carries, before whitespace clean-up.
  * `rtf` holds the file's bytes, one per character, so `\binN` can skip
@@ -940,7 +967,8 @@ function utf8SequenceLength(rtf: string, i: number, end: number): number {
  *   skipped group. A `\` at the end of input is dropped.
  * - `\binN` and the N raw bytes after it (one fallback unit) are skipped,
  *   even inside a skipped group, so binary data never reads as markup.
- * - Listed destination groups are skipped whole. Unbalanced braces are
+ * - Destination groups are skipped whole (see {@link isSkippedGroup}),
+ *   including any group nested in a kept one. Unbalanced braces are
  *   tolerated, and nothing recurses or backtracks.
  */
 function scanRtf(rtf: string): string {
@@ -997,9 +1025,7 @@ function scanRtf(rtf: string): string {
       skip = 0;
       if (char === '{') {
         depth += 1;
-        RTF_GROUP_START.lastIndex = i;
-        const name = RTF_GROUP_START.exec(rtf)?.[1];
-        if (skippedDepth === 0 && name !== undefined && RTF_DESTINATIONS.has(name)) skippedDepth = depth;
+        if (skippedDepth === 0 && isSkippedGroup(rtf, i)) skippedDepth = depth;
       } else if (depth > 0) {
         const saved = savedUc.at(-1);
         if (saved?.depth === depth) {
@@ -1125,8 +1151,9 @@ function scanRtf(rtf: string): string {
  * holding text encodes it first. The bytes are read through a Latin-1 view
  * (one character per byte, no copy of the input) so {@link scanRtf} can skip
  * `\binN` data exactly.
- * One linear pass reads the markup token by token ({@link scanRtf}): listed
- * destination groups are dropped whole, each `\uN` character replaces its
+ * One linear pass reads the markup token by token ({@link scanRtf}): markup
+ * destination groups and every ignorable `{\*\…}` group except shape text
+ * are dropped whole, each `\uN` character replaces its
  * `\ucN` fallback, `\'hh` bytes decode in the `\ansicpgN` code page
  * (windows-1252 when absent or unsupported), `\binN` data is skipped, the few
  * control words that mean whitespace become whitespace, and every other
