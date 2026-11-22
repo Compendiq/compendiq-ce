@@ -615,7 +615,9 @@ box — splits it in document order: the text before it, the nested lines, then
 the rest of the outer paragraph on a new line (#1734). Comments
 (`office:annotation`), forms, binary data and the rendered footnote mark
 (`text:note-citation`) are dropped, and so is the whole `text:tracked-changes`
-subtree: text deleted under change tracking is not extracted, inserted text is.
+subtree: text deleted under change tracking is not extracted, inserted text is
+(elements are matched by their conventional `text:`/`office:` prefixes; XML
+namespaces are not resolved, so another prefix is not recognised).
 At most 64 paragraphs are tracked open (deeper ones join the
 innermost), character references are decoded once with invalid code points
 read as U+FFFD, and no DTD is loaded or interpreted: a declared entity is never

@@ -372,7 +372,8 @@ or interprets a DTD and expands only the five XML entities and numeric reference
 swap in an XML/DOM parser that expands declared entities (jsdom's XML mode does).
 ODT `text:tracked-changes` is skipped whole: text deleted under change tracking lives only there
 (`text:deletion`), inserted text stays inline in the body and is kept, and `text:track-changes="false"`
-needs no special case.
+needs no special case. Like every element the walk reads, it is matched by its conventional `text:` prefix
+(namespaces are not resolved), so the same element under another prefix is not recognised.
 ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
 the existing entry limit; do not expand each run without a shared budget.
 RTF is one linear token scan over the file's bytes: `\uN` replaces its group-scoped `\ucN`

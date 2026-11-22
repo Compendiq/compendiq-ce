@@ -594,6 +594,10 @@ interface OdfBlock {
  *   the body between empty `text:change-*` markers and is kept. Recording
  *   switched off (`text:track-changes="false"`) leaves the regions in place,
  *   so one rule covers both.
+ *
+ * Elements are matched by their conventional prefixed names (`text:`,
+ * `office:`), as every element read here is; XML namespaces are not resolved,
+ * so `text:tracked-changes` written under another prefix is not recognised.
  */
 function odfContentToText(xml: string): string {
   const body = odfBody(xml);
