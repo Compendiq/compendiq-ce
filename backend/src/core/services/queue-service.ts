@@ -200,6 +200,17 @@ export async function startQueueWorkers(): Promise<void> {
   // Register analytics-aggregation queue for future EE use
   getOrCreateQueue('analytics-aggregation');
 
+  // #1965: one startup kick so the body_text backfill does not wait for its
+  // scheduler (an existing scheduler keeps its next slot across restarts).
+  // Never fails startup.
+  try {
+    const { armBodyTextBackfill } = await import('./body-text-backfill.js');
+    armBodyTextBackfill();
+    await enqueueJob('body-text-backfill', {}, { jobId: 'body-text-backfill-startup' });
+  } catch (err) {
+    logger.warn({ err, queue: 'body-text-backfill' }, 'body_text backfill startup kick failed');
+  }
+
   logger.info({ queues: workerDefs.map((d) => d.queueName) }, 'BullMQ workers started');
 }
 
@@ -208,6 +219,11 @@ export async function startQueueWorkers(): Promise<void> {
  * Waits for in-flight jobs to complete.
  */
 export async function stopQueueWorkers(): Promise<void> {
+  // #1965: latch the body_text backfill, terminate its parser worker and await
+  // its in-flight run before workers or the pool close (both modes).
+  const { stopBodyTextBackfill } = await import('./body-text-backfill.js');
+  await stopBodyTextBackfill();
+
   if (!USE_BULLMQ) {
     return stopLegacyWorkers();
   }
@@ -542,6 +558,19 @@ function registerAllWorkers(): void {
       return processBackupJob(job.id ?? null);
     },
   });
+
+  // body_text backfill (#1965): hourly; a tick on a completed state with
+  // nothing due is one settings read. Concurrency 1; the state row's lease
+  // keeps replicas from running it twice.
+  registerWorkerDef({
+    queueName: 'body-text-backfill',
+    concurrency: 1,
+    repeatPattern: { every: 60 * 60 * 1000 },
+    processor: async (job: Job) => {
+      const { processBodyTextBackfillJob } = await import('./body-text-backfill.js');
+      return processBodyTextBackfillJob(job.data);
+    },
+  });
 }
 
 // ─── Legacy setInterval fallback ─────────────────────────────────────────────
@@ -556,6 +585,7 @@ async function startLegacyWorkers(): Promise<void> {
   const { startTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { startRetentionWorker } = await import('./data-retention-service.js');
   const { startBackupLegacyWorker } = await import('./backup-worker.js');
+  const { startBodyTextBackfillWorker } = await import('./body-text-backfill.js');
   // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
   const { startImageAnalysisWorker } = await import('../../domains/llm/services/image-analysis-worker.js');
 
@@ -571,6 +601,7 @@ async function startLegacyWorkers(): Promise<void> {
   startTokenCleanupWorker();
   startRetentionWorker();
   startBackupLegacyWorker();
+  startBodyTextBackfillWorker();
   startImageAnalysisWorker(syncInterval);
 
   // Initial batches after 30s delay. The .catch() prevents a batch failure
@@ -595,6 +626,7 @@ async function stopLegacyWorkers(): Promise<void> {
   const { stopTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { stopRetentionWorker } = await import('./data-retention-service.js');
   const { stopBackupLegacyWorker } = await import('./backup-worker.js');
+  const { stopBodyTextBackfillWorker } = await import('./body-text-backfill.js');
   // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
   const { stopImageAnalysisWorker } = await import('../../domains/llm/services/image-analysis-worker.js');
 
@@ -604,5 +636,6 @@ async function stopLegacyWorkers(): Promise<void> {
   stopTokenCleanupWorker();
   stopRetentionWorker();
   stopBackupLegacyWorker();
+  stopBodyTextBackfillWorker();
   stopImageAnalysisWorker();
 }
