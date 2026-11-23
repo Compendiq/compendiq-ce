@@ -380,10 +380,22 @@ RTF is one linear token scan over the file's bytes (`rtfToText` takes a `Uint8Ar
 non-ASCII character after `\` or inside a `\ucN` fallback counts as one whole well-formed UTF-8 sequence): `\uN` replaces its group-scoped `\ucN`
 fallback, `\'hh` bytes decode through `TextDecoder` in the `\ansicpgN` code page (windows-1252
 when absent or unsupported; 932/936/949/950 as double-byte runs, 949 as full Windows cp949, whose `C9`/`FE` rows decode to the private-use area U+E000–U+E0BB;
-per-font `\fcharsetN` is not read), `\binN` data is skipped, listed destination groups drop
-whole with everything nested in them, a backslash followed by a line break (`\`+LF, CR or CRLF as
+per-font `\fcharsetN` is not read), `\binN` data is skipped (inside skipped groups too), a backslash followed by a line break (`\`+LF, CR or CRLF as
 one break, as TextEdit and `textutil` write every paragraph) is kept as a paragraph break like `\par`
 (silent in a skipped group), and malformed input never throws.
+Destination groups (#1967) drop whole with everything nested in them, under one decision table:
+an ignorable `{\*\name …}` group is **dropped** unless `name` is `shpinst` or `shptxt` (so bookmarks,
+`\fldinst` field codes such as `HYPERLINK "url"`, `\expandedcolortbl`, `\panose`, `\listtext`, rsid
+tables and unknown names never reach the text, and a `{\*` with no readable name is dropped too); a
+plain `{\name …}` group is dropped only when `name` is a listed markup destination (`fonttbl`,
+`colortbl`, `stylesheet`, `info`, `pict`, headers/footers, `footnote`, … and `sp`, a shape property
+pair). **Kept:** `\fldrslt` (a plain group, so a hyperlink keeps its visible text) and text-box text
+in `\shpinst`/`\shptxt`; an unknown ignorable group nested inside a kept `\shpinst` is still dropped.
+A group's name is read past raw CR/LF right after its `{` and its `\*`, so a writer's source-line wrap
+inside a group header does not change whether the group is dropped.
+In visible body text, a raw source line break (without `\`) is kept as a line break outside a pending
+`\'hh` byte run (inside one it is ignored, so a multi-byte character is not split), so a writer that
+wraps source lines inside a paragraph (LibreOffice) yields extra line breaks.
 
 **Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
 never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format

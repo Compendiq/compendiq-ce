@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import {
   buildPreview,
@@ -859,6 +860,304 @@ describe('rtfToText', () => {
     it('skips a very large \\ucN over a long raw run in linear time', () => {
       const run = 'я'.repeat(500_000);
       expect(rtfToText(utf8(`{\\rtf1\\uc999999999 \\u65 ${run}b}`))).toBe('A');
+    });
+  });
+
+  describe('ignorable {\\*\\…} destinations (#1967)', () => {
+    it('drops bookmarks and the expanded colour table', () => {
+      expect(rtfFromSource('{\\rtf1\\ansi Before{\\*\\bkmkstart mark}After{\\*\\expandedcolortbl;;}}')).toBe('BeforeAfter');
+    });
+
+    it('keeps a hyperlink field result and drops its \\fldinst instruction', () => {
+      expect(rtfFromSource('{\\rtf1\\ansi A{\\field{\\*\\fldinst HYPERLINK "http://x"}{\\fldrslt link}}B}')).toBe('AlinkB');
+      // AppKit nests the instruction in a further group.
+      expect(rtfFromSource('{\\rtf1 A{\\field{\\*\\fldinst{HYPERLINK "http://x"}}{\\fldrslt link}}B}')).toBe('AlinkB');
+    });
+
+    it.each([
+      ['bookmark start', '{\\*\\bkmkstart mark}'],
+      ['bookmark end', '{\\*\\bkmkend mark}'],
+      ['expanded colour table', '{\\*\\expandedcolortbl;;\\cssrgb\\c0\\c0\\c0;}'],
+      ['field instruction', '{\\*\\fldinst HYPERLINK "http://x"}'],
+      ['panose', '{\\*\\panose 02020603050405020304}'],
+      ['rsid table', '{\\*\\rsidtbl \\rsid1405817 rsidsentinel\\rsid3871291}'],
+      ['unlisted rsid-style table', '{\\*\\pgdsctbl{\\pgdsc0\\pgdscuse195 Default Page Style;}}'],
+      ['list text', '{\\*\\listtext 1.\\tab}'],
+      ['unknown destination', '{\\*\\x hidden {nested} text}'],
+    ])('drops the %s group at the top level and nested in kept groups', (_name, group) => {
+      expect(rtfFromSource(`{\\rtf1\\ansi A${group}B}`)).toBe('AB');
+      expect(rtfFromSource(`{\\rtf1\\ansi {\\b A{\\i {\\ul ${group}}B}}C}`)).toBe('ABC');
+    });
+
+    it('keeps the plain-group rule unchanged', () => {
+      // Unlisted plain groups keep their text; listed ones drop in either form.
+      expect(rtfFromSource('{\\rtf1 A{\\fldrslt link}{\\x plain}B}')).toBe('AlinkplainB');
+      expect(rtfFromSource('{\\rtf1 A{\\*\\fonttbl{\\f0 Arial;}}{\\fonttbl{\\f1 Arial;}}B}')).toBe('AB');
+    });
+
+    it('keeps text-box text and nothing from shape property pairs', () => {
+      const shape = '{\\shp{\\*\\shpinst\\shpleft0\\shpright3600{\\sp{\\sn shapeType}{\\sv 202}}{\\shptxt Box text}}}';
+      expect(rtfFromSource(`{\\rtf1 A ${shape} B}`)).toBe('A Box text B');
+      // shptxt is kept in its ignorable form too.
+      expect(rtfFromSource('{\\rtf1 A{\\*\\shptxt Box}B}')).toBe('ABoxB');
+      // An unknown ignorable group inside a kept shpinst is still dropped.
+      expect(rtfFromSource('{\\rtf1 {\\*\\shpinst{\\*\\wrapelemhint x}{\\sp{\\sn fFlipH}{\\sv 0}}{\\shptxt Box}}}')).toBe('Box');
+    });
+
+    const rawLineBreaks = [['LF', '\n'], ['CR', '\r'], ['CRLF', '\r\n']] as const;
+
+    it.each(rawLineBreaks)('drops a field instruction whose header wraps after { or \\* (%s)', (_name, nl) => {
+      for (const header of [`{${nl}\\*\\fldinst`, `{\\*${nl}\\fldinst`, `{${nl}${nl}\\*${nl}${nl}\\fldinst`]) {
+        expect(rtfFromSource(`{\\rtf1 A{\\field${header} HYPERLINK "http://x"}{\\fldrslt link}}B}`)).toBe('AlinkB');
+      }
+      expect(rtfFromSource(`{\\rtf1 A{${nl}\\*${nl}\\bkmkstart mark}B}`)).toBe('AB');
+    });
+
+    it.each(rawLineBreaks)('keeps a text box whose header wraps after \\* (%s)', (_name, nl) => {
+      // The group is kept, so its raw line breaks are body line breaks, as before.
+      const lineBreak = nl === '\r' ? '\r' : '\n';
+      for (const [header, count] of [[`{\\*${nl}\\shpinst`, 1], [`{${nl}\\*${nl}\\shpinst`, 2]] as const) {
+        const shape = `{\\shp${header}\\shpleft0{\\sp{\\sn shapeType}{\\sv 202}}{\\shptxt Box text}}}`;
+        expect(rtfFromSource(`{\\rtf1 A${shape}B}`)).toBe(`A${lineBreak.repeat(count)}Box textB`);
+      }
+    });
+
+    it('reads a group header past raw line breaks only', () => {
+      // A space or a backslash-newline still ends the header: no readable name, dropped.
+      expect(rtfFromSource('{\\rtf1 A{\\* \\shptxt Box}B}')).toBe('AB');
+      expect(rtfFromSource('{\\rtf1 A{\\*\\\nshptxt Box}B}')).toBe('AB');
+      expect(rtfFromSource('{\\rtf1 A{\\*\n junk}B}')).toBe('AB');
+      // A plain group past a wrap keeps the plain rule.
+      expect(rtfFromSource('{\\rtf1 A{\n\\fonttbl{\\f0 Arial;}}{\n\\x plain}B}')).toBe('A\nplainB');
+    });
+
+    it('reads wrapped group headers in linear time', () => {
+      const run = '\r\n'.repeat(5_000);
+      const groups = `{${run}\\*${run}\\x hidden}v`.repeat(200);
+      expect(groups.length).toBeGreaterThan(4_000_000);
+      expect(rtfFromSource(`{\\rtf1 ${groups}}`)).toBe('v'.repeat(200));
+      // Unclosed kept groups, each followed by a long run.
+      expect(rtfFromSource(`{\\rtf1 ${`{${run}`.repeat(200)}x`)).toBe('x');
+    }, 5_000);
+
+    it('drops a {\\* group whose name cannot be read', () => {
+      expect(rtfFromSource('{\\rtf1 A{\\* junk}B}')).toBe('AB');
+      expect(rtfFromSource('{\\rtf1 A{\\*{\\shptxt x}}B}')).toBe('AB');
+      expect(rtfFromSource('{\\rtf1 A{\\*\\123 junk}B}')).toBe('AB');
+      expect(rtfFromSource("{\\rtf1 A{\\*\\'41 junk}B}")).toBe('AB');
+      expect(rtfFromSource('{\\rtf1 A{\\*')).toBe('A');
+    });
+
+    it('skips \\binN data inside a skipped ignorable group by length', () => {
+      // The payload holds braces that would otherwise close the group early.
+      expect(rtfFromSource('{\\rtf1 A{\\*\\x \\bin3 }}}hidden}B}')).toBe('AB');
+      // Parsed, `}}leak` would close the property pair and leak into the kept shpinst.
+      expect(rtfFromSource('{\\rtf1 A{\\*\\shpinst{\\sp{\\sn pib}{\\sv \\bin6 }}leak}}{\\shptxt Box}}B}')).toBe('ABoxB');
+    });
+
+    it('never throws on unbalanced braces around a skipped ignorable group', () => {
+      expect(rtfFromSource('{\\rtf1 A{\\*\\x hidden')).toBe('A');
+      // Surplus closing braces clear the skip and never go below depth zero.
+      expect(rtfFromSource('{\\rtf1 A{\\*\\x hidden}}}}}B{\\*\\y hidden')).toBe('AB');
+      expect(rtfFromSource('}}{\\*\\x hidden}visible')).toBe('visible');
+      expect(rtfFromSource('{\\rtf1 {\\*\\x a}}visible')).toBe('visible');
+    });
+
+    it('skips a deeply nested ignorable group and keeps the text after it', () => {
+      const nested = `${'{'.repeat(100_000)}hidden${'}'.repeat(100_000)}`;
+      expect(rtfFromSource(`{\\rtf1 A{\\*\\x ${nested}}B}`)).toBe('AB');
+      // An ignorable group deep inside kept groups.
+      expect(rtfFromSource(`{\\rtf1 ${'{\\b '.repeat(10_000)}{\\*\\bkmkstart m}x${'}'.repeat(10_000)}B}`)).toBe('xB');
+    }, 5_000);
+
+    it('skips a 1 MiB ignorable group in linear time and keeps the text after it', () => {
+      const payload = '{\\*\\y n}{\\shptxt t}\\par x'.repeat(42_000);
+      expect(payload.length).toBeGreaterThan(1_048_576);
+      expect(rtfFromSource(`{\\rtf1 A{\\*\\x ${payload}}B}`)).toBe('AB');
+    }, 5_000);
+
+    it('extracts a hand-written Word-shaped document (synthetic, not written by Word)', () => {
+      // Hand-written after the RTF 1.9.1 spec's description of Word output; no
+      // Word-produced file is available. Content is self-authored.
+      const word = [
+        '{\\rtf1\\adeflang1025\\ansi\\ansicpg1252\\uc1\\adeff31507\\deff0\\deflang1033',
+        '{\\fonttbl{\\f0\\fbidi \\froman\\fcharset0\\fprq2{\\*\\panose 02020603050405020304}Times New Roman;}}',
+        '{\\colortbl;\\red0\\green0\\blue0;\\red5\\green99\\blue193;}',
+        '{\\*\\defchp \\fs24\\lang1033 }{\\*\\defpap \\ql \\li0\\ri0\\widctlpar }',
+        '{\\stylesheet{\\ql \\li0\\ri0 Normal;}{\\*\\cs15 \\additive \\ul\\cf2 Hyperlink;}}',
+        '{\\*\\rsidtbl \\rsid1405817\\rsid3871291}{\\*\\mmathPr\\mmathFont34\\mbrkBin0}',
+        '{\\info{\\author Compendiq}}{\\*\\xmlnstbl {\\xmlns1 http://schemas.microsoft.com/office/word/2003/wordml}}',
+        '\\paperw12240\\paperh15840{\\*\\ftnsep \\chftnsep \\par }{\\*\\pnseclvl1\\pnucrm\\pnstart1\\pnindent720\\pnhang {\\pntxta .}}',
+        '\\pard\\plain \\ltrpar\\ql {\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid1405817 First paragraph of the Word-shaped case.\\par }',
+        '{\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid1405817 Second paragraph with a }{\\field\\fldedit{\\*\\fldinst {\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid3871291  HYPERLINK "https://example.com/compendiq-word" }{\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid3871291 {\\*\\datafield 00d0c9ea79f9bace118c8200aa004ba90b02000000}}}{\\fldrslt {\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\cs15\\ul\\cf2\\insrsid3871291 fixture link}}}{\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid1405817  inside.\\par }',
+        '{\\*\\bkmkstart wordmark}{\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid1405817 Third paragraph ends}{\\*\\bkmkend wordmark}{\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid1405817  the Word-shaped case.}{\\shp{\\*\\shpinst\\shpleft0\\shptop0\\shpright3600\\shpbottom1440\\shpbxcolumn\\shpbxignore\\shpbypara\\shpbyignore\\shpwr3\\shpwrk0\\shpz0\\shplid1026{\\sp{\\sn shapeType}{\\sv 202}}{\\sp{\\sn fFlipH}{\\sv 0}}{\\sp{\\sn lTxid}{\\sv 65536}}{\\shptxt \\ltrpar \\pard\\plain \\ltrpar\\ql {\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid1405817 Box text of the Word-shaped case.\\par }}}{\\shprslt{\\*\\do\\dobxcolumn\\dobypara\\dodhgt8193\\dptxbx\\dptxlrtb{\\dptxbxtext\\pard\\plain {\\insrsid1405817 Box text of the Word-shaped case.\\par }}\\dpx0\\dpy0\\dpxsize3600\\dpysize1440}}}{\\rtlch\\fcs1 \\af31507 \\ltrch\\fcs0 \\insrsid1405817 \\par }',
+        '{\\*\\themedata 504b030414000600}{\\*\\colorschememapping 3c3f786d6c}{\\*\\latentstyles\\lsdstimax376{\\lsdlockedexcept \\lsdqformat1 Normal;}}{\\*\\datastore 0105000002000000}}',
+      ].join('\r\n');
+      expect(rtfFromSource(word)).toBe([
+        'First paragraph of the Word-shaped case.',
+        '',
+        'Second paragraph with a fixture link inside.',
+        '',
+        'Third paragraph ends the Word-shaped case.',
+        'Box text of the Word-shaped case.',
+      ].join('\n'));
+    });
+  });
+
+  /**
+   * Real application-written RTF (#1967), self-authored content only. Each
+   * source document sits next to its fixture (`*.source.*`).
+   *
+   * Maintainer decision of 2026-11-22 (issue #1967): the AppKit/`textutil`
+   * file is accepted for TextEdit, and the real Word-written fixture is
+   * waived (Word is not available). The second LibreOffice specimen below,
+   * from a DOCX source, is not a Word-written file and is not evidence of how
+   * Word writes RTF; the Word-shaped cases stay covered by the synthetic
+   * hand-written test above.
+   *
+   * - `appkit-textutil.rtf` (624 bytes): written by the AppKit RTF writer that
+   *   TextEdit uses, through `textutil` on macOS 27.2.1 (26B131):
+   *   `textutil -convert rtf -output appkit-textutil.rtf appkit-textutil.source.html`.
+   *   Not saved from the TextEdit application itself. Typed content: the three
+   *   paragraphs below, with "fixture link" linking to
+   *   https://example.com/compendiq-appkit and an `<a name="appkitmark">`
+   *   anchor around "ends", which AppKit does not write as a bookmark.
+   * - `libreoffice-26.8.rtf` (4479 bytes): LibreOffice 26.8.3.1 (macOS
+   *   AArch64), `soffice -env:UserInstallation=file:///tmp/e2029-rtf/lo-profile
+   *   --headless --convert-to rtf libreoffice-26.8.source.fodt`. Typed content:
+   *   the three paragraphs below, "fixture link" linking to
+   *   https://example.com/compendiq-libreoffice, a bookmark `lomark` on "ends",
+   *   and a text frame holding "Text box line of the LibreOffice fixture.".
+   * - `libreoffice-26.8-from-docx.rtf` (4945 bytes): LibreOffice, from a DOCX
+   *   source. LibreOffice 26.8.3.1 (macOS AArch64) wrote the DOCX
+   *   (`soffice -env:UserInstallation=file:///tmp/e2029-rtf/lo-profile --headless
+   *   --convert-to docx libreoffice-26.8-from-docx.source.fodt`, giving
+   *   `libreoffice-26.8-from-docx.source.docx`) and then the RTF from that DOCX
+   *   (same profile, `--convert-to rtf libreoffice-26.8-from-docx.source.docx`).
+   *   Typed content: the three paragraphs below, "round trip link" linking to
+   *   https://example.com/compendiq-libreoffice-docx, a bookmark `docxmark` on
+   *   "marks", and a text frame holding "Framed note of the DOCX round trip.".
+   *   Through DOCX the frame comes back as a drawing shape inside a field,
+   *   `{\field{\*\fldinst SHAPE }{\fldrslt{\shp{\*\shpinst …{\shptxt …}}}}}`.
+   */
+  describe('application-written fixtures (#1967)', () => {
+    const fixture = (name: string): Buffer => readFileSync(new URL(`./__fixtures__/rtf/${name}`, import.meta.url));
+    const expectNoMarkup = (text: string, url: string, bookmark?: string): void => {
+      expect(text).not.toContain('HYPERLINK');
+      expect(text).not.toContain(url);
+      expect(text).not.toContain(';;');
+      expect(text).not.toMatch(/shapeType|\\|[{}]/);
+      if (bookmark !== undefined) expect(text).not.toContain(bookmark);
+    };
+
+    const appKitText = [
+      'First paragraph of the Compendiq AppKit fixture.',
+      'Second paragraph with a fixture link inside.',
+      'Third paragraph ends the AppKit fixture.',
+    ].join('\n');
+
+    it('extracts the AppKit (textutil) fixture as three paragraphs on three lines', async () => {
+      const rtf = fixture('appkit-textutil.rtf');
+      const source = rtf.toString('latin1');
+      // The writer's own signature and a real hyperlink field.
+      expect(source).toMatch(/^\{\\rtf1\\ansi\\ansicpg1252\\cocoartf\d+\n/);
+      expect(source).toContain('{\\field{\\*\\fldinst{HYPERLINK "https://example.com/compendiq-appkit"}}{\\fldrslt ');
+      expect(source).toContain('{\\*\\expandedcolortbl;;');
+
+      const { text } = await extractDocumentText(rtf, 'appkit-textutil.rtf');
+      expect(text).toBe(appKitText);
+      expectNoMarkup(text, 'example.com');
+    });
+
+    it('extracts the AppKit fixture unchanged when its field header wraps after {', async () => {
+      const source = fixture('appkit-textutil.rtf').toString('latin1');
+      const wrapped = source.replace('{\\*\\fldinst', '{\r\n\\*\\fldinst');
+      expect(wrapped).not.toBe(source);
+      const { text } = await extractDocumentText(Buffer.from(wrapped, 'latin1'), 'appkit-textutil.rtf');
+      expect(text).toBe(appKitText);
+    });
+
+    it('extracts the LibreOffice fixture with its link text and text box and no markup', async () => {
+      const rtf = fixture('libreoffice-26.8.rtf');
+      const source = rtf.toString('latin1');
+      expect(source).toContain('{\\*\\generator LibreOffice/26.8.3.1');
+      expect(source).toContain('{\\field{\\*\\fldinst HYPERLINK "https://example.com/compendiq-libreoffice" }{\\fldrslt ');
+      expect(source).toContain('{\\*\\bkmkstart lomark}');
+      expect(source).toContain('{\\shp{\\*\\shpinst');
+      expect(source).toContain('{\\shptxt');
+
+      const { text } = await extractDocumentText(rtf, 'libreoffice-26.8.rtf');
+      // LibreOffice wraps source lines inside a paragraph, and the scanner
+      // keeps a raw source line break as a line break, so two paragraphs span
+      // three lines each.
+      expect(text).toBe([
+        'First paragraph of the Compendiq LibreOffice fixture.',
+        '',
+        'Second paragraph with a',
+        'fixture link',
+        'inside.',
+        '',
+        'Text box line of the LibreOffice fixture.',
+        '',
+        'Third paragraph',
+        'ends',
+        'the LibreOffice fixture.',
+      ].join('\n'));
+      // The words of each paragraph, in order, and the text box once.
+      expect(text.replace(/\s+/g, ' ')).toBe(
+        'First paragraph of the Compendiq LibreOffice fixture. ' +
+        'Second paragraph with a fixture link inside. ' +
+        'Text box line of the LibreOffice fixture. ' +
+        'Third paragraph ends the LibreOffice fixture.',
+      );
+      expectNoMarkup(text, 'example.com', 'lomark');
+    });
+
+    it('keeps the LibreOffice text box once when its shape header wraps after \\*', async () => {
+      const source = fixture('libreoffice-26.8.rtf').toString('latin1');
+      const wrapped = source.replace('{\\shp{\\*\\shpinst', '{\\shp{\\*\r\n\\shpinst');
+      expect(wrapped).not.toBe(source);
+      const { text } = await extractDocumentText(Buffer.from(wrapped, 'latin1'), 'libreoffice-26.8.rtf');
+      expect(text.split('Text box line of the LibreOffice fixture.')).toHaveLength(2);
+      expectNoMarkup(text, 'example.com', 'lomark');
+    });
+
+    it('extracts the LibreOffice fixture from a DOCX source with its link text and text box and no markup', async () => {
+      const rtf = fixture('libreoffice-26.8-from-docx.rtf');
+      const source = rtf.toString('latin1');
+      expect(source).toContain('{\\*\\generator LibreOffice/26.8.3.1');
+      expect(source).toContain(
+        '{\\field{\\*\\fldinst HYPERLINK "https://example.com/compendiq-libreoffice-docx" }{\\fldrslt ',
+      );
+      expect(source).toContain('{\\*\\bkmkstart docxmark}');
+      expect(source).toContain('{\\field{\\*\\fldinst SHAPE }{\\fldrslt{\\shp{\\*\\shpinst');
+      expect(source).toContain('{\\shptxt');
+
+      const { text } = await extractDocumentText(rtf, 'libreoffice-26.8-from-docx.rtf');
+      // Raw source line breaks inside a paragraph are kept, as in the fixture above.
+      expect(text).toBe([
+        'Opening paragraph of the Compendiq DOCX round trip.',
+        '',
+        'Middle paragraph carrying a',
+        'round trip link',
+        'for readers.',
+        '',
+        'Closing paragraph',
+        'marks',
+        'the DOCX round trip.',
+        '',
+        'Framed note of the DOCX round trip.',
+      ].join('\n'));
+      // The words of each paragraph, in order, and the text box once.
+      expect(text.replace(/\s+/g, ' ')).toBe(
+        'Opening paragraph of the Compendiq DOCX round trip. ' +
+        'Middle paragraph carrying a round trip link for readers. ' +
+        'Closing paragraph marks the DOCX round trip. ' +
+        'Framed note of the DOCX round trip.',
+      );
+      expectNoMarkup(text, 'example.com', 'docxmark');
+      // Neither the SHAPE field instruction nor shape property names or values.
+      expect(text).not.toMatch(/SHAPE|RoundTripFrame|pVerticies|16777215/);
     });
   });
 
