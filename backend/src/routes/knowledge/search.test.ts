@@ -247,7 +247,10 @@ describe('Search Routes', () => {
                 last_modified_at: new Date('2025-01-15'),
                 labels: ['howto'],
                 rank: 0.85,
-                snippet: 'How to use <mark>Redis</mark> caching',
+                // Full-text row: the headline carries the primary selectors.
+                fuzzy: false,
+                headline: 'How to use \u0001Redis\u0002 caching',
+                headline_alternate: null,
                 total_count: '2',
               },
               {
@@ -260,7 +263,9 @@ describe('Search Routes', () => {
                 last_modified_at: new Date('2025-02-10'),
                 labels: ['architecture'],
                 rank: 0.72,
-                snippet: 'Configure <mark>Redis</mark> for production',
+                fuzzy: false,
+                headline: 'Configure \u0001Redis\u0002 for production',
+                headline_alternate: null,
                 total_count: '2',
               },
             ],
@@ -289,7 +294,7 @@ describe('Search Routes', () => {
       expect(body.facets.authors).toHaveLength(2);
       expect(body.facets.tags).toHaveLength(2);
       expect(body.items[0].title).toBe('Redis Guide');
-      expect(body.items[0].snippet).toContain('<mark>');
+      expect(body.items[0].snippet).toBe('How to use <mark>Redis</mark> caching');
       // New fields
       expect(body.mode).toBe('keyword');
       expect(body.hasEmbeddings).toBeDefined();
@@ -525,7 +530,7 @@ describe('Search Routes', () => {
       mockQueryFn.mockImplementation((sql: string) => {
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
-            rows: [{ id: 1, confluence_id: 'p-1', source: 'confluence', title: 'T', space_key: 'DEV', author: null, last_modified_at: null, labels: [], rank: 0.5, snippet: 's', total_count: '50' }],
+            rows: [{ id: 1, confluence_id: 'p-1', source: 'confluence', title: 'T', space_key: 'DEV', author: null, last_modified_at: null, labels: [], rank: 0.5, fuzzy: false, headline: 's', headline_alternate: null, total_count: '50' }],
           };
         }
         return { rows: [] };
@@ -568,7 +573,9 @@ describe('Search Routes', () => {
       last_modified_at: null,
       labels: [],
       rank: 0.5,
-      snippet: 'snippet',
+      fuzzy: false,
+      headline: 'snippet',
+      headline_alternate: null,
       total_count: totalCount,
     });
     // Regression guard: before #1741 a separate, unpaged fuzzy-title statement
@@ -603,7 +610,9 @@ describe('Search Routes', () => {
       // …and only the page's rows read a body: they join back to `pages` for
       // display columns and the snippet after LIMIT, in the same order.
       expect(sql).toMatch(/FROM paged hits\s+JOIN pages cp ON cp\.id = hits\.id\s+ORDER BY hits\.fuzzy, hits\.rank DESC, hits\.id$/);
-      expect(sql.split('cp.body_text')).toHaveLength(3);
+      const finalSelect = sql.indexOf('SELECT cp.id, cp.confluence_id');
+      expect(finalSelect).toBeGreaterThan(sql.indexOf('paged AS ('));
+      expect(sql.slice(0, finalSelect)).not.toContain('cp.body_text');
       // The fuzzy leg stays sargable (#928): `%` is its first conjunct.
       expect(sql).toContain('WHERE cp.title % $1\n');
       expect(sql).toContain('similarity(cp.title, $1) > $4');
@@ -843,9 +852,6 @@ describe('Search Routes', () => {
       // Coverage probe: embeddable pages exist, none embedded (#1117)
       mockGetEmbeddingCoverage.mockResolvedValue({ embeddedPages: 0, totalPages: 3, coverage: 0 });
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '1' }] };
-        }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
             rows: [{
@@ -858,7 +864,10 @@ describe('Search Routes', () => {
               last_modified_at: null,
               labels: [],
               rank: 0.5,
-              snippet: 'result snippet',
+              fuzzy: false,
+              headline: 'result snippet',
+              headline_alternate: null,
+              total_count: '1',
             }],
           };
         }
@@ -1523,7 +1532,9 @@ describe('Search Routes', () => {
               last_modified_at: null,
               labels: [],
               rank: 0.8,
-              snippet: 'Redis snippet',
+              fuzzy: false,
+              headline: 'Redis snippet',
+              headline_alternate: null,
               total_count: '1',
             }],
           };
@@ -1574,7 +1585,9 @@ describe('Search Routes', () => {
               last_modified_at: null,
               labels: [],
               rank: 0.5,
-              snippet: 'snippet',
+              fuzzy: false,
+              headline: 'snippet',
+              headline_alternate: null,
               total_count: '1',
             }],
           };

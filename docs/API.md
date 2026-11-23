@@ -363,6 +363,36 @@ Every search item includes `source: "standalone" | "confluence"`, taken from
 the current page record in every search mode and fallback path. A named
 `spaceKey` or historical `confluenceId` does not determine provenance.
 
+Every item's `snippet` is always a string holding an HTML-safe fragment, in
+every mode (keyword full-text, keyword typo-tolerant title, semantic, hybrid).
+For keyword rows (full-text and typo-tolerant title) it is empty when the page
+has no body text. Semantic and hybrid snippets come from the matched chunk, so
+they can be non-empty for a page whose `body_text` is empty (for example an
+image-only page with descriptive alt text).
+
+1. **Text is text.** Every character of the excerpt passes once through one
+   mapping (`&`, `<`, `>`, `"`, `'` become `&amp;`, `&lt;`, `&gt;`, `&quot;`,
+   `&#39;`); authored `<mark>`, `<script>`, entities, quotes and control
+   characters arrive escaped and render as written. The only markup is
+   `<mark>`/`</mark>` where PostgreSQL highlighted a match, without
+   attributes and never nested. Render it as HTML through a sanitizer that
+   allows only `mark`, or strip the two tags and decode the five entities for
+   plain text.
+2. **Keyword full-text snippets are PostgreSQL's.** They keep the passage and
+   highlights `ts_headline` selects over the unmodified page text (up to 30
+   words, a limit on words, not characters; punctuation at the excerpt's edges
+   can be clipped), including a partial or no highlight when the page matched
+   through its title.
+3. **Limitation: keyword full-text snippets omit text PostgreSQL's parser
+   treats as a tag.** For the page text `Use <br> for a line break` the
+   snippet is `Use   for a <mark>line</mark> break`, and words inside such text
+   are not indexed, so the page is not found by `br` alone. Typo-tolerant
+   title snippets (the first 300 characters of the page text) and semantic and
+   hybrid snippets (the first 300 characters of the matched chunk, flattened
+   from Markdown) can display such text when it falls in the excerpt, but never
+   add a highlight for it. Both cuts count Unicode code points and happen
+   before escaping.
+
 In `mode=keyword`, `spaceKey`, `author`, `dateFrom`, `dateTo`, `tags` and
 `aiPolicy` apply to every returned item, including typo-tolerant title
 matches.
