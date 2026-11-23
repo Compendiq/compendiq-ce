@@ -104,7 +104,7 @@ curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts
 
 Then open **http://localhost:8080** and register — the first account becomes the admin.
 
-> **Requirements:** Linux or macOS with Docker 24+ and Compose v2.20+, 4 GB RAM (8 GB
+> **Requirements:** Linux or macOS with Docker 24+ and Compose v2.20+, 6 GB RAM (8 GB
 > recommended), 10 GB disk, and one free port. Plus at least one OpenAI-compatible `/v1`
 > endpoint — [Ollama](https://ollama.ai) on the host is the usual choice.
 
