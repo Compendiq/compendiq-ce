@@ -376,9 +376,10 @@ needs no special case. Like every element the walk reads, it is matched by its c
 (namespaces are not resolved), so the same element under another prefix is not recognised.
 ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
 the existing entry limit; do not expand each run without a shared budget.
-RTF is one linear token scan over the file's bytes: `\uN` replaces its group-scoped `\ucN`
+RTF is one linear token scan over the file's bytes (`rtfToText` takes a `Uint8Array`, never decoded text; a raw
+non-ASCII character after `\` or inside a `\ucN` fallback counts as one whole well-formed UTF-8 sequence): `\uN` replaces its group-scoped `\ucN`
 fallback, `\'hh` bytes decode through `TextDecoder` in the `\ansicpgN` code page (windows-1252
-when absent or unsupported; 932/936/949/950 as double-byte runs, 949 as full Windows cp949;
+when absent or unsupported; 932/936/949/950 as double-byte runs, 949 as full Windows cp949, whose `C9`/`FE` rows decode to the private-use area U+E000–U+E0BB;
 per-font `\fcharsetN` is not read), `\binN` data is skipped, listed destination groups drop
 whole with everything nested in them, a backslash followed by a line break (`\`+LF, CR or CRLF as
 one break, as TextEdit and `textutil` write every paragraph) is kept as a paragraph break like `\par`
