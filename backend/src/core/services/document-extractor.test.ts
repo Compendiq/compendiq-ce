@@ -729,6 +729,55 @@ describe('rtfToText', () => {
     expect(rtfToText("{\\rtf1{\\info{\\title a\\}b\\'7dc\\{d}}Body}")).toBe('Body');
   });
 
+  it('reads a backslash and a line break as a paragraph break (#1966)', () => {
+    expect(rtfToText('{\\rtf1\\ansi first\\\nsecond}')).toBe('first\nsecond');
+    expect(rtfToText('{\\rtf1 a\\\rb}')).toBe('a\nb');
+    // CRLF is one break, not two.
+    expect(rtfToText('{\\rtf1 a\\\r\nb}')).toBe('a\nb');
+    // An escaped break followed by a raw source newline matches its \par twin.
+    expect(rtfToText('{\\rtf1 a\\\n\nb}')).toBe('a\n\nb');
+    expect(rtfToText('{\\rtf1 a\\\n\nb}')).toBe(rtfToText('{\\rtf1 a\\par\nb}'));
+    // Three or more still collapse to a blank line.
+    expect(rtfToText('{\\rtf1 a\\\n\\\n\\\n\\\nb}')).toBe('a\n\nb');
+  });
+
+  it('extracts a TextEdit-shaped document the same with backslash-newline as with \\par (#1966)', () => {
+    const textEdit = (lineBreak: string): string => [
+      '{\\rtf1\\ansi\\ansicpg1252\\cocoartf2761',
+      '\\cocoatextscaling0\\cocoaplatform0{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}',
+      '{\\colortbl;\\red255\\green255\\blue255;}',
+      '\\pard\\tx720\\tx1440\\pardirnatural\\partightenfactor0',
+      '',
+      `\\f0\\fs24 \\cf0 First paragraph${lineBreak}Second paragraph${lineBreak}Third paragraph}`,
+    ].join('\n');
+    const expected = 'First paragraph\nSecond paragraph\nThird paragraph';
+    // TextEdit writes the break as `\` + newline; the twin has `\par` and no source newline.
+    expect(rtfToText(textEdit('\\\n'))).toBe(expected);
+    expect(rtfToText(textEdit('\\par '))).toBe(expected);
+  });
+
+  it('ends a pending \\uN fallback at a backslash-newline break (#1966)', () => {
+    expect(rtfToText('{\\rtf1\\uc2 \\u1055\\\nb}')).toBe('П\nb');
+    expect(rtfToText('{\\rtf1 \\u1055?\\\nb}')).toBe('П\nb');
+  });
+
+  it('keeps a double-byte character intact before a backslash-newline inside a byte run (#1966)', () => {
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg932 \\'82\\'a0\\\n\\'82\\'a2}")).toBe('あ\nい');
+  });
+
+  it('stays silent for a backslash-newline inside a skipped destination group (#1966)', () => {
+    expect(rtfToText('{\\rtf1 a{\\fonttbl x\\\ny\\\r\nz}b}')).toBe('ab');
+  });
+
+  it('still drops a trailing lone backslash (#1966)', () => {
+    expect(rtfToText('{\\rtf1 a\\')).toBe('a');
+  });
+
+  it('extractDocumentText keeps backslash-newline paragraph breaks (#1966)', async () => {
+    const rtf = Buffer.from('{\\rtf1\\ansi first\\\nsecond}', 'latin1');
+    expect(await extractDocumentText(rtf, 'memo.rtf')).toEqual({ format: 'rtf', text: 'first\nsecond' });
+  });
+
   it('skips a destination group of any size without throwing', () => {
     const fonts = '{a}'.repeat(4_000_000);
     expect(rtfToText(`{\\rtf1{\\fonttbl${fonts}}Body}`)).toBe('Body');

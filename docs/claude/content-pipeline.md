@@ -380,7 +380,9 @@ RTF is one linear token scan over the file's bytes: `\uN` replaces its group-sco
 fallback, `\'hh` bytes decode through `TextDecoder` in the `\ansicpgN` code page (windows-1252
 when absent or unsupported; 932/936/949/950 as double-byte runs, 949 as full Windows cp949;
 per-font `\fcharsetN` is not read), `\binN` data is skipped, listed destination groups drop
-whole with everything nested in them, and malformed input never throws.
+whole with everything nested in them, a backslash followed by a line break (`\`+LF, CR or CRLF as
+one break, as TextEdit and `textutil` write every paragraph) is kept as a paragraph break like `\par`
+(silent in a skipped group), and malformed input never throws.
 
 **Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
 never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format
