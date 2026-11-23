@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Article PDF exports that exceed 1,000 printed code rows now return HTTP 413 instead of risking a backend crash. The limit includes wrapped rows and applies across the whole batch (#1962).
 
+- Stored search text written before the #1735 fix (an escaped `&amp;lt;br&amp;gt;` stored as `<br>`) is corrected by a resumable background job, so keyword search and search snippets, which read that stored text, find what the page shows (#1965); how snippets are displayed is not changed here. It runs once per hour until complete, then re-checks after 24 hours and every 30 days; each page is corrected with its draft and history in one step or left as it is, and pages it leaves are counted in the job log. Correcting a page's published or draft text gives it a new content revision, so its summary, quality and embedding work may run again; correcting only its history does not.
+
 - Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
 
 - **Upgrade note for #1918.** Reload any open Compendiq tabs after upgrading. A tab still running the old frontend bundle receives HTTP 400 on Confluence version preview and restore, and on semantic diff, until it reloads.

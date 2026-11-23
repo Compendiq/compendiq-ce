@@ -110,6 +110,11 @@ const legacy = vi.hoisted(() => ({
   stopBackupLegacyWorker: vi.fn(),
   processBackupJob: vi.fn(),
   runForcedBackup: vi.fn(),
+  armBodyTextBackfill: vi.fn(),
+  startBodyTextBackfillWorker: vi.fn(),
+  stopBodyTextBackfillWorker: vi.fn(),
+  stopBodyTextBackfill: vi.fn(),
+  processBodyTextBackfillJob: vi.fn(),
 }));
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
@@ -152,6 +157,14 @@ vi.mock('./backup-worker.js', () => ({
   stopBackupLegacyWorker: legacy.stopBackupLegacyWorker,
   processBackupJob: legacy.processBackupJob,
   runForcedBackup: legacy.runForcedBackup,
+}));
+
+vi.mock('./body-text-backfill.js', () => ({
+  armBodyTextBackfill: legacy.armBodyTextBackfill,
+  startBodyTextBackfillWorker: legacy.startBodyTextBackfillWorker,
+  stopBodyTextBackfillWorker: legacy.stopBodyTextBackfillWorker,
+  stopBodyTextBackfill: legacy.stopBodyTextBackfill,
+  processBodyTextBackfillJob: legacy.processBodyTextBackfillJob,
 }));
 
 vi.mock('../db/postgres.js', () => ({
@@ -420,6 +433,7 @@ describe('queue-service', () => {
         ['maintenance', 'maintenance-scheduler', 24 * hour, 'maintenance'],
         ['maintenance', 'data-retention-scheduler', 24 * hour, 'data-retention'],
         ['backup', 'backup-scheduler', 15 * minute, 'backup'],
+        ['body-text-backfill', 'body-text-backfill-scheduler', hour, 'body-text-backfill'],
       ];
       for (const [queue, id, every, name] of expected) {
         expect(queueStubs.get(queue)!.upsertJobScheduler).toHaveBeenCalledWith(
@@ -464,6 +478,56 @@ describe('queue-service', () => {
         data: {},
       });
       expect(legacy.processBackupJob).toHaveBeenLastCalledWith(null);
+    });
+
+    // #1965: the hourly scheduler alone may not fire for up to an hour after
+    // a restart (an existing scheduler keeps its next slot), hence the kick.
+    it('kicks the body_text backfill once at startup with a fixed job id after arming it (#1965)', async () => {
+      const stub = createQueueStub();
+      stub.getJob.mockResolvedValue(undefined);
+      stub.add.mockResolvedValue({ id: 'body-text-backfill-startup' });
+      queueStubs.set('body-text-backfill', stub);
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+      expect(legacy.armBodyTextBackfill).toHaveBeenCalledTimes(1);
+      expect(stub.add).toHaveBeenCalledTimes(1);
+      expect(stub.add).toHaveBeenCalledWith('body-text-backfill', {}, { jobId: 'body-text-backfill-startup' });
+    });
+
+    it('a failing startup kick is logged and never fails startup (#1965)', async () => {
+      const stub = createQueueStub();
+      stub.getJob.mockResolvedValue(undefined);
+      stub.add.mockRejectedValue(new Error('redis down'));
+      queueStubs.set('body-text-backfill', stub);
+      const { startQueueWorkers } = await import('./queue-service.js');
+      const { logger } = await import('../utils/logger.js');
+      await expect(startQueueWorkers()).resolves.toBeUndefined();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ queue: 'body-text-backfill' }), 'body_text backfill startup kick failed',
+      );
+    });
+
+    it('forwards the job data to the body_text backfill processor (#1965)', async () => {
+      legacy.processBodyTextBackfillJob.mockResolvedValue('body_text backfill done');
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+      const processor = workerProcessors.get('body-text-backfill');
+      await expect(processor!({ id: 'j', name: 'body-text-backfill', data: { restart: true } }))
+        .resolves.toBe('body_text backfill done');
+      expect(legacy.processBodyTextBackfillJob).toHaveBeenCalledWith({ restart: true });
+    });
+
+    it('stopQueueWorkers awaits the body_text backfill stop before closing queues (#1965)', async () => {
+      let finishStop!: () => void;
+      legacy.stopBodyTextBackfill.mockImplementation(() => new Promise<void>((resolve) => { finishStop = resolve; }));
+      const { startQueueWorkers, stopQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+      const stopping = stopQueueWorkers();
+      await vi.waitFor(() => expect(legacy.stopBodyTextBackfill).toHaveBeenCalledTimes(1));
+      expect(queueStubs.get('sync')!.close).not.toHaveBeenCalled();
+      finishStop();
+      await stopping;
+      expect(queueStubs.get('sync')!.close).toHaveBeenCalled();
     });
   });
 
@@ -564,6 +628,18 @@ describe('queue-service', () => {
       // Registering worker defs for the inline fallback must not open Redis
       // connections — no Queue construction, no upsertJobScheduler.
       expect(queueStubs.size).toBe(0);
+    });
+
+    it('starts and stops the legacy body_text backfill timers; stop awaits the in-flight run (#1965)', async () => {
+      legacy.stopBodyTextBackfill.mockResolvedValue(undefined);
+      const { startQueueWorkers, stopQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+      expect(legacy.startBodyTextBackfillWorker).toHaveBeenCalledTimes(1);
+      await stopQueueWorkers();
+      expect(legacy.stopBodyTextBackfill).toHaveBeenCalledTimes(1);
+      expect(legacy.stopBodyTextBackfillWorker).toHaveBeenCalledTimes(1);
+      expect(legacy.stopBodyTextBackfill.mock.invocationCallOrder[0])
+        .toBeLessThan(legacy.stopSyncWorker.mock.invocationCallOrder[0]!);
     });
 
     it('logs instead of crashing when an inline processor rejects', async () => {

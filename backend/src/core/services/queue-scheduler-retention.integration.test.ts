@@ -22,7 +22,7 @@ vi.mock('./backup-worker.js', () => ({
 }));
 
 const available = await isDbAvailable() && await isRedisAvailable();
-const names = ['sync', 'quality', 'summary', 'image-analysis', 'maintenance', 'reembed-all', 'shadow-reembed', 'backup'];
+const names = ['sync', 'quality', 'summary', 'image-analysis', 'maintenance', 'reembed-all', 'shadow-reembed', 'backup', 'body-text-backfill'];
 const queues: Queue[] = [];
 const redis = createClient({ url: process.env.REDIS_URL });
 const SCHEDULER_EVERY_MS = 10;

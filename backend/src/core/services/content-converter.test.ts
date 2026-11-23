@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import { JSDOM, VirtualConsole } from 'jsdom';
 import {
   confluenceToHtml,
   htmlToConfluence,
   htmlToMarkdown,
   markdownToHtml,
   htmlToText,
+  htmlTextContent,
+  collapseBodyText,
   protectMedia,
   restoreMedia,
   extractLayoutSkeleton,
@@ -1442,6 +1445,36 @@ describe('content-converter', () => {
       expect(htmlToText('<p>see https://x.test/?id=1&amp;reg=eu&amp;copy=2</p>')).toBe(
         'see https://x.test/?id=1&reg=eu&copy=2',
       );
+    });
+
+    // #1965: the backfill classifies stored rows with the two halves of
+    // htmlToText. The split must not change a single output on the corpus.
+    it('equals collapseBodyText(htmlTextContent(html)) and the pre-split derivation on the corpus (#1965)', () => {
+      const corpus = [
+        confluenceToHtml(SIMPLE_PAGE),
+        confluenceToHtml(COMPLEX_PAGE, '42'),
+        confluenceToHtml(TABLE_PAGE),
+        confluenceToHtml(CODE_BLOCK_PAGE),
+        confluenceToHtml(TASK_LIST_PAGE),
+        '<p>A &amp; B &lt; C</p>',
+        '<p>Use &amp;lt;br&amp;gt;</p>',
+        '<p>Write &amp;amp; for an ampersand</p>',
+        '<p>Write &amp;#60; for a less-than sign</p>',
+        '\n  <p>  A &amp;\tB </p>\n\n<p>&amp;lt;br&amp;gt;  </p>  ',
+        '<p>a&nbsp;&nbsp;b &amp;nbsp;</p>',
+        '<p>see https://x.test/?id=1&amp;reg=eu&amp;copy=2</p>',
+        '',
+      ];
+      const preSplit = (html: string) => (
+        new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document.body.textContent ?? ''
+      ).replace(/\s+/g, ' ').trim();
+      for (const html of corpus) {
+        expect(htmlToText(html)).toBe(preSplit(html));
+        expect(collapseBodyText(htmlTextContent(html))).toBe(preSplit(html));
+        expect(htmlTextContent(html, new VirtualConsole())).toBe(htmlTextContent(html));
+      }
+      // The raw half keeps whitespace; only the collapse removes it.
+      expect(htmlTextContent('<p> a\n</p>')).toBe(' a\n');
     });
   });
 

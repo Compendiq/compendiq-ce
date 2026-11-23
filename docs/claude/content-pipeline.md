@@ -63,8 +63,19 @@ link around a line break (Yjs keeps marks on text only). Pinned by
 `body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
 imports, drafts, version text; Notion imports join parts with blank lines, restores copy
 stored text), so `htmlToText` must equal what the page shows: the HTML parser decodes
-entities once and nothing decodes again (#1735). Rows written before #1735 keep their double-decoded text until
-their next write; there is no backfill.
+entities once and nothing decodes again (#1735). Rows written before #1735 are repaired
+by the hourly `body_text` backfill job (`core/services/body-text-backfill.ts`, #1965): it
+rewrites `pages.body_text`, `pages.draft_body_text` and `page_versions.body_text` only where
+the stored text is exactly the frozen pre-#1940 derivation of the copy's own HTML
+(`he.decode(textContent)`, kept verbatim in `body-text-backfill-parser.ts`; never "fix" it)
+and differs from `htmlToText`. A page and its history are repaired together in one
+transaction or not at all: if any copy the job will not rewrite (baseline-linked or
+text-only snapshot, a frozen page's columns, a diverged/current/no-`&` copy) holds the same
+stored text as a copy it would correct, or the repair would move the page's snapshot
+identity onto an occupied key, the whole page is left as it is and counted. Notion, folder,
+diverged and already-current rows, oversized (> 32 MiB) or unparseable columns,
+`page_baselines`, `page_relocation_preparations` and `pending_sync_versions` are never
+written. Design and limits: `docs/architecture/11-content-pipeline.md`.
 
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
