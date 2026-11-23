@@ -588,8 +588,16 @@ interface OdfBlock {
  *   after it starts a new line. The outer's marker goes on its first line only.
  * - Comments, forms, binary data and the rendered footnote mark
  *   (`text:note-citation`) are dropped with their content. Character data
- *   outside every block (declarations, metadata) is not text. Text deleted
- *   under change tracking (`text:tracked-changes`) is not filtered out.
+ *   outside every block (declarations, metadata) is not text. So is the
+ *   `text:tracked-changes` subtree: text deleted under change tracking lives
+ *   only there (inside `text:deletion`), while inserted text stays inline in
+ *   the body between empty `text:change-*` markers and is kept. Recording
+ *   switched off (`text:track-changes="false"`) leaves the regions in place,
+ *   so one rule covers both.
+ *
+ * Elements are matched by their conventional prefixed names (`text:`,
+ * `office:`), as every element read here is; XML namespaces are not resolved,
+ * so `text:tracked-changes` written under another prefix is not recognised.
  */
 function odfContentToText(xml: string): string {
   const body = odfBody(xml);
@@ -648,9 +656,11 @@ function odfContentToText(xml: string): string {
 
     const { name, attrs, selfClosing } = token;
     switch (name) {
-      // Not document text: comments, form controls, embedded binaries and the
-      // rendered footnote mark (the note body itself is kept).
+      // Not document text: comments, form controls, embedded binaries, the
+      // rendered footnote mark (the note body itself is kept) and the
+      // change-tracking regions (deleted text lives only there).
       case 'office:annotation':
+      case 'text:tracked-changes':
       case 'office:forms':
       case 'office:binary-data':
       case 'text:note-citation':

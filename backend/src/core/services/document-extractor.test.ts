@@ -268,6 +268,50 @@ describe('extractDocumentText', () => {
       expect(text).toBe('- Install\nNeeds admin rights.\nthe agent\n- Restart\nPort\nTCP only.\n8443\nOpen');
     });
 
+    describe('change tracking', () => {
+      /** A deletion region as LibreOffice records it: the removed text lives only here. */
+      const deleted = (id: string, contentXml: string): string =>
+        `<text:changed-region text:id="${id}"><text:deletion>` +
+        '<office:change-info><dc:creator>Ann</dc:creator><dc:date>2026-01-01T00:00:00</dc:date></office:change-info>' +
+        `${contentXml}</text:deletion></text:changed-region>`;
+      const inserted = (id: string): string =>
+        `<text:changed-region text:id="${id}"><text:insertion>` +
+        '<office:change-info><dc:creator>Ann</dc:creator></office:change-info></text:insertion></text:changed-region>';
+      const tracked = (regions: string, recording = 'true'): string =>
+        `<text:tracked-changes text:track-changes="${recording}">${regions}</text:tracked-changes>`;
+      const body =
+        '<text:p>Kept first.</text:p>' +
+        '<text:p>Keep <text:change-start text:change-id="ct3"/>added words<text:change-end text:change-id="ct3"/>' +
+        ' and <text:change text:change-id="ct2"/>tail.</text:p>' +
+        '<text:change text:change-id="ct1"/>';
+      const regions =
+        deleted('ct1', '<text:p>Deleted paragraph SENTINEL.</text:p>') +
+        deleted('ct2', '<text:p>deleted run SENTINEL</text:p>') +
+        inserted('ct3');
+      const expected = 'Kept first.\nKeep added words and tail.';
+
+      it('drops deleted paragraphs and runs and keeps inserted text', async () => {
+        expect(await odtText(tracked(regions) + body)).toBe(expected);
+      });
+
+      it('reads the same with change recording turned off', async () => {
+        expect(await odtText(tracked(regions, 'false') + body)).toBe(expected);
+      });
+
+      it('accepts an empty self-closing tracked-changes element', async () => {
+        expect(await odtText('<text:tracked-changes/><text:p>Only text</text:p>')).toBe('Only text');
+      });
+
+      it('drops a tracked-changes block wherever the walk finds it', async () => {
+        const text = await odtText(
+          '<text:section text:name="S1"><text:p>In section</text:p>' +
+          tracked(deleted('ct1', '<text:p>Gone SENTINEL</text:p>')) +
+          '<text:p>After block</text:p></text:section>',
+        );
+        expect(text).toBe('In section\nAfter block');
+      });
+    });
+
     it('bullets every paragraph of a list item, also after a nested list', async () => {
       const text = await odtText(
         '<text:list><text:list-item>' +
