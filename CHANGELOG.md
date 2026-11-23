@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The backend container's default memory limit is 2048m instead of 1024m (`BACKEND_MEM_LIMIT`). 1024m is documented as the minimum. An existing `BACKEND_MEM_LIMIT` in `.env` keeps its value.
+- The backend container's default memory limit is 2048m instead of 1024m (`BACKEND_MEM_LIMIT`). 1024m is documented as the minimum. An existing `BACKEND_MEM_LIMIT` in `.env` keeps its value. The documented minimum host RAM is 6 GB instead of 4 GB.
 
 ### Fixed
 
