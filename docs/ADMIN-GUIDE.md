@@ -8,9 +8,19 @@ This guide covers installation, configuration, maintenance, and troubleshooting 
 |-----------|---------|-------------|
 | **Docker** | 24.0+ | Latest stable |
 | **Docker Compose** | v2.20+ | Latest stable |
-| **RAM** | 4 GB | 8 GB+ |
+| **RAM** (host) | 4 GB | 8 GB+ |
+| **Backend container memory** (`BACKEND_MEM_LIMIT`) | 1024m | 2048m (default) |
 | **Disk** | 10 GB | 20 GB+ (depends on attachment cache size) |
 | **CPU** | 2 cores | 4 cores |
+
+The backend container is capped at 2048m by default. 1024m is the lowest
+supported value: the backend idles at about 330 MiB and background jobs such
+as the `body_text` repair can add several hundred MiB for a short time. The
+per-service caps are upper limits, not reservations, so the defaults still
+fit a 4 GB host; on such a host leave Ollama or other memory-heavy services
+elsewhere. Do not start the backend with Node's `--max-old-space-size`
+(for example through `NODE_OPTIONS`): the `body_text` repair job then
+refuses to run.
 
 Additionally, the backend needs at least one OpenAI-compatible `/v1` endpoint —
 local **Ollama** / LM Studio / vLLM, or a hosted API such as **OpenAI** or

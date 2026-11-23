@@ -116,7 +116,7 @@ services:
       # Root FS is read-only. Persistent writes go to the attachments volume.
       # Only transient scratch needs a writable /tmp.
       - /tmp
-    mem_limit: ${BACKEND_MEM_LIMIT:-1024m}
+    mem_limit: ${BACKEND_MEM_LIMIT:-2048m}
     cpus: 2.0
     pids_limit: 512
     # frontend-net: reachable by the nginx proxy. backend-net: reach mcp-docs.

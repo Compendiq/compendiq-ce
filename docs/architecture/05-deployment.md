@@ -127,7 +127,7 @@ compose in `scripts/install.sh`):
 | Service   | `cap_drop` | extra `cap_add` | `read_only` | `mem_limit` / `cpus` / `pids_limit` |
 |-----------|------------|-----------------|-------------|-------------------------------------|
 | frontend  | `ALL`      | –               | **yes**     | 128m / 0.5 / 100 |
-| backend   | `ALL`      | –               | **yes**     | 1024m / 2.0 / 512 |
+| backend   | `ALL`      | –               | **yes**     | 2048m / 2.0 / 512 |
 | mcp-docs  | `ALL`      | –               | **yes**     | 256m / 0.5 / 100 |
 | searxng   | `ALL`      | –               | no          | 256m / 0.5 / 200 |
 | postgres  | `ALL`      | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | no | 1024m / 2.0 / 300 |
@@ -155,9 +155,12 @@ compose in `scripts/install.sh`):
   killer. Each `mem_limit` is **env-overridable** as
   `${<SERVICE>_MEM_LIMIT:-<default>}` (e.g. `BACKEND_MEM_LIMIT`,
   `POSTGRES_MEM_LIMIT` — see `.env.example`), so an operator can raise a limit
-  without editing the compose file; the table values are the defaults. Raise
-  `BACKEND_MEM_LIMIT` first if the backend is OOM-killed during large syncs or
-  embedding batches.
+  without editing the compose file; the table values are the defaults. The
+  backend default is 2048m and its **minimum is 1024m**: under a 1,024 MiB cap
+  the production image idles at about 330 MiB and the `body_text` backfill
+  peaked at 609 MiB in its worst measured cases (#1965), so 1024m runs but
+  leaves little room for a large sync, embedding batch or PDF export at the
+  same time. Raise `BACKEND_MEM_LIMIT` first if the backend is OOM-killed.
 
 ### Image pinning
 

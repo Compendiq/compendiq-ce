@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [Accepted ADR-028](docs/ARCHITECTURE-DECISIONS.md#adr-028-complex-text-in-pdf-exports) selects PDFKit for a future article PDF writer. Article and analytics exports are unchanged (#2033).
 
+### Changed
+
+- The backend container's default memory limit is 2048m instead of 1024m (`BACKEND_MEM_LIMIT`). 1024m is documented as the minimum. An existing `BACKEND_MEM_LIMIT` in `.env` keeps its value.
+
 ### Fixed
 
 - RTF extraction drops ignorable `{\*\…}` destinations it does not keep, so bookmark names, `HYPERLINK "url"` field codes and TextEdit's `;;` colour-table residue no longer reach the extracted text; a hyperlink keeps its visible result text, and text-box text (`\shpinst`, `\shptxt`) is kept without its shape properties (#1967).

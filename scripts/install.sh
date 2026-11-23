@@ -355,7 +355,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: ${BACKEND_MEM_LIMIT:-1024m}
+    mem_limit: ${BACKEND_MEM_LIMIT:-2048m}
     cpus: 2.0
     pids_limit: 512
     healthcheck:
