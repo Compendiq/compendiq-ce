@@ -1,24 +1,21 @@
 /**
  * Honest refusal when Confluence moved while a collab session is live (#1448).
- * `role="status"` (not alert) so AT is not interrupted.
+ * `role="status"` (not alert) so AT is not interrupted; the session stays open.
  *
- * Two cases share the strip. The version check before anything was sent: the
- * page was not saved and the session stays open. Confluence refusing the write
- * itself (`saveOutcomeUnknown`, #2035): the result is unknown and the room
- * stops accepting edits, so nothing here may promise an open session.
+ * Only for the version check before the Save was sent. A Save that Confluence
+ * refused after dispatch has an unknown result (#2035): the editor goes to its
+ * read-only draft instead, and this strip is not shown.
  */
 import { cn } from '../../shared/lib/cn';
 
 export function ConfluenceModifiedAlert({
   remoteVersion,
   localVersion,
-  saveOutcomeUnknown = false,
   onDismiss,
   className,
 }: {
   remoteVersion?: number;
   localVersion?: number;
-  saveOutcomeUnknown?: boolean;
   onDismiss: () => void;
   className?: string;
 }) {
@@ -37,21 +34,11 @@ export function ConfluenceModifiedAlert({
       )}
     >
       <span className="mt-0.5 inline-flex shrink-0 items-center rounded-full border border-border bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-secondary-foreground">
-        {saveOutcomeUnknown ? 'Result unknown' : 'Not saved'}
+        Not saved
       </span>
       <p className="min-w-0 flex-1 leading-5 text-foreground">
-        {saveOutcomeUnknown ? (
-          <>
-            This page was modified in Confluence{versions} while it was being
-            saved. The result of this save is unknown, and editing is paused
-            until that save is resolved.
-          </>
-        ) : (
-          <>
-            This page was modified in Confluence{versions}. Your collaborative
-            session is still open — nobody&apos;s edits were overwritten.
-          </>
-        )}
+        This page was modified in Confluence{versions}. Your collaborative
+        session is still open — nobody&apos;s edits were overwritten.
       </p>
       <button
         type="button"

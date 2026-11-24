@@ -63,6 +63,13 @@ export interface UseCollabProviderResult {
    * False for a document that synced from a server or a room that named none.
    */
   docEpochPinned: boolean;
+  /**
+   * The Save route answered that the collaborative save of `document` has an
+   * unknown result (#2035). Enters the state the `commit_unknown` control
+   * does, at once: that control may be late or never arrive. A document that
+   * is no longer the mounted one is ignored.
+   */
+  declareCommitUnknown: (document: Y.Doc) => void;
 }
 
 function collabWsUrl(): string {
@@ -141,6 +148,8 @@ function postSyncReadOnlyReason(code: number, reason: string, hasSynced: boolean
  *   client that missed it) keeps the Y.Doc the same way and never reconnects
  *   (#2035): a collaborative save of the page did not finish and its result is
  *   unknown. The `permission_loss` the server sends after it changes nothing.
+ *   The Save route's own answer enters the same state through
+ *   `declareCommitUnknown`, without waiting for the control.
  * - Before the first sync a 4403 reason is parsed with `CollabRefusalReasonSchema`:
  *   `rate_limited` (Retry once `COLLAB_UPGRADE_WINDOW_SEC` has passed), `flag_off`,
  *   and `readonly` (an interrupted join, Retry at once) preserve no document.
@@ -174,6 +183,8 @@ export function useCollabProvider({
   // Each join installs its own rejoin; `retry` keeps one identity for callers.
   const retryRef = useRef<() => void>(() => undefined);
   const retry = useCallback(() => retryRef.current(), []);
+  const declareCommitUnknownRef = useRef<(document: Y.Doc) => void>(() => undefined);
+  const declareCommitUnknown = useCallback((document: Y.Doc) => declareCommitUnknownRef.current(document), []);
 
   useEffect(() => {
     setConnected(false);
@@ -249,6 +260,9 @@ export function useCollabProvider({
       setReadOnlyReason(reason);
       // Keep both the document and provider identity mounted in TipTap.
       ws.disconnect();
+    };
+    declareCommitUnknownRef.current = (document) => {
+      if (document === doc) preserveReadOnly('commit_unknown');
     };
     // A refused first join has no document to preserve; a retry is explicit.
     const refuseBeforeSync = (joinError: Exclude<CollabJoinError, 'unauthorized' | 'forbidden' | 'not_found'>) => {
@@ -399,6 +413,7 @@ export function useCollabProvider({
       clearTimeout(rejoinTimer);
       clearTimeout(retryTimer);
       retryRef.current = () => undefined;
+      declareCommitUnknownRef.current = () => undefined;
       awareness.off('update', refreshAwareness);
       ws.destroy();
       awareness.destroy();
@@ -415,6 +430,6 @@ export function useCollabProvider({
 
   return {
     ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error,
-    reconnecting, canRetry, retry, docEpochPinned,
+    reconnecting, canRetry, retry, docEpochPinned, declareCommitUnknown,
   };
 }
