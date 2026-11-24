@@ -129,8 +129,8 @@ runs on the transaction it already holds:
   `afterCommit` side effect; `reconcilePageWriteIntent` awaits it strictly
   after its settlement transaction resolves, never on rollback, and logs a
   failure instead of failing the already-settled recovery (the remote and
-  local delete reconcilers close collaborative rooms this way, each page id
-  independently via `Promise.allSettled`). An explicit
+  local delete reconcilers close collaborative rooms this way, the page ids
+  independently and concurrently via `Promise.allSettled`). An explicit
   re-assertion of the same `all`/`local_only`
   policy bumps the revision and emits, but re-queues no derived work; only
   a real move re-queues, and `none` always purges.

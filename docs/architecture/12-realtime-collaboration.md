@@ -352,12 +352,17 @@ recovered delete, remote (`pages.delete.confluence`, `pages.bulk.delete.remote`)
 or local (`pages.delete.standalone`, `pages.delete.local`,
 `pages.bulk.delete.local`), tombstones after its settlement COMMIT, never inside
 it (a writable room's final flush takes the page lifecycle lock that
-transaction holds). Each deleted page id is closed independently, so one failing
-close does not skip the others. A rolled-back settlement sends no 4404 and keeps
-`collab:active`; the administrator's retry closes the room. A crash between the
-COMMIT and the close is not retried: sockets close on disconnect and a rejoin
-answers 4404. An undispatched remote delete restores `deleted_at` and closes
-nothing.
+transaction holds). The deleted page ids are closed independently and
+concurrently (`Promise.allSettled`), so one failing close does not skip the
+others. A rolled-back settlement sends no 4404 and keeps `collab:active`; the
+administrator's retry closes the room. Two committed-but-unclosed cases are
+accepted and not retried (a durable outbox is out of scope): the process dies
+between the COMMIT and the close, or PostgreSQL commits but the COMMIT
+acknowledgment is lost, so `inTransaction` rejects, the reconcile fails without
+reaching `afterCommit` and the intent is already durably settled. Unlike a
+rollback, a later reconcile does not close the room. In both, sockets close on
+disconnect and a fresh join answers 4404. An undispatched remote delete
+restores `deleted_at` and closes nothing.
 
 ## Feature flag
 

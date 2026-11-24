@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { setTimeout as setTimeoutPromise } from 'node:timers/promises';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { WebSocket } from 'ws';
 import {
   isDbAvailable,
@@ -19,8 +20,6 @@ import {
   getDefaultCollabRuntime,
   initCollabBus,
 } from '../../../core/services/collab-room-service.js';
-import type * as CollabTombstone from '../../../core/services/collab-tombstone.js';
-import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
 import { localAttachmentsDir } from '../../../core/services/local-attachment-service.js';
 import {
   type PageRuntimeAdmission,
@@ -31,11 +30,6 @@ import {
 } from '../../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import { registerOrdinaryPageWriteReconcilers } from './ordinary-page-write-reconciler.js';
-
-vi.mock('../../../core/services/collab-tombstone.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof CollabTombstone>();
-  return { ...actual, tombstoneCollabRoomAfterCommit: vi.fn(actual.tombstoneCollabRoomAfterCommit) };
-});
 
 const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 const describeIntegration = dbAvailable && redisAvailable ? describe : describe.skip;
@@ -116,13 +110,26 @@ type LocalDeleteKind = Extract<
 
 type RecordedClose = { pageId: number; code: number; reason: string };
 
-/** A WebSocket stand-in whose only observable is the server's close call. */
-function recordingSocket(pageId: number, closes: RecordedClose[]): WebSocket {
+/**
+ * A WebSocket stand-in whose only observables are the server's close call and
+ * what the durable intent looked like to a second connection at that moment:
+ * a close issued inside the settlement transaction sees `pending`.
+ */
+function recordingSocket(
+  pageId: number,
+  closes: RecordedClose[],
+  statusAtClose: Array<Promise<string | undefined>>,
+  intentRef: { id: string | null },
+): WebSocket {
   return {
     readyState: 1,
     send() {},
     close(code?: number, reason?: string) {
       closes.push({ pageId, code: code ?? 1005, reason: String(reason ?? '') });
+      statusAtClose.push(
+        query<{ status: string }>('SELECT status FROM page_write_intents WHERE id = $1', [intentRef.id])
+          .then((result) => result.rows[0]?.status),
+      );
     },
   } as unknown as WebSocket;
 }
@@ -142,6 +149,8 @@ type SeededDeletion = {
   recoveryAdminId: string;
   preserveSharedCache: boolean;
   closes: RecordedClose[];
+  /** The durable intent status another connection read the moment each socket was closed. */
+  statusAtClose: Array<Promise<string | undefined>>;
   joinedWritable: boolean;
 };
 
@@ -180,6 +189,8 @@ async function seedCommittedDeletion(
     revisionsById.set(sibling.rows[0]!.id, sibling.rows[0]!);
   }
   const closes: RecordedClose[] = [];
+  const statusAtClose: Array<Promise<string | undefined>> = [];
+  const intentRef: { id: string | null } = { id: null };
   let joinedWritable = false;
   if (options.room) {
     // truncateAllTables removed this process's runtime row; a writable join needs it.
@@ -189,7 +200,7 @@ async function seedCommittedDeletion(
     for (const id of deletedIds) {
       const joined = await runtime.attachSocket(id, {
         id: `editor-${randomUUID()}`,
-        ws: recordingSocket(id, closes),
+        ws: recordingSocket(id, closes, statusAtClose, intentRef),
         userId: originalActorId,
         writable: options.room === 'writable',
       });
@@ -244,6 +255,7 @@ async function seedCommittedDeletion(
     ],
   );
   const intentId = randomUUID();
+  intentRef.id = intentId;
   const effect = standalone
     ? {
         effectClass: 'local',
@@ -313,6 +325,7 @@ async function seedCommittedDeletion(
     recoveryAdminId,
     preserveSharedCache,
     closes,
+    statusAtClose,
     joinedWritable,
   };
 }
@@ -432,7 +445,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   if (!dbAvailable || !redisAvailable) return;
-  vi.mocked(tombstoneCollabRoomAfterCommit).mockClear();
   // A writable room's durable admission can outlive a committed delete, so
   // release it explicitly before the next case truncates the tables.
   for (const room of seededRooms.splice(0)) {
@@ -559,6 +571,54 @@ describeIntegration('local page-delete recovery', () => {
     )).rows[0]).toEqual({ status: 'reconciled_applied', cache_invalidation_pending: false });
   });
 
+  /**
+   * Runs a reconcile under a test-owned deadline. A reconcile that waits on its
+   * own lifecycle lock never settles by itself, so past the deadline the
+   * identified advisory-lock waiters are cancelled and the original reconcile
+   * is awaited, leaving no transaction, lock or room behind for the teardown.
+   * The case then fails: a cancelled flush must never let it pass.
+   *
+   * The deadline and the drain polling use real timers on purpose: the
+   * condition is a PostgreSQL lock wait that no fake clock can advance, and
+   * both only cost time on the failure path.
+   */
+  async function reconcileWithinDeadline(
+    intentId: string,
+    recoveryAdminId: string,
+    reason: string,
+    deadlineMs = 5_000,
+  ): Promise<unknown> {
+    const reconcile = reconcilePageWriteIntent(intentId, { actorId: recoveryAdminId, reason });
+    let finished = false;
+    const watched = reconcile.then(
+      () => { finished = true; },
+      () => { finished = true; },
+    );
+    const { promise: expired, resolve: expire } = Promise.withResolvers<'deadline'>();
+    const deadline = setTimeout(() => expire('deadline'), deadlineMs);
+    const first = await Promise.race([watched.then(() => 'settled' as const), expired]);
+    clearTimeout(deadline);
+    if (first === 'settled') return reconcile;
+
+    let cancelled = 0;
+    for (let attempt = 0; attempt < 40 && !finished; attempt += 1) {
+      const waiters = await query<{ cancelled: boolean }>(
+        `SELECT pg_cancel_backend(pid) AS cancelled FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND query LIKE '%pg_advisory_xact_lock%'`,
+      );
+      cancelled += waiters.rows.length;
+      await Promise.race([watched, setTimeoutPromise(250)]);
+    }
+    await watched;
+    throw new Error(
+      `reconcile did not settle within ${deadlineMs} ms; cancelled ${cancelled} advisory-lock waiter(s)`,
+    );
+  }
+
   it.each([
     'pages.delete.standalone',
     'pages.delete.local',
@@ -571,15 +631,18 @@ describeIntegration('local page-delete recovery', () => {
 
       // Closing the room inside the settlement transaction would wait for this
       // room's final flush, which needs the page lifecycle lock that
-      // transaction holds: this await would never resolve.
-      await expect(reconcilePageWriteIntent(seeded.intentId, {
-        actorId: seeded.recoveryAdminId,
-        reason: 'Finish the crashed local delete under an open writable room',
-      })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+      // transaction holds: the reconcile would never settle.
+      await expect(reconcileWithinDeadline(
+        seeded.intentId,
+        seeded.recoveryAdminId,
+        'Finish the crashed local delete under an open writable room',
+      )).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
 
       expect(seeded.closes).toEqual([
         { pageId: seeded.pageId, code: 4404, reason: 'committed_delete' },
       ]);
+      // The socket was closed only once the settlement was visible to others.
+      await expect(Promise.all(seeded.statusAtClose)).resolves.toEqual(['reconciled_applied']);
       const waiters = await query(
         `SELECT pid FROM pg_stat_activity
           WHERE datname = current_database()
@@ -590,40 +653,44 @@ describeIntegration('local page-delete recovery', () => {
       );
       expect(waiters.rows).toEqual([]);
     },
-    15_000,
+    30_000,
   );
 
-  it('closes every id of a standalone multi-page delete when one tombstone fails, and still settles', async () => {
+  it('closes every id of a standalone multi-page delete when one room teardown fails, and still settles', async () => {
     const seeded = await seedCommittedDeletion('pages.delete.standalone', {
       room: 'readonly',
       extraStandalonePages: 2,
       failFirstSettlement: false,
     });
     expect(seeded.pageIds).toHaveLength(3);
-    const failingId = [...seeded.pageIds].sort((first, second) => first - second)[0]!;
-    const realTombstone = vi.mocked(tombstoneCollabRoomAfterCommit).getMockImplementation()!;
-    vi.mocked(tombstoneCollabRoomAfterCommit).mockImplementation(async (pageId) => {
-      if (pageId === failingId) throw new Error('simulated tombstone failure');
-      await realTombstone(pageId);
-    });
-    onTestFinished(() => {
-      vi.mocked(tombstoneCollabRoomAfterCommit).mockImplementation(realTombstone);
-    });
+    const ascending = [...seeded.pageIds].sort((first, second) => first - second);
+    const [failingId, ...otherIds] = ascending as [number, ...number[]];
+    const runtime = getDefaultCollabRuntime()!;
+    // The room's own teardown fails for the first id (its Y.Doc cannot be
+    // destroyed), so that page's tombstone rejects after its sockets closed.
+    const failingDoc = runtime.getRoom(failingId)!.doc;
+    const realDestroy = failingDoc.destroy.bind(failingDoc);
+    failingDoc.destroy = () => { throw new Error('simulated room teardown failure'); };
+    try {
+      await expect(reconcileWithinDeadline(
+        seeded.intentId,
+        seeded.recoveryAdminId,
+        'Finish the crashed standalone subtree delete while one room teardown fails',
+      )).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+    } finally {
+      failingDoc.destroy = realDestroy;
+    }
 
-    await expect(reconcilePageWriteIntent(seeded.intentId, {
-      actorId: seeded.recoveryAdminId,
-      reason: 'Finish the crashed standalone subtree delete while one room close fails',
-    })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
-
-    const attempted = vi.mocked(tombstoneCollabRoomAfterCommit).mock.calls.map(([pageId]) => pageId);
-    expect([...attempted].sort((first, second) => first - second))
-      .toEqual([...seeded.pageIds].sort((first, second) => first - second));
-    expect(seeded.closes.map(({ pageId }) => pageId).sort((first, second) => first - second))
-      .toEqual(seeded.pageIds.filter((id) => id !== failingId).sort((first, second) => first - second));
-    expect(seeded.closes.every(({ code, reason }) => code === 4404 && reason === 'committed_delete')).toBe(true);
+    // The other ids were still closed and dropped, each with 4404.
+    for (const id of otherIds) expect(runtime.getRoom(id)).toBeUndefined();
+    expect(seeded.closes.filter(({ pageId }) => otherIds.includes(pageId))
+      .sort((first, second) => first.pageId - second.pageId))
+      .toEqual(otherIds.map((pageId) => ({ pageId, code: 4404, reason: 'committed_delete' })));
+    await expect(Promise.all(seeded.statusAtClose))
+      .resolves.toEqual(seeded.closes.map(() => 'reconciled_applied'));
     expect((await query<{ status: string; cache_invalidation_pending: boolean }>(
       'SELECT status, cache_invalidation_pending FROM page_write_intents WHERE id = $1',
       [seeded.intentId],
     )).rows[0]).toEqual({ status: 'reconciled_applied', cache_invalidation_pending: false });
-  });
+  }, 30_000);
 });

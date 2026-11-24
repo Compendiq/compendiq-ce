@@ -321,13 +321,15 @@ only after that COMMIT, never on rollback, and logs a failure instead of failing
 the settled recovery. A recovered local delete (`pages.delete.standalone`,
 `pages.delete.local`, `pages.bulk.delete.local`) does the same, never inside the
 settlement transaction (a writable room's final flush waits for the lifecycle
-lock it holds), and tombstones each deleted id independently with
-`Promise.allSettled`, logging each rejection, so one failing id cannot skip the
-rest. A rolled-back settlement sends no 4404 and keeps `collab:active`; the retry
-closes the room. A crash between COMMIT and the close is not retried: sockets
-close on disconnect and a rejoin answers 4404. An undispatched delete
-(`remoteEffectStartedAt === null`) restores `deleted_at` and leaves the rooms
-open.
+lock it holds), and tombstones the deleted ids independently and concurrently
+with `Promise.allSettled`, logging each rejection, so one failing id cannot skip
+the rest. A rolled-back settlement sends no 4404 and keeps `collab:active`; the
+retry closes the room. A crash between COMMIT and the close, or a COMMIT whose
+acknowledgment is lost (the reconcile rejects without running `afterCommit`; the
+intent is already settled), is not retried and a later reconcile does not close
+the room: sockets close on disconnect and a fresh join answers 4404. An
+undispatched delete (`remoteEffectStartedAt === null`) restores `deleted_at` and
+leaves the rooms open.
 
 The frontend delete hook does not remove anything before the DELETE succeeds.
 After success it adjusts only paginated Library caches that actually contain
