@@ -39,6 +39,21 @@ export type CollabWritableAdmissionControl = z.infer<
   typeof CollabWritableAdmissionControlSchema
 >;
 
+/**
+ * Identity of a collaborative document lineage (#2034): the server-owned
+ * `page_collaborative_docs.doc_epoch`. It is not a credential; a client only
+ * echoes it as the `expectedDocEpoch` join parameter.
+ */
+export const CollabDocEpochSchema = z.string().uuid();
+export type CollabDocEpoch = z.infer<typeof CollabDocEpochSchema>;
+
+/** Server control frame naming the lineage of the document a socket is attached to. */
+export const CollabDocEpochControlSchema = z.object({
+  type: z.literal('doc_epoch'),
+  epoch: CollabDocEpochSchema,
+}).strict();
+export type CollabDocEpochControl = z.infer<typeof CollabDocEpochControlSchema>;
+
 /** Body for POST /api/pages/:id/collab/commit. Server snapshots the Y.Doc. */
 export const CollabCommitSchema = z.object({
   title: z.string().min(1).max(500),

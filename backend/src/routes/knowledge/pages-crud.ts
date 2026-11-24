@@ -12,7 +12,6 @@ import { isConfluenceEnabled } from '../../core/services/confluence-integration.
 import {
   decideConflictPolicyOnClient,
   getClientForUser,
-  reconcileCollabAfterInboundBodyWrite,
   recordConfluenceVersionObservation,
   recordConflictPolicyAudit,
 } from '../../domains/confluence/services/sync-service.js';
@@ -49,6 +48,7 @@ import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standal
 import { withLocalAttachmentMutationLock } from '../../core/services/attachment-snapshot-lock.js';
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
+import { hintCollabDocRetired } from '../../core/services/collab-room-service.js';
 import {
   authorizedSubtreeComponents,
   activeDescendantCount,
@@ -4335,15 +4335,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                WHERE id = $1`,
               [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number, Number(overwritesLocalEdit)],
             );
+            // #2034 (amendment A8): an accepted publication ends the page's
+            // collaborative lineage in this transaction, under the lifecycle
+            // lock taken above, whether or not a room is live. The unchanged
+            // refresh runs the same statement and publishes no new body, so it
+            // keeps the lineage.
+            if (decided.kind === 'apply_incoming') {
+              await invalidateCollabDocAfterBodyWrite(numericPageId, writeClient);
+            }
             return decided;
           });
           // After commit, never inside it: the audit first (logAuditEvent never
-          // throws), then the collab document, whose non-live branch opens its
-          // own page-write transaction.
+          // throws), then the retire hint. Rooms of the previous generation are
+          // already fenced by the missing row; the hint only retires them now.
           await recordConflictPolicyAudit(decision, { confluenceId: id, syncRunId, actorUserId: userId });
-          if (decision.kind === 'apply_incoming') {
-            await reconcileCollabAfterInboundBodyWrite(numericPageId, bodyHtml);
-          }
+          if (decision.kind === 'apply_incoming') await hintCollabDocRetired(numericPageId);
           return id;
         }),
       ),

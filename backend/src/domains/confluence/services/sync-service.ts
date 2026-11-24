@@ -25,7 +25,7 @@ import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
 import { invalidateCollabDocAfterBodyWrite, isLiveCollabRoom } from '../../../core/services/collab-guard.js';
-import { resetCollabRoomFromHtml } from '../../../core/services/collab-room-service.js';
+import { hintCollabDocRetired } from '../../../core/services/collab-room-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSyncConflictPolicy, type SyncConflictPolicy } from '../../../core/services/sync-conflict-policy-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
@@ -981,6 +981,8 @@ async function syncPage(
   let automaticFreshPublication = false;
   let snapshotPreserved = false;
   let movedSinceDecision: { lockedVersion: number | null } | null = null;
+  // The existing row this transaction publishes the incoming body onto (#2034).
+  let publishedExistingPageId: number | null = null;
   const txClient = await getPool().connect();
   type UpsertRow = { id: number; ai_policy: string; was_update: boolean };
   let upsert: { rowCount: number | null; rows: UpsertRow[] };
@@ -1011,7 +1013,10 @@ async function syncPage(
       const locked = current.rows[0];
       const decided = versionJumpDecision?.row;
       const pending = locked && await pendingConfluencePublication(txClient, locked.id);
-      if ((locked && (locked.baseline_id || pending)) || (!observed && locked) || (decided && (
+      // A row whose lifecycle lock this transaction does not hold (it took the
+      // Confluence id between the two reads above) was never decided on either.
+      const lifecycleUnlocked = locked !== undefined && !target.rows.some((row) => row.id === locked.id);
+      if (lifecycleUnlocked || (locked && (locked.baseline_id || pending)) || (!observed && locked) || (decided && (
         !locked
         || locked.id !== decided.id
         || locked.version !== decided.version
@@ -1032,6 +1037,7 @@ async function syncPage(
           });
         }
       } else if (locked) {
+        publishedExistingPageId = locked.id;
         if (overwritesLocalEdit) {
           try {
             await snapshotLocalVersionBeforeOverwrite(txClient, locked, 'local');
@@ -1153,6 +1159,20 @@ async function syncPage(
       if ((upsert.rowCount ?? 0) === 0) {
         throw new FreshPublicationDeferredError(page.id, 'unbound_create');
       }
+      // #2034 (amendment A8): the accepted publication onto an existing row
+      // ends that page's collaborative lineage in this transaction, under the
+      // lifecycle lock taken above, whether or not a room is live. From this
+      // COMMIT a room of the previous generation updates no row and so cannot
+      // write `body_html` over the published version. Keyed on the decision
+      // above and the exact row the statement updated (that row was locked
+      // before the statement, so its id in the result means it was updated); a
+      // fresh create and the creator-journal branch have no previous generation.
+      if (!upsert.rows.some((row) => row.id === publishedExistingPageId)) {
+        publishedExistingPageId = null;
+      }
+      if (publishedExistingPageId !== null) {
+        await invalidateCollabDocAfterBodyWrite(publishedExistingPageId, txClient);
+      }
       if (automaticFreshPublication || admittedCurrentPolicy !== null) {
         for (const inserted of upsert.rows) {
           const published = await publishIngestionPolicyOnClient(txClient, {
@@ -1193,14 +1213,14 @@ async function syncPage(
   } else {
     counts.pagesUpdated++;
     // #1772: SYNC_OVERWROTE_LOCAL_EDITS iff this upsert replaced a local edit
-    // the policy let the incoming version win over. Written before the collab
-    // reconcile, which can still throw after the commit (logAuditEvent never
-    // does), so the record of an overwrite cannot be lost.
+    // the policy let the incoming version win over.
     if (versionJumpDecision) {
       await recordConflictPolicyAudit(versionJumpDecision, { confluenceId: page.id, syncRunId, actorUserId: null });
     }
-    await reconcileCollabAfterInboundBodyWrite(existing.rows[0]!.id, bodyHtml);
   }
+  // The lineage ended with the publication's COMMIT. This only prompts rooms of
+  // the previous generation to retire now rather than at their next boundary.
+  if (publishedExistingPageId !== null) await hintCollabDocRetired(publishedExistingPageId);
 
   // Sync Confluence view restrictions → access_control_entries. Runs after
   // the page upsert so `pages.id` is guaranteed to exist (the ACE foreign
@@ -1212,16 +1232,6 @@ async function syncPage(
 // ─────────────────────────────────────────────────────────────────────────
 //  Conflict-detection branch (Compendiq/compendiq-ee#118)
 // ─────────────────────────────────────────────────────────────────────────
-
-/** After an inbound body write commits: reset a live collab room from the new
- *  HTML, otherwise drop the stored collab document (in its own transaction). */
-export async function reconcileCollabAfterInboundBodyWrite(pageId: number, html: string): Promise<void> {
-  if (await isLiveCollabRoom(pageId)) {
-    await resetCollabRoomFromHtml(pageId, html);
-  } else {
-    await invalidateCollabDocAfterBodyWrite(pageId);
-  }
-}
 
 /** What the conflict-policy decision needs from one inbound Confluence page. */
 export interface ConflictPolicyInput {
@@ -1381,8 +1391,9 @@ async function queueIncomingVersionOnClient(
  * Never writes the body, publishes the AI policy or audits. For every outcome
  * but 'missing' the caller publishes the policy once on the same transaction;
  * on 'apply_incoming' it writes the incoming content itself; after COMMIT it
- * calls `recordConflictPolicyAudit` (and `reconcileCollabAfterInboundBodyWrite`
- * when it replaced the body).
+ * calls `recordConflictPolicyAudit`. When it replaced the body it also deletes
+ * the page's collaborative row before that COMMIT and sends
+ * `hintCollabDocRetired` after it (#2034).
  *
  * Test coverage lives in `sync-service-conflicts.integration.test.ts`.
  */
@@ -1414,8 +1425,10 @@ export async function decideConflictPolicyOnClient(
 
   const row = locked.rows[0];
   // Page disappeared between the outer SELECT and the lock acquisition
-  // (e.g. a concurrent DELETE or hard purge). Nothing to do.
-  if (!row) return { kind: 'missing' };
+  // (e.g. a concurrent DELETE or hard purge), or another row took the
+  // Confluence id meanwhile, whose lifecycle lock this transaction does not
+  // hold. Nothing to do; the next walk decides on that state.
+  if (!row || !target.rows.some((page) => page.id === row.id)) return { kind: 'missing' };
 
   const admittedPolicy = admitAutomaticIngestionPolicy({
     identity: input.confluenceId, currentPolicy: row.ai_policy, candidate: policyFromLabels(input.labels),
@@ -1627,9 +1640,14 @@ async function applyConflictPolicyForExistingPage(
       pageId: row.id, userId: args.userId ?? '', candidate: admittedPolicy,
     });
     if (published.policy === 'none') await purgeDerivedAiState(conn, [row.id]);
+    // #2034 (amendment A8): this accepted publication ends the page's
+    // collaborative lineage in the same transaction, under the lifecycle lock
+    // the decision took, whether or not a room is live.
+    await invalidateCollabDocAfterBodyWrite(row.id, conn);
     await conn.query('COMMIT');
     args.counts.pagesUpdated++;
-    await reconcileCollabAfterInboundBodyWrite(row.id, args.bodyHtml);
+    // Only a prompt: rooms of the previous generation are already fenced.
+    await hintCollabDocRetired(row.id);
 
     await recordConflictPolicyAudit(decision, auditContext);
   } catch (err) {

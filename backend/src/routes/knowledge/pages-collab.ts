@@ -11,6 +11,7 @@ import * as Y from 'yjs';
 import {
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
+  CollabDocEpochSchema,
   CollabCommitResponseSchema,
   CollabCommitSchema,
   CollabConfigSchema,
@@ -28,6 +29,7 @@ import {
   COLLAB_PING_INTERVAL_MS,
   getDefaultCollabRuntime,
   refreshCollabActiveTtl,
+  type CollabDocEpochDeclaration,
   type CollabRuntime,
 } from '../../core/services/collab-room-service.js';
 import { assignTaskIds, htmlToConfluence, htmlToText } from '../../core/services/content-converter.js';
@@ -188,10 +190,13 @@ async function commitConfluencePage(args: {
   html: string;
   taskItems: CollabTaskItem[];
   taskIdsCarried: boolean;
+  docEpoch: string;
   runtime: CollabRuntime;
   admission: PageRuntimeAdmission;
 }) {
-  const { fastify, request, pageId, userId, existing, body, html, taskItems, taskIdsCarried, runtime, admission } = args;
+  const {
+    fastify, request, pageId, userId, existing, body, html, taskItems, taskIdsCarried, docEpoch, runtime, admission,
+  } = args;
   if (!existing.confluence_id) {
     throw fastify.httpErrors.badRequest('Confluence page is missing a remote id');
   }
@@ -382,11 +387,13 @@ async function commitConfluencePage(args: {
   // uploaded; the room must carry them too, or its next persist drops them and
   // the next Save uploads every image again. After settlement and before the
   // `pages_version` control, so the flush that control starts keeps them (#1764).
-  await runtime.markUploadedImages(pageId, admission, imagePlan.markers);
+  // Both marks carry the epoch of the snapshot this Save published, so they
+  // are never written into a document of another lineage (#2034).
+  await runtime.markUploadedImages(pageId, admission, imagePlan.markers, docEpoch);
   // The room also records that its tasks carry ids, when it has not yet: also
   // after a Save in which every task already carried its id (#1751).
   if (taskIdMarkers.length > 0 || (!taskIdsCarried && assigned.taskIds.length > 0)) {
-    await runtime.markWrittenTaskIds(pageId, admission, taskIdMarkers);
+    await runtime.markWrittenTaskIds(pageId, admission, taskIdMarkers, docEpoch);
   }
   runtime.broadcastControl(pageId, { type: 'pages_version', version: result.newVersion });
   logger.info({ pageId, version: result.newVersion, confluence: true }, 'collab.commit');
@@ -616,6 +623,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           html,
           taskItems: snapshot.taskItems,
           taskIdsCarried: snapshot.taskIdsCarried,
+          docEpoch: snapshot.docEpoch,
           runtime,
           admission,
         });
@@ -842,6 +850,14 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         && /^\d+$/.test(rawExpectedLifecycleRevision)
         ? rawExpectedLifecycleRevision
         : null;
+      // `expectedDocEpoch` (#2034) is not a credential: it can only end this
+      // join or leave the socket unverified. Anything but one UUID (an empty
+      // value, a repeated parameter, other text) is malformed, never absent.
+      const rawExpectedDocEpoch = (request.query as { expectedDocEpoch?: unknown }).expectedDocEpoch;
+      const parsedDocEpoch = CollabDocEpochSchema.safeParse(rawExpectedDocEpoch);
+      const expectedDocEpoch: CollabDocEpochDeclaration = rawExpectedDocEpoch === undefined
+        ? { kind: 'absent' }
+        : parsedDocEpoch.success ? { kind: 'declared', epoch: parsedDocEpoch.data } : { kind: 'malformed' };
       const requestedWritable = await userCanEditPage(auth.userId, pageId);
       const meta = await fetchUserMeta(auth.userId);
       connId = randomUUID();
@@ -851,6 +867,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         userId: auth.userId,
         writable: requestedWritable,
         expectedLifecycleRevision,
+        expectedDocEpoch,
         identity: {
           id: auth.userId,
           name: meta.name,
@@ -862,6 +879,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           pageId,
           userId: auth.userId,
           writable: attached.writable,
+          lineageVerified: attached.lineageVerified,
           connId,
           name: meta.name,
           color: awarenessColor(auth.userId),
@@ -870,6 +888,12 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         'collab.identity',
       );
 
+      if (attached.joinRefused) {
+        // The room told this socket `doc_reset`, closed it 1001 and attached
+        // nothing: no frame is handled and nothing is detached later.
+        finish(1001, attached.joinRefused);
+        return;
+      }
       if (closed) {
         await runtime.detachSocket(pageId, connId);
         return;

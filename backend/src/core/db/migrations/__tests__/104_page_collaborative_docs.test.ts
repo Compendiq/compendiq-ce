@@ -126,8 +126,9 @@ describe.skipIf(!dbAvailable)('Migration 104 — page_collaborative_docs (#1443)
     );
     const byName = Object.fromEntries(rows.map((r) => [r.column_name, r]));
 
+    // `doc_epoch` arrives with migration 159 (#2034).
     expect(Object.keys(byName).sort()).toEqual([
-      'created_at', 'doc_state', 'page_id', 'state_vector', 'updated_at', 'version',
+      'created_at', 'doc_epoch', 'doc_state', 'page_id', 'state_vector', 'updated_at', 'version',
     ]);
     expect(byName.page_id).toMatchObject({ data_type: 'integer', is_nullable: 'NO' });
     expect(byName.doc_state).toMatchObject({ data_type: 'bytea', is_nullable: 'NO' });

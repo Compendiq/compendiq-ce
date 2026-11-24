@@ -4,6 +4,8 @@ import {
   COLLAB_WS_PROTOCOL,
   CollabConfigSchema,
   CollabCommitSchema,
+  CollabDocEpochControlSchema,
+  CollabDocEpochSchema,
   CollabCommitResponseSchema,
   CollabRefusalReasonSchema,
   CollabWritableAdmissionControlSchema,
@@ -79,5 +81,26 @@ describe('collab contracts (#1444)', () => {
         source: 'standalone',
       }),
     ).toMatchObject({ id: 1, version: 2, source: 'standalone' });
+  });
+
+  it('accepts only a UUID as a document epoch (#2034)', () => {
+    const epoch = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+    expect(CollabDocEpochSchema.parse(epoch)).toBe(epoch);
+    for (const malformed of ['', ' ', 'null', '7b0f4c1e52a84d3f9c6b1a2b3c4d5e6f', `${epoch} `, `${epoch},${epoch}`]) {
+      expect(CollabDocEpochSchema.safeParse(malformed).success, malformed).toBe(false);
+    }
+    // A repeated query parameter reaches the route as an array.
+    expect(CollabDocEpochSchema.safeParse([epoch, epoch]).success).toBe(false);
+    expect(CollabDocEpochSchema.safeParse(undefined).success).toBe(false);
+  });
+
+  it('parses the doc_epoch control strictly (#2034)', () => {
+    const epoch = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+    expect(CollabDocEpochControlSchema.parse({ type: 'doc_epoch', epoch })).toEqual({ type: 'doc_epoch', epoch });
+    expect(CollabDocEpochControlSchema.safeParse({ type: 'doc_epoch' }).success).toBe(false);
+    expect(CollabDocEpochControlSchema.safeParse({ type: 'doc_epoch', epoch: 'not-a-uuid' }).success).toBe(false);
+    expect(CollabDocEpochControlSchema.safeParse({ type: 'doc_reset', epoch }).success).toBe(false);
+    // Strict: a frame that carries anything else is not this control.
+    expect(CollabDocEpochControlSchema.safeParse({ type: 'doc_epoch', epoch, writable: true }).success).toBe(false);
   });
 });

@@ -970,10 +970,11 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     },
   );
 
-  it('writes the overwrite audit before the collab reconcile, so a failing reconcile cannot drop it', async () => {
+  it('a publication whose collaborative-row delete fails rolls back as a whole: nothing is overwritten or audited (#2034)', async () => {
     await usePolicy('confluence-wins');
     const id = await seedSyncedV5('vj-collab-fault');
     await bobSavesLocally(id);
+    const before = await row(id);
     const page = upstreamPage('vj-collab-fault');
     upstreamPages.set(page.id, page);
     await query(`CREATE FUNCTION vj_fail_collab_invalidate() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -986,7 +987,14 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
       await query('DROP TRIGGER vj_fail_collab_invalidate ON page_collaborative_docs; DROP FUNCTION vj_fail_collab_invalidate()');
     }
 
-    // The upsert committed before the reconcile failed: the overwrite is on record.
+    // The lineage ends inside the publication transaction: the body, the local
+    // edit's history snapshot and the row delete commit together or not at all.
+    expect(await row(id)).toEqual(before);
+    expect(await snapshots(id)).toEqual([]);
+    expect(await syncAudits(id)).toEqual([]);
+
+    // The next walk publishes it, and the overwrite is on record then.
+    await runSync(page, RUN_2);
     expect(await row(id)).toMatchObject({ version: 7, local_modified_at: null });
     expect((await syncAudits(id)).map((a) => a.action)).toEqual(['SYNC_OVERWROTE_LOCAL_EDITS']);
   });
