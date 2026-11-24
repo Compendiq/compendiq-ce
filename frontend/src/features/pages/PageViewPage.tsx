@@ -11,6 +11,7 @@ import {
   usePage,
   useUpdatePage,
   useUpdatePageLabels,
+  parseCommittedLabels,
   usePageFilterOptions,
   usePinnedPages,
   usePinPage,
@@ -963,12 +964,13 @@ export function PageViewPage() {
             // may have changed tags) can become the baseline: never derive
             // them locally. A success without a valid label set leaves the
             // session open with baseline and draft untouched.
-            if (!Array.isArray(written?.labels) || !written.labels.every((l) => typeof l === 'string')) {
+            const confirmedLabels = parseCommittedLabels(written);
+            if (!confirmedLabels) {
               if (editSessionRef.current !== session) return;
               toast.warning('Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.');
               return;
             }
-            committedLabels = written.labels;
+            committedLabels = confirmedLabels;
             setLabelPolicyNotice(null);
           } catch (labelError) {
             // #283: a reserved-label verdict from the server (contradictory

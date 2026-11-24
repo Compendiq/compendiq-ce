@@ -78,7 +78,7 @@ let nextPutOverride: (() => Response) | null;
 // is a server that merges the request's adds and removes into the row it
 // holds now, like applyLabelChanges, and answers the committed labels.
 type LabelPut = { addLabels?: string[]; removeLabels?: string[] };
-let labelMode: 'refuse' | 'apply' | 'apply-unacknowledged';
+let labelMode: 'refuse' | 'apply' | 'apply-unacknowledged' | 'apply-malformed';
 let labelPuts: LabelPut[];
 // Runs when a label write reaches the server, before it is applied: a peer
 // write that lands first.
@@ -227,6 +227,7 @@ beforeEach(() => {
       for (const l of body.addLabels ?? []) if (!labels.includes(l)) labels.push(l);
       serverPage = { ...serverPage, labels };
       // A 2xx that does not carry the committed set.
+      if (labelMode === 'apply-malformed') return json({ labels: [123] });
       return labelMode === 'apply-unacknowledged' ? json({}) : json({ labels });
     }
     if (url === '/api/pages/42/labels' && method === 'PUT') {
@@ -609,6 +610,32 @@ describe("PageViewPage Save sends only the session's own tag delta (#1931)", { t
     await clickSave();
     await waitFor(() => expect(labelPuts).toHaveLength(2));
     expect(labelPuts[1]).toEqual({ addLabels: ['mine'], removeLabels: [] });
+  });
+
+  it('never lets a malformed label reply reach the page cache or the open draft, even while the refetch is pending', async () => {
+    labelMode = 'apply-malformed';
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    await addTag('mine');
+    remoteLabels(['peer']);
+    await refreshLabels(client, ['peer']);
+    // The refetch the label write triggers never settles in this test.
+    const realFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pages/42' && (init?.method ?? 'GET') === 'GET') return new Promise<Response>(() => {});
+      return realFetch(input, init);
+    });
+
+    await clickSave();
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
+      'Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.',
+    ));
+    // Last valid cached labels, not [123].
+    expect(client.getQueryData<{ labels: unknown[] }>(['pages', '42'])?.labels).toEqual(['peer']);
+    expect(screen.getByTestId('remove-tag-mine')).toBeInTheDocument();
+    expect(await editableBody()).toHaveTextContent('MY EDIT');
   });
 
   it('does not mark an untouched session dirty after a foreign tag change, and Cancel opens no discard dialog', async () => {
