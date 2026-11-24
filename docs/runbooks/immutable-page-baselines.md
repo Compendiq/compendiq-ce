@@ -811,20 +811,72 @@ the page's own pending collaborative Save (`collab.commit.confluence` or
 and release once that Save settles, at once on its `pages_version` control and
 otherwise on a retry that starts at 1 s and doubles to 30 s, so a successful
 Save does not leave the page answering `409 collab_session_active` (#1763).
-While such an intent stays pending the admission stays active, and the page's
-rooms keep accepting edits that they cannot persist. A Save whose Confluence
-write failed after dispatch leaves its intent pending as an unknown outcome
-until it is reconciled. After reconciliation, rooms of the page on other
-runtimes persist on their next edit, last-writer flush or release retry. The
-runtime that ran the Save cannot get there while it hosts a room of that page.
-Reconciliation needs that runtime fenced, and the room admission it holds
-behind the pending intent keeps it from draining, so quiescence never answers
-(#1934). Terminate that process and fence it with independently verified local
-termination (below); where that cannot be verified, the fence fails closed and
-the intent stays pending. Edits that reached only its room since the failed Save
-then survive only in the editors' open tabs; a tab that reconnects does not
-send them again (#1928). Any other flush failure keeps the admission as before
-and schedules no retry.
+While such an intent stays pending the admission stays active.
+
+**A collaborative Save that failed after dispatch (#2035).** A Save whose
+Confluence write (an attachment upload or the page update) ended without a
+terminal result leaves its intent pending as an unknown outcome until it is
+reconciled. The page's rooms then stop accepting edits, because they could not
+persist them:
+
+- *What editors see.* Every tab that could edit the page shows "This editing
+  session is now read-only" with "A collaborative save of this page did not
+  finish, and its result is unknown. Editing is paused until that save is
+  resolved. Your open draft remains below and is not reapplied
+  automatically.", **Download draft** and **Open current version**. Save is
+  blocked. A user who opens the editor while the state holds sees the first
+  two sentences and no draft. Edits typed after the failed Save are not
+  persisted and not merged later; **Download draft** is how a user keeps them.
+  Tell users to download the draft before they open the current version.
+- *What ends it.* Only the intent leaving `pending`: reconcile it (below).
+  Nothing else clears the state and no timer does. After settlement a newly
+  opened editor is writable again; tabs already on the read-only draft stay
+  there until the user opens the current version.
+- *How to see it.* The intent carries `remote_effect_failed_at` (migration
+  160):
+
+  ```sql
+  SELECT id, kind, page_ids, runtime_id, remote_effect_started_at, remote_effect_failed_at
+    FROM page_write_intents
+   WHERE status = 'pending'
+     AND kind IN ('collab.commit.confluence', 'collab.commit.confluence.media')
+     AND remote_effect_started_at IS NOT NULL
+     AND remote_terminal_result IS NULL;
+  ```
+
+  The marker never settles, cancels or releases anything, and reconciliation
+  does not read it. Do not set or clear it by hand.
+- *Limits of the marker.* A row without the marker is not proof of a healthy
+  Save. A process that died mid-Save recorded none: its rooms on other
+  processes keep accepting edits until that runtime is fenced or quiesced,
+  which makes the state hold everywhere. A living process that cannot reach
+  PostgreSQL keeps retrying the marker (from 1 s, doubling to 30 s) and
+  meanwhile refuses edits itself, tells the other processes over Redis
+  (`collab:commit-unknown:<pageId>` and a bus cue), and logs
+  `collab.commit_unknown_marker_failed`. A process that got neither the cue nor
+  the key keeps accepting edits for that page until the marker commits. A
+  backend process older than this change knows neither the marker nor the
+  control: follow the rolling-upgrade gate above.
+- *Quiescence.* The room admission of such a page stays active behind the
+  pending intent, and its release retries until the intent settles. With the
+  marker recorded, the failed Save itself no longer holds its runtime's drain,
+  also when it failed between an upload and the page update. A runtime that
+  hosts no room of the page can therefore acknowledge quiescence. A runtime
+  that hosts one still waits behind that room admission (#1934). While the
+  marker is not recorded, a Save that failed between its phases keeps holding
+  the drain as before.
+
+After reconciliation, rooms of the page on other runtimes persist on their
+next edit, last-writer flush or release retry. The runtime that ran the Save
+cannot get there while it hosts a room of that page. Reconciliation needs that
+runtime fenced, and the room admission it holds behind the pending intent
+keeps it from draining, so quiescence never answers (#1934). Terminate that
+process and fence it with independently verified local termination (below);
+where that cannot be verified, the fence fails closed and the intent stays
+pending. Edits that reached only its room while that Save was running then survive
+only in the editors' open tabs; a tab that reconnects does not send them again
+(#1928). Any other flush failure keeps the admission as before and schedules
+no retry.
 
 ## Runtime retirement and fencing
 

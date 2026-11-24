@@ -43,7 +43,11 @@ until the first sync the editor shows one message per close reason (4403
 `forbidden` and unknown reasons fail closed; `rate_limited` retries only after
 the server's upgrade window), no draft banner or Download draft, and Save stays
 blocked; after it every 4403 keeps the read-only draft. The gateway buffers
-pre-live frames in order and never refuses them with 4403.
+pre-live frames in order and never refuses them with 4403. `commit_unknown`
+(the control, or close `1001 commit_unknown`) is a read-only reason of its
+own: the page's own collaborative Save failed after dispatch, so the draft is
+kept, nothing reconnects, and `writable_admission` is written only inside the
+fenced final step of the join (#2035).
 
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`

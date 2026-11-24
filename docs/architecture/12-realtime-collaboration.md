@@ -135,6 +135,7 @@ sequenceDiagram
 | **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
 | **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
 | **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable declared a malformed `expectedDocEpoch` or another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
+| **1001** | `commit_unknown` | The page's own collaborative Save failed after dispatch and its result is unknown (#2035). Sent to every socket that was writable, after the `commit_unknown` control and the `permission_loss` compatibility cue. Not a new close code | "A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved." | Read-only draft (`commit_unknown`) with **Download draft** and **Open current version**, no reconnect |
 | **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect |
 | HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
 
@@ -196,19 +197,23 @@ end that join or leave the socket unverified.
    `rate_limited`, `1001 no_runtime`.
 2. The join would not be writable (no edit permission, a frozen page, a
    missing or stale `expectedLifecycleRevision`): today's outcome, attached
-   read-only, **no epoch decision**.
+   read-only, **no epoch decision and no unknown-commit decision**.
 3. `expectedDocEpoch` is malformed, or declared and different from the page's
    `doc_epoch` (or the page has no row): `doc_reset` control, close `1001
    doc_reset`, the socket is not attached and no admission is kept. Only the
    joining socket is affected: the room's other sockets stay, and a refused
    join does not cancel an empty room's eviction.
-4. Otherwise the join is writable: `writable_admission`.
+4. The page's own collaborative commit is unknown (#2035, below): the socket
+   is attached read-only and sent `commit_unknown`, then `permission_loss`. It
+   never receives `writable_admission` and takes no admission.
+5. Otherwise the join is writable: `writable_admission`.
 
 A frozen page is step 2 whatever the join declares: the refused admission
 gives it today's read-only outcome and the declaration is not looked at.
 
-Step 3 is decided at three points, and a declared join is writable only when
-its declaration equals the epoch of the document the room ends up holding:
+Step 3 is decided at four points, and a declared join is writable only when
+its declaration equals the epoch of the document the room ends up holding.
+The last of them also decides step 4:
 
 - *Pre-check, before the admission.* A malformed declaration is refused with
   no read. Otherwise the row is read without locks. A room whose `docEpoch`
@@ -230,17 +235,19 @@ its declaration equals the epoch of the document the room ends up holding:
   declaration must equal the epoch the room now holds; otherwise the admission
   this join acquired is released and the socket is refused. A room that already
   owns an admission accepts only a declaration equal to its own `docEpoch`.
-
-**Not in this change: the final step.** The current-epoch assertion in one
-fenced transaction that also writes `writable_admission` (design D-2034,
-"final step of `attachSocket`") arrives with #2035. Until then a publication
-that commits after the join's last fenced transaction and before the positive
-control is written still lets that control be sent for a document whose
-lineage has just ended. No byte crosses in that window: the socket's first
-frame fails the current-epoch assertion, nothing is applied, and the room is
-retired with `doc_reset`. What the join decision guarantees here is that a
-declared join is never writable in a room that holds another epoch than the
-one it declared.
+- *The final step (#2035).* After every awaited preparation (admission, fresh
+  room state, Redis bookkeeping) the socket is registered without write
+  authority, and one admission-fenced transaction decides: it asserts on its
+  own lifecycle-locked client that the row still carries the room's epoch,
+  compares a declaration with the epoch the room ended up with, and asserts
+  that the page's own commit is not unknown. Still inside that transaction,
+  and without awaiting anything else, it makes the last socket, room and
+  transport checks, marks the socket writable and writes `writable_admission`.
+  A lineage that ended meanwhile retires the room (a declared join is answered
+  `doc_reset`, an undeclared one is closed `1001` and reconnects into a fresh
+  room); a declaration that no longer matches is refused with `doc_reset`,
+  never admitted unverified. If the transaction fails the socket is closed and
+  cleaned up. The positive control is never written outside this fence.
 
 `CollabSocket.lineageVerified` is true only for a writable socket whose join
 declared the room's epoch. A join that declares nothing is admitted as before
@@ -254,9 +261,10 @@ Type-4 control frames (JSON, server to client):
 |---------|---------|
 | `doc_epoch` | Epoch of the room's persisted document; sent once per join, first (#2034) |
 | `page_lifecycle` | Lifecycle revision, frozen state and baseline of the page |
-| `writable_admission` | Positive write admission at exactly that lifecycle revision |
+| `writable_admission` | Positive write admission at exactly that lifecycle revision. Written only inside the fenced final step of the join |
 | `writable_refused` | The join stays read-only: lifecycle revision missing or stale |
-| `permission_loss` | No edit permission at join, or revoked later |
+| `permission_loss` | No edit permission at join, or revoked later. Also sent directly after `commit_unknown`, so a client that predates that control keeps its draft and does not reconnect |
+| `commit_unknown` | The page's own collaborative Save failed after dispatch and its result is unknown; no further edit is accepted until it is resolved (#2035). No payload |
 | `pages_version` | A collaborative Save settled at that `pages.version` |
 | `doc_reset` | The document lineage changed; the client keeps its `Y.Doc` as a draft |
 | `tombstone` | The page was hidden or deleted |
@@ -403,10 +411,10 @@ awaited by the persist chain, the bus queue or a frame handler. No "the row
 cannot change while an admission is live" assumption is needed: a stale room
 cannot persist, merge, accept a client frame, or answer or apply a peer
 exchange, and it is retired at the first of those boundaries it reaches. A
-join into a stale room is refused or restarted by the checks above; the one
-remaining window, a lineage that ends between the join's last transaction and
-its `writable_admission`, is closed by #2035's final step (see *Not in this
-change* above).
+join into a stale room is refused or restarted by the checks above, and a
+lineage that ends between the join's last preparation and its
+`writable_admission` is caught by the fenced final step, which asserts the
+current epoch in the transaction that writes that control.
 
 **Inbound publication and the retire hint (#2034, amendment A8).** The three
 inbound Confluence writers that update an existing page (scheduled sync
@@ -463,6 +471,9 @@ on again. During an ungated mix no guarantee is given; this is what to expect:
 | Tab that synced on a new pod, later merged replacement content on an old pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. An old pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned is unverified |
 | Old bundle on a new pod | Declares nothing and ignores `doc_epoch`: admitted as before, never verified |
 | New bundle on an old pod | Never receives `doc_epoch`, so it never pins and declares nothing |
+| Old pod runs a Save that fails after dispatch (#2035) | It records no marker and sends no cue. Every pod reads the intent as `in_flight` and keeps accepting edits, as before this change, until that pod's runtime is fenced or quiesced; from then on the state is `unknown` on every new pod |
+| Old pod hosts sockets of a page whose Save failed on a new pod (#2035) | It does not know `commit_unknown` or the marker: its sockets stay writable and their edits stay unpersisted, as before. A new pod cannot add the barrier to an old pod's sockets |
+| Old bundle on a new pod, `commit_unknown` (#2035) | Ignores the control and acts on the `permission_loss` that follows it: read-only draft with **Download draft**, no reconnect. Its banner keeps the generic sentence |
 
 **While the page's own collaborative Save is pending (#1763).** A Confluence
 commit compares its provider read with `pages.remote_version`, including
@@ -483,13 +494,93 @@ resumes both at once on every pod: a waiting persist while a writer is
 connected, and a deferred last-writer release. Without that control (a
 cancelled Save, or one settled by recovery) a waiting persist runs again on the
 next edit or the last-writer flush, and a deferred release retries from 1 s,
-doubling to 30 s. A Save whose Confluence write failed after dispatch stays
-pending as an unknown outcome until it is reconciled, and the room's edits stay
-unpersisted until then (see the immutable-page baselines runbook and #1934).
-Any other pending page write, a stale lifecycle or admission, and a fenced
-runtime still close a writable socket with `1001 collab_validation_unavailable`,
-and that refused frame is not requested again (#1928). No close code or control
-frame is added.
+doubling to 30 s. Any other pending page write, a stale lifecycle or admission,
+and a fenced runtime still close a writable socket with
+`1001 collab_validation_unavailable`, and that refused frame is not requested
+again (#1928).
+
+**When that Save fails after dispatch (#2035).** The transience above holds
+for a Save in flight only. A Save whose remote phase ends without a terminal
+result (a failed attachment upload, a refusal between the upload and the page
+update, a failed `updatePage`, the provider's 409 after dispatch) leaves its
+intent pending with `remote_effect_started_at` set: only reconciliation can
+tell whether Confluence applied it, and the room's persists stay deferred
+until then. The room therefore fails closed instead of collecting edits it
+cannot persist. Nothing here settles, cancels or releases anything; it only
+removes write authority.
+
+- *Durable state.* One read under the page lifecycle lock looks for the
+  pending `collab.commit.confluence[.media]` intent of exactly this page whose
+  remote effect started and has no terminal result. `none`: no such intent.
+  `unknown`: it carries the marker `page_write_intents.remote_effect_failed_at`
+  (migration 160), or a recovery claimed it (`recovery_started_at`), or its
+  owning runtime is fenced or quiesced. `in_flight` otherwise. The marker
+  exists because the issue's predicate alone is also true during a healthy
+  Save (amendment A3). Reconciliation does not read it.
+- *Effective state on a pod.* The durable state, raised from `in_flight` to
+  `unknown` when a latch names the same intent: the owner's process-local set,
+  the room's `unknownCommitIntentId` (set by a cue), or the Redis key
+  `collab:commit-unknown:<pageId>`. The key is read only when the durable read
+  answered `in_flight` and no other latch matched, outside every transaction
+  and bounded at 250 ms: the fenced transaction ends without an effect, the key
+  is read, and the transaction runs again. The answer is bound to the intent
+  it was read for; a different intent in the second transaction starts over.
+  Absent, unreadable and timed out all mean no latch. A latch for another or a
+  settled intent is ignored.
+- *Trigger and owner procedure.* On every exit of the commit route that leaves
+  its own intent in that shape, the owner (1) adds the intent to its
+  process-local set synchronously, (2) records the marker in a transaction
+  that locks the runtime row, the page lifecycle and then the intent row, with
+  an exact-match `UPDATE` and a proof read of the committed row (up to three
+  immediate attempts, each abandoned at its own 5 s deadline), (3) once the
+  marker is proven, retires a finished upload phase whose next phase can no
+  longer run, so that intent no longer holds the runtime's drain, (4) without
+  a proven marker writes the Redis key and keeps retrying with a backoff from
+  1 s to 30 s for the life of the process, deleting the key afterwards only if
+  it still names this intent, and (5) publishes the bus cue
+  `{ kind: 'commit_unknown', intentId }` after the request admission's release
+  was attempted, again on every retry, and once more after a late marker
+  success. It is not triggered by the version check before dispatch, a
+  cancelled reservation, any failure before dispatch, a failure after a
+  terminal result was recorded, or a standalone commit. The provider's 409
+  after dispatch keeps status 409, `code: 'confluence_modified'` and the
+  version fields, but its message no longer says the session is still open.
+- *Fences.* The cue is only a prompt; these are the barrier. A client frame is
+  applied only inside a transaction that asserts the effective state is not
+  `unknown`. The `precondition` of a room admission asserts it, so no join
+  acquires an admission after the marker. The final step of the join (above)
+  asserts it in the transaction that writes `writable_admission`: either the
+  marker commits first and the join is gated, or the socket is a registered
+  writer before the marker commits and the cue or its next frame demotes it.
+  Peer replication, state dumps and room loads are unchanged, because an edit
+  a pod accepted under its fence must still converge.
+- *Cue.* A pod that receives the cue reads the durable state once under the
+  lifecycle lock, outside the room's inbound queue. While that intent is still
+  the page's pending commit, the room latches it and every socket that is
+  writable at that instant is demoted. A cue for a settled intent does nothing.
+  A refused frame prompts the same check, so a pod that missed the cue demotes
+  its other writers when the first of them types.
+- *Demotion.* The socket loses write authority and its `collab:active`
+  member, is sent `commit_unknown` and then `permission_loss`, and is closed
+  `1001 commit_unknown`. Frames that still arrive from it are dropped and do
+  not count toward `COLLAB_READONLY_DROP_LIMIT`. Read-only sockets are sent
+  `commit_unknown` and stay connected. The room keeps its admission, its
+  `room` member and `persistable`: the existing last-writer release defers on
+  `collab_commit_pending` until the intent settles.
+- *What ends it.* Only the intent leaving `pending` (reconciled applied,
+  reconciled not applied, or cancelled). There is no timer. A join after
+  settlement is writable again; a tab already on the read-only draft stays
+  there until the user opens the current version. Edits typed after the
+  failed Save are not persisted or merged: **Download draft** is the recovery
+  path.
+- *Limits (amendment A3).* A process that died mid-Save recorded no marker:
+  its intent reads `in_flight` until its runtime is fenced or quiesced. While
+  a living owner cannot record the marker, the owner is fenced from its own
+  set; another pod is fenced, for joins and for frames alike, as soon as a cue
+  reached its room or it reads the Redis key; a pod with neither keeps
+  admitting joins and applying frames, as for a Save in flight, until the
+  marker commits. During that time an orphaned finished upload phase keeps the
+  owner's quiesce waiting, as before.
 
 ## Neighborhoods
 

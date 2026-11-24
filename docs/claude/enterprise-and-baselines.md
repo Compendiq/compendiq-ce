@@ -91,6 +91,22 @@ room's persists wait for it (`'defer'` answers `collab_commit_pending`) and run
 again on the successful commit's `pages_version` cue, the next edit, or the
 last-writer release, which retries. Every other writer, including a second
 Save, and every other pending intent keep `page_write_busy` (#1763).
+That transience is for a Save in flight only (#2035). When the commit route's
+own remote phase ends without a terminal result, the outcome is unknown and
+the room fails closed: the route adds the intent to the process-local set
+before its first await, records `page_write_intents.remote_effect_failed_at`
+(migration 160; exact-match update, proof read, lock order runtime row, page
+lifecycle, intent row), and publishes a cue after its request-admission
+release was attempted. Frames, the room-admission `precondition` and the
+final step of `attachSocket` assert the effective state (durable state plus
+the process, room and Redis latches for the same intent) on their
+lifecycle-locked client; `writable_admission` is written only inside that
+final fenced transaction. The marker, the latches and the cue never settle,
+cancel or release anything, and reconciliation does not read the marker. A
+proven marker retires only a finished upload phase whose next phase cannot
+run; never touch a `running` effect. Peer replication and room loads keep
+`'proceed'`. Without the marker a Save reads `in_flight`: a process that died
+mid-Save is unknown only once its runtime is fenced or quiesced.
 Recovery requires server-observed fencing evidence, never a caller's assertion,
 a missing heartbeat or a force-clear. A read-only HTTP fetch needs no durable
 mutation intent: capture current authority and revisions, then check the same
@@ -284,8 +300,9 @@ adopted its document, because that happens in a later transaction. A declared
 join is writable only in a room whose `docEpoch` equals the declaration. A
 stale heap the join finds is retired first and the join restarts once; a frozen
 page gets no epoch decision. An undeclared join is admitted and never
-`lineageVerified`. The fenced final step that asserts the current epoch in the
-transaction that writes `writable_admission` is #2035, not this change. Do not
+`lineageVerified`. The fenced final step of `attachSocket` repeats the
+current-epoch assertion and the declaration comparison in the transaction
+that writes `writable_admission` (#2035). Do not
 reintroduce an in-place replacement of the row, a process-wide reset flag or a
 pre-commit freeze. Details: `docs/architecture/12-realtime-collaboration.md`.
 
