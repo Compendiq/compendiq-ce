@@ -17,6 +17,7 @@ import {
   CollabConfigSchema,
   PagePrimaryKeySchema,
   type CollabCommit,
+  type CollabCommitConflictSaveOutcome,
 } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
@@ -80,23 +81,25 @@ const UPGRADE_LIMIT_PER_MIN = 20;
 const PRELIVE_FRAME_LIMIT = 64;
 const PRELIVE_BYTE_LIMIT = 1024 * 1024;
 
-const CONFLUENCE_MODIFIED_BEFORE_DISPATCH =
-  'This page was modified in Confluence. Your collaborative session is still open — nobody\'s edits were overwritten.';
 // After dispatch the Save's own outcome is unknown and the room stops accepting
-// edits (#2035), so this answer promises neither an open session nor an
-// untouched page.
-const CONFLUENCE_MODIFIED_AFTER_DISPATCH =
-  'Confluence reported a newer version of this page while it was being saved. The result of this save is unknown.';
+// edits (#2035), so that answer promises neither an open session nor an
+// untouched page. `saveOutcome` tells the editor which of the two it got.
+const CONFLUENCE_MODIFIED_MESSAGE: Record<CollabCommitConflictSaveOutcome, string> = {
+  not_dispatched:
+    'This page was modified in Confluence. Your collaborative session is still open — nobody\'s edits were overwritten.',
+  unknown:
+    'Confluence reported a newer version of this page while it was being saved. The result of this save is unknown.',
+};
 
 function throwConfluenceModified(
   fastify: FastifyInstance,
   remoteVersion: number,
   localVersion: number,
-  message: string = CONFLUENCE_MODIFIED_BEFORE_DISPATCH,
+  saveOutcome: CollabCommitConflictSaveOutcome,
 ): never {
   throw Object.assign(
-    fastify.httpErrors.conflict(message),
-    { code: 'confluence_modified', remoteVersion, localVersion },
+    fastify.httpErrors.conflict(CONFLUENCE_MODIFIED_MESSAGE[saveOutcome]),
+    { code: 'confluence_modified', remoteVersion, localVersion, saveOutcome },
   );
 }
 
@@ -259,7 +262,7 @@ async function commitConfluencePage(args: {
   const remoteVersion = remote.version.number;
   const expectedRemoteVersion = existing.remote_version ?? existing.version;
   if (remoteVersion !== expectedRemoteVersion) {
-    throwConfluenceModified(fastify, remoteVersion, expectedRemoteVersion);
+    throwConfluenceModified(fastify, remoteVersion, expectedRemoteVersion, 'not_dispatched');
   }
 
   const publication = describeCollabCommit({
@@ -404,7 +407,7 @@ async function commitConfluencePage(args: {
         } catch {
           // The durable intent remains pending for exact reconciliation.
         }
-        throwConfluenceModified(fastify, observedVersion, expectedRemoteVersion, CONFLUENCE_MODIFIED_AFTER_DISPATCH);
+        throwConfluenceModified(fastify, observedVersion, expectedRemoteVersion, 'unknown');
       }
       throw error;
     }

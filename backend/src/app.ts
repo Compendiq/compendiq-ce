@@ -134,7 +134,13 @@ import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queu
 import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
 import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
-import { COLLAB_WS_PROTOCOL, LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE, type OidcConfig } from '@compendiq/contracts';
+import {
+  COLLAB_WS_PROTOCOL,
+  CollabCommitConflictSaveOutcomeSchema,
+  LOGOUT_BUSY_CODE,
+  REFRESH_BUSY_CODE,
+  type OidcConfig,
+} from '@compendiq/contracts';
 
 export async function buildApp() {
   // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
@@ -552,6 +558,10 @@ export async function buildApp() {
     ]);
     const remoteVersion = (error as { remoteVersion?: unknown }).remoteVersion;
     const localVersion = (error as { localVersion?: unknown }).localVersion;
+    // Whether the collaborative Save had been sent when Confluence refused it (#2035).
+    const saveOutcome = CollabCommitConflictSaveOutcomeSchema.safeParse(
+      (error as { saveOutcome?: unknown }).saveOutcome,
+    );
     reply.status(statusCode).send({
       error: safeErrorName(statusCode, error.name),
       message: statusCode === 500 ? 'Internal Server Error' : error.message,
@@ -559,6 +569,7 @@ export async function buildApp() {
       ...(typeof code === 'string' && publicCodes.has(code) ? { code } : {}),
       ...(code === 'confluence_modified' && typeof remoteVersion === 'number' ? { remoteVersion } : {}),
       ...(code === 'confluence_modified' && typeof localVersion === 'number' ? { localVersion } : {}),
+      ...(code === 'confluence_modified' && saveOutcome.success ? { saveOutcome: saveOutcome.data } : {}),
     });
   });
 
