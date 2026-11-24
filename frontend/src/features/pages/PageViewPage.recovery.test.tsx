@@ -1246,6 +1246,8 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     });
     expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
+    // The merge changed nothing: no notice about an earlier copy.
+    expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument();
     expect(document.querySelector('.ProseMirror')).toHaveTextContent('Typed before the limit');
     // The focus the control held is handed to the named editor column, not dropped to <body>.
     await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
@@ -1337,7 +1339,8 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     });
   }
 
-  it('keeps the offline text recoverable through Download draft when the room is ahead and the proof fails', async () => {
+  /** A published paragraph the tab typed into while offline, then removed in the room, then a 4403. */
+  async function limitedWithRoomAhead() {
     publish('Published paragraph');
     renderPage();
     const first = await startCollabEdit();
@@ -1361,6 +1364,10 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     const second = Socket.instances[1]!;
     act(() => { second.open(); second.close(4403, 'rate_limited'); });
     await screen.findByText('This editing session is now read-only');
+  }
+
+  it('keeps the offline text recoverable through Download draft when the room is ahead and the proof fails', async () => {
+    await limitedWithRoomAhead();
 
     roomDropsUpdates = true;
     const { attempt } = await pressRejoin();
@@ -1385,6 +1392,50 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
       await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
       expect(again.attempt.readyState).toBe(Socket.CLOSED);
     }
+  });
+
+  describe('a successful attempt whose merge removed offline text', () => {
+    async function succeedAgainstRoomAhead() {
+      await limitedWithRoomAhead();
+      const { attempt } = await pressRejoin();
+      completeAttempt(attempt);
+      await act(async () => { await Promise.resolve(); });
+      act(() => serve(attempt));
+      // Coverage holds, so editing resumes, with the peer's deletion merged in.
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+      });
+      expect(document.querySelector('.ProseMirror')).not.toHaveTextContent('Typed offline');
+    }
+
+    it('keeps the earlier copy downloadable until it is downloaded', async () => {
+      await succeedAgainstRoomAhead();
+
+      const notice = await screen.findByTestId('collab-merged-copy');
+      expect(notice).toHaveTextContent('Your draft was merged with the page');
+      expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+      const download = screen.getByRole('button', { name: 'Download earlier copy' });
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+      download.focus();
+      fireEvent.click(download);
+
+      const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
+      expect(saved.bodyHtml).toContain('Typed offline');
+      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
+      // Keyboard users keep a place: focus goes to the editor column, not <body>.
+      await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
+    });
+
+    it('keeps it until dismissed explicitly, and drops it without a download', async () => {
+      await succeedAgainstRoomAhead();
+
+      // Editing carries on; the notice stays.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * WINDOW_MS); });
+      expect(screen.getByTestId('collab-merged-copy')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
+      expect(downloads).toHaveLength(0);
+    });
   });
 
   it('hands focus to the editor column when the control was only reached by keyboard after the attempt started', async () => {

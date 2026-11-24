@@ -33,8 +33,12 @@ vi.mock('node:dns/promises', () => ({
   }),
 }));
 
-import { insertTestRuntime, setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
-// The code `useCollabProvider` runs for a manual Rejoin (#2036); it is free of React.
+import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
+// Cross-workspace import, on purpose (#2036): the Rejoin attempt is frontend
+// code (`useCollabProvider` runs it), and these live-room tests must run that
+// very code against the real gateway, not a copy. Running this file therefore
+// needs the full monorepo checkout (`frontend/src` next to `backend/`) and the
+// root `npm ci`; the backend build and image never compile tests.
 import { createRejoinController } from '../../../../frontend/src/features/pages/collab-rejoin-attempt.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
@@ -66,7 +70,15 @@ import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { __internal as sync } from '../../domains/confluence/services/sync-service.js';
-import { isCollabCommitPending, withPageWriteTransaction } from '../../core/services/page-write-admission.js';
+import {
+  declareCollabCommitUnknown,
+  isCollabCommitPending,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+} from '../../core/services/page-write-admission.js';
+import { invalidateCollabDocAfterBodyWrite } from '../../core/services/collab-guard.js';
+import { describeCollabCommit } from '../../domains/confluence/services/collab-commit-intent-reconciler.js';
 import { seedRestrictionFixture } from './page-restriction.test-helpers.js';
 
 const dbAvailable = await isDbAvailable();
@@ -4070,7 +4082,9 @@ function frameKind(frame: Uint8Array): string {
 }
 
 describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#1928)', () => {
-  async function pinnedTab(name: string): Promise<{ tab: HookTab; pageId: number; token: string; revision: string }> {
+  async function pinnedTab(name: string): Promise<{
+    tab: HookTab; pageId: number; token: string; userId: string; revision: string;
+  }> {
     const { token, userId } = await createUser(name);
     const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>recovery-seed</p>' });
     await enableCollabFlag();
@@ -4080,7 +4094,7 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     // A first join declares nothing and is not asked; the epoch is pinned from here on.
     expect(tab.serverSyncStep1s()).toBe(0);
     expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toMatch(/^[0-9a-f-]{36}$/);
-    return { tab, pageId, token, revision };
+    return { tab, pageId, token, userId, revision };
   }
 
   it('a frame refused with 1001 collab_validation_unavailable reaches the room after the reconnect, and the Save returns 200', async () => {
@@ -4198,17 +4212,39 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
       if (event?.code === 1001 && (event.reason === 'doc_reset' || event.reason === 'commit_unknown')) refuse(event.reason);
       else if (event === null || event.code < 4400 || event.code >= 4500) controller.fail();
     });
-    let send: { mock: { calls: unknown[][] } } | null = null;
+    // The tab's own transport is the barrier: the attempt's real probe frame can
+    // be held on the client side, outside any server transaction, and released later.
+    let probes = 0;
+    let holding = false;
+    let held: (() => void) | null = null;
     return {
       run,
       controller,
       press: () => {
         controller.start(tab.doc);
-        send = vi.spyOn(tab.provider.ws!, 'send');
+        const ws = tab.provider.ws!;
+        const deliver = ws.send.bind(ws);
+        Object.assign(ws, {
+          send: (frame: Uint8Array) => {
+            if (frame.length === PROBE.length && PROBE.every((byte, i) => frame[i] === byte)) {
+              probes += 1;
+              if (holding) {
+                held = () => deliver(frame);
+                return;
+              }
+            }
+            deliver(frame);
+          },
+        });
       },
-      probesSent: () => (send?.mock.calls ?? []).filter(([frame]) => (
-        frame instanceof Uint8Array && frame.length === PROBE.length && PROBE.every((byte, i) => frame[i] === byte)
-      )).length,
+      probesSent: () => probes,
+      holdProbe: () => { holding = true; },
+      probeHeld: () => held !== null,
+      releaseProbe: () => {
+        holding = false;
+        held?.();
+        held = null;
+      },
     };
   }
 
@@ -4237,49 +4273,47 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     expect(saved.statusCode, saved.body).toBe(200);
   }, 30_000);
 
-  /** Runs `fence` inside the probe's fenced answer: after the replay was applied, before the answer. */
-  function betweenReplayAndAnswer(pageId: number, fence: () => Promise<void>) {
-    const real = persist.assertCurrentCollabDocEpoch;
-    let fired = false;
-    const barrier = vi.spyOn(persist, 'assertCurrentCollabDocEpoch').mockImplementation(async (...args) => {
-      // The replay's own check precedes its apply; this one follows it.
-      if (!fired && liveRoomHtml(pageId).includes(OFFLINE)) {
-        fired = true;
-        await fence();
-      }
-      return real(...args);
-    });
-    onTestFinished(() => barrier.mockRestore());
-    return () => fired;
-  }
-
   it.each([
     ['an epoch invalidation', 'doc_reset', async (pageId: number) => {
-      await query('UPDATE page_collaborative_docs SET doc_epoch = gen_random_uuid() WHERE page_id = $1', [pageId]);
+      // What the three inbound publication writers do in their own transaction:
+      // under the page lifecycle lock, delete the collaborative row.
+      await invalidateCollabDocAfterBodyWrite(pageId);
     }],
-    ['an unknown-outcome marker (no cue is delivered)', 'commit_unknown', async (pageId: number) => {
-      const runtimeId = await insertTestRuntime();
-      await query(
-        `INSERT INTO page_write_intents
-           (id, runtime_id, kind, page_ids, revisions, recovery_mode, effect,
-            effect_started_at, remote_effect_started_at, remote_effect_failed_at)
-         VALUES (gen_random_uuid(), $1, 'collab.commit.confluence', ARRAY[$2]::int[], '{}'::jsonb,
-                 'remote_conditional', $3::jsonb, NOW(), NOW(), NOW())`,
-        [runtimeId, pageId, JSON.stringify({
-          effectClass: 'remote', pageId, confluenceId: 'cf-2036', expectedRemoteVersion: '4',
-          intendedStateDigest: 'a'.repeat(64),
-        })],
-      );
+    ['an unknown-outcome marker (its cue is delayed)', 'commit_unknown', async (pageId: number, userId: string, revision: string) => {
+      // The Save route's own sequence for a Save that fails after dispatch: a
+      // reserved collaborative-commit intent, a started remote effect that
+      // throws, and the marker through the production declaration. The cue
+      // callback does nothing, so only the probe's own fence can notice.
+      const publication = describeCollabCommit({
+        actorId: userId, pageId, confluenceId: 'cf-2036', title: 'Collab page', bodyStorage: '<p>x</p>',
+        expectedRemoteVersion: 4, expectedLocalVersion: 1, expectedLifecycleRevision: revision,
+      });
+      const intent = await reservePageWriteIntent({
+        pageIds: [pageId], kind: 'collab.commit.confluence', actorId: userId, effect: publication.effect,
+      });
+      await expect(runPageWriteIntentEffect(
+        intent,
+        { kind: 'remote', completesRemoteWork: true },
+        async () => { throw new Error('socket hang up after the request was written'); },
+      )).rejects.toThrow('socket hang up');
+      await declareCollabCommitUnknown(intent, () => undefined).record();
     }],
   ])('never restores editing when %s commits after the replay and before the probe answer', async (_name, refusal, fence) => {
-    const { tab, pageId, revision } = await offlineTab(`collab_rejoin_${refusal}`);
+    const { tab, pageId, userId, revision } = await offlineTab(`collab_rejoin_${refusal}`);
     const attempt = rejoinRun(tab, pageId, revision);
-    const fired = betweenReplayAndAnswer(pageId, () => fence(pageId));
+    attempt.holdProbe();
 
     attempt.press();
 
+    // The replay has reached the room; the probe frame waits on the tab's transport.
+    await vi.waitFor(() => {
+      expect(attempt.probeHeld()).toBe(true);
+      expect(liveRoomHtml(pageId)).toContain(OFFLINE);
+    }, { timeout: 12_000 });
+    await fence(pageId, userId, revision);
+    attempt.releaseProbe();
+
     await vi.waitFor(() => expect(attempt.run.refusal).toBe(refusal), { timeout: 12_000 });
-    expect(fired()).toBe(true);
     expect(attempt.probesSent()).toBe(1);
     // Nothing arrives afterwards that could count as proof; the draft is still the tab's.
     await pause(1_500);

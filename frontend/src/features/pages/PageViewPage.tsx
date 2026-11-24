@@ -458,9 +458,31 @@ export function PageViewPage() {
     }
     retryCollabJoin();
   }, [collabCanRetry, editHtml, editorInstance, rejoinInFlight, retryCollabJoin]);
+  // After a successful Rejoin the open document may still differ from that
+  // export: coverage proves the room holds the draft's clocks and deletions,
+  // not that the user's text survived the merge (a peer's deletion can win).
+  // Editing resumes regardless; the earlier copy stays available until it is
+  // downloaded or dismissed.
+  const [mergedDraftCopy, setMergedDraftCopy] = useState<string | null>(null);
   useEffect(() => {
-    if (collab.readOnlyReason === null) rejoinDraftExportRef.current = null;
-  }, [collab.readOnlyReason]);
+    if (collab.readOnlyReason !== null) return;
+    const exported = rejoinDraftExportRef.current;
+    rejoinDraftExportRef.current = null;
+    // A session that merely ended or restarted is not writable: nothing to offer.
+    if (exported === null || !collab.writable) return;
+    const current = editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml;
+    if (current !== exported) setMergedDraftCopy(exported);
+  }, [collab.readOnlyReason, collab.writable, editHtml, editorInstance]);
+  useEffect(() => {
+    if (!editing || !collabLive) setMergedDraftCopy(null);
+  }, [collabLive, editing]);
+  const closeMergedCopyNotice = useCallback(() => {
+    setMergedDraftCopy(null);
+    // The button that held focus is gone: hand focus to the editor column.
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.body) editorColumnRef.current?.focus();
+    });
+  }, []);
   // A Rejoin that vanished with focus on it hands focus to the named editor
   // column, unless something else took it (a surviving control keeps it) or the
   // page changed first.
@@ -802,9 +824,7 @@ export function PageViewPage() {
     discardAndExit();
   }, [discardAndExit]);
 
-  const downloadOpenDraft = useCallback(() => {
-    const bodyHtml = rejoinDraftExportRef.current ??
-      (editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml);
+  const saveDraftFile = useCallback((bodyHtml: string) => {
     triggerDownload(new Blob([JSON.stringify({
       pageId: id,
       title: editTitle,
@@ -812,7 +832,16 @@ export function PageViewPage() {
       labels: draftLabels,
       lifecycleRevision: sessionLifecycleRevision ?? null,
     }, null, 2)], { type: 'application/json' }), `page-${id}-draft.json`);
-  }, [draftLabels, editHtml, editTitle, editorInstance, id, sessionLifecycleRevision]);
+  }, [draftLabels, editTitle, id, sessionLifecycleRevision]);
+  const downloadOpenDraft = useCallback(() => {
+    saveDraftFile(rejoinDraftExportRef.current ??
+      (editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml));
+  }, [editHtml, editorInstance, saveDraftFile]);
+  const downloadMergedCopy = useCallback(() => {
+    if (mergedDraftCopy === null) return;
+    saveDraftFile(mergedDraftCopy);
+    closeMergedCopyNotice();
+  }, [closeMergedCopyNotice, mergedDraftCopy, saveDraftFile]);
 
   const openCurrentVersion = useCallback(async () => {
     if (openingCurrent) return;
@@ -1623,6 +1652,18 @@ export function PageViewPage() {
                     )}
                     <button type="button" className="nm-button-ghost h-8" onClick={downloadOpenDraft}>Download draft</button>
                     <button type="button" className="nm-button-ghost h-8" onClick={() => setConfirmReloadOpen(true)}>Open current version</button>
+                  </div>
+                </div>
+              )}
+              {mergedDraftCopy !== null && !writeLocked && (
+                <div className="my-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm" data-testid="collab-merged-copy">
+                  <p className="font-medium text-foreground">Your draft was merged with the page</p>
+                  <p className="mt-1 leading-6 text-muted-foreground">
+                    The page changed while you were away, so some of what you typed may no longer appear in it. A copy of your draft from before you pressed Rejoin is still available.
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" className="nm-button-ghost h-8" onClick={downloadMergedCopy}>Download earlier copy</button>
+                    <button type="button" className="nm-button-ghost h-8" onClick={closeMergedCopyNotice}>Dismiss</button>
                   </div>
                 </div>
               )}
