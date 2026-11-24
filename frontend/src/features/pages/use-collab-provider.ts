@@ -347,12 +347,20 @@ export function useCollabProvider({
         setCanRetry(true);
       }, COLLAB_UPGRADE_WINDOW_SEC * 1000);
     };
+    // The reason of the read-only state this session is in, if any.
+    let readOnlyNow: CollabReadOnlyReason | null = null;
     const preserveReadOnly = (reason: CollabReadOnlyReason) => {
-      if (cancelled || (blocked && !rejoin.running)) return;
+      // An unknown collaborative save (#2035) is authoritative about this
+      // draft: it replaces the retryable post-sync `rate_limited` state (its
+      // cooldown, Rejoin and unconfirmed notice go), but never a terminal
+      // refusal or any other read-only reason.
+      const replacesRateLimit = reason === 'commit_unknown' && readOnlyNow === 'rate_limited';
+      if (cancelled || (blocked && !rejoin.running && !replacesRateLimit)) return;
       rejoin.cancel();
       blocked = true;
       setWritable(false);
       setConnected(false);
+      readOnlyNow = reason;
       setReadOnlyReason(reason);
       // Keep both the document and provider identity mounted in TipTap.
       ws.disconnect();
@@ -397,6 +405,7 @@ export function useCollabProvider({
     const onRejoinSucceeded = () => {
       if (cancelled) return;
       blocked = false;
+      readOnlyNow = null;
       setError(null);
       setReadOnlyReason(null);
       setRejoinOffered(false);

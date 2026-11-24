@@ -1665,4 +1665,36 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     expect(download).toHaveFocus();
   });
+
+  it('shows commit_unknown and never offers Rejoin when the Save answer arrives after a 4403 rate_limited', async () => {
+    commitMode = 'confluence_modified_after_dispatch';
+    const commit = Promise.withResolvers<void>();
+    deferredCommit = commit.promise;
+    renderPage();
+    const socket = await joinPinnedSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(1));
+
+    // The room's limit closes the tab while its Save is still in flight: no socket cue will follow.
+    act(() => socket.close(4403, 'rate_limited'));
+    expect(await screen.findByText(BANNER)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rejoin' })).toBeInTheDocument();
+
+    await act(async () => commit.resolve());
+    await waitFor(() => expect(screen.getByTestId('save-page-btn')).not.toHaveTextContent('Saving…'));
+
+    expect(await screen.findByText(
+      'A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved. Your open draft remains below and is not reapplied automatically.',
+    )).toBeInTheDocument();
+    expect(screen.queryByText(BANNER)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('collab-rejoin-status')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3 * WINDOW_MS); });
+    expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
+    expect(Socket.instances).toHaveLength(1);
+    expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+  });
 });

@@ -1255,5 +1255,100 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       expect(result.current).toMatchObject({ writable: false, rejoinAttempt: 'unconfirmed', canRetry: true });
       expect(probes(attempt)).toBe(0);
     });
+
+    describe('an unknown collaborative save (#2035) while the draft is rate_limited', () => {
+      const expectNoRejoin = async (session: Limited) => {
+        expect(session.result.current).toMatchObject({
+          readOnlyReason: 'commit_unknown', writable: false, connected: false,
+          rejoinOffered: false, rejoinAttempt: 'idle', canRetry: false,
+        });
+        const sockets = Socket.instances.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(3 * WINDOW_MS); });
+        expect(session.result.current).toMatchObject({ rejoinOffered: false, canRetry: false });
+        act(() => { session.result.current.retry(); });
+        expect(Socket.instances).toHaveLength(sockets);
+        expectSameDraft(session);
+      };
+
+      it('replaces the state during the cooldown: commit_unknown, no timer, no Rejoin', async () => {
+        const session = limited();
+        expect(session.result.current).toMatchObject({ readOnlyReason: 'rate_limited', rejoinOffered: true });
+
+        act(() => { session.result.current.declareCommitUnknown(session.draft); });
+
+        await expectNoRejoin(session);
+      });
+
+      it('replaces the state after the cooldown too, before Rejoin is pressed', async () => {
+        const session = limited();
+        await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS); });
+        expect(session.result.current.canRetry).toBe(true);
+
+        act(() => { session.result.current.declareCommitUnknown(session.draft); });
+
+        await expectNoRejoin(session);
+      });
+
+      it('replaces the state after an unconfirmed attempt, clearing its notice and eligibility', async () => {
+        const session = limited();
+        const attempt = await rejoin(session);
+        act(() => { attempt.open(); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
+        expect(session.result.current).toMatchObject({ rejoinAttempt: 'unconfirmed', canRetry: true });
+
+        act(() => { session.result.current.declareCommitUnknown(session.draft); });
+
+        await expectNoRejoin(session);
+      });
+
+      it('ends a running attempt the same way', async () => {
+        const session = limited();
+        const attempt = await rejoin(session);
+        act(() => { attempt.open(); });
+
+        act(() => { session.result.current.declareCommitUnknown(session.draft); });
+
+        expect(attempt.readyState).toBe(Socket.CLOSED);
+        await expectNoRejoin(session);
+      });
+
+      it.each([
+        ['forbidden', 'permission_loss'],
+        ['flag_off', 'flag_off'],
+        ['readonly', 'readonly'],
+      ])('does not overwrite a terminal 4403 %s refusal', async (reason, expected) => {
+        const session = limited({ reason });
+        expect(session.result.current.readOnlyReason).toBe(expected);
+
+        act(() => { session.result.current.declareCommitUnknown(session.draft); });
+
+        expect(session.result.current).toMatchObject({ readOnlyReason: expected, rejoinOffered: false });
+      });
+
+      it('does not overwrite a refusal an attempt ended in', async () => {
+        const session = limited();
+        const attempt = await rejoin(session);
+        act(() => { attempt.open(); control(attempt, { type: 'doc_reset' }); });
+        expect(session.result.current.readOnlyReason).toBe('document_changed');
+
+        act(() => { session.result.current.declareCommitUnknown(session.draft); });
+
+        expect(session.result.current.readOnlyReason).toBe('document_changed');
+      });
+
+      it('ignores an answer for a document that is not the mounted one', async () => {
+        const session = limited();
+        const earlier = new Y.Doc();
+
+        act(() => { session.result.current.declareCommitUnknown(earlier); });
+
+        expect(session.result.current).toMatchObject({
+          readOnlyReason: 'rate_limited', rejoinOffered: true, canRetry: false,
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS); });
+        expect(session.result.current.canRetry).toBe(true);
+        earlier.destroy();
+      });
+    });
   });
 });
