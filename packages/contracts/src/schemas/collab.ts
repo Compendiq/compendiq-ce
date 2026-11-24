@@ -54,6 +54,16 @@ export const CollabDocEpochControlSchema = z.object({
 }).strict();
 export type CollabDocEpochControl = z.infer<typeof CollabDocEpochControlSchema>;
 
+/**
+ * Server control frame (#2035): a collaborative save of this page did not
+ * finish and its result is unknown, so the room accepts no further edits until
+ * that save is resolved. It carries no payload and only removes edit authority.
+ */
+export const CollabCommitUnknownControlSchema = z.object({
+  type: z.literal('commit_unknown'),
+}).strict();
+export type CollabCommitUnknownControl = z.infer<typeof CollabCommitUnknownControlSchema>;
+
 /** Body for POST /api/pages/:id/collab/commit. Server snapshots the Y.Doc. */
 export const CollabCommitSchema = z.object({
   title: z.string().min(1).max(500),

@@ -4,6 +4,7 @@ import {
   COLLAB_WS_PROTOCOL,
   CollabConfigSchema,
   CollabCommitSchema,
+  CollabCommitUnknownControlSchema,
   CollabDocEpochControlSchema,
   CollabDocEpochSchema,
   CollabCommitResponseSchema,
@@ -102,5 +103,22 @@ describe('collab contracts (#1444)', () => {
     expect(CollabDocEpochControlSchema.safeParse({ type: 'doc_reset', epoch }).success).toBe(false);
     // Strict: a frame that carries anything else is not this control.
     expect(CollabDocEpochControlSchema.safeParse({ type: 'doc_epoch', epoch, writable: true }).success).toBe(false);
+  });
+
+  it('parses the payload-free commit_unknown control strictly (#2035)', () => {
+    expect(CollabCommitUnknownControlSchema.parse({ type: 'commit_unknown' })).toEqual({ type: 'commit_unknown' });
+    // Strict: no payload, so a frame that carries anything else is not this control.
+    for (const extra of [{ intentId: 'a' }, { writable: true }, { reason: 'commit_unknown' }, { version: 1 }]) {
+      expect(
+        CollabCommitUnknownControlSchema.safeParse({ type: 'commit_unknown', ...extra }).success,
+        JSON.stringify(extra),
+      ).toBe(false);
+    }
+    for (const malformed of [
+      {}, { type: 'commit-unknown' }, { type: 'COMMIT_UNKNOWN' }, { type: 'permission_loss' },
+      { type: ['commit_unknown'] }, { type: null }, 'commit_unknown', null, ['commit_unknown'],
+    ]) {
+      expect(CollabCommitUnknownControlSchema.safeParse(malformed).success, JSON.stringify(malformed)).toBe(false);
+    }
   });
 });
