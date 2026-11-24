@@ -218,12 +218,17 @@ The last of them also decides step 4:
 - *Pre-check, before the admission.* A malformed declaration is refused with
   no read. Otherwise the row is read without locks. A room whose `docEpoch`
   differs from that read may be a stale heap and is decided first: the row is
-  read again under the page lifecycle lock, which is the proof. A stale heap is
-  retired (`doc_reset` to its sockets) and the join restarts once against a
-  fresh room, so a tab of the current generation that meets a superseded room
-  is admitted, and a tab of an old generation still causes the stale room it
-  found to be retired before it is refused. Then a declaration that differs
-  from the row refuses the socket.
+  read again under the page lifecycle lock, which is the proof. What the proof
+  shows decides how the heap is retired. A superseded document on a page that
+  still exists is retired with `doc_reset` to its sockets, and the join
+  restarts once against a fresh room, so a tab of the current generation that
+  meets a superseded room is admitted, and a tab of an old generation still
+  causes the stale room it found to be retired before it is refused. A page
+  proven absent is not a document reset: its room goes through the
+  committed-delete teardown (`4404 committed_delete`), and the restarted join
+  fails as any join to a missing page does (see the paragraph "A room is
+  **retired** only on an authoritative mismatch" below). Then a declaration
+  that differs from the row refuses the socket.
 - *Admission precondition.* The same conditions run as the `precondition` of
   `admitPageRuntime`, inside the admission transaction under the page lifecycle
   lock that every invalidation, seed and inbound publication also takes, so a
