@@ -503,4 +503,187 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(result.current.provider).toBeNull();
     expect(Socket.instances).toHaveLength(0);
   });
+
+  describe('document epoch (#2034)', () => {
+    const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+    const OTHER_EPOCH = '0d9c1b2a-3e4f-4a5b-8c6d-7e8f9a0b1c2d';
+
+    const declared = (socket: Socket) => new URL(socket.url).searchParams.get('expectedDocEpoch');
+    const mount = () => renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '1',
+    }));
+    /** Drop the connection and let y-websocket open the next one. */
+    const reconnect = async (socket: Socket): Promise<Socket> => {
+      const opened = Socket.instances.length;
+      act(() => { socket.close(1006, 'offline'); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(Socket.instances).toHaveLength(opened + 1);
+      return Socket.instances[opened]!;
+    };
+
+    it('pins the control\'s epoch at the first sync and declares it on every later join, never on the first', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      expect(declared(first)).toBeNull();
+      expect(result.current.docEpochPinned).toBe(false);
+      act(() => {
+        first.open();
+        control(first, { type: 'doc_epoch', epoch: EPOCH });
+        control(first, lifecycle('1'));
+      });
+      // Remembered, not pinned: the document has not synced yet.
+      expect(result.current.docEpochPinned).toBe(false);
+      act(() => {
+        hydrate(first);
+        control(first, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      expect(result.current.docEpochPinned).toBe(true);
+      expect(result.current.writable).toBe(true);
+
+      const second = await reconnect(first);
+      expect(declared(second)).toBe(EPOCH);
+      expect(new URL(second.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+      act(() => { second.open(); hydrate(second); });
+      const third = await reconnect(second);
+      expect(declared(third)).toBe(EPOCH);
+      expect(result.current.docEpochPinned).toBe(true);
+    });
+
+    it('never changes the pin: a later doc_epoch control is ignored', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => {
+        first.open();
+        control(first, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(first);
+        // Also on the connection that pinned it.
+        control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH });
+      });
+      const second = await reconnect(first);
+      expect(declared(second)).toBe(EPOCH);
+      act(() => {
+        second.open();
+        control(second, { type: 'doc_epoch', epoch: OTHER_EPOCH });
+        hydrate(second);
+      });
+      const third = await reconnect(second);
+      expect(declared(third)).toBe(EPOCH);
+      expect(result.current.docEpochPinned).toBe(true);
+    });
+
+    it('stays unpinned for its lifetime when the first sync came without the control', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, lifecycle('1')); hydrate(first); });
+      expect(result.current.synced).toBe(true);
+      expect(result.current.docEpochPinned).toBe(false);
+
+      const second = await reconnect(first);
+      expect(declared(second)).toBeNull();
+      // A later connection names an epoch: the document already holds content of an unknown lineage.
+      act(() => {
+        second.open();
+        control(second, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(second);
+      });
+      const third = await reconnect(second);
+      expect(declared(third)).toBeNull();
+      expect(result.current.docEpochPinned).toBe(false);
+    });
+
+    it('forgets a remembered epoch when its connection closes before the first sync', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); });
+      const second = await reconnect(first);
+      // Nothing was synced, so nothing is declared and nothing of that connection is kept.
+      expect(declared(second)).toBeNull();
+      act(() => { second.open(); hydrate(second); });
+      expect(result.current.docEpochPinned).toBe(false);
+      const third = await reconnect(second);
+      expect(declared(third)).toBeNull();
+    });
+
+    it('pins the epoch of the connection that delivers the first sync, not an earlier connection\'s', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); });
+      const second = await reconnect(first);
+      act(() => {
+        second.open();
+        control(second, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(second);
+      });
+      expect(result.current.docEpochPinned).toBe(true);
+      expect(declared(await reconnect(second))).toBe(EPOCH);
+    });
+
+    it('works as before against a server that never sends the control', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => {
+        first.open();
+        control(first, lifecycle('1'));
+        hydrate(first, 'Old server text');
+        control(first, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      expect(result.current).toMatchObject({
+        synced: true, connected: true, writable: true, error: null, readOnlyReason: null, docEpochPinned: false,
+      });
+      const second = await reconnect(first);
+      expect(declared(second)).toBeNull();
+      act(() => {
+        second.open();
+        hydrate(second, 'Old server text');
+        control(second, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      expect(result.current).toMatchObject({ writable: true, readOnlyReason: null, docEpochPinned: false });
+      expect(result.current.ydoc!.getText('draft').toString()).toContain('Old server text');
+    });
+
+    it.each([
+      ['not a UUID', { type: 'doc_epoch', epoch: 'not-a-uuid' }],
+      ['no epoch', { type: 'doc_epoch' }],
+      ['an extra field', { type: 'doc_epoch', epoch: EPOCH, writable: true }],
+    ])('does not pin a doc_epoch control with %s', async (_name, frame) => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, frame); hydrate(first); });
+      expect(result.current.docEpochPinned).toBe(false);
+      expect(result.current.writable).toBe(false);
+      expect(declared(await reconnect(first))).toBeNull();
+    });
+
+    it.each([
+      ['the control and the close', true],
+      ['the close alone', false],
+    ])('keeps the draft as document_changed and never reconnects when a declared rejoin gets doc_reset (%s)', async (_name, withControl) => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => {
+        first.open();
+        control(first, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(first, 'Draft the tab still holds');
+        control(first, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      const draft = result.current.ydoc!;
+      const second = await reconnect(first);
+      expect(declared(second)).toBe(EPOCH);
+      act(() => {
+        second.open();
+        if (withControl) control(second, { type: 'doc_reset' });
+        second.close(1001, 'doc_reset');
+      });
+      expect(result.current.readOnlyReason).toBe('document_changed');
+      expect(result.current.writable).toBe(false);
+      expect(result.current.connected).toBe(false);
+      expect(result.current.ydoc).toBe(draft);
+      expect(draft.getText('draft').toString()).toBe('Draft the tab still holds');
+      // The synced document keeps its draft state; this is not a pre-sync join error.
+      expect(result.current.synced).toBe(true);
+      expect(result.current.error).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(Socket.instances).toHaveLength(2);
+    });
+  });
 });
