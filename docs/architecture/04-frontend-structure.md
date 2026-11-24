@@ -563,17 +563,24 @@ flowchart TB
   `rejoinOffered` only for a post-sync `rate_limited` of a document with a
   pinned epoch (`docEpochPinned`), `canRetry` once one full
   `COLLAB_UPGRADE_WINDOW_SEC` has passed or an attempt ended unconfirmed, and
-  `rejoinAttempt` (`idle`, `attempting`, `unconfirmed`). The read-only banner
-  then shows **Rejoin** beside `Download draft` and `Open current version`,
-  with a status line (`rejoinStatusMessage`). Like the join `Retry` it is inert
-  through `aria-disabled`, never `disabled`, keeps focus, reads `Rejoining…`
-  while the attempt runs and hands orphaned focus to the "Page body" region
-  when it goes away. The banner and both draft controls stay mounted before,
-  during and after an attempt, Save stays blocked and the draft is never
-  discarded. The editor becomes writable only when the attempt proves the
-  server holds the draft (`docs/architecture/12-realtime-collaboration.md`);
-  otherwise the status says the server could not be confirmed and Rejoin stays
-  available. No other reason is offered a rejoin.
+  `rejoinAttempt` (`idle`, `attempting`, `unconfirmed`). The attempt itself is
+  `collab-rejoin-attempt.ts` (no React; the live-gateway tests run it too).
+  The read-only banner then shows **Rejoin** beside `Download draft` and
+  `Open current version`, with a status line (`rejoinStatusMessage`). Like the
+  join `Retry` it is inert through `aria-disabled`, never `disabled`, keeps
+  focus and reads `Rejoining…` while the attempt runs. Focus ownership is read
+  when the control leaves the document, not when it was pressed; if it held
+  focus and nothing else took it, focus goes to the "Page body" region, and a
+  surviving control or another page never loses focus to it. The banner and
+  both draft controls stay mounted before, during and after an attempt, and
+  Save stays blocked. An attempt merges the room's state into the only open
+  document, which can remove text typed offline, so the page exports the draft
+  once when the first attempt starts and **Download draft** serves that export
+  until editing is restored; the status after an unconfirmed attempt says so
+  and does not call the draft unchanged. The editor becomes writable only when
+  the attempt proves the server holds the draft
+  (`docs/architecture/12-realtime-collaboration.md`). No other reason is
+  offered a rejoin.
 - **An unknown collaborative save pauses editing (#2035).** The
   `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or
   the `1001 commit_unknown` close sets `readOnlyReason: 'commit_unknown'`

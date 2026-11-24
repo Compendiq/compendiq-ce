@@ -101,7 +101,7 @@ sequenceDiagram
     F->>F: verify JWT and flag and page row and userCanAccessPage
     alt missing or expired JWT
         F-->>B: close 4401
-        B->>B: refreshAccessTokenOnce then reconnect
+        B->>B: outside a manual Rejoin attempt, refreshAccessTokenOnce then reconnect
     else flag off or upgrade rate limited
         F-->>B: close 4403 flag_off or rate_limited
         B->>B: no reconnect, show the reason, Retry after the upgrade window for rate_limited, after the first sync the draft stays read-only and Rejoin follows the same window
@@ -130,17 +130,17 @@ sequenceDiagram
 
 | Code | Reason | When | Client before the first sync | Client after the first sync |
 |------|--------|------|------------------------------|-----------------------------|
-| **4401** | `unauthorized` | Missing / invalid / expired JWT, deactivated user or changed role (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) | Refresh and rejoin. No session left: "Your session expired" | Refresh and rejoin. No session left: read-only draft |
+| **4401** | `unauthorized` | Missing / invalid / expired JWT, deactivated user or changed role (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) | Refresh and rejoin. No session left: "Your session expired" | Refresh and rejoin, **except during a manual Rejoin attempt (#2036)**, which never refreshes: it ends in the read-only draft (`unauthorized`). No session left: read-only draft |
 | **4403** | `forbidden` | Page access revoked mid-session (60 s permission refresh) | "You cannot join this collaborative session." Fail closed, no Retry | Read-only draft (`permission_loss`) |
 | **4403** | `rate_limited` | More than 20 upgrades by the user in the fixed `COLLAB_UPGRADE_WINDOW_SEC` (60 s) window | "Too many connection attempts". Retry becomes available one full window after the refusal | Read-only draft (`rate_limited`): "Too many connection attempts from your account." **Rejoin** one full window after the refusal, only for a document with a pinned epoch (#2036, amendment A4); no rejoin otherwise |
 | **4403** | `flag_off` | Flag off at join, or mid-session (every pod tombstones its rooms) | "Collaborative editing has been turned off". The client refetches `GET /api/collab/config`, no Retry | Read-only draft (`flag_off`): "Collaborative editing was turned off." The client also refetches `GET /api/collab/config` |
 | **4403** | `readonly` | 8 refused write frames from a read-only socket after the join (`COLLAB_READONLY_DROP_LIMIT`). Never sent for pre-live buffering | "The collaborative session closed before it finished loading." with Retry | Read-only draft (`readonly`): "The server stopped accepting changes from this tab." |
 | **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden`: read-only draft (`permission_loss`), also for an empty reason |
 | **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
-| **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
+| **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect; during a manual Rejoin attempt no reconnect: the attempt ends unconfirmed |
 | **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable declared a malformed `expectedDocEpoch` or another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
 | **1001** | `commit_unknown` | The page's own collaborative Save failed after dispatch and its result is unknown (#2035). Sent to every socket that was writable, after the `commit_unknown` control and the `permission_loss` compatibility cue. Not a new close code | "A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved." | Read-only draft (`commit_unknown`) with **Download draft** and **Open current version**, no reconnect |
-| **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect |
+| **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect; during a manual Rejoin attempt no reconnect: the attempt ends unconfirmed (Rejoin available at once) |
 | HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
 
 **Before live (#1895).** Until the join completes (JWT, flag, page row,
@@ -319,10 +319,17 @@ the draft arrived). `forbidden`, `flag_off`, `readonly`, unknown and empty
 reasons keep the read-only draft with no rejoin, and nothing rejoins by
 itself. `retry()` then starts one attempt on the same provider with the joined
 lifecycle revision, the pinned epoch and the current access token. The attempt
-owns every close: a terminal `closed` (4401, 4403, 4404) is settled once after
-`connection-close`, 4401 does not refresh the token, and the provider's
-reconnect timer is switched off at the first close so it cannot start a second
-attempt.
+logic is `collab-rejoin-attempt.ts`, free of React, so the live-gateway tests
+run the same code as the hook. The attempt owns every close, which changes the
+automatic behaviour described in the close table for as long as it runs: a
+terminal `closed` (4401, 4403, 4404) is settled once after `connection-close`,
+4401 does not refresh the token, a transient close reconnects nothing (the
+provider's reconnect timer is switched off at the first close so it cannot
+start a second attempt), and the hook's periodic resync (the 30 s SyncStep1
+y-websocket would send) stands still, because its differential SyncStep2
+could not be told from the answer to the probe below. After a successful
+attempt the 4401 refresh, the reconnect after a transient close and the resync
+resume; after an unsuccessful one nothing reconnects until Rejoin is pressed again.
 
 ```mermaid
 sequenceDiagram
@@ -361,6 +368,12 @@ read-only draft with its own reason (`writable_refused`, `permission_loss`,
 `doc_reset`, `tombstone`, `commit_unknown`, 4401, 4403, 4404); a second
 `rate_limited` restarts the window. Against a pod without #1928 no SyncStep1
 arrives and the attempt ends unsuccessfully after the timeout.
+
+The open document merges what the room holds before the proof (the first
+SyncStep2 may carry a peer's deletion that removes text typed offline), so the
+page exports the draft once, as it was when the first attempt started, and
+**Download draft** serves that export until editing is restored, also after an
+unsuccessful attempt or a refusal and across further presses.
 
 The proof is a live-room statement: the room of the current generation held the
 draft at that moment. It is not a durable publication and does not protect
