@@ -81,3 +81,24 @@ export const CollabCommitResponseSchema = z.object({
   pushedToConfluence: z.boolean().optional(),
 });
 export type CollabCommitResponse = z.infer<typeof CollabCommitResponseSchema>;
+
+/**
+ * What a collaborative Save that answered 409 `confluence_modified` had done
+ * to Confluence when it found the newer version (#2035).
+ * `not_dispatched`: the version check ran before anything was sent, so the
+ * page was not saved and the editing session stays open. `unknown`: Confluence
+ * refused the write itself after it was sent; the save's result is unknown and
+ * the room stops accepting edits until it is resolved. A server that predates
+ * the field sends none.
+ */
+export const CollabCommitConflictSaveOutcomeSchema = z.enum(['not_dispatched', 'unknown']);
+export type CollabCommitConflictSaveOutcome = z.infer<typeof CollabCommitConflictSaveOutcomeSchema>;
+
+/** The typed part of the 409 body of POST /api/pages/:id/collab/commit. */
+export const CollabCommitConflictSchema = z.object({
+  code: z.literal('confluence_modified'),
+  remoteVersion: z.number().int().optional(),
+  localVersion: z.number().int().optional(),
+  saveOutcome: CollabCommitConflictSaveOutcomeSchema.optional(),
+});
+export type CollabCommitConflict = z.infer<typeof CollabCommitConflictSchema>;

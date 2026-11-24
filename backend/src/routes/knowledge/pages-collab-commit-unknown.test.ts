@@ -2,10 +2,13 @@
  * #2035 — the collaboration room fails closed after its own Confluence Save
  * failed after dispatch.
  *
- * Real PostgreSQL, Redis, gateway and commit route; only the Confluence HTTP
- * client is replaced. A second `createCollabRuntime` stands for another
- * backend process: it gets its own unknown-commit latches, so it does not see
- * the process-local set of the runtime that ran the Save.
+ * Real PostgreSQL, Redis, gateway and commit route. Confluence is a loopback
+ * HTTP server (`confluence-http-fixture.test-helpers.ts`): the real
+ * `ConfluenceClient` sends its requests there, and each test decides how
+ * Confluence answers after the fixture has seen the request. A second
+ * `createCollabRuntime` stands for another backend process: it gets its own
+ * unknown-commit latches, so it does not see the process-local set of the
+ * runtime that ran the Save.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
 import fs from 'node:fs';
@@ -55,7 +58,8 @@ import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
-import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { setRateLimit } from '../../domains/confluence/services/confluence-rate-limiter.js';
+import { ConfluenceHttpFixture, type ConfluenceFixtureGate } from './confluence-http-fixture.test-helpers.js';
 import {
   _resetCollabCommitUnknownForTest,
   collabCommitUnknownKey,
@@ -80,6 +84,7 @@ const MESSAGE_CONTROL = 4;
 const EMPTY_DOCUMENT_STATE = Buffer.from(Y.encodeSnapshot(Y.emptySnapshot)).toString('base64');
 const MEDIA_BODY = '<p>image</p><img src="/api/attachments/local-src/pasted.png">';
 const UNKNOWN_CLOSE = { code: 1001, reason: 'commit_unknown' };
+const CONFLUENCE_PAT = 'test-pat-2035';
 
 type Control = { type: string; [key: string]: unknown };
 type CloseInfo = { code: number; reason: string };
@@ -87,6 +92,7 @@ type Account = { token: string; userId: string };
 
 let app: FastifyInstance;
 let baseWs: string;
+let confluence: ConfluenceHttpFixture;
 
 function entropy(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -158,11 +164,13 @@ async function seedPage(options: { media?: boolean } = {}): Promise<Seed> {
     [confluenceId, spaceKey, body],
   );
   const pageId = page.rows[0]!.id;
+  // What Confluence holds: the version the local row was synced from.
+  confluence.addPage({ id: confluenceId, title: 'Conf page', version: 4, storage: body });
   await grantSpaceRead(saver.userId, spaceKey);
   await grantSpaceRead(coEditor.userId, spaceKey);
   await query(
     'UPDATE user_settings SET confluence_url = $2, confluence_pat = $3 WHERE user_id = $1',
-    [saver.userId, 'https://confluence.example.com', encryptPat('test-pat-2035')],
+    [saver.userId, confluence.url, encryptPat(CONFLUENCE_PAT)],
   );
   await query(
     `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
@@ -357,9 +365,9 @@ async function attachFake(
 
 /** Another backend process: it never sees the process-local set of the runtime that ran the Save. */
 function anotherProcess(
-  sharedLatch: CollabCommitLatches['readSharedLatch'] = processCollabCommitLatches.readSharedLatch,
+  sharedLatch: CollabCommitLatches['sharedLatchNames'] = processCollabCommitLatches.sharedLatchNames,
 ): CollabCommitLatches {
-  return { locallyUnknown: () => false, readSharedLatch: sharedLatch };
+  return { locallyUnknown: () => false, sharedLatchNames: sharedLatch };
 }
 
 async function otherRuntime(podId: string, latches: CollabCommitLatches = anotherProcess()): Promise<CollabRuntime> {
@@ -379,64 +387,46 @@ function roomHtml(runtime: CollabRuntime, pageId: number): string {
   return room ? yDocToHtml(room.doc) : '';
 }
 
-function remotePage(confluenceId: string, version: number, title = 'Conf page', storage?: string) {
-  return {
-    id: confluenceId,
-    title,
-    status: 'current',
-    type: 'page',
-    version: { number: version, when: '2026-11-24T00:00:00Z' },
-    ...(storage === undefined ? {} : { body: { storage: { value: storage } } }),
-  };
-}
-
-/** The provider read; a list answers call by call and repeats its last version. */
-function mockRemoteRead(confluenceId: string, versions: number[] = [4]) {
-  let calls = 0;
-  return vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
-    const version = versions[Math.min(calls, versions.length - 1)]!;
-    calls += 1;
-    return remotePage(confluenceId, version) as never;
-  });
-}
-
-function acceptUpload() {
-  return vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockImplementation(
-    async (_id, filename) => ({
-      id: 'attachment-1',
-      title: filename,
-      mediaType: 'image/png',
-      version: { number: 1, when: '2026-11-24T00:00:01Z' },
-    }) as never,
+/** The saver loses access to the page's space, as an administrator's change would do mid-Save. */
+async function revokeSaverAccess(seed: Seed): Promise<void> {
+  await query(
+    `DELETE FROM space_role_assignments
+      WHERE space_key = $1 AND principal_type = 'user' AND principal_id = $2`,
+    [seed.spaceKey, seed.saver.userId],
   );
 }
 
-function acceptPut(confluenceId: string) {
-  return vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
-    async (_id, title, storage) => remotePage(confluenceId, 5, title, storage) as never,
-  );
+/** Someone else saved the page in Confluence: its version is no longer the one this Save builds on. */
+function someoneElseSaved(seed: Seed, version = 9): void {
+  confluence.page(seed.confluenceId).version = version;
 }
 
-function failPut(error: Error = new Error('socket hang up after the request was written')) {
-  return vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockRejectedValue(error);
-}
-
-/** The provider PUT waits; `started` resolves once the intent's publishing phase runs. */
-function gatePut(confluenceId: string) {
-  const started = Promise.withResolvers<void>();
-  const gate = Promise.withResolvers<void>();
-  gate.promise.catch(() => undefined);
-  const spy = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
-    started.resolve();
-    await gate.promise;
-    return remotePage(confluenceId, 5, title, storage) as never;
+/** The page update the backend really sent: the request Confluence read before answering. */
+function expectPageUpdateSent(seed: Seed): void {
+  const updates = confluence.sent('update');
+  expect(updates).toHaveLength(1);
+  expect(updates[0]).toMatchObject({
+    method: 'PUT',
+    path: `/rest/api/content/${seed.confluenceId}`,
+    authorization: `Bearer ${CONFLUENCE_PAT}`,
+    json: {
+      type: 'page',
+      title: 'Saved title',
+      version: { number: 5 },
+      body: { storage: { representation: 'storage' } },
+    },
   });
-  return {
-    spy,
-    started: started.promise,
-    succeed: () => gate.resolve(),
-    fail: () => gate.reject(new Error('socket hang up after the request was written')),
-  };
+}
+
+function expectUploadSent(seed: Seed): void {
+  const uploads = confluence.sent('upload');
+  expect(uploads).toHaveLength(1);
+  expect(uploads[0]).toMatchObject({
+    method: 'POST',
+    path: `/rest/api/content/${seed.confluenceId}/child/attachment`,
+    authorization: `Bearer ${CONFLUENCE_PAT}`,
+    filename: 'pasted.png',
+  });
 }
 
 function save(seed: Seed, token = seed.saver.token) {
@@ -507,19 +497,26 @@ function expectUnknownThenCompatibilityCue(types: string[]): void {
   expect(types.indexOf('permission_loss', unknown), types.join(',')).toBe(unknown + 1);
 }
 
-/** The bus loses every `commit_unknown` cue; all other messages are delivered. */
-function dropCommitUnknownCues(): { dropped: () => number } {
+/**
+ * Watch the `commit_unknown` cues this process publishes. With `drop` the bus
+ * loses every one of them; all other messages are delivered either way.
+ */
+function watchCommitUnknownCues(options: { drop: boolean }): { published: () => number } {
   const redis = getRedisClient()!;
-  const publish = redis.publish.bind(redis);
-  let dropped = 0;
-  vi.spyOn(redis, 'publish').mockImplementation(((channel: string, message: string) => {
-    if (typeof message === 'string' && message.includes('"kind":"commit_unknown"')) {
-      dropped += 1;
-      return Promise.resolve(0);
-    }
-    return publish(channel, message);
-  }) as typeof redis.publish);
-  return { dropped: () => dropped };
+  const withAbortSignal = redis.withAbortSignal.bind(redis);
+  let published = 0;
+  // The cue is the only message published through a command deadline.
+  vi.spyOn(redis, 'withAbortSignal').mockImplementation(((signal: AbortSignal) => {
+    const client = withAbortSignal(signal);
+    const publish = client.publish.bind(client);
+    client.publish = ((channel: string, message: string) => {
+      if (!message.includes('"kind":"commit_unknown"')) return publish(channel, message);
+      published += 1;
+      return options.drop ? Promise.resolve(0) : publish(channel, message);
+    }) as typeof client.publish;
+    return client;
+  }) as typeof redis.withAbortSignal);
+  return { published: () => published };
 }
 
 /** Hold the page lifecycle lock until released. `waiters` counts the backends queued behind it. */
@@ -592,6 +589,9 @@ async function settleBySql(intentId: string, status: string): Promise<void> {
 beforeAll(async () => {
   if (!canRun) return;
   await setupTestDb();
+  confluence = await ConfluenceHttpFixture.start();
+  // Every Save here talks to the fixture; the default 60 requests a minute would throttle the file.
+  setRateLimit(600);
   app = await buildApp();
   await app.ready();
   await app.listen({ host: '127.0.0.1', port: 0 });
@@ -601,22 +601,25 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!canRun) return;
   await app?.close();
+  await confluence?.close();
+  setRateLimit(60);
   await teardownTestDb();
 });
 
 beforeEach(async () => {
   if (!canRun) return;
   await _resetCollabRoomsForTest();
-  _resetCollabCommitUnknownForTest();
+  await _resetCollabCommitUnknownForTest();
+  confluence.reset();
   await truncateAllTables();
   await withPageWriteTransaction([], async () => undefined);
 });
 
 afterEach(async () => {
   if (!canRun) return;
+  await _resetCollabCommitUnknownForTest();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
-  _resetCollabCommitUnknownForTest();
   const redis = getRedisClient()!;
   const leftover = await redis.keys('collab:commit-unknown:*');
   if (leftover.length > 0) await redis.del(leftover);
@@ -627,104 +630,75 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
     name: string;
     media: boolean;
     status: number;
-    arrange: (seed: Seed) => { putNotIssued?: boolean };
+    /** How Confluence answers this Save. */
+    arrange: (seed: Seed) => void;
+    /** Whether the page update itself was sent before the Save ended. */
+    updateSent: boolean;
     verify?: (body: Record<string, unknown>) => void;
   };
 
   const expectPostDispatchConflict = (body: Record<string, unknown>): void => {
-    // Status, code and versions are kept; the open-session promise is not.
-    expect(body).toMatchObject({ code: 'confluence_modified', remoteVersion: 9, localVersion: 4 });
+    // Status, code and versions are kept; the open-session promise is not, and
+    // the typed outcome tells the editor that this Save had been sent.
+    expect(body).toMatchObject({
+      code: 'confluence_modified', remoteVersion: 9, localVersion: 4, saveOutcome: 'unknown',
+    });
     expect(String(body.message)).not.toMatch(/session is still open/i);
     expect(String(body.message)).toMatch(/result of this save is unknown/i);
   };
 
   const TRIGGERS: Trigger[] = [
     {
-      name: 'the provider fails after dispatch',
+      name: 'Confluence drops the connection after it read the page update',
       media: false,
       status: 500,
-      arrange: (seed) => {
-        mockRemoteRead(seed.confluenceId);
-        failPut();
-        return {};
-      },
+      arrange: () => { confluence.handlers.update = () => 'reset'; },
+      updateSent: true,
     },
     {
-      name: 'the provider fails after a completed upload (.media)',
+      name: 'Confluence drops the page update after a completed upload (.media)',
       media: true,
       status: 500,
-      arrange: (seed) => {
-        mockRemoteRead(seed.confluenceId);
-        acceptUpload();
-        failPut();
-        return {};
-      },
+      arrange: () => { confluence.handlers.update = () => 'reset'; },
+      updateSent: true,
     },
     {
-      name: 'the provider answers 409 after dispatch',
+      name: 'Confluence answers the page update with 409',
       media: false,
       status: 409,
-      arrange: (seed) => {
-        mockRemoteRead(seed.confluenceId, [4, 9]);
-        failPut(new ConfluenceError('Version conflict', 409));
-        return {};
-      },
+      // Another editor's save lands between this Save's version check and its update.
+      arrange: (seed) => { confluence.handlers.update = () => someoneElseSaved(seed); },
+      updateSent: true,
       verify: expectPostDispatchConflict,
     },
     {
-      name: 'the provider answers 409 after a completed upload (.media)',
+      name: 'Confluence answers the page update with 409 after a completed upload (.media)',
       media: true,
       status: 409,
-      arrange: (seed) => {
-        mockRemoteRead(seed.confluenceId, [4, 9]);
-        acceptUpload();
-        failPut(new ConfluenceError('Version conflict', 409));
-        return {};
-      },
+      arrange: (seed) => { confluence.handlers.update = () => someoneElseSaved(seed); },
+      updateSent: true,
       verify: expectPostDispatchConflict,
     },
     {
-      name: 'the first upload fails (.media)',
+      name: 'Confluence drops the first upload (.media)',
       media: true,
       status: 500,
-      arrange: (seed) => {
-        mockRemoteRead(seed.confluenceId);
-        vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockRejectedValue(
-          new Error('connection reset after attachment bytes were sent'),
-        );
-        acceptPut(seed.confluenceId);
-        return { putNotIssued: true };
-      },
+      arrange: () => { confluence.handlers.upload = () => 'reset'; },
+      updateSent: false,
     },
     {
       name: 'the Save is refused between its upload and its page update (.media)',
       media: true,
       status: 403,
-      arrange: (seed) => {
-        mockRemoteRead(seed.confluenceId);
-        vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockImplementation(async (_id, filename) => {
-          // The upload completes; the saver loses access before the next phase.
-          await query(
-            `DELETE FROM space_role_assignments
-              WHERE space_key = $1 AND principal_type = 'user' AND principal_id = $2`,
-            [seed.spaceKey, seed.saver.userId],
-          );
-          return {
-            id: 'attachment-1',
-            title: filename,
-            mediaType: 'image/png',
-            version: { number: 1, when: '2026-11-24T00:00:01Z' },
-          } as never;
-        });
-        acceptPut(seed.confluenceId);
-        return { putNotIssued: true };
-      },
+      // The upload completes; the saver loses access before the next phase.
+      arrange: (seed) => { confluence.handlers.upload = () => revokeSaverAccess(seed); },
+      updateSent: false,
     },
   ];
 
   it.each(TRIGGERS)(
     'fails the room closed on every pod when $name',
-    async ({ media, status, arrange, verify }) => {
+    async ({ media, status, arrange, updateSent, verify }) => {
       const seed = await seedPage({ media });
       const { pageId } = seed;
       // The saver's tab answers the control with one more edit: a frame that
@@ -740,14 +714,18 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const c = (await attachFake(podB, seed, 'pod-b-writer')).socket;
       expect(c.controls()).toContain('writable_admission');
       const viewer = (await attachFake(podB, seed, 'pod-b-viewer', { writable: false })).socket;
-      const expected = arrange(seed);
+      arrange(seed);
       const info = vi.spyOn(logger, 'info');
 
       const response = await save(seed);
 
       expect(response.statusCode, response.body).toBe(status);
       verify?.(response.json());
-      if (expected.putNotIssued) expect(ConfluenceClient.prototype.updatePage).not.toHaveBeenCalled();
+      // What the backend really sent before Confluence failed it.
+      if (media) expectUploadSent(seed);
+      else expect(confluence.sent('upload')).toEqual([]);
+      if (updateSent) expectPageUpdateSent(seed);
+      else expect(confluence.sent('update')).toEqual([]);
       // The durable marker on the intent the route left pending; nothing is settled.
       const intents = await commitIntents(pageId);
       expect(intents).toEqual([{
@@ -815,14 +793,13 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
     async function failedPlainSave(): Promise<{ seed: Seed; intentId: string; published: { title: string; storage: string } }> {
       const seed = await seedPage();
       const a = await joinWritable(seed.pageId, seed.saver.token);
-      mockRemoteRead(seed.confluenceId);
-      const published = { title: '', storage: '' };
-      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
-        published.title = title;
-        published.storage = storage;
-        throw new Error('socket hang up after the request was written');
-      });
+      // Confluence reads the page update and drops the connection: the response is lost.
+      confluence.handlers.update = () => 'reset';
       expect((await save(seed)).statusCode).toBe(500);
+      expectPageUpdateSent(seed);
+      const sent = confluence.sent('update')[0]!.json as { title: string; body: { storage: { value: string } } };
+      const published = { title: sent.title, storage: sent.body.storage.value };
+      confluence.handlers = {};
       expect(await a.closed).toEqual(UNKNOWN_CLOSE);
       const intentId = await pendingIntentId(seed.pageId);
       const gated = await joinTab(seed.pageId, seed.coEditor.token);
@@ -852,12 +829,13 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       // The pod that ran the Save was terminated and fenced; another pod reconciles.
       const terminated = await insertTestRuntime({ fenced: true });
       await query('UPDATE page_write_intents SET runtime_id = $2 WHERE id = $1', [intentId, terminated]);
-      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue(remotePage(
-        seed.confluenceId,
-        5,
-        applied ? published.title : 'Somebody else',
-        applied ? published.storage : '<p>another writer took version 5</p>',
-      ) as never);
+      // What Confluence holds at the version this Save asked for: its own
+      // update, or another writer's.
+      Object.assign(confluence.page(seed.confluenceId), {
+        version: 5,
+        title: applied ? published.title : 'Somebody else',
+        storage: applied ? published.storage : '<p>another writer took version 5</p>',
+      });
 
       const reconciled = await app.inject({
         method: 'POST',
@@ -906,13 +884,13 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       expect(await tabSees(a, 'AFTER_LATE_CUE')).toBe(true);
 
       // A later Save is in flight when the old cue is repeated: it names another intent.
-      const put = gatePut(seed.confluenceId);
+      const put = confluence.gate('update');
       const saving = save(seed);
-      await put.started;
+      await put.arrived;
       await deliverCue(defaultRuntime(), seed.pageId, intentId);
       a.ws.send(typedFrame(a.doc, 'DURING_LATER_SAVE'));
       expect(await tabSees(b, 'DURING_LATER_SAVE')).toBe(true);
-      put.succeed();
+      put.respond();
       expect((await saving).statusCode).toBe(200);
 
       for (const tab of [a, b]) {
@@ -934,22 +912,24 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
         expect(tab.closeInfo).toBeNull();
         expect(controlTypes(tab)).not.toContain('commit_unknown');
       }
-      expect(await getRedisClient()!.get(collabCommitUnknownKey(seed.pageId))).toBeNull();
+      expect(await getRedisClient()!.sMembers(collabCommitUnknownKey(seed.pageId))).toEqual([]);
     }
 
     it('for a failure before dispatch', async () => {
       const seed = await seedPage();
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const b = await joinWritable(seed.pageId, seed.coEditor.token);
-      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockRejectedValue(
-        new ConfluenceError('Confluence unavailable', 503),
-      );
-      const put = acceptPut(seed.confluenceId);
+      // The version check's read fails; Confluence never sees an update.
+      confluence.handlers.read = () => ({
+        status: 500,
+        body: { statusCode: 500, message: 'Confluence is unavailable' },
+      });
 
       const response = await save(seed);
 
-      expect(response.statusCode).toBe(503);
-      expect(put).not.toHaveBeenCalled();
+      expect(response.statusCode, response.body).toBeGreaterThanOrEqual(500);
+      expect(confluence.sent('read').length).toBeGreaterThan(0);
+      expect(confluence.sent('update')).toEqual([]);
       expect(await commitIntents(seed.pageId)).toEqual([]);
       await expectRoomStillWritable(seed, a, b, 'AFTER_PRE_DISPATCH_FAILURE');
     });
@@ -958,23 +938,20 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const seed = await seedPage({ media: true });
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const b = await joinWritable(seed.pageId, seed.coEditor.token);
-      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+      confluence.handlers.read = async () => {
         // The planned bytes change before the reservation prepares them.
         await fs.promises.writeFile(
           path.join(process.env.ATTACHMENTS_DIR!, 'local-src', 'pasted.png'),
           Buffer.from('bytes changed after planning'),
         );
-        return remotePage(seed.confluenceId, 4) as never;
-      });
-      const upload = acceptUpload();
-      const put = acceptPut(seed.confluenceId);
+      };
 
       const response = await save(seed);
 
       expect(response.statusCode).toBe(409);
       expect(response.json().reason).toBe('pasted_image_unavailable');
-      expect(upload).not.toHaveBeenCalled();
-      expect(put).not.toHaveBeenCalled();
+      expect(confluence.sent('upload')).toEqual([]);
+      expect(confluence.sent('update')).toEqual([]);
       expect(await commitIntents(seed.pageId)).toMatchObject([{ status: 'cancelled', started: false, marked: false }]);
       await expectRoomStillWritable(seed, a, b, 'AFTER_CANCELLED_RESERVATION');
     });
@@ -983,16 +960,17 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const seed = await seedPage();
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const b = await joinWritable(seed.pageId, seed.coEditor.token);
-      mockRemoteRead(seed.confluenceId, [7]);
-      const put = acceptPut(seed.confluenceId);
+      someoneElseSaved(seed, 7);
 
       const response = await save(seed);
 
       expect(response.statusCode).toBe(409);
-      expect(response.json()).toMatchObject({ code: 'confluence_modified', remoteVersion: 7, localVersion: 4 });
+      expect(response.json()).toMatchObject({
+        code: 'confluence_modified', remoteVersion: 7, localVersion: 4, saveOutcome: 'not_dispatched',
+      });
       // Before dispatch the session really is still open.
       expect(response.json().message).toMatch(/session is still open/i);
-      expect(put).not.toHaveBeenCalled();
+      expect(confluence.sent('update')).toEqual([]);
       expect(await commitIntents(seed.pageId)).toEqual([]);
       await expectRoomStillWritable(seed, a, b, 'AFTER_VERSION_CHECK');
     });
@@ -1001,21 +979,15 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const seed = await seedPage();
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const b = await joinWritable(seed.pageId, seed.coEditor.token);
-      mockRemoteRead(seed.confluenceId);
-      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
-        // Confluence accepts the page; the saver loses access before the local publication.
-        await query(
-          `DELETE FROM space_role_assignments
-            WHERE space_key = $1 AND principal_type = 'user' AND principal_id = $2`,
-          [seed.spaceKey, seed.saver.userId],
-        );
-        return remotePage(seed.confluenceId, 5, title, storage) as never;
-      });
+      // Confluence accepts the page; the saver loses access before the local publication.
+      confluence.handlers.update = () => revokeSaverAccess(seed);
 
       const response = await save(seed);
 
       expect(response.statusCode).toBe(409);
       expect(response.json().reason).toBe('intent_actor_authority_unavailable');
+      expectPageUpdateSent(seed);
+      expect(confluence.page(seed.confluenceId).version).toBe(5);
       const intents = await commitIntents(seed.pageId);
       expect(intents).toMatchObject([{ status: 'pending', started: true, marked: false }]);
       expect(intents[0]!.terminal).not.toBeNull();
@@ -1028,8 +1000,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const b = await joinWritable(seed.pageId, seed.coEditor.token);
       // Another page's Save failed after dispatch and was declared unknown.
-      mockRemoteRead(other.confluenceId);
-      failPut();
+      confluence.handlers.update = (request) => (request.contentId === other.confluenceId ? 'reset' : undefined);
       const otherTab = await joinWritable(other.pageId, other.saver.token);
       expect((await save(other)).statusCode).toBe(500);
       expect(await otherTab.closed).toEqual(UNKNOWN_CLOSE);
@@ -1082,29 +1053,11 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const seed = await seedPage({ media });
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const b = await joinWritable(seed.pageId, seed.coEditor.token);
-      mockRemoteRead(seed.confluenceId);
-      const started = Promise.withResolvers<void>();
-      const gate = Promise.withResolvers<void>();
-      if (media) {
-        vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockImplementation(async (_id, filename) => {
-          started.resolve();
-          await gate.promise;
-          return {
-            id: 'attachment-1', title: filename, mediaType: 'image/png',
-            version: { number: 1, when: '2026-11-24T00:00:01Z' },
-          } as never;
-        });
-        acceptPut(seed.confluenceId);
-      } else {
-        vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
-          started.resolve();
-          await gate.promise;
-          return remotePage(seed.confluenceId, 5, title, storage) as never;
-        });
-      }
+      // Confluence holds the response of that phase; the other phase answers at once.
+      const held = confluence.gate(media ? 'upload' : 'update');
       const saving = save(seed);
       try {
-        await started.promise;
+        await held.arrived;
         expect(await durableState(seed.pageId)).toMatchObject({ state: 'in_flight' });
 
         b.ws.send(typedFrame(b.doc, 'DURING_HEALTHY_SAVE'));
@@ -1113,7 +1066,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
         joined.ws.send(typedFrame(joined.doc, 'JOINED_DURING_HEALTHY_SAVE'));
         expect(await tabSees(a, 'JOINED_DURING_HEALTHY_SAVE')).toBe(true);
 
-        gate.resolve();
+        held.respond();
         expect((await saving).statusCode).toBe(200);
         for (const tab of [a, b, joined]) {
           expect(tab.closeInfo).toBeNull();
@@ -1121,7 +1074,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
         }
         expect((await commitIntents(seed.pageId)).filter((intent) => intent.marked)).toEqual([]);
       } finally {
-        gate.resolve();
+        held.respond();
         await saving;
       }
     }, 30_000);
@@ -1135,17 +1088,16 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
     async function failSaveWithUnrecordedMarker(seed: Seed): Promise<{
       intentId: string;
       releaseMarker: () => Promise<void>;
-      cues: { dropped: () => number };
+      cues: { published: () => number };
     }> {
       vi.stubEnv('COLLAB_COMMIT_MARKER_DEADLINE_MS', '150');
       vi.stubEnv('COLLAB_COMMIT_MARKER_RETRY_MS', '100');
-      const cues = dropCommitUnknownCues();
-      mockRemoteRead(seed.confluenceId);
+      const cues = watchCommitUnknownCues({ drop: true });
       let releaseMarker: (() => Promise<void>) | undefined;
-      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async () => {
+      confluence.handlers.update = async () => {
         releaseMarker = await blockMarker(await pendingIntentId(seed.pageId));
-        throw new Error('socket hang up after the request was written');
-      });
+        return 'reset';
+      };
       expect((await save(seed)).statusCode).toBe(500);
       const intents = await commitIntents(seed.pageId);
       expect(intents).toMatchObject([{ status: 'pending', started: true, marked: false }]);
@@ -1177,8 +1129,8 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
 
       const { intentId, cues } = await failSaveWithUnrecordedMarker(seed);
 
-      expect(cues.dropped()).toBeGreaterThan(0);
-      expect(await getRedisClient()!.get(collabCommitUnknownKey(seed.pageId))).toBe(intentId);
+      expect(cues.published()).toBeGreaterThan(0);
+      expect(await getRedisClient()!.sMembers(collabCommitUnknownKey(seed.pageId))).toEqual([intentId]);
       // PostgreSQL still answers `in_flight`; the key names the same intent.
       expect(await durableState(seed.pageId)).toEqual({ state: 'in_flight', intentId });
       expect(writer.closed()).toBeNull();
@@ -1200,7 +1152,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const seed = await seedPage();
       await joinWritable(seed.pageId, seed.saver.token);
       // Cue missed and key unreadable: this pod has no way to know yet.
-      const pod = await otherRuntime('unknown-no-latch', anotherProcess(async () => null));
+      const pod = await otherRuntime('unknown-no-latch', anotherProcess(async () => false));
       const writer = (await attachFake(pod, seed, 'blind-pod-writer')).socket;
 
       const { intentId, releaseMarker, cues } = await failSaveWithUnrecordedMarker(seed);
@@ -1212,8 +1164,8 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       expect(early.attached.writable).toBe(true);
       expect(early.socket.controls()).toContain('writable_admission');
       // The background retry repeats the cue and keeps failing; nothing is settled.
-      const cuesAfterSave = cues.dropped();
-      await vi.waitFor(() => expect(cues.dropped()).toBeGreaterThanOrEqual(cuesAfterSave + 3), { timeout: 10_000 });
+      const cuesAfterSave = cues.published();
+      await vi.waitFor(() => expect(cues.published()).toBeGreaterThanOrEqual(cuesAfterSave + 3), { timeout: 10_000 });
       expect(await commitIntents(seed.pageId)).toMatchObject([{ id: intentId, status: 'pending', marked: false }]);
       expect(writer.closed()).toBeNull();
 
@@ -1236,14 +1188,14 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const seed = await seedPage();
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const b = await joinWritable(seed.pageId, seed.coEditor.token);
-      mockRemoteRead(seed.confluenceId);
+
       const holder = await getPool().connect();
       onTestFinished(async () => {
         await holder.query('ROLLBACK').catch(() => undefined);
         holder.release();
       });
       let holderPid = 0;
-      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async () => {
+      confluence.handlers.update = async () => {
         // The request admission's row is held, so its release cannot commit.
         await holder.query('BEGIN');
         const request = await holder.query<{ pid: number }>(
@@ -1254,8 +1206,8 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
         );
         expect(request.rows).toHaveLength(1);
         holderPid = request.rows[0]!.pid;
-        throw new Error('socket hang up after the request was written');
-      });
+        return 'reset';
+      };
       const warn = vi.spyOn(logger, 'warn');
 
       const saving = save(seed);
@@ -1287,6 +1239,61 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
         expect(request).toMatchObject([{ released: true }]);
       }, { timeout: 10_000 });
     }, 30_000);
+
+    it('publishes no cue while the Save still waits for its 409 readback, although background retries have run', async () => {
+      const seed = await seedPage();
+      const a = await joinWritable(seed.pageId, seed.saver.token);
+      const pod = await otherRuntime('unknown-early-cue');
+      const peer = (await attachFake(pod, seed, 'early-cue-peer')).socket;
+      vi.stubEnv('COLLAB_COMMIT_MARKER_DEADLINE_MS', '150');
+      vi.stubEnv('COLLAB_COMMIT_MARKER_RETRY_MS', '100');
+      const cues = watchCommitUnknownCues({ drop: false });
+      const warn = vi.spyOn(logger, 'warn');
+      const failedAttempts = (): number => warn.mock.calls
+        .filter((call) => call[1] === 'collab.commit_unknown_marker_failed').length;
+      let releaseMarker: (() => Promise<void>) | undefined;
+      let readback: ConfluenceFixtureGate | undefined;
+      confluence.handlers.update = async () => {
+        releaseMarker = await blockMarker(await pendingIntentId(seed.pageId));
+        // Confluence answers 409; the route then reads the page back, and that read is held.
+        readback = confluence.gate('read');
+        someoneElseSaved(seed);
+      };
+
+      const saving = save(seed);
+      try {
+        await vi.waitFor(() => expect(readback).toBeDefined(), { timeout: 10_000 });
+        await readback!.arrived;
+        // The owner's three attempts failed and it kept retrying in the
+        // background, all while the route has not reached its cleanup.
+        const attemptsAtReadback = failedAttempts();
+        expect(attemptsAtReadback).toBeGreaterThanOrEqual(3);
+        await vi.waitFor(() => expect(failedAttempts()).toBeGreaterThanOrEqual(attemptsAtReadback + 3), {
+          timeout: 10_000,
+        });
+        expect((await admissionRows(seed.pageId)).filter((row) => row.purpose === 'collab_request'))
+          .toMatchObject([{ released: false }]);
+
+        expect(cues.published()).toBe(0);
+        expect(a.closeInfo).toBeNull();
+        expect(controlTypes(a)).not.toContain('commit_unknown');
+        expect(peer.closed()).toBeNull();
+        expect(peer.controls()).not.toContain('commit_unknown');
+      } finally {
+        readback?.respond();
+      }
+
+      const response = await saving;
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ code: 'confluence_modified', remoteVersion: 9, saveOutcome: 'unknown' });
+      // The route attempted its release; only now the page is announced.
+      expect(cues.published()).toBeGreaterThan(0);
+      expect(await a.closed).toEqual(UNKNOWN_CLOSE);
+      await vi.waitFor(() => expect(peer.closed()).toEqual(UNKNOWN_CLOSE), { timeout: 8_000 });
+      expect((await admissionRows(seed.pageId)).filter((row) => row.purpose === 'collab_request'))
+        .toMatchObject([{ released: true }]);
+      await releaseMarker!();
+    }, 30_000);
   });
 
   describe('barrier', () => {
@@ -1306,39 +1313,72 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       return { reached: reached.promise, resume: () => resume.resolve() };
     }
 
-    it('gates a join whose final step runs after the marker committed, although it was admitted before', async () => {
+    /**
+     * A Save whose page update Confluence holds, and a join of `socketId` on
+     * another pod paused before its final step. The bus loses the cue, so the
+     * pod learns of the Save only from what each test does next.
+     */
+    async function joinPausedWhileSaving(podId: string, socketId: string) {
       const seed = await seedPage();
       await joinWritable(seed.pageId, seed.saver.token);
-      const pod = await otherRuntime('unknown-final-step');
+      const pod = await otherRuntime(podId);
       // A first writer gives this pod its room and admission.
-      await attachFake(pod, seed, 'final-step-first');
-      mockRemoteRead(seed.confluenceId);
-      const put = gatePut(seed.confluenceId);
+      await attachFake(pod, seed, `${socketId}-first`);
+      watchCommitUnknownCues({ drop: true });
+      const put = confluence.gate('update');
       const saving = save(seed);
-      await put.started;
-      const paused = pauseJoinAtBookkeeping('unknown-final-step', 'final-step-join');
-      const joining = attachFake(pod, seed, 'final-step-join');
+      await put.arrived;
+      const paused = pauseJoinAtBookkeeping(podId, socketId);
+      const joining = attachFake(pod, seed, socketId);
       await paused.reached;
 
       // The Save fails and its marker commits while the join waits before its final step.
-      put.fail();
+      put.respond('reset');
       expect((await saving).statusCode).toBe(500);
-      expect(await durableState(seed.pageId)).toMatchObject({ state: 'unknown' });
+      const state = await durableState(seed.pageId);
+      if (state.state !== 'unknown') throw new Error(`expected an unknown commit, got ${state.state}`);
+      return { seed, pod, paused, joining, intentId: state.intentId };
+    }
+
+    async function expectGatedJoin(seed: Seed, pod: CollabRuntime, podId: string, socket: FakeSocket): Promise<void> {
+      expect(socket.controls()).not.toContain('writable_admission');
+      // Attached read-only, and it holds no liveness member.
+      expect(socket.closed()).toBeNull();
+      expect(pod.getRoom(seed.pageId)!.sockets.has(socket.id)).toBe(true);
+      await vi.waitFor(async () => {
+        expect(await activeMembers(seed.pageId)).not.toContain(`${podId}:${socket.id}`);
+      });
+      expect(await pod.handleInboundFrame(seed.pageId, socket.id, typedFrame(new Y.Doc(), 'GATED_JOIN')))
+        .toBe('dropped');
+      expect(roomHtml(pod, seed.pageId)).not.toContain('GATED_JOIN');
+    }
+
+    it('gates a join whose final step runs after the marker committed, although it was admitted before', async () => {
+      // No cue reaches the pod: the final step alone finds the marker.
+      const { seed, pod, paused, joining } = await joinPausedWhileSaving('unknown-final-step', 'final-step-join');
       paused.resume();
       const { socket, attached } = await joining;
 
       expect(attached.writable).toBe(false);
-      expect(socket.controls()).not.toContain('writable_admission');
-      expectUnknownThenCompatibilityCue(socket.controls());
-      // Attached read-only, and it holds no liveness member.
-      expect(socket.closed()).toBeNull();
-      expect(pod.getRoom(seed.pageId)!.sockets.has('final-step-join')).toBe(true);
-      await vi.waitFor(async () => {
-        expect(await activeMembers(seed.pageId)).not.toContain('unknown-final-step:final-step-join');
-      });
-      expect(await pod.handleInboundFrame(seed.pageId, 'final-step-join', typedFrame(new Y.Doc(), 'GATED_JOIN')))
-        .toBe('dropped');
-      expect(roomHtml(pod, seed.pageId)).not.toContain('GATED_JOIN');
+      // The join's own controls come first, then the unknown commit and its compatibility cue.
+      expect(socket.controls().slice(-4)).toEqual(['doc_epoch', 'page_lifecycle', 'commit_unknown', 'permission_loss']);
+      await expectGatedJoin(seed, pod, 'unknown-final-step', socket);
+    }, 30_000);
+
+    it('tells a join once when the cue is checked before its final step, and still gates it', async () => {
+      const { seed, pod, paused, joining, intentId } = await joinPausedWhileSaving('unknown-cue-first', 'cue-first-join');
+      // The cue's locked check runs while the join is registered but not live yet.
+      await deliverCue(pod, seed.pageId, intentId);
+      paused.resume();
+      const { socket, attached } = await joining;
+
+      expect(attached.writable).toBe(false);
+      // Told by the cue, ahead of the join's own controls; the final step does
+      // not repeat it, and the compatibility cue still follows.
+      const controls = socket.controls();
+      expect(controls.filter((type) => type === 'commit_unknown')).toHaveLength(1);
+      expect(controls.slice(-4)).toEqual(['commit_unknown', 'doc_epoch', 'page_lifecycle', 'permission_loss']);
+      await expectGatedJoin(seed, pod, 'unknown-cue-first', socket);
     }, 30_000);
 
     it('writes no positive cue for a socket that left while the final step waited for the lifecycle lock', async () => {
@@ -1412,14 +1452,13 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const pod = await otherRuntime('unknown-dropped-cue');
       const writer = (await attachFake(pod, seed, 'dropped-cue-writer')).socket;
       const idle = (await attachFake(pod, seed, 'dropped-cue-idle')).socket;
-      const cues = dropCommitUnknownCues();
-      mockRemoteRead(seed.confluenceId);
-      failPut();
+      const cues = watchCommitUnknownCues({ drop: true });
+      confluence.handlers.update = () => 'reset';
       const info = vi.spyOn(logger, 'info');
 
       expect((await save(seed)).statusCode).toBe(500);
 
-      expect(cues.dropped()).toBeGreaterThan(0);
+      expect(cues.published()).toBeGreaterThan(0);
       expect(await durableState(seed.pageId)).toMatchObject({ state: 'unknown' });
       expect(writer.closed()).toBeNull();
       expect(await pod.handleInboundFrame(seed.pageId, writer.id, typedFrame(new Y.Doc(), 'AFTER_DROPPED_CUE')))
@@ -1436,17 +1475,16 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const seed = await seedPage();
       const runtime = defaultRuntime();
       const writer = (await attachFake(runtime, seed, 'queued-writer')).socket;
-      mockRemoteRead(seed.confluenceId);
-      const put = gatePut(seed.confluenceId);
+      const put = confluence.gate('update');
       const saving = save(seed);
-      await put.started;
+      await put.arrived;
       const lock = await holdLifecycleLock(seed.pageId);
       const first = runtime.handleInboundFrame(seed.pageId, writer.id, typedFrame(new Y.Doc(), 'QUEUED_FIRST'));
       const second = runtime.handleInboundFrame(seed.pageId, writer.id, typedFrame(new Y.Doc(), 'QUEUED_SECOND'));
       expect(await lock.waiters(2)).toBe(true);
 
       // The Save fails: its marker transaction queues behind both frames.
-      put.fail();
+      put.respond('reset');
       expect(await lock.waiters(3)).toBe(true);
       await lock.release();
 
@@ -1464,8 +1502,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const a = await joinWritable(seed.pageId, seed.saver.token);
       const pod = await otherRuntime('unknown-peer-edit');
       await attachFake(pod, seed, 'peer-writer');
-      mockRemoteRead(seed.confluenceId);
-      failPut();
+      confluence.handlers.update = () => 'reset';
       expect((await save(seed)).statusCode).toBe(500);
       expect(await a.closed).toEqual(UNKNOWN_CLOSE);
 
@@ -1482,8 +1519,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
     it('keeps the pre-live buffer order for a gated join and counts none of its frames as a violation', async () => {
       const seed = await seedPage();
       const a = await joinWritable(seed.pageId, seed.saver.token);
-      mockRemoteRead(seed.confluenceId);
-      failPut();
+      confluence.handlers.update = () => 'reset';
       expect((await save(seed)).statusCode).toBe(500);
       expect(await a.closed).toEqual(UNKNOWN_CLOSE);
       const info = vi.spyOn(logger, 'info');
@@ -1506,18 +1542,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
   describe('orphaned upload continuation', () => {
     /** The upload completes, then the Save is refused before its page update. */
     function refuseAfterUpload(seed: Seed): void {
-      mockRemoteRead(seed.confluenceId);
-      vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockImplementation(async (_id, filename) => {
-        await query(
-          `DELETE FROM space_role_assignments
-            WHERE space_key = $1 AND principal_type = 'user' AND principal_id = $2`,
-          [seed.spaceKey, seed.saver.userId],
-        );
-        return {
-          id: 'attachment-1', title: filename, mediaType: 'image/png',
-          version: { number: 1, when: '2026-11-24T00:00:01Z' },
-        } as never;
-      });
+      confluence.handlers.upload = () => revokeSaverAccess(seed);
     }
 
     it.each([
@@ -1532,12 +1557,12 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
         await attachFake(pod, seed, 'orphan-room-writer', { userId: seed.saver.userId });
       }
       refuseAfterUpload(seed);
-      const put = acceptPut(seed.confluenceId);
 
       const response = await save(seed);
 
       expect(response.statusCode, response.body).toBe(403);
-      expect(put).not.toHaveBeenCalled();
+      expectUploadSent(seed);
+      expect(confluence.sent('update')).toEqual([]);
       expect(Boolean(defaultRuntime().getRoom(seed.pageId)?.admission)).toBe(hostsRoom);
       const intents = await commitIntents(seed.pageId);
       expect(intents).toMatchObject([{
@@ -1550,18 +1575,17 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
     it('still holds the drain for a healthy upload whose page update is running', async () => {
       const seed = await seedPage({ media: true });
       await joinWritable(seed.pageId, seed.saver.token);
-      mockRemoteRead(seed.confluenceId);
-      acceptUpload();
       let holdsDuringUpdate: boolean | undefined;
       let intentId = '';
-      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
+      // Asked while Confluence holds the page update of an upload that completed.
+      confluence.handlers.update = async () => {
         intentId = await pendingIntentId(seed.pageId);
         holdsDuringUpdate = pageWriteIntentHoldsDrain(intentId);
-        return remotePage(seed.confluenceId, 5, title, storage) as never;
-      });
+      };
 
       expect((await save(seed)).statusCode).toBe(200);
 
+      expectUploadSent(seed);
       expect(holdsDuringUpdate).toBe(true);
       expect(await commitIntents(seed.pageId)).toMatchObject([{ status: 'completed', marked: false }]);
       expect(pageWriteIntentHoldsDrain(intentId)).toBe(false);
@@ -1602,8 +1626,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
     await vi.waitFor(() => {
       expect(roomHtml(defaultRuntime(), seed.pageId)).toContain('OLD_BUNDLE_DRAFT');
     }, { timeout: 8_000 });
-    mockRemoteRead(seed.confluenceId);
-    failPut();
+    confluence.handlers.update = () => 'reset';
 
     expect((await save(seed)).statusCode).toBe(500);
 

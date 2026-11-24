@@ -3,6 +3,7 @@ import {
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabConfigSchema,
+  CollabCommitConflictSchema,
   CollabCommitSchema,
   CollabCommitUnknownControlSchema,
   CollabDocEpochControlSchema,
@@ -120,5 +121,21 @@ describe('collab contracts (#1444)', () => {
     ]) {
       expect(CollabCommitUnknownControlSchema.safeParse(malformed).success, JSON.stringify(malformed)).toBe(false);
     }
+  });
+
+  it('types the 409 confluence_modified body with an additive save outcome (#2035)', () => {
+    const base = { code: 'confluence_modified', remoteVersion: 9, localVersion: 4 };
+    // The error envelope around the typed part is ignored.
+    expect(CollabCommitConflictSchema.parse({
+      error: 'Conflict', message: 'x', statusCode: 409, ...base, saveOutcome: 'unknown',
+    })).toEqual({ ...base, saveOutcome: 'unknown' });
+    expect(CollabCommitConflictSchema.parse({ ...base, saveOutcome: 'not_dispatched' }).saveOutcome)
+      .toBe('not_dispatched');
+    // A server that predates the field: the body still parses, without an outcome.
+    expect(CollabCommitConflictSchema.parse(base)).toEqual(base);
+    // An outcome the client does not know is not read as either.
+    expect(CollabCommitConflictSchema.safeParse({ ...base, saveOutcome: 'saved' }).success).toBe(false);
+    expect(CollabCommitConflictSchema.safeParse({ ...base, saveOutcome: true }).success).toBe(false);
+    expect(CollabCommitConflictSchema.safeParse({ ...base, code: 'collab_session_active' }).success).toBe(false);
   });
 });

@@ -96,8 +96,19 @@ own remote phase ends without a terminal result, the outcome is unknown and
 the room fails closed: the route adds the intent to the process-local set
 before its first await, records `page_write_intents.remote_effect_failed_at`
 (migration 160; exact-match update, proof read, lock order runtime row, page
-lifecycle, intent row), and publishes a cue after its request-admission
-release was attempted. Frames, the room-admission `precondition` and the
+lifecycle, intent row), and publishes a cue only after its request-admission
+release was attempted: background retries record and latch but stay silent
+until the route opens the declaration's gate (`announce()`). The Redis latch
+is a set of intent ids, so a late write cannot replace another Save's member;
+send its commands and the cue through `withRedisCommandDeadline`, which
+removes a still-queued command at the deadline, never through a bare
+`Promise.race`. Members are reclaimed only when durable state proves them
+obsolete (intent settled or absent), in a bounded sample after an owner's
+marker work ends; never give the key a TTL or delete a pending intent's
+member. The route's 409 `confluence_modified` carries `saveOutcome`
+(`not_dispatched` or `unknown`); on `unknown` the saving tab enters the
+`commit_unknown` read-only draft from the answer alone
+(`declareCommitUnknown`). Frames, the room-admission `precondition` and the
 final step of `attachSocket` assert the effective state (durable state plus
 the process, room and Redis latches for the same intent) on their
 lifecycle-locked client; `writable_admission` is written only inside that

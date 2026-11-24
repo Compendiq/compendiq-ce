@@ -212,7 +212,7 @@ let deferredPageRead: Promise<typeof initialPage> | null = null;
 let fetchMock: Mock;
 let collabEnabled = true;
 let deferredCollabConfig: Promise<{ enabled: boolean }> | null = null;
-let commitMode: 'success' | 'confluence_modified' = 'success';
+let commitMode: 'success' | 'confluence_modified' | 'confluence_modified_after_dispatch' = 'success';
 let deferredCommit: Promise<void> | null = null;
 let pageUpdateMode: 'success' | 'failure' = 'success';
 let deferredPageUpdate: Promise<void> | null = null;
@@ -278,12 +278,19 @@ beforeEach(() => {
     }
     if (url === '/api/pages/42/collab/commit' && method === 'POST') {
       if (deferredCommit) await deferredCommit;
-      if (commitMode === 'confluence_modified') {
+      if (commitMode !== 'success') {
+        // The real 409 body: the version check before dispatch, or Confluence
+        // refusing the write itself after it was sent (#2035).
         return json({
-          message: 'This page was modified in Confluence.',
+          error: 'Conflict',
+          statusCode: 409,
+          message: commitMode === 'confluence_modified'
+            ? 'This page was modified in Confluence. Your collaborative session is still open — nobody\'s edits were overwritten.'
+            : 'Confluence reported a newer version of this page while it was being saved. The result of this save is unknown.',
           code: 'confluence_modified',
           remoteVersion: 9,
           localVersion: 1,
+          saveOutcome: commitMode === 'confluence_modified' ? 'not_dispatched' : 'unknown',
         }, 409);
       }
       const body = CollabCommitSchema.parse(JSON.parse(String(init?.body)));
@@ -1055,6 +1062,73 @@ describe('unknown collaborative save (#2035)', () => {
     expect(screen.queryByRole('button', { name: 'Download draft' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('collab-join-retry')).not.toBeInTheDocument();
     expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+  });
+
+  it('ends the saver\'s session on a post-dispatch conflict answer alone, with no control or close from the room', async () => {
+    commitMode = 'confluence_modified_after_dispatch';
+    renderPage();
+    const socket = await joinWritableSession();
+    await pasteBodyText('Draft typed before the save failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // The HTTP answer is the only feedback: the socket stays silent.
+    expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
+    expect(screen.getByText(BANNER)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open current version' })).toBeInTheDocument();
+    // The draft is still there, in the same document, and takes no more edits.
+    const editor = document.querySelector('.ProseMirror');
+    if (!(editor instanceof HTMLElement)) throw new Error('Editor did not mount');
+    expect(editor).toHaveTextContent('Draft typed before the save failed');
+    expect(editor).toHaveAttribute('contenteditable', 'false');
+    // Save is blocked on the button and on the keyboard: no second commit is issued.
+    await waitFor(() => expect(screen.getByTestId('save-page-btn')).toBeDisabled());
+    expect(screen.getByTestId('save-page-btn')).not.toHaveTextContent('Saving…');
+    fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit')).toHaveLength(1);
+    // The draft-preservation state, not the notice of an open session.
+    expect(screen.queryByTestId('confluence-modified-alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/session is still open/)).not.toBeInTheDocument();
+    // Disconnected by the client itself, and nothing reconnects or replays the draft.
+    expect(socket.readyState).toBe(Socket.CLOSED);
+    expect(Socket.instances).toHaveLength(1);
+  });
+
+  it('keeps the session writable and the open-session notice for the version check before dispatch', async () => {
+    commitMode = 'confluence_modified';
+    renderPage();
+    const socket = await joinWritableSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    const notice = await screen.findByTestId('confluence-modified-alert');
+    expect(notice).toHaveTextContent('Not saved');
+    expect(notice).toHaveTextContent(/Your collaborative session is still open/);
+    expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+    expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    await waitFor(() => expect(screen.getByTestId('save-page-btn')).toBeEnabled());
+    expect(socket.readyState).toBe(Socket.OPEN);
+  });
+
+  it('stays on the same read-only draft when the control arrived before the post-dispatch answer', async () => {
+    commitMode = 'confluence_modified_after_dispatch';
+    const commit = Promise.withResolvers<void>();
+    deferredCommit = commit.promise;
+    renderPage();
+    const socket = await joinWritableSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(1));
+
+    act(() => sendControl(socket, { type: 'commit_unknown' }));
+    expect(await screen.findByText(BANNER)).toBeInTheDocument();
+    await act(async () => commit.resolve());
+    await waitFor(() => expect(screen.getByTestId('save-page-btn')).not.toHaveTextContent('Saving…'));
+
+    expect(screen.getByText(BANNER)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+    expect(screen.queryByTestId('confluence-modified-alert')).not.toBeInTheDocument();
+    expect(Socket.instances).toHaveLength(1);
   });
 
   it('replaces the Confluence-modified notice when the control arrives after the HTTP error', async () => {

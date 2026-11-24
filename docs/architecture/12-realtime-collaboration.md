@@ -98,6 +98,8 @@ sequenceDiagram
     N->>F: Upgrade headers forwarded
     F->>F: Map Sec-WebSocket-Protocol JWT onto Authorization Bearer
     F-->>B: 101 Switching Protocols subprotocol compendiq.collab.v1
+    B->>F: on open, y-websocket sends its SyncStep1 and awareness at once
+    Note over F: until goLive, frames are buffered in arrival order, 64 frames and 1 MiB, overflow closes 1013
     F->>F: verify JWT and flag and page row and userCanAccessPage
     alt missing or expired JWT
         F-->>B: close 4401
@@ -109,19 +111,26 @@ sequenceDiagram
         F-->>B: close 4404
         B->>B: destroy provider do not reconnect
     else ok
-        Note over F: frames before live are buffered in order, 64 frames and 1 MiB, overflow closes 1013
-        F->>G: attachSocket with the expectedDocEpoch declaration, load or create room, stamp awareness
+        F->>G: attachSocket with the expectedDocEpoch declaration and goLive, load or create room, stamp awareness
         alt would be writable and the declaration is malformed or names another epoch than the row
             G-->>B: control doc_reset then close 1001 doc_reset, socket not attached, no admission
             B->>B: keep the Y.Doc as a read-only draft, do not reconnect
         else attached
-            G-->>B: control doc_epoch when the room has a persisted document, then page_lifecycle, then writable_admission or its refusal
-            opt lineage-verified writable join
-                G-->>B: server SyncStep1 with the room state vector, directly after writable_admission
-                B->>G: SyncStep2 with what the room lacks, through the fenced write path
+            G-->>B: control doc_epoch when the room has a persisted document, then page_lifecycle
+            alt writable join reaches the fenced final step
+                G->>F: goLive inside the final transaction, buffered frames move to the frame chain behind a gate
+                G-->>B: writable_admission
+                opt lineage-verified writable join
+                    G-->>B: server SyncStep1 with the room state vector
+                    B->>F: SyncStep2 with what the room lacks, queued behind the gate, no 1 MiB budget, 10 MiB maxPayload
+                end
+                F->>G: attachSocket returned and the socket is still open, gate opens, frames handled in arrival order
+                Note over F: closing or closed before that, or a rollback, discards every queued frame
+            else read-only, writable_refused or commit_unknown join
+                G-->>B: permission_loss, writable_refused, or commit_unknown then permission_loss
+                F->>G: attachSocket returned, the socket goes live, buffered frames handled in arrival order
             end
-            B->>G: binary SyncStep1
-            G-->>B: SyncStep2, answered under the admission fence for a lineage-verified writer
+            G-->>B: SyncStep2 answering the buffered SyncStep1, under the admission fence for a lineage-verified writer
             B->>B: first sync pins the doc_epoch of this connection for every later join
             Note over G: read-only peers drop SyncStep2 and Update by first two bytes
         end
@@ -143,15 +152,24 @@ sequenceDiagram
 | **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect; during a manual Rejoin attempt no reconnect: the attempt ends unconfirmed (Rejoin available at once) |
 | HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
 
-**Before live (#1895).** Until the join completes (JWT, flag, page row,
-access, upgrade limit, edit permission, `attachSocket`), the gateway buffers
-inbound frames in arrival order, at most 64 frames and 1 MiB. When the socket
-goes live they are handled before any later frame, under the same read-only
-rules, so a read-only socket that queued writes still reaches the drop limit.
-An overflow closes `1013 join_backlog`, which y-websocket retries. Buffering
-never produces a 4403. Before the first sync the editor shows exactly one of
-the messages above, never the read-only draft banner or **Download draft**;
-Save stays blocked, and title, tags and icon unlock with the first sync.
+**Before live (#1895, #1928).** y-websocket sends its SyncStep1 and awareness
+as soon as the socket opens, long before the join completes (JWT, flag, page
+row, access, upgrade limit, edit permission, `attachSocket`). Until the socket
+goes live the gateway buffers inbound frames in arrival order, at most 64
+frames and 1 MiB; an overflow closes `1013 join_backlog`, which y-websocket
+retries. Buffering never produces a 4403. A socket goes live at one of two
+points: a writable join that reaches its fenced final step goes live when that
+step calls `goLive` (below), before `writable_admission`; every other join
+goes live when `attachSocket` returns. Before `goLive` the 64-frame /
+1 MiB budget applies. After `goLive` and while `attachSocket` has not yet
+returned, frames are no longer buffered under that budget: they are queued on
+the gated frame chain, each bounded only by the 10 MiB `maxPayload`, and are
+handled once `attachSocket` has returned on a socket that is still open. Either
+way the buffered frames are handled before any later frame, under the same
+read-only rules, so a read-only socket that queued writes still reaches the
+drop limit. Before the first sync the editor shows exactly one of the messages
+above, never the read-only draft banner or **Download draft**; Save stays
+blocked, and title, tags and icon unlock with the first sync.
 
 **Gateway handoff (#1928).** The server SyncStep1 of a lineage-verified
 writable join is written inside the join's fenced final step, so the tab's
@@ -164,13 +182,16 @@ and in arrival order, onto the ordered frame chain behind a gate that opens
 when `attachSocket` has returned; later frames, the reply included, append
 behind them. `attachSocket` never awaits that chain, and no frame is handled
 under the join transaction's lifecycle lock (each frame handler takes its own).
-A rollback of the final transaction, or a close while the chain is gated,
-drops the buffered frames instead of handling them. A join that does not reach
-the final writable step goes live as before, after `attachSocket` returns. The
-10 MiB WebSocket `maxPayload` (`backend/src/app.ts`) is the only bound on the
-reply.
+The gate opens only for a socket that is still open: a rollback of the final
+transaction, a close, or a socket already closing when `attachSocket` returns
+(it can be `CLOSING` before its `close` event and before the detach) drops
+every queued frame instead of handling it, and each frame queued behind the
+gate is handled only while the transport is still open. A join that does not
+reach the final writable step goes live as before, after `attachSocket`
+returns. The 10 MiB WebSocket `maxPayload` (`backend/src/app.ts`) is the only
+bound on the reply.
 
-Close **after** the 101, **before** any SyncStep1. Do not throw
+Close **after** the 101, **before** any buffered SyncStep1 is handled. Do not throw
 `fastify.authenticate` in `onRequest` on this route.
 
 `:pageId` on the wire is integer `pages.id`, never `confluence_id`.
@@ -653,31 +674,71 @@ removes write authority.
 - *Effective state on a pod.* The durable state, raised from `in_flight` to
   `unknown` when a latch names the same intent: the owner's process-local set,
   the room's `unknownCommitIntentId` (set by a cue), or the Redis key
-  `collab:commit-unknown:<pageId>`. The key is read only when the durable read
-  answered `in_flight` and no other latch matched, outside every transaction
-  and bounded at 250 ms: the fenced transaction ends without an effect, the key
-  is read, and the transaction runs again. The answer is bound to the intent
-  it was read for; a different intent in the second transaction starts over.
-  Absent, unreadable and timed out all mean no latch. A latch for another or a
-  settled intent is ignored.
+  `collab:commit-unknown:<pageId>`, a set of intent ids. The key is read
+  (`SISMEMBER` for the intent) only when the durable read answered `in_flight`
+  and no other latch matched, outside every transaction and bounded at 250 ms:
+  the fenced transaction ends without an effect, the key is read, and the
+  transaction runs again. The answer is bound to the intent it was read for; a
+  different intent in the second transaction starts over. Absent, unreadable
+  and timed out all mean no latch. A member for another or a settled intent is
+  ignored.
 - *Trigger and owner procedure.* On every exit of the commit route that leaves
   its own intent in that shape, the owner (1) adds the intent to its
   process-local set synchronously, (2) records the marker in a transaction
   that locks the runtime row, the page lifecycle and then the intent row, with
   an exact-match `UPDATE` and a proof read of the committed row (up to three
-  immediate attempts, each abandoned at its own 5 s deadline), (3) once the
+  immediate attempts; the transaction and the proof read are each abandoned
+  at their own 5 s deadline, so the attempts can take up to 30 s), (3) once the
   marker is proven, retires a finished upload phase whose next phase can no
   longer run, so that intent no longer holds the runtime's drain, (4) without
-  a proven marker writes the Redis key and keeps retrying with a backoff from
-  1 s to 30 s for the life of the process, deleting the key afterwards only if
-  it still names this intent, and (5) publishes the bus cue
-  `{ kind: 'commit_unknown', intentId }` after the request admission's release
-  was attempted, again on every retry, and once more after a late marker
-  success. It is not triggered by the version check before dispatch, a
-  cancelled reservation, any failure before dispatch, a failure after a
-  terminal result was recorded, or a standalone commit. The provider's 409
-  after dispatch keeps status 409, `code: 'confluence_modified'` and the
-  version fields, but its message no longer says the session is still open.
+  a proven marker adds its intent id to the Redis key and keeps retrying with
+  a backoff from 1 s to 30 s for the life of the process, removing its own
+  member afterwards, and (5) publishes the bus cue
+  `{ kind: 'commit_unknown', intentId }`. It is not triggered by the version
+  check before dispatch, a cancelled reservation, any failure before dispatch,
+  a failure after a terminal result was recorded, or a standalone commit.
+- *Redis commands of the owner.* The latch write, the latch read and the cue
+  each run under a deadline that cancels the command: one that was still
+  queued behind a stalled or reconnecting connection is removed from the
+  queue, so it cannot reach Redis after the deadline (5 s for the write and
+  the cue, 250 ms for the read). A command that was already on the wire may
+  still be applied late. That is safe for both: a late `SADD` adds only its
+  own intent id and cannot replace the member of a later Save, and a late cue
+  is checked against the durable state by its receiver. A cue that missed its
+  deadline is logged `collab.commit_unknown_cue_unpublished` and repeated by
+  the next marker retry.
+- *When the cue is published.* Never before the route attempted (completed or
+  deferred) the release of its request admission: the declaration keeps a
+  gate that the route opens in its `finally`. A background marker retry that
+  runs while the route is still in its 409 readback or its cleanup records
+  the marker and the latch but publishes nothing; a marker proven during that
+  time is announced when the gate opens. From then on every retry repeats the
+  cue, and a late marker success publishes it once more.
+- *Retention of the Redis set.* Each owner removes only its own member, so a
+  member can outlive its Save: the owner stopped after the write, or a write
+  that was already on the wire landed after the owner's cleanup. Such a
+  member grants and removes nothing, because a reader asks for the page's
+  current intent only. It is reclaimed when the marker work of any later Save
+  of the page ends (marker proven, or the intent found settled): the owner
+  then samples up to 32 members of the set, reads which of them name a
+  `pending` intent, and removes the others, that is, members whose intent is
+  settled or does not exist. One sample, one read and one removal per marker,
+  not awaited by the Save's answer; a larger set shrinks over several markers.
+  An intent never returns to `pending`, so a removed member can never be the
+  current one again, and the member of a pending intent stays however long
+  its marker is delayed. The key has no TTL for the same reason: an expiry
+  could drop the current intent's latch while its marker cannot be recorded.
+  A page without a later failed Save keeps its leftover members.
+- *The route's 409.* The provider's 409 after dispatch keeps status 409,
+  `code: 'confluence_modified'` and the version fields. Its body carries
+  `saveOutcome: 'unknown'` (`CollabCommitConflictSchema` in
+  `@compendiq/contracts`) and its message no longer says the session is still
+  open. The version check before dispatch sends `saveOutcome:
+  'not_dispatched'` and the previous message. A body without the field comes
+  from a backend older than this change and is read as `not_dispatched`. The
+  tab that issued the Save acts on `unknown` itself: it enters the read-only
+  draft at once and disconnects, without waiting for the cue or the close
+  (`04-frontend-structure.md`).
 - *Fences.* The cue is only a prompt; these are the barrier. A client frame is
   applied only inside a transaction that asserts the effective state is not
   `unknown`. The `precondition` of a room admission asserts it, so no join
@@ -692,7 +753,10 @@ removes write authority.
   the page's pending commit, the room latches it and every socket that is
   writable at that instant is demoted. A cue for a settled intent does nothing.
   A refused frame prompts the same check, so a pod that missed the cue demotes
-  its other writers when the first of them types.
+  its other writers when the first of them types. A join that is registered
+  but has not run its final step is told `commit_unknown` by the cue, ahead of
+  its `doc_epoch` and `page_lifecycle` controls; its final step then gates it
+  and sends `permission_loss` without repeating `commit_unknown`.
 - *Demotion.* The socket loses write authority and its `collab:active`
   member, is sent `commit_unknown` and then `permission_loss`, and is closed
   `1001 commit_unknown`. Frames that still arrive from it are dropped and do
@@ -712,8 +776,10 @@ removes write authority.
   set; another pod is fenced, for joins and for frames alike, as soon as a cue
   reached its room or it reads the Redis key; a pod with neither keeps
   admitting joins and applying frames, as for a Save in flight, until the
-  marker commits. During that time an orphaned finished upload phase keeps the
-  owner's quiesce waiting, as before.
+  marker commits. The key is written only after the immediate marker attempts
+  failed (up to 30 s), and the cue only after the route's release attempt, so
+  both can be later than the failure itself. During that time an orphaned
+  finished upload phase keeps the owner's quiesce waiting, as before.
 
 ## Neighborhoods
 

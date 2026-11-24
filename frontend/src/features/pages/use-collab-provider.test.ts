@@ -526,9 +526,10 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       });
     };
 
-    it.each([
-      ['the commit_unknown control', (socket: Socket) => control(socket, { type: 'commit_unknown' })],
-      ['the 1001 commit_unknown close of a client that missed the control', (socket: Socket) => socket.close(1001, 'commit_unknown')],
+    it.each<[string, (socket: Socket, draft: Y.Doc, declare: (document: Y.Doc) => void) => void]>([
+      ['the commit_unknown control', (socket) => control(socket, { type: 'commit_unknown' })],
+      ['the 1001 commit_unknown close of a client that missed the control', (socket) => socket.close(1001, 'commit_unknown')],
+      ['the Save route\'s own answer, with no control and no close from the room', (_socket, draft, declare) => declare(draft)],
     ])('keeps the document as a commit_unknown read-only draft on %s and never reconnects', async (_name, arrive) => {
       const { result } = mount();
       const socket = Socket.instances[0]!;
@@ -537,7 +538,7 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       const draft = result.current.ydoc!;
       act(() => { draft.getText('draft').insert(0, 'Unsaved: '); });
 
-      act(() => { arrive(socket); });
+      act(() => { arrive(socket, draft, result.current.declareCommitUnknown); });
 
       expect(result.current.readOnlyReason).toBe('commit_unknown');
       expect(result.current.writable).toBe(false);
@@ -550,6 +551,20 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       expect(socket.readyState).toBe(Socket.CLOSED);
       await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
       expect(Socket.instances).toHaveLength(1);
+    });
+
+    it('ignores a Save answer for a document that is no longer the mounted one', () => {
+      const { result } = mount();
+      const socket = Socket.instances[0]!;
+      joinWritable(socket);
+      const earlier = new Y.Doc();
+
+      act(() => { result.current.declareCommitUnknown(earlier); });
+
+      expect(result.current.readOnlyReason).toBeNull();
+      expect(result.current.writable).toBe(true);
+      expect(socket.readyState).toBe(Socket.OPEN);
+      earlier.destroy();
     });
 
     it('ignores the permission_loss and the close that follow the control', async () => {

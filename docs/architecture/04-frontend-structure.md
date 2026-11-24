@@ -606,9 +606,14 @@ flowchart TB
   open draft remains below and is not reapplied automatically." with
   `Download draft` and `Open current version`; before it, the editor slot
   shows the first two sentences and no draft controls. Save stays blocked.
-  `ConfluenceModifiedAlert` is not rendered in this state, whichever of the
-  commit's 409 and the control arrived first: its "session is still open"
-  sentence would be false.
+  The answer to the saver's own Save does the same without the control: a 409
+  whose body carries `saveOutcome: 'unknown'` (`CollabCommitConflictSchema`)
+  makes `PageViewPage` call `declareCommitUnknown(document)` for the document
+  it submitted, so the tab is on the read-only draft even when the control is
+  late or lost. `ConfluenceModifiedAlert` is for `not_dispatched` (or no
+  field) only, the version check before dispatch, where the session really is
+  still open; it is not rendered in the `commit_unknown` state, whichever of
+  the 409 and the control arrived first.
 - **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
   ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
   caret palette. `@tiptap/extension-collaboration-caret` — not the v2

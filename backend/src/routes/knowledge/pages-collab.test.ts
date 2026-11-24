@@ -13,7 +13,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
-import type { AddressInfo } from 'node:net';
+import { Socket, type AddressInfo } from 'node:net';
 import { createServer } from 'node:http';
 import * as jose from 'jose';
 import * as Y from 'yjs';
@@ -41,7 +41,8 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 // root `npm ci`; the backend build and image never compile tests.
 import { createRejoinController } from '../../../../frontend/src/features/pages/collab-rejoin-attempt.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import { PAGE_LIFECYCLE_LOCK_KEY } from '../../core/db/advisory-locks.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken, generateRefreshToken, revokeAllUserTokens } from '../../core/plugins/auth.js';
 import { logger } from '../../core/utils/logger.js';
@@ -4099,11 +4100,39 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
 
   it('a frame refused with 1001 collab_validation_unavailable reaches the room after the reconnect, and the Save returns 200', async () => {
     const { tab, pageId, token, revision } = await pinnedTab('collab_syncstep1_refused');
-    const refuse = vi.spyOn(persist, 'assertCurrentCollabDocEpoch')
-      .mockRejectedValueOnce(new Error('validation read lost'));
-    onTestFinished(() => refuse.mockRestore());
+    // A real fault at the database boundary of that one frame: its write
+    // transaction queues behind a held page lifecycle lock and its backend is
+    // terminated there. The lock is released before the tab reconnects.
+    const holder = await getPool().connect();
+    let holding = true;
+    const releaseHolder = async (): Promise<void> => {
+      if (!holding) return;
+      holding = false;
+      await holder.query('ROLLBACK').catch(() => undefined);
+      holder.release();
+    };
+    onTestFinished(releaseHolder);
+    await holder.query('BEGIN');
+    await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, pageId]);
+    const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
 
     typeInto(tab.doc, 'REFUSED_FRAME');
+    let framePids: number[] = [];
+    await vi.waitFor(async () => {
+      const blocked = await query<{ pid: number }>(
+        `SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
+        [holderPid],
+      );
+      framePids = blocked.rows.map((row) => row.pid);
+      expect(framePids).toHaveLength(1);
+    }, { timeout: 8_000 });
+    const terminated = await query<{ terminated: boolean }>(
+      'SELECT pg_terminate_backend($1) AS terminated', [framePids[0]],
+    );
+    expect(terminated.rows[0]!.terminated).toBe(true);
+    await releaseHolder();
+
     await vi.waitFor(() => {
       expect(tab.closes).toContainEqual({ code: 1001, reason: 'collab_validation_unavailable' });
     }, { timeout: 8_000 });
@@ -4355,6 +4384,8 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
     commitReached: Promise<void>;
     releaseCommit: () => void;
     serverClosed: Promise<void>;
+    /** The server side of the intercepted join's socket, once the join began. */
+    serverSocket: () => NodeWs | null;
     /** Settles when the intercepted `attachSocket` has returned or thrown. */
     joined: Promise<unknown>;
     /** What the server read on the socket since the join began. */
@@ -4365,8 +4396,11 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
 
   /**
    * Wraps the next join: it waits inside `attachSocket` until `proceed`, and
-   * the COMMIT of its fenced final step (the first COMMIT after `goLive`) is
-   * paused until `releaseCommit`, or fails.
+   * the COMMIT of its fenced final step is paused until `releaseCommit`, or
+   * fails. That COMMIT is bound to the join's own checkout: the pooled client
+   * that holds the page's lifecycle lock when `goLive` runs, which only the
+   * final step's transaction can hold at that moment. No other transaction's
+   * COMMIT is touched.
    */
   function interceptJoin(commit: 'pause' | 'fail'): JoinInterceptor {
     const runtime = getDefaultCollabRuntime()!;
@@ -4381,17 +4415,39 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
     const received: JoinInterceptor['received'] = [];
     const handled: string[] = [];
     let connId: string | null = null;
-    let armed = false;
+    let joinPageId: number | null = null;
+    let serverSocket: NodeWs | null = null;
+    // At most one client at a time: the page's lifecycle lock is exclusive.
+    const lifecycleHolder = new Set<pg.Client>();
+    const finalStepClient = new Set<pg.Client>();
     const sendQuery = pg.Client.prototype.query as (...args: unknown[]) => unknown;
     const querySpy = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
-      if (!armed || args[0] !== 'COMMIT') return sendQuery.apply(this, args);
-      armed = false;
-      commitReached.resolve();
-      if (commit === 'fail') return Promise.reject(new Error('final step COMMIT lost'));
-      return commitRelease.promise.then(() => sendQuery.apply(this, args));
+      const [text, values] = args;
+      if (finalStepClient.has(this) && text === 'COMMIT') {
+        finalStepClient.clear();
+        lifecycleHolder.clear();
+        commitReached.resolve();
+        if (commit === 'fail') return Promise.reject(new Error('final step COMMIT lost'));
+        return commitRelease.promise.then(() => sendQuery.apply(this, args));
+      }
+      const sent = sendQuery.apply(this, args);
+      if (
+        text === 'SELECT pg_advisory_xact_lock($1, $2)' && Array.isArray(values)
+        && values[0] === PAGE_LIFECYCLE_LOCK_KEY && joinPageId !== null && values[1] === joinPageId
+      ) {
+        void (sent as Promise<unknown>).then(() => {
+          lifecycleHolder.clear();
+          lifecycleHolder.add(this);
+        }, () => undefined);
+      } else if (lifecycleHolder.has(this) && (text === 'COMMIT' || text === 'ROLLBACK')) {
+        lifecycleHolder.clear();
+      }
+      return sent;
     } as never);
     const attachSpy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (pageId, socket) => {
       connId = socket.id;
+      joinPageId = pageId;
+      serverSocket = socket.ws;
       socket.ws.on('message', (data) => {
         const frame = Array.isArray(data) ? new Uint8Array(Buffer.concat(data)) : new Uint8Array(data);
         received.push({ kind: frameKind(frame), bytes: frame.byteLength });
@@ -4402,7 +4458,12 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
       const goLive = socket.goLive;
       const attaching = attach(pageId, {
         ...socket,
-        ...(goLive ? { goLive: () => { armed = true; goLive(); } } : {}),
+        ...(goLive ? {
+          goLive: () => {
+            for (const client of lifecycleHolder) finalStepClient.add(client);
+            goLive();
+          },
+        } : {}),
       });
       attaching.then(joined.resolve, joined.resolve);
       return attaching;
@@ -4424,6 +4485,7 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
       commitReached: commitReached.promise,
       releaseCommit: () => commitRelease.resolve(),
       serverClosed: serverClosed.promise,
+      serverSocket: () => serverSocket,
       joined: joined.promise,
       received,
       handled,
@@ -4513,15 +4575,90 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
     expect(stored.rows[0]!.body_html).not.toContain('GATED_EDIT');
   }, 30_000);
 
+  it('drops the buffered mutation when the socket is CLOSING, before its close event, as the final COMMIT completes', async () => {
+    const { tab, pageId } = await offlinePinnedTab('collab_handoff_closing', () => undefined);
+    tab.provider.on('connection-close', () => { tab.provider.shouldConnect = false; });
+    const join = interceptJoin('pause');
+
+    await rejoinWithBufferedEdit(tab, join, 'CLOSING_EDIT');
+    // The server starts closing the transport (as a room path does with
+    // `ws.close`) while the COMMIT is paused. Its completion is held: the
+    // underlying TCP socket (a private member of ws) is not read, so the
+    // tab's close reply and the `close` event wait.
+    const transport = join.serverSocket()!;
+    const tcp = '_socket' in transport ? transport._socket : null;
+    if (!(tcp instanceof Socket)) throw new Error('ws no longer exposes its TCP socket');
+    tcp.pause();
+    // Resumed on failure as well, so a failed assertion cannot leave the transport stalled.
+    onTestFinished(() => { tcp.resume(); });
+    let closeEmitted = false;
+    transport.on('close', () => { closeEmitted = true; });
+    transport.close(1001, 'closing_during_join');
+    expect(transport.readyState).toBe(NodeWs.CLOSING);
+
+    join.releaseCommit();
+    await join.joined;
+    const drained = Promise.withResolvers<void>();
+    setImmediate(drained.resolve);
+    await drained.promise;
+
+    // Still CLOSING, no close event yet: nothing queued was dispatched or applied.
+    expect(transport.readyState).toBe(NodeWs.CLOSING);
+    expect(closeEmitted).toBe(false);
+    expect(join.handled).toEqual([]);
+    expect(liveRoomHtml(pageId)).not.toContain('CLOSING_EDIT');
+
+    tcp.resume();
+    await join.serverClosed;
+    expect(join.handled).toEqual([]);
+    expect(liveRoomHtml(pageId)).not.toContain('CLOSING_EDIT');
+    const stored = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+    expect(stored.rows[0]!.body_html).not.toContain('CLOSING_EDIT');
+  }, 30_000);
+
   it('bounds the reply by the 10 MiB WebSocket maxPayload', async () => {
-    const { tab } = await offlinePinnedTab('collab_handoff_max_payload', () => undefined);
+    const { tab, pageId } = await offlinePinnedTab('collab_handoff_max_payload', () => undefined);
+    const runtime = getDefaultCollabRuntime()!;
+    const attach = runtime.attachSocket;
+    const handleFrame = runtime.handleInboundFrame;
+    const serverErrors: Array<{ code: unknown; message: string }> = [];
+    const serverClosed = Promise.withResolvers<void>();
+    const handledBytes: number[] = [];
+    let connId: string | null = null;
+    const attachSpy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (joinPageId, socket) => {
+      connId = socket.id;
+      socket.ws.on('error', (err: Error & { code?: unknown }) => {
+        serverErrors.push({ code: err.code, message: err.message });
+      });
+      socket.ws.on('close', () => serverClosed.resolve());
+      return attach(joinPageId, socket);
+    });
+    const frameSpy = vi.spyOn(runtime, 'handleInboundFrame').mockImplementation(async (framePageId, id, buf) => {
+      if (id === connId) handledBytes.push(buf.byteLength);
+      return handleFrame(framePageId, id, buf);
+    });
+    onTestFinished(() => {
+      attachSpy.mockRestore();
+      frameSpy.mockRestore();
+    });
     const since = tab.controls.length;
     tab.provider.connect();
     await hookTabWritable(tab, since);
     tab.provider.on('connection-close', () => { tab.provider.shouldConnect = false; });
+    const before = liveRoomHtml(pageId);
+    const closesBefore = tab.closes.length;
 
     tab.provider.ws!.send(new Uint8Array(10 * 1024 * 1024 + 1));
 
-    await vi.waitFor(() => expect(tab.closes.map((close) => close.code)).toContain(1009), { timeout: 10_000 });
+    // The server's receiver refuses the frame for its length and closes the
+    // socket. The client may see the server's 1009, or an abnormal 1006 when
+    // the server tears the connection down while the client is still writing.
+    await serverClosed.promise;
+    expect(serverErrors).toContainEqual(expect.objectContaining({ code: 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' }));
+    await vi.waitFor(() => expect(tab.closes.length).toBeGreaterThan(closesBefore), { timeout: 10_000 });
+    expect([1009, 1006]).toContain(tab.closes.at(-1)!.code);
+    // The frame never reached the room, and the document is unchanged.
+    expect(handledBytes.every((bytes) => bytes <= 10 * 1024 * 1024)).toBe(true);
+    expect(liveRoomHtml(pageId)).toBe(before);
   }, 30_000);
 });
