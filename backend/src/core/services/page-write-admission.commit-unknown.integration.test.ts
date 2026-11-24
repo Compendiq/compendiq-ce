@@ -174,9 +174,12 @@ interface RedisRelay {
   /** Commands that leave the client are kept here and reach Redis only on `release`. */
   hold: () => void;
   release: () => void;
-  /** Every connection is cut and new ones are refused until `comeUp`. */
-  goDown: () => void;
-  comeUp: () => void;
+  /**
+   * Every connection is cut and the port stops listening until `comeUp`, so a
+   * reconnect is refused and the client keeps what it has queued.
+   */
+  goDown: () => Promise<void>;
+  comeUp: () => Promise<void>;
 }
 
 /** A TCP relay in front of the real Redis that can stall or cut a client's connection. */
@@ -184,12 +187,7 @@ async function redisRelay(): Promise<RedisRelay> {
   const target = new URL(process.env.REDIS_URL!);
   const pairs = new Set<{ downstream: Socket; upstream: Socket; held: Buffer[] }>();
   let holding = false;
-  let down = false;
   const server = createServer((downstream) => {
-    if (down) {
-      downstream.destroy();
-      return;
-    }
     const upstream = createConnection({ host: target.hostname, port: Number(target.port || 6379) });
     const pair = { downstream, upstream, held: [] as Buffer[] };
     pairs.add(pair);
@@ -208,20 +206,30 @@ async function redisRelay(): Promise<RedisRelay> {
       socket.on('close', drop);
     }
   });
-  await new Promise<void>((resolve, reject) => {
+  const listen = (port: number): Promise<void> => new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
   });
-  onTestFinished(async () => {
+  const cutConnections = (): void => {
     for (const pair of [...pairs]) {
       pair.downstream.destroy();
       pair.upstream.destroy();
     }
-    await new Promise<void>((resolve) => { server.close(() => resolve()); });
+  };
+  const stopListening = (): Promise<void> => new Promise<void>((resolve) => {
+    if (!server.listening) resolve();
+    else server.close(() => resolve());
+    cutConnections();
   });
+  await listen(0);
+  const port = (server.address() as AddressInfo).port;
+  onTestFinished(stopListening);
   const url = new URL(process.env.REDIS_URL!);
   url.hostname = '127.0.0.1';
-  url.port = String((server.address() as AddressInfo).port);
+  url.port = String(port);
   return {
     url: url.toString(),
     hold: () => { holding = true; },
@@ -231,11 +239,8 @@ async function redisRelay(): Promise<RedisRelay> {
         for (const chunk of pair.held.splice(0)) pair.upstream.write(chunk);
       }
     },
-    goDown: () => {
-      down = true;
-      for (const pair of [...pairs]) pair.downstream.destroy();
-    },
-    comeUp: () => { down = false; },
+    goDown: stopListening,
+    comeUp: () => listen(port),
   };
 }
 
@@ -626,7 +631,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       setRedisClient(unreliable);
       // The latch is there and this process reads it while its connection works.
       expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('unknown');
-      breakConnection(relay);
+      await breakConnection(relay);
       const started = performance.now();
 
       expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('known');
@@ -952,7 +957,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       const logged = (message: string): boolean => warn.mock.calls.some((call) => call[1] === message);
 
       setRedisClient(unreachable);
-      relay.goDown();
+      await relay.goDown();
       await vi.waitFor(() => expect(unreachable.isReady).toBe(false), { timeout: 5_000 });
       // Both commands wait in the client's queue for the reconnect, and both expire there.
       const declaration = declareCollabCommitUnknown(
@@ -970,7 +975,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       await release();
       await settleBySql(intent.id);
       await _resetCollabCommitUnknownForTest();
-      relay.comeUp();
+      await relay.comeUp();
       await vi.waitFor(() => expect(unreachable.isReady).toBe(true), { timeout: 10_000 });
       // Whatever was still queued has been sent before this answer.
       await unreachable.ping();
