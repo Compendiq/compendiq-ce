@@ -405,6 +405,11 @@ this section run `collab-rejoin-attempt.ts`
 itself from `pages-collab.test.ts`, a cross-workspace import that needs the full
 monorepo checkout (see `docs/claude/testing-and-retrieval-eval.md`).
 
+An unknown outcome of the tab's own collaborative Save (#2035) takes precedence
+over the retryable state: the hook replaces `rate_limited` with `commit_unknown`
+(window timer cleared, no Rejoin, a running attempt cancelled), also when the
+Save route's answer is the only signal. A terminal refusal is never replaced.
+
 The proof is a live-room statement: the room of the current generation held the
 draft at that moment. It is not a durable publication and does not protect
 against a later unrelated change; Save keeps its own check.

@@ -598,7 +598,12 @@ flowchart TB
   synchronously, before it is removed. Nothing is shown when the merge changed
   nothing. The editor becomes writable only when the attempt proves the server
   holds the draft (`docs/architecture/12-realtime-collaboration.md`). No other
-  reason is offered a rejoin.
+  reason is offered a rejoin. An unknown collaborative save (#2035) replaces the
+  retryable `rate_limited` state, whether it arrives during the cooldown, after
+  it or after an unconfirmed attempt (the Save answer may be the only signal: the
+  socket is closed and no cue follows): the reason becomes `commit_unknown`, the
+  cooldown and Rejoin go and the draft is kept. It never overwrites a terminal
+  refusal, and an answer for another document changes nothing.
 - **An unknown collaborative save pauses editing (#2035).** The
   `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or
   the `1001 commit_unknown` close sets `readOnlyReason: 'commit_unknown'`
