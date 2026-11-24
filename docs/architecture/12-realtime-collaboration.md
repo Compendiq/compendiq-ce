@@ -373,7 +373,13 @@ The open document merges what the room holds before the proof (the first
 SyncStep2 may carry a peer's deletion that removes text typed offline), so the
 page exports the draft once, as it was when the first attempt started, and
 **Download draft** serves that export until editing is restored, also after an
-unsuccessful attempt or a refusal and across further presses.
+unsuccessful attempt or a refusal and across further presses. The proof
+predicate is unchanged and does not say the typed text survived: after a
+successful attempt whose merged document differs from the export, editing
+resumes and the page keeps the export available (**Download earlier copy**,
+**Dismiss**). The live-room tests of this section run `collab-rejoin-attempt.ts`
+itself from `pages-collab.test.ts`, a cross-workspace import that needs the full
+monorepo checkout (see `docs/claude/testing-and-retrieval-eval.md`).
 
 The proof is a live-room statement: the room of the current generation held the
 draft at that moment. It is not a durable publication and does not protect

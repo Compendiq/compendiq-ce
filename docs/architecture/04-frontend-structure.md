@@ -577,9 +577,15 @@ flowchart TB
   document, which can remove text typed offline, so the page exports the draft
   once when the first attempt starts and **Download draft** serves that export
   until editing is restored; the status after an unconfirmed attempt says so
-  and does not call the draft unchanged. The editor becomes writable only when
-  the attempt proves the server holds the draft
-  (`docs/architecture/12-realtime-collaboration.md`). No other reason is
+  and does not call the draft unchanged. A successful attempt can remove text
+  too (coverage proves clocks and deletions, not that typed text survived the
+  merge): when the open document then differs from the export, editing resumes
+  and a notice in the same banner style, "Your draft was merged with the page",
+  keeps the export behind **Download earlier copy** and **Dismiss** (native
+  buttons; focus goes to the "Page body" region afterwards) until one is used
+  or the editing session ends. Nothing is shown when the merge changed nothing.
+  The editor becomes writable only when the attempt proves the server holds the
+  draft (`docs/architecture/12-realtime-collaboration.md`). No other reason is
   offered a rejoin.
 - **An unknown collaborative save pauses editing (#2035).** The
   `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or
