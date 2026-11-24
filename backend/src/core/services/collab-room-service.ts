@@ -437,6 +437,17 @@ function busDocEpoch(value: unknown): string | undefined {
 }
 
 /**
+ * Whether a join with this declaration may be writable in a room that holds
+ * the document `docEpoch` (#2034). A declaration names the lineage of the
+ * client's `Y.Doc`; only the room of that lineage may admit it. `absent`
+ * claims nothing and is admitted as before.
+ */
+function declarationAdmits(declaration: CollabDocEpochDeclaration, docEpoch: string | null): boolean {
+  return declaration.kind === 'absent'
+    || (declaration.kind === 'declared' && declaration.epoch === docEpoch);
+}
+
+/**
  * Admission precondition of a join (#2034): inside the admission transaction,
  * under the page lifecycle lock that every invalidation, seed and inbound
  * publication also takes. A throw leaves no admission behind.
@@ -459,11 +470,12 @@ async function assertJoinLineage(
   // A lifecycle the join did not expect keeps its existing outcome (the
   // admission is released again); it gets no epoch decision.
   if (expectedLifecycleRevision !== undefined && row.lifecycle_revision !== expectedLifecycleRevision) return;
-  if (declaration.kind === 'declared' && row.doc_epoch !== declaration.epoch) {
-    throw new JoinLineageRefusal('refuse_socket');
-  }
+  // A stale heap first: it is retired and the join decided again on a fresh room.
   if (room.docEpoch !== null && row.doc_epoch !== room.docEpoch) {
     throw new JoinLineageRefusal('stale_heap');
+  }
+  if (!declarationAdmits(declaration, row.doc_epoch)) {
+    throw new JoinLineageRefusal('refuse_socket');
   }
 }
 
@@ -1333,7 +1345,7 @@ export async function createCollabRuntime(
       ) return false;
       // The room already owns an admission, so only its own generation may
       // join it. A declaration is not evidence against the room; its row is.
-      if (declaration.kind === 'declared' && declaration.epoch !== room.docEpoch) {
+      if (!declarationAdmits(declaration, room.docEpoch)) {
         void revalidateRoomLineage(room);
         throw new JoinLineageRefusal('refuse_socket');
       }
@@ -1369,6 +1381,14 @@ export async function createCollabRuntime(
             canonical.destroy();
             throw error;
           }
+        }
+        // The precondition compared the declaration with the row inside the
+        // admission transaction. A provisional room loads, seeds or adopts its
+        // document in a later transaction, and the row can be deleted or
+        // reseeded in between: the declaration must name the document this
+        // room ended up with. The catch below releases the admission.
+        if (!declarationAdmits(declaration, room.docEpoch)) {
+          throw new JoinLineageRefusal('refuse_socket');
         }
         room.admission = acquired;
         room.lifecycleRevision = acquired.lifecycleRevision;
@@ -1725,11 +1745,13 @@ export async function createCollabRuntime(
   }
 
   /**
-   * Step 3 of the join outcome precedence (#2034), before any lock: the
-   * declaration and this heap against the row. A row that is gone or carries
+   * Step 3 of the join outcome precedence (#2034), before the admission: this
+   * heap and the declaration against the row. A row that is gone or carries
    * another epoch than one that was once read from it never comes back, so
-   * this unlocked read is already proof; the admission repeats it under the
-   * lifecycle lock.
+   * the unlocked read is already proof for a heap without an admission. A
+   * room that owns an admission is retired only on a read under the page
+   * lifecycle lock. A stale heap is decided first: it is retired and the join
+   * restarts against a fresh room, which then answers the declaration.
    */
   async function decideJoinLineage(
     room: CollabRoom,
@@ -1737,10 +1759,16 @@ export async function createCollabRuntime(
   ): Promise<'proceed' | 'refuse' | 'stale_heap'> {
     // Malformed is a mismatch, never absent, and needs no read.
     if (declaration.kind === 'malformed') return 'refuse';
-    const rowEpoch = await persist.readCollabDocEpoch(room.pageId);
-    if (declaration.kind === 'declared' && rowEpoch !== declaration.epoch) return 'refuse';
-    if (!room.admission && room.docEpoch !== null && room.docEpoch !== rowEpoch) return 'stale_heap';
-    return 'proceed';
+    let rowEpoch = await persist.readCollabDocEpoch(room.pageId);
+    if (room.docEpoch !== null && room.docEpoch !== rowEpoch) {
+      if (!room.admission) return 'stale_heap';
+      rowEpoch = await withPageLifecycleRead(
+        room.pageId,
+        (client) => persist.readCollabDocEpoch(room.pageId, client),
+      );
+      if (room.docEpoch !== rowEpoch) return 'stale_heap';
+    }
+    return declarationAdmits(declaration, rowEpoch) ? 'proceed' : 'refuse';
   }
 
   /**
@@ -1831,7 +1859,10 @@ export async function createCollabRuntime(
     // Only a join that would be writable gets an epoch decision (#2034); a
     // join that stays read-only for permission or lifecycle keeps its outcome.
     if (socket.writable && refusalReason === undefined && room.demotionReason === null) {
-      const decision = await decideJoinLineage(room, declaration);
+      // A frozen page is never writable: it keeps the outcome the refused
+      // admission below gives it. Should the page have thawed since this room
+      // read it, the admission precondition decides the declaration.
+      const decision = room.isFrozen ? 'proceed' : await decideJoinLineage(room, declaration);
       if (decision === 'refuse') return refuseJoinForLineage(room, socket);
       if (decision === 'stale_heap') {
         await retireRoomOwned(room, room.docEpoch);
