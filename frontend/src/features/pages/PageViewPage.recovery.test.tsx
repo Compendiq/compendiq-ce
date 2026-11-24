@@ -1009,3 +1009,86 @@ describe('collaborative join before the first sync (#1895)', () => {
     expect(Socket.instances).toHaveLength(1);
   });
 });
+
+describe('unknown collaborative save (#2035)', () => {
+  const BANNER = 'A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved. Your open draft remains below and is not reapplied automatically.';
+  const PRE_SYNC = 'A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved.';
+
+  it.each([
+    ['the commit_unknown control', (socket: Socket) => {
+      sendControl(socket, { type: 'commit_unknown' });
+      sendControl(socket, { type: 'permission_loss', reason: 'edit_permission_revoked' });
+    }],
+    ['the 1001 commit_unknown close', (socket: Socket) => socket.close(1001, 'commit_unknown')],
+  ])('keeps the draft read-only with Download draft and Open current version after %s', async (_name, arrive) => {
+    renderPage();
+    const socket = await joinWritableSession();
+    await pasteBodyText('Draft typed before the save failed');
+
+    act(() => arrive(socket));
+
+    expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
+    expect(screen.getByText(BANNER)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open current version' })).toBeInTheDocument();
+    expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+    expect(document.querySelector('.ProseMirror')).toHaveTextContent('Draft typed before the save failed');
+    expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+    expect(screen.queryByTestId('collab-join-error')).not.toBeInTheDocument();
+    expect(Socket.instances).toHaveLength(1);
+  });
+
+  it('names the unknown save without draft controls when the join is gated before the first sync', async () => {
+    renderPage();
+    const socket = await startCollabEdit();
+    act(() => {
+      socket.open();
+      sendControl(socket, { type: 'commit_unknown' });
+      sendControl(socket, { type: 'permission_loss', reason: 'edit_permission_revoked' });
+    });
+
+    expect(await screen.findByTestId('collab-join-error')).toHaveTextContent(PRE_SYNC);
+    expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Your open draft remains below/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download draft' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('collab-join-retry')).not.toBeInTheDocument();
+    expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+  });
+
+  it('replaces the Confluence-modified notice when the control arrives after the HTTP error', async () => {
+    commitMode = 'confluence_modified';
+    renderPage();
+    const socket = await joinWritableSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByTestId('confluence-modified-alert')).toBeInTheDocument();
+
+    act(() => sendControl(socket, { type: 'commit_unknown' }));
+
+    expect(await screen.findByText(BANNER)).toBeInTheDocument();
+    expect(screen.queryByTestId('confluence-modified-alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/session is still open/)).not.toBeInTheDocument();
+  });
+
+  it('never shows the Confluence-modified notice when the control arrives before the HTTP error', async () => {
+    commitMode = 'confluence_modified';
+    const commit = Promise.withResolvers<void>();
+    deferredCommit = commit.promise;
+    renderPage();
+    const socket = await joinWritableSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(1));
+
+    act(() => sendControl(socket, { type: 'commit_unknown' }));
+    expect(await screen.findByText(BANNER)).toBeInTheDocument();
+    expect(screen.getByTestId('save-page-btn')).toHaveTextContent('Saving…');
+    await act(async () => commit.resolve());
+    // The Save flight ends only after the 409 was handled.
+    await waitFor(() => expect(screen.getByTestId('save-page-btn')).not.toHaveTextContent('Saving…'));
+
+    expect(screen.getByText(BANNER)).toBeInTheDocument();
+    expect(screen.queryByTestId('confluence-modified-alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/session is still open/)).not.toBeInTheDocument();
+  });
+});

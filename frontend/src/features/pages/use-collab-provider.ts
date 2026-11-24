@@ -6,6 +6,7 @@ import { Awareness } from 'y-protocols/awareness';
 import {
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
+  CollabCommitUnknownControlSchema,
   CollabDocEpochControlSchema,
   CollabRefusalReasonSchema,
   CollabWritableAdmissionControlSchema,
@@ -38,7 +39,8 @@ export type CollabReadOnlyReason =
   | 'not_found'
   | 'flag_off'
   | 'rate_limited'
-  | 'readonly';
+  | 'readonly'
+  | 'commit_unknown';
 
 export interface UseCollabProviderResult {
   ydoc: Y.Doc | null;
@@ -135,6 +137,10 @@ function postSyncReadOnlyReason(code: number, reason: string, hasSynced: boolean
  * - A writable admission is acknowledged explicitly; page state is not permission.
  * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
  *   disconnect it, and never silently replay it into a new lifecycle.
+ * - `commit_unknown` (the control, or the `1001 commit_unknown` close for a
+ *   client that missed it) keeps the Y.Doc the same way and never reconnects
+ *   (#2035): a collaborative save of the page did not finish and its result is
+ *   unknown. The `permission_loss` the server sends after it changes nothing.
  * - Before the first sync a 4403 reason is parsed with `CollabRefusalReasonSchema`:
  *   `rate_limited` (Retry once `COLLAB_UPGRADE_WINDOW_SEC` has passed), `flag_off`,
  *   and `readonly` (an interrupted join, Retry at once) preserve no document.
@@ -299,6 +305,10 @@ export function useCollabProvider({
           }
           return;
         }
+        if (CollabCommitUnknownControlSchema.safeParse(control).success) {
+          preserveReadOnly('commit_unknown');
+          return;
+        }
         if (typeof control !== 'object' || control === null || !('type' in control)) return;
         if (control.type === 'writable_refused') preserveReadOnly('lifecycle_changed');
         else if (control.type === 'permission_loss') preserveReadOnly('permission_loss');
@@ -377,6 +387,7 @@ export function useCollabProvider({
       setConnected(false);
       setWritable(false);
       if (event?.code === 1001 && event.reason === 'doc_reset') preserveReadOnly('document_changed');
+      if (event?.code === 1001 && event.reason === 'commit_unknown') preserveReadOnly('commit_unknown');
       // y-websocket retries every close outside 4400–4499; those arrive as `closed`.
       const terminal = event !== null && event.code >= 4400 && event.code < 4500;
       if (!hasSynced && !blocked && !terminal) setReconnecting(true);

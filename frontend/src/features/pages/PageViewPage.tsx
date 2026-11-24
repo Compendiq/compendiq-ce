@@ -153,6 +153,9 @@ function collabPreSyncMessage(
       return 'This page is no longer available for collaborative editing.';
     case 'unauthorized':
       return 'Your session expired. Sign in again to keep editing together.';
+    // The join was gated before any document arrived (#2035): no draft to mention.
+    case 'commit_unknown':
+      return 'A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved.';
     // Set only after the first sync, where the banner owns the copy (#1927).
     case 'flag_off':
     case 'rate_limited':
@@ -167,8 +170,9 @@ function collabPreSyncMessage(
 
 /**
  * Body of the read-only draft banner (#1927). After the first sync a 4403 names
- * its reason; every other cause, and any reason not listed, keeps the original
- * sentence (fail closed).
+ * its reason, and an unknown collaborative save names itself (#2035); every
+ * other cause, and any reason not listed, keeps the original sentence (fail
+ * closed).
  */
 function readOnlyDraftMessage(reason: CollabReadOnlyReason | null): string {
   switch (reason) {
@@ -178,6 +182,8 @@ function readOnlyDraftMessage(reason: CollabReadOnlyReason | null): string {
       return 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.';
     case 'readonly':
       return 'The server stopped accepting changes from this tab. Your open draft remains below and is not reapplied automatically.';
+    case 'commit_unknown':
+      return 'A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved. Your open draft remains below and is not reapplied automatically.';
     default:
       return 'The page or your access changed. Your open draft remains below and is not reapplied automatically.';
   }
@@ -419,6 +425,13 @@ export function PageViewPage() {
     remoteVersion?: number;
     localVersion?: number;
   } | null>(null);
+  // The Confluence-modified notice says the session is still open. Once the
+  // save's result is unknown that is no longer true, whichever of the HTTP
+  // error and the `commit_unknown` control arrived first (#2035).
+  const commitUnknown = collab.readOnlyReason === 'commit_unknown';
+  useEffect(() => {
+    if (commitUnknown && confluenceModified) setConfluenceModified(null);
+  }, [commitUnknown, confluenceModified]);
   useEffect(() => {
     setPresenceEditing(collabLive ? false : editing);
   }, [editing, collabLive, setPresenceEditing]);
@@ -1449,7 +1462,7 @@ export function PageViewPage() {
         {!isError && (inlineArticlePolicy(page).articlePolicy === 'none' || inlineArticlePolicy(page).articlePolicy === 'local_only') && (
           <div className="px-3 py-1"><AiPolicyChip compact policy={inlineArticlePolicy(page).articlePolicy!} /></div>
         )}
-        {confluenceModified && (
+        {confluenceModified && !commitUnknown && (
           <ConfluenceModifiedAlert
             remoteVersion={confluenceModified.remoteVersion}
             localVersion={confluenceModified.localVersion}
