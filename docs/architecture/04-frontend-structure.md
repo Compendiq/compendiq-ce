@@ -574,18 +574,26 @@ flowchart TB
   surviving control or another page never loses focus to it. The banner and
   both draft controls stay mounted before, during and after an attempt, and
   Save stays blocked. An attempt merges the room's state into the only open
-  document, which can remove text typed offline, so the page exports the draft
-  once when the first attempt starts and **Download draft** serves that export
-  until editing is restored; the status after an unconfirmed attempt says so
-  and does not call the draft unchanged. A successful attempt can remove text
-  too (coverage proves clocks and deletions, not that typed text survived the
-  merge): when the open document then differs from the export, editing resumes
-  and a notice in the same banner style, "Your draft was merged with the page",
-  keeps the export behind **Download earlier copy** and **Dismiss** (native
-  buttons; focus goes to the "Page body" region afterwards) until one is used
-  or the editing session ends. Nothing is shown when the merge changed nothing.
-  The editor becomes writable only when the attempt proves the server holds the
-  draft (`docs/architecture/12-realtime-collaboration.md`). No other reason is
+  document, which can remove text typed offline. The page therefore takes one
+  immutable export at the first Rejoin press of a sequence (exactly the file
+  **Download draft** writes: body, title, labels, page and lifecycle identity)
+  and **Download draft** serves it until editing is restored; the status after
+  an unconfirmed attempt says so and does not call the draft unchanged. A
+  successful attempt can remove text too (coverage proves clocks and deletions,
+  not that typed text survived the merge). When the merged document differs from
+  that attempt's own export, editing resumes and the export is appended, unchanged,
+  to an ordered list of earlier copies, each shown as a notice in the same banner
+  style: "Your draft was merged with the page", the copy named as from before
+  you first pressed Rejoin (with its time when there is more than one), and
+  **Download earlier copy** and **Dismiss** (native buttons). A copy leaves the
+  list only when it is downloaded or dismissed or the editing session ends; a
+  later refusal or read-only state, a later merge (which appends its own copy) and
+  later title or label edits never hide, replace or rewrite one. Download writes
+  the stored file as it is. A notice action hands focus to the "Page body" region
+  only when the pressed control owned focus, synchronously, before it is removed.
+  Nothing is shown when the merge changed nothing. The editor becomes writable
+  only when the attempt proves the server holds the draft
+  (`docs/architecture/12-realtime-collaboration.md`). No other reason is
   offered a rejoin.
 - **An unknown collaborative save pauses editing (#2035).** The
   `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or

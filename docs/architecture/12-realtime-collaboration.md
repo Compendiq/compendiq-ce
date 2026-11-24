@@ -371,13 +371,15 @@ arrives and the attempt ends unsuccessfully after the timeout.
 
 The open document merges what the room holds before the proof (the first
 SyncStep2 may carry a peer's deletion that removes text typed offline), so the
-page exports the draft once, as it was when the first attempt started, and
-**Download draft** serves that export until editing is restored, also after an
-unsuccessful attempt or a refusal and across further presses. The proof
-predicate is unchanged and does not say the typed text survived: after a
-successful attempt whose merged document differs from the export, editing
-resumes and the page keeps the export available (**Download earlier copy**,
-**Dismiss**). The live-room tests of this section run `collab-rejoin-attempt.ts`
+page takes one immutable export of the draft (the whole Download draft file) at
+the first Rejoin press of a sequence, and **Download draft** serves it until
+editing is restored, also after an unsuccessful attempt or a refusal and across
+further presses. The proof predicate is unchanged and does not say the typed
+text survived: after a successful attempt whose merged document differs from
+that attempt's own export, editing resumes and the export joins an ordered list
+of earlier copies (**Download earlier copy**, **Dismiss**) that only a download,
+a dismissal or the end of the editing session removes. The live-room tests of
+this section run `collab-rejoin-attempt.ts`
 itself from `pages-collab.test.ts`, a cross-workspace import that needs the full
 monorepo checkout (see `docs/claude/testing-and-retrieval-eval.md`).
 
