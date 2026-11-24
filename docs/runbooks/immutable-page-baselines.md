@@ -827,7 +827,12 @@ persist them:
   blocked. A user who opens the editor while the state holds sees the first
   two sentences and no draft. Edits typed after the failed Save are not
   persisted and not merged later; **Download draft** is how a user keeps them.
-  Tell users to download the draft before they open the current version.
+  Tell users to download the draft before they open the current version. The
+  user whose Save was answered 409 at that point sees "This page was modified
+  in Confluence … while it was being saved. The result of this save is
+  unknown, and editing is paused until that save is resolved." (chip "Result
+  unknown") until the read-only draft replaces it; that notice no longer says
+  the editing session is still open.
 - *What ends it.* Only the intent leaving `pending`: reconcile it (below).
   Nothing else clears the state and no timer does. After settlement a newly
   opened editor is writable again; tabs already on the read-only draft stay
@@ -851,10 +856,16 @@ persist them:
   processes keep accepting edits until that runtime is fenced or quiesced,
   which makes the state hold everywhere. A living process that cannot reach
   PostgreSQL keeps retrying the marker (from 1 s, doubling to 30 s) and
-  meanwhile refuses edits itself, tells the other processes over Redis
-  (`collab:commit-unknown:<pageId>` and a bus cue), and logs
-  `collab.commit_unknown_marker_failed`. A process that got neither the cue nor
-  the key keeps accepting edits for that page until the marker commits. A
+  meanwhile refuses edits itself, tells the other processes over Redis (its
+  intent id in the set `collab:commit-unknown:<pageId>`, and a bus cue), and
+  logs `collab.commit_unknown_marker_failed`. The set is written after the
+  first three marker attempts failed, which can take up to 30 s, and the cue
+  after the Save's request cleanup was attempted. Both Redis commands give up
+  at a 5 s deadline instead of waiting for a stalled connection
+  (`collab.commit_unknown_latch_failed`,
+  `collab.commit_unknown_cue_unpublished`) and are repeated by the next
+  retry. A process that got neither the cue nor the key keeps accepting edits
+  for that page until the marker commits. A
   backend process older than this change knows neither the marker nor the
   control: follow the rolling-upgrade gate above.
 - *Quiescence.* The room admission of such a page stays active behind the

@@ -571,8 +571,12 @@ flowchart TB
   `Download draft` and `Open current version`; before it, the editor slot
   shows the first two sentences and no draft controls. Save stays blocked.
   `ConfluenceModifiedAlert` is not rendered in this state, whichever of the
-  commit's 409 and the control arrived first: its "session is still open"
-  sentence would be false.
+  commit's 409 and the control arrived first. Until the control arrives, the
+  alert reads the 409 body's `saveOutcome` (`CollabCommitConflictSchema`):
+  `unknown` shows the chip "Result unknown" and "This page was modified in
+  Confluence … while it was being saved. The result of this save is unknown,
+  and editing is paused until that save is resolved."; `not_dispatched` or no
+  field keeps the "session is still open" notice of the version check.
 - **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
   ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
   caret palette. `@tiptap/extension-collaboration-caret` — not the v2
