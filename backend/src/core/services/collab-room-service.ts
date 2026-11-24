@@ -414,6 +414,9 @@ function logMarksSkipped(
   logger.warn({ err: error, pageId, step }, `collab.${kind}_failed`);
 }
 
+/** How a room's document lineage ended, as the rows prove it (#2034). */
+type LineageEnd = 'superseded' | 'page_deleted';
+
 /** How a join's epoch decision ends that join attempt without an admission (#2034). */
 class JoinLineageRefusal extends Error {
   constructor(readonly outcome: 'refuse_socket' | 'stale_heap') {
@@ -760,22 +763,55 @@ export async function createCollabRuntime(
   }
 
   /**
+   * The proof that a room's lineage ended, read in its own transaction under
+   * the page lifecycle lock (#2034): `superseded` when the page exists and its
+   * collaborative row is gone or carries another epoch, `page_deleted` when
+   * the page row itself is gone. A hard delete cascades the collaborative row,
+   * so that row's absence alone cannot tell the two apart. Null when the row
+   * still carries `docEpoch`.
+   */
+  async function proveLineageEnded(room: CollabRoom, docEpoch: string): Promise<LineageEnd | null> {
+    const row = await withPageLifecycleRead(
+      room.pageId,
+      (client) => persist.readCollabLineageRow(client, room.pageId),
+    );
+    if (row === 'page_absent') return 'page_deleted';
+    return row.docEpoch === docEpoch ? null : 'superseded';
+  }
+
+  /**
    * Retire a room whose lineage ended (#2034). The caller holds the room's
    * ownership and a check against the row, under the page lifecycle lock,
    * proved `docEpoch` gone or replaced; that transaction has ended.
-   * `closeRoomSockets` with `doc_reset` sends the control, closes every socket
-   * and releases the admission without a flush (there is nothing left to
-   * write into); the editors keep their documents as read-only drafts.
+   *
+   * `superseded`: `closeRoomSockets` with `doc_reset` sends the control, closes
+   * every socket and releases the admission without a flush (there is nothing
+   * left to write into); the editors keep their documents as read-only drafts.
+   *
+   * `page_deleted`: the page is gone, which is not a document reset. The room
+   * gets the committed-delete teardown, the same `closeRoomSockets` call the
+   * committed-delete tombstone makes (collab-tombstone.ts), with its release
+   * handling, so the sockets hear `4404 committed_delete` whether this proof
+   * or that tombstone reaches the room first.
    */
-  async function retireRoomOwned(room: CollabRoom, docEpoch: string | null): Promise<void> {
+  async function retireRoomOwned(
+    room: CollabRoom,
+    docEpoch: string | null,
+    end: LineageEnd = 'superseded',
+  ): Promise<void> {
     // The proof names one heap at one epoch. A room that left the heap or
     // adopted another document meanwhile is not the one it was about.
     if (rooms.get(room.pageId) !== room || room.docEpoch !== docEpoch) {
       room.lineageRetiring = false;
       return;
     }
-    logger.info({ pageId: room.pageId, sockets: room.sockets.size }, 'collab.lineage_retired');
-    await closeRoomSockets(room, 1001, 'doc_reset');
+    if (end === 'page_deleted') {
+      logger.info({ pageId: room.pageId, sockets: room.sockets.size }, 'collab.lineage_page_deleted');
+      await closeRoomSockets(room, 4404, 'committed_delete');
+    } else {
+      logger.info({ pageId: room.pageId, sockets: room.sockets.size }, 'collab.lineage_retired');
+      await closeRoomSockets(room, 1001, 'doc_reset');
+    }
     if (rooms.get(room.pageId) === room) rooms.delete(room.pageId);
   }
 
@@ -785,10 +821,14 @@ export async function createCollabRuntime(
    * hold the ownership while it waits for a dump on that queue) or a frame
    * handler. The returned promise never rejects.
    */
-  function scheduleLineageRetirement(room: CollabRoom, docEpoch: string | null): Promise<void> {
+  function scheduleLineageRetirement(
+    room: CollabRoom,
+    docEpoch: string | null,
+    end: LineageEnd = 'superseded',
+  ): Promise<void> {
     if (room.lineageRetiring || rooms.get(room.pageId) !== room) return Promise.resolve();
     room.lineageRetiring = true;
-    return withRoomOwnership(room.pageId, () => retireRoomOwned(room, docEpoch)).catch((error: unknown) => {
+    return withRoomOwnership(room.pageId, () => retireRoomOwned(room, docEpoch, end)).catch((error: unknown) => {
       room.lineageRetiring = false;
       logger.warn({ err: error, pageId: room.pageId }, 'collab: lineage retirement failed');
     });
@@ -797,18 +837,15 @@ export async function createCollabRuntime(
   async function checkRoomLineage(room: CollabRoom): Promise<void> {
     const docEpoch = room.docEpoch;
     if (docEpoch === null || room.lineageRetiring || rooms.get(room.pageId) !== room) return;
-    let current: string | null;
+    let end: LineageEnd | null;
     try {
-      current = await withPageLifecycleRead(
-        room.pageId,
-        (client) => persist.readCollabDocEpoch(room.pageId, client),
-      );
+      end = await proveLineageEnded(room, docEpoch);
     } catch (error) {
       // An unreadable row proves nothing; the room keeps its state.
       logger.warn({ err: error, pageId: room.pageId }, 'collab: lineage revalidation unavailable');
       return;
     }
-    if (current !== docEpoch) await scheduleLineageRetirement(room, docEpoch);
+    if (end) await scheduleLineageRetirement(room, docEpoch, end);
   }
 
   /**
@@ -1746,27 +1783,23 @@ export async function createCollabRuntime(
 
   /**
    * Step 3 of the join outcome precedence (#2034), before the admission: this
-   * heap and the declaration against the row. A row that is gone or carries
-   * another epoch than one that was once read from it never comes back, so
-   * the unlocked read is already proof for a heap without an admission. A
-   * room that owns an admission is retired only on a read under the page
-   * lifecycle lock. A stale heap is decided first: it is retired and the join
-   * restarts against a fresh room, which then answers the declaration.
+   * heap and the declaration against the row. The unlocked read only finds a
+   * heap that may be stale; the proof is the read under the page lifecycle
+   * lock, which also tells a deleted page from a replaced document. A stale
+   * heap is decided first: it is retired and the join restarts against a
+   * fresh room, which then answers the declaration.
    */
   async function decideJoinLineage(
     room: CollabRoom,
     declaration: CollabDocEpochDeclaration,
-  ): Promise<'proceed' | 'refuse' | 'stale_heap'> {
+  ): Promise<'proceed' | 'refuse' | LineageEnd> {
     // Malformed is a mismatch, never absent, and needs no read.
     if (declaration.kind === 'malformed') return 'refuse';
     let rowEpoch = await persist.readCollabDocEpoch(room.pageId);
     if (room.docEpoch !== null && room.docEpoch !== rowEpoch) {
-      if (!room.admission) return 'stale_heap';
-      rowEpoch = await withPageLifecycleRead(
-        room.pageId,
-        (client) => persist.readCollabDocEpoch(room.pageId, client),
-      );
-      if (room.docEpoch !== rowEpoch) return 'stale_heap';
+      const end = await proveLineageEnded(room, room.docEpoch);
+      if (end) return end;
+      rowEpoch = room.docEpoch;
     }
     return declarationAdmits(declaration, rowEpoch) ? 'proceed' : 'refuse';
   }
@@ -1864,8 +1897,10 @@ export async function createCollabRuntime(
       // read it, the admission precondition decides the declaration.
       const decision = room.isFrozen ? 'proceed' : await decideJoinLineage(room, declaration);
       if (decision === 'refuse') return refuseJoinForLineage(room, socket);
-      if (decision === 'stale_heap') {
-        await retireRoomOwned(room, room.docEpoch);
+      if (decision !== 'proceed') {
+        // A stale heap. For a deleted page the restart finds no page to load,
+        // and the join fails as any join to a missing page does.
+        await retireRoomOwned(room, room.docEpoch, decision);
         return 'restart';
       }
       try {

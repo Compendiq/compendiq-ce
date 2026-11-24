@@ -198,6 +198,26 @@ export async function readCollabDocEpoch(pageId: number, client?: PoolClient): P
 }
 
 /**
+ * What the rows say about a page's document lineage: `page_absent` when the
+ * `pages` row itself is gone (a hard delete cascades the collaborative row
+ * with it), otherwise the epoch of its persisted document, or null without
+ * one. Only a read under the page lifecycle lock is proof of either.
+ */
+export type CollabLineageRow = 'page_absent' | { docEpoch: string | null };
+
+export async function readCollabLineageRow(client: PoolClient, pageId: number): Promise<CollabLineageRow> {
+  const result = await client.query<{ doc_epoch: string | null }>(
+    `SELECT d.doc_epoch::text
+       FROM pages p
+  LEFT JOIN page_collaborative_docs d ON d.page_id = p.id
+      WHERE p.id = $1`,
+    [pageId],
+  );
+  const row = result.rows[0];
+  return row ? { docEpoch: row.doc_epoch } : 'page_absent';
+}
+
+/**
  * Current-epoch assertion: the caller's transaction holds the page lifecycle
  * lock and is about to consume or emit document bytes for the generation
  * `docEpoch`. Two rooms can agree on a superseded epoch, so equality between
