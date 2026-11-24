@@ -459,7 +459,8 @@ While the freeze holds the page lifecycle locks it refuses with
 unreleased runtime admission (`assertPageFreezeIdle`). A writable collaborative
 room admission is the common case: it exists from the moment an editor joins
 write-enabled and is released only by a clean disconnect with a successful
-flush, by a server-proven fence, or once its page is proven hard-deleted
+flush, by a server-proven fence, or by one of the server-decided retirements
+listed under *Diagnosing blocked writers*, such as a page proven hard-deleted
 (#1922). Redis presence is not the authority, and a
 read-only viewer holds no admission, so neither blocks. The refusal writes
 nothing: no baseline, reservation, history or lifecycle event. The shared
@@ -722,19 +723,31 @@ establish a terminal outcome.
 
 A writable room admission remains active until a clean disconnect and successful
 flush, or a server-proven runtime fence. Redis liveness, a missing heartbeat,
-elapsed time, and process age do not expire it. Two exits need neither. One is
-the schema-upgrade retirement described under *One-time152 Notion identity
-snapshot upgrade* (`release_kind = 'upgrade_retired'`), which is justified by
-the write gate it closes in the same transaction. The other is a page proven
-absent (#1922): when the room's final flush fails with `page_not_found`, the
-room re-reads the page inside its release transaction, after the runtime and
-page lifecycle locks, and releases the admission
-(`release_kind = 'clean_disconnect'`) only if the row is gone. A hard-deleted
-page has no row for the room's edits to land in. If the row is still there or
-the proof query fails, the admission is kept; no other flush failure, HTTP 404
-or caller's claim of deletion releases it. A page with a pending intent cannot
-be hard-deleted through the protected delete paths, so this exit is no way
-around a pending intent. A flush that only waits for
+elapsed time, and process age do not expire it. A few intentional releases need
+neither a flush nor a fence, and each is decided by the server:
+
+- the room's retirement on `doc_reset` and on a lifecycle change (freeze or
+  thaw), which end the room's document or its lifecycle revision and release
+  without a final flush;
+- the schema-upgrade retirement described under *One-time152 Notion identity
+  snapshot upgrade* (`release_kind = 'upgrade_retired'`), which is justified by
+  the write gate it closes in the same transaction;
+- a page proven absent (#1922): when the room's final flush fails with
+  `page_not_found`, the room re-reads the page inside its release transaction,
+  after the runtime and page lifecycle locks, and releases the admission
+  (`release_kind = 'clean_disconnect'`) only if the row is gone. A hard-deleted
+  page has no row for the room's edits to land in. If the row is still there or
+  the proof query fails, the admission is kept; no other flush failure, HTTP
+  404 or caller's claim of deletion releases it.
+
+The deleted-page exit releases only the room admission, never a write intent.
+The delete's own intent (for example `pages.delete.standalone`,
+`pages.delete.confluence` or `pages.bulk.delete.remote`) destroys the row
+before it settles, so a room can release while that intent is still pending;
+the intent settles, or stays pending for reconciliation, on its own path. Any
+other pending intent on the
+page refuses the protected delete paths before they destroy the row, so this
+exit is no way around a competing pending intent. A flush that only waits for
 the page's own pending collaborative Save (`collab.commit.confluence` or
 `.media`) is not a failure: the room keeps the admission and retries the flush
 and release once that Save settles, at once on its `pages_version` control and

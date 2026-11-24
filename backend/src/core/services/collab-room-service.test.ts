@@ -2908,19 +2908,25 @@ describe.skipIf(!canRun)('room admission of a hard-deleted page (#1922)', () => 
     return room.admission!;
   }
 
-  /** Cancel the one statement `holder` blocks, the way a statement timeout would end it. */
-  async function cancelStatementBlockedBy(holderPid: number): Promise<void> {
-    let blockedPid = 0;
+  /** The one backend whose statement `holder` blocks, with that statement's text. */
+  async function statementBlockedBy(holderPid: number): Promise<{ pid: number; query: string }> {
+    let blocked: { pid: number; query: string } | undefined;
     await vi.waitFor(async () => {
-      const blocked = await query<{ pid: number }>(
-        `SELECT pid FROM pg_stat_activity
+      const rows = await query<{ pid: number; query: string }>(
+        `SELECT pid, query FROM pg_stat_activity
           WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
         [holderPid],
       );
-      expect(blocked.rows).toHaveLength(1);
-      blockedPid = blocked.rows[0]!.pid;
+      expect(rows.rows).toHaveLength(1);
+      blocked = rows.rows[0]!;
     });
-    await query('SELECT pg_cancel_backend($1)', [blockedPid]);
+    return blocked!;
+  }
+
+  /** Cancel the one statement `holder` blocks, the way a statement timeout would end it. */
+  async function cancelStatementBlockedBy(holderPid: number): Promise<void> {
+    const { pid } = await statementBlockedBy(holderPid);
+    await query('SELECT pg_cancel_backend($1)', [pid]);
   }
 
   async function withSlowDeferredRetry<T>(run: () => Promise<T>): Promise<T> {
@@ -3082,7 +3088,25 @@ describe.skipIf(!canRun)('room admission of a hard-deleted page (#1922)', () => 
     let closing: Promise<void> | undefined;
     try {
       closing = runtimeA!.tombstone(pageId, 4404, 'committed_delete');
-      await cancelStatementBlockedBy(holderPid);
+      const proof = await statementBlockedBy(holderPid);
+      // The blocked read is the absence proof, and its transaction already
+      // holds the runtime row (FOR SHARE) and the page lifecycle lock: the
+      // proof runs behind the lifecycle fence, not before it.
+      expect(proof.query).toBe('SELECT 1 FROM pages WHERE id = $1');
+      const lifecycleLock = await query<{ granted: boolean }>(
+        `SELECT granted FROM pg_locks
+          WHERE pid = $1 AND locktype = 'advisory'
+            AND classid = $2::int::oid AND objid = $3::int::oid AND objsubid = 2`,
+        [proof.pid, PAGE_LIFECYCLE_LOCK_KEY, pageId],
+      );
+      expect(lifecycleLock.rows).toEqual([{ granted: true }]);
+      await expect(query('SELECT pg_try_advisory_xact_lock($1, $2) AS acquired', [PAGE_LIFECYCLE_LOCK_KEY, pageId]))
+        .resolves.toMatchObject({ rows: [{ acquired: false }] });
+      await expect(query(
+        'SELECT 1 FROM page_writer_runtimes WHERE runtime_id = $1 FOR UPDATE NOWAIT',
+        [admission.runtimeId],
+      )).rejects.toMatchObject({ code: '55P03' });
+      await query('SELECT pg_cancel_backend($1)', [proof.pid]);
       await closing;
 
       expect(warn).toHaveBeenCalledWith(

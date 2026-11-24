@@ -654,23 +654,49 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
     expect(await getRedisClient()!.sMembers(`collab:active:${pageId}`)).toEqual([]);
   }
 
-  it('standalone DELETE after committed SQL closes 4404', async () => {
+  it('standalone DELETE after committed SQL closes 4404, flushing an unsaved edit before the release', async () => {
     const { token, userId } = await createUser('collab_trash');
     const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
     await enableCollabFlag();
 
-    const ws = await openAndSync(pageId, token);
-    const closedP = waitClose(ws);
+    const ws = await openWritableWhatwg(pageId, token);
+    await waitOpen(ws);
+    // No 2 s autosave may run: only the close's own flush can make the edit durable.
+    const autosave = vi.spyOn(persist, 'scheduleCollabPersist').mockImplementation(() => undefined);
+    try {
+      const doc = new Y.Doc();
+      try {
+        applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+        const paragraph = new Y.XmlElement('paragraph');
+        const typed = new Y.XmlText();
+        typed.insert(0, 'TYPED_BEFORE_TRASH');
+        paragraph.insert(0, [typed]);
+        doc.getXmlFragment('default').push([paragraph]);
+        ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
+        // The reply is ordered after the update on the same socket.
+        await exchangeSyncStep1(ws, doc);
+      } finally {
+        doc.destroy();
+      }
+      // Accepted by the room, which asked for an autosave that never runs.
+      expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_BEFORE_TRASH');
+      expect(autosave).toHaveBeenCalled();
+      expect(await persist.htmlFromPersistedDoc(pageId) ?? '').not.toContain('TYPED_BEFORE_TRASH');
+      const closedP = waitClose(ws);
 
-    const del = await app.inject({
-      method: 'DELETE',
-      url: `/api/pages/${pageId}`,
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(del.statusCode).toBe(200);
-    const closed = await closedP;
-    expect(closed.code).toBe(4404);
-    // Trash keeps the row: the room flushes and releases as before (#1922 control).
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/api/pages/${pageId}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(del.statusCode).toBe(200);
+      const closed = await closedP;
+      expect(closed.code).toBe(4404);
+    } finally {
+      autosave.mockRestore();
+    }
+    // Trash keeps the row: the close flushed the edit, then released (#1922 control).
+    expect(await persist.htmlFromPersistedDoc(pageId)).toContain('TYPED_BEFORE_TRASH');
     await expectRoomReleased(pageId);
     expect((await query('SELECT 1 FROM pages WHERE id = $1 AND deleted_at IS NOT NULL', [pageId])).rowCount).toBe(1);
   });
