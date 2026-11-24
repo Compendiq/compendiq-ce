@@ -518,6 +518,24 @@ flowchart TB
   toast's **Reload** leaves edit mode with the local draft intact and the next
   Edit offers it. A newer version this session did not write — another user,
   another tab, a version restore or an inbound sync — is a conflict.
+- **Save sends only the session's own tag delta (#1931).** The three session
+  seeding points (Edit, Restore draft, Edit published version) capture a label
+  baseline next to `draftLabels`: in React state for the render-time dirty
+  checks and mirrored in a ref for the Save closure. Save snapshots the draft
+  at submit and sends `addLabels = draft − baseline`, `removeLabels = baseline
+  − draft` to `PUT /api/pages/:id/labels`, which the server applies to the tags
+  it holds now; no label request is sent when the session changed no tag (both
+  the collaborative commit and the ordinary PUT). `isEditorDirty` and
+  `titleOrLabelsDiverged` compare against the baseline, never the live
+  `page.labels`, so a tag change by another client, an admin rename/delete or a
+  sync neither dirties an untouched session nor opens the discard dialog. When a
+  successful label write leaves the session open (the collaborative "document
+  changed while saving" branch), the baseline becomes the committed labels the
+  server returned (it normalizes) and the draft is rebased onto them, keeping
+  only the edits made after the submitted snapshot; guarded by
+  `editSessionRef`. A refused reserved-label write (#283) changes neither. If
+  both sides touched the same tag, the later write wins; there is no conflict
+  dialog.
 - **Save is single-flight per editing session.** `PageViewPage` claims the
   flight synchronously before draw.io draining (the first await), so the Save
   button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the
