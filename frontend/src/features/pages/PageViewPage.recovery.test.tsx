@@ -956,16 +956,24 @@ describe('collaborative join before the first sync (#1895)', () => {
     expect(screen.queryByTestId('collab-join-error')).not.toBeInTheDocument();
   });
 
-  it('refetches the collaboration config after a 4403 flag_off following the first sync', async () => {
+  it.each([
+    ['is still pending', (gate: PromiseWithResolvers<{ enabled: boolean }>) => gate.resolve({ enabled: false })],
+    ['fails', (gate: PromiseWithResolvers<{ enabled: boolean }>) => gate.reject(new TypeError('Failed to fetch'))],
+  ])('opens no new collaborative join after a post-sync 4403 flag_off while the config refresh %s (#1927)', async (_name, settle) => {
     const client = renderPage();
     const socket = await joinWritableSession();
-    collabEnabled = false;
+    const configReads = () => fetchMock.mock.calls.filter(([url]) => url === '/api/collab/config').length;
+    const readsBefore = configReads();
+    const gate = Promise.withResolvers<{ enabled: boolean }>();
+    gate.promise.catch(() => undefined);
+    deferredCollabConfig = gate.promise;
     act(() => socket.close(4403, 'flag_off'));
 
     expect(await screen.findByText(
       'Collaborative editing was turned off. Your open draft remains below and is not reapplied automatically.',
     )).toBeInTheDocument();
-    await waitFor(() => expect(client.getQueryData(['collab-config'])).toEqual({ enabled: false }));
+    await waitFor(() => expect(configReads()).toBe(readsBefore + 1));
+    expect(client.getQueryData(['collab-config'])).toEqual({ enabled: false });
 
     fireEvent.click(screen.getByRole('button', { name: 'Open current version' }));
     fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
@@ -974,6 +982,10 @@ describe('collaborative join before the first sync (#1895)', () => {
       expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
     });
     expect(Socket.instances).toHaveLength(1);
+
+    await act(async () => { settle(gate); await gate.promise.catch(() => undefined); });
+    expect(Socket.instances).toHaveLength(1);
+    expect(client.getQueryData(['collab-config'])).toEqual({ enabled: false });
   });
 
   it('refetches the collaboration config after flag_off so reopening the editor edits locally', async () => {

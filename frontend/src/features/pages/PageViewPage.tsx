@@ -153,12 +153,10 @@ function collabPreSyncMessage(
       return 'This page is no longer available for collaborative editing.';
     case 'unauthorized':
       return 'Your session expired. Sign in again to keep editing together.';
+    // Set only after the first sync, where the banner owns the copy (#1927).
     case 'flag_off':
-      return 'Collaborative editing has been turned off. Close the editor and open it again to edit this page.';
     case 'rate_limited':
-      return 'Too many connection attempts. Close the editor and open it again to edit this page.';
     case 'readonly':
-      return 'The collaborative session stopped accepting changes. Close the editor and open it again to edit this page.';
     case null:
       break;
   }
@@ -369,9 +367,13 @@ export function PageViewPage() {
   // The refusal copy says to close and reopen the editor; make that reopen use
   // the current config and page instead of the cached ones.
   useEffect(() => {
-    // Post-sync `flag_off` (#1927): Edit within the 30 s staleTime must not
-    // re-enter collab mode only to receive the pre-sync refusal.
-    if (collab.readOnlyReason === 'flag_off') void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
+    // Post-sync `flag_off` (#1927): the server just said the feature is off, so
+    // record that at once; a pending or failed refresh must not leave the refused
+    // `enabled: true` able to start a new join. The refetch re-enables on fresh evidence.
+    if (collab.readOnlyReason === 'flag_off') {
+      queryClient.setQueryData<CollabConfig>(['collab-config'], { enabled: false });
+      void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
+    }
     if (!collabPreSync) return;
     if (collab.error === 'flag_off') void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
     if (collab.readOnlyReason === 'lifecycle_changed' || collab.readOnlyReason === 'document_changed' ||
