@@ -4418,14 +4418,48 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
   }, 30_000);
 
   it('bounds the reply by the 10 MiB WebSocket maxPayload', async () => {
-    const { tab } = await offlinePinnedTab('collab_handoff_max_payload', () => undefined);
+    const { tab, pageId } = await offlinePinnedTab('collab_handoff_max_payload', () => undefined);
+    const runtime = getDefaultCollabRuntime()!;
+    const attach = runtime.attachSocket;
+    const handleFrame = runtime.handleInboundFrame;
+    const serverErrors: Array<{ code: unknown; message: string }> = [];
+    const serverClosed = Promise.withResolvers<void>();
+    const handledBytes: number[] = [];
+    let connId: string | null = null;
+    const attachSpy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (joinPageId, socket) => {
+      connId = socket.id;
+      socket.ws.on('error', (err: Error & { code?: unknown }) => {
+        serverErrors.push({ code: err.code, message: err.message });
+      });
+      socket.ws.on('close', () => serverClosed.resolve());
+      return attach(joinPageId, socket);
+    });
+    const frameSpy = vi.spyOn(runtime, 'handleInboundFrame').mockImplementation(async (framePageId, id, buf) => {
+      if (id === connId) handledBytes.push(buf.byteLength);
+      return handleFrame(framePageId, id, buf);
+    });
+    onTestFinished(() => {
+      attachSpy.mockRestore();
+      frameSpy.mockRestore();
+    });
     const since = tab.controls.length;
     tab.provider.connect();
     await hookTabWritable(tab, since);
     tab.provider.on('connection-close', () => { tab.provider.shouldConnect = false; });
+    const before = liveRoomHtml(pageId);
+    const closesBefore = tab.closes.length;
 
     tab.provider.ws!.send(new Uint8Array(10 * 1024 * 1024 + 1));
 
-    await vi.waitFor(() => expect(tab.closes.map((close) => close.code)).toContain(1009), { timeout: 10_000 });
+    // The server's receiver refuses the frame for its length and closes the
+    // socket. The client may see the server's 1009, or an abnormal 1006 when
+    // the server tears the connection down while the client is still writing.
+    await serverClosed.promise;
+    expect(serverErrors).toContainEqual(expect.objectContaining({ code: 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' }));
+    await vi.waitFor(() => expect(tab.closes.length).toBeGreaterThan(closesBefore), { timeout: 10_000 });
+    expect([1009, 1006]).toContain(tab.closes.at(-1)!.code);
+    // The frame never reached the room, and the document is unchanged.
+    expect(handledBytes.every((bytes) => bytes <= 10 * 1024 * 1024)).toBe(true);
+    expect(liveRoomHtml(pageId)).toBe(before);
   }, 30_000);
 });
