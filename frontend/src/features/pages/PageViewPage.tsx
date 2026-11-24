@@ -44,7 +44,12 @@ import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { ArticleReadToolbar } from '../../shared/components/article/ArticleReadToolbar';
 import { AiPolicyChip } from '../../shared/components/badges/AiPolicyChips';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
-import { CollabCommitResponseSchema, type CollabConfig, type SettablePageIcon } from '@compendiq/contracts';
+import {
+  CollabCommitConflictSchema,
+  CollabCommitResponseSchema,
+  type CollabConfig,
+  type SettablePageIcon,
+} from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
@@ -424,10 +429,12 @@ export function PageViewPage() {
   const [confluenceModified, setConfluenceModified] = useState<{
     remoteVersion?: number;
     localVersion?: number;
+    /** The Save had been sent when Confluence refused it: its result is unknown (#2035). */
+    saveOutcomeUnknown: boolean;
   } | null>(null);
-  // The Confluence-modified notice says the session is still open. Once the
-  // save's result is unknown that is no longer true, whichever of the HTTP
-  // error and the `commit_unknown` control arrived first (#2035).
+  // Once the room reports the unknown save, the read-only draft banner says
+  // it all and the notice goes, whichever of the HTTP error and the
+  // `commit_unknown` control arrived first (#2035).
   const commitUnknown = collab.readOnlyReason === 'commit_unknown';
   useEffect(() => {
     if (commitUnknown && confluenceModified) setConfluenceModified(null);
@@ -1022,9 +1029,13 @@ export function PageViewPage() {
         return;
       }
       if (error instanceof ApiError && error.code === 'confluence_modified') {
+        // The typed body tells a Save that was never sent from one whose
+        // result is unknown; only the first leaves the session open.
+        const conflict = CollabCommitConflictSchema.safeParse(error.body);
         setConfluenceModified({
           remoteVersion: error.remoteVersion,
           localVersion: error.localVersion,
+          saveOutcomeUnknown: conflict.success && conflict.data.saveOutcome === 'unknown',
         });
         return;
       }
@@ -1466,6 +1477,7 @@ export function PageViewPage() {
           <ConfluenceModifiedAlert
             remoteVersion={confluenceModified.remoteVersion}
             localVersion={confluenceModified.localVersion}
+            saveOutcomeUnknown={confluenceModified.saveOutcomeUnknown}
             onDismiss={() => setConfluenceModified(null)}
           />
         )}

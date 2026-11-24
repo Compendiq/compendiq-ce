@@ -210,7 +210,7 @@ let deferredPageRead: Promise<typeof initialPage> | null = null;
 let fetchMock: Mock;
 let collabEnabled = true;
 let deferredCollabConfig: Promise<{ enabled: boolean }> | null = null;
-let commitMode: 'success' | 'confluence_modified' = 'success';
+let commitMode: 'success' | 'confluence_modified' | 'confluence_modified_after_dispatch' = 'success';
 let deferredCommit: Promise<void> | null = null;
 let pageUpdateMode: 'success' | 'failure' = 'success';
 let deferredPageUpdate: Promise<void> | null = null;
@@ -276,12 +276,19 @@ beforeEach(() => {
     }
     if (url === '/api/pages/42/collab/commit' && method === 'POST') {
       if (deferredCommit) await deferredCommit;
-      if (commitMode === 'confluence_modified') {
+      if (commitMode !== 'success') {
+        // The real 409 body: the version check before dispatch, or Confluence
+        // refusing the write itself after it was sent (#2035).
         return json({
-          message: 'This page was modified in Confluence.',
+          error: 'Conflict',
+          statusCode: 409,
+          message: commitMode === 'confluence_modified'
+            ? 'This page was modified in Confluence. Your collaborative session is still open — nobody\'s edits were overwritten.'
+            : 'Confluence reported a newer version of this page while it was being saved. The result of this save is unknown.',
           code: 'confluence_modified',
           remoteVersion: 9,
           localVersion: 1,
+          saveOutcome: commitMode === 'confluence_modified' ? 'not_dispatched' : 'unknown',
         }, 409);
       }
       const body = CollabCommitSchema.parse(JSON.parse(String(init?.body)));
@@ -1053,6 +1060,49 @@ describe('unknown collaborative save (#2035)', () => {
     expect(screen.queryByRole('button', { name: 'Download draft' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('collab-join-retry')).not.toBeInTheDocument();
     expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+  });
+
+  it('promises no open session for a post-dispatch conflict when no control ever arrives', async () => {
+    commitMode = 'confluence_modified_after_dispatch';
+    renderPage();
+    await joinWritableSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // The HTTP answer is the only feedback: the socket stays silent.
+    const notice = await screen.findByTestId('confluence-modified-alert');
+    expect(notice).toHaveTextContent('Result unknown');
+    expect(notice).toHaveTextContent(
+      'This page was modified in Confluence (remote version 9, local version 1) while it was being saved. The result of this save is unknown, and editing is paused until that save is resolved.',
+    );
+    expect(notice).not.toHaveTextContent(/session is still open/);
+    expect(notice).not.toHaveTextContent(/Not saved/);
+    expect(screen.queryByText(/nobody's edits were overwritten/)).not.toBeInTheDocument();
+    expect(Socket.instances).toHaveLength(1);
+  });
+
+  it('keeps the open-session notice for the version check before dispatch', async () => {
+    commitMode = 'confluence_modified';
+    renderPage();
+    await joinWritableSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    const notice = await screen.findByTestId('confluence-modified-alert');
+    expect(notice).toHaveTextContent('Not saved');
+    expect(notice).toHaveTextContent(/Your collaborative session is still open/);
+    expect(notice).not.toHaveTextContent(/result of this save is unknown/);
+  });
+
+  it('lets the draft take over a post-dispatch conflict notice once the control arrives', async () => {
+    commitMode = 'confluence_modified_after_dispatch';
+    renderPage();
+    const socket = await joinWritableSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByTestId('confluence-modified-alert')).toHaveTextContent('Result unknown');
+
+    act(() => sendControl(socket, { type: 'commit_unknown' }));
+
+    expect(await screen.findByText(BANNER)).toBeInTheDocument();
+    expect(screen.queryByTestId('confluence-modified-alert')).not.toBeInTheDocument();
   });
 
   it('replaces the Confluence-modified notice when the control arrives after the HTTP error', async () => {
