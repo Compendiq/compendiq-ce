@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - RTF extraction drops ignorable `{\*\…}` destinations it does not keep, so bookmark names, `HYPERLINK "url"` field codes and TextEdit's `;;` colour-table residue no longer reach the extracted text; a hyperlink keeps its visible result text, and text-box text (`\shpinst`, `\shptxt`) is kept without its shape properties (#1967).
 
+- A Save of a Confluence page no longer uploads the cached draw.io preview PNG of its diagrams (collaborative Save and `PUT /api/pages/:id`): `planLocalImagesForConfluence` skips every image inside a `.confluence-drawio` wrapper, so a page with only diagrams reserves `collab.commit.confluence` instead of `.media`, adds no attachment version, and a missing cached preview no longer refuses the Save with `pasted_image_unavailable` (#1935).
+
 - RTF extraction takes the file's bytes (`rtfToText(bytes: Uint8Array)`), so already-decoded text can no longer be corrupted by the UTF-8 re-decode. A raw non-ASCII character after a backslash or inside a `\ucN` fallback is skipped whole instead of leaving U+FFFD, and the cp949 private-use rows `C9`/`FE` are documented (#1960).
 
 - RTF extraction keeps line breaks written as a backslash followed by a newline (`\`+LF, CR or CRLF), as TextEdit and `textutil` write every paragraph, instead of running the lines together (#1966).

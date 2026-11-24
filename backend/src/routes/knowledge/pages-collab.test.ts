@@ -2254,6 +2254,80 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     }
   });
 
+  describe('draw.io previews on a collaborative Save (#1935)', () => {
+    const DRAWIO = '<div class="confluence-drawio" data-diagram-name="Arch">'
+      + '<img src="/api/attachments/local-src/Arch.png" alt="Arch"></div>';
+
+    async function commitWith(bodyHtml: string) {
+      const fixture = await createPastedImageRoot();
+      await fs.promises.writeFile(
+        path.join(fixture.root, 'local-src', 'Arch.png'),
+        Buffer.from('cached drawio preview bytes'),
+      );
+      const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4, bodyHtml });
+      try {
+        vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+          id: confluenceId,
+          title: 'Conf page',
+          status: 'current',
+          type: 'page',
+          version: { number: 4, when: '2026-09-20T00:00:00Z' },
+        } as never);
+        const updateAttachment = vi.spyOn(ConfluenceClient.prototype, 'updateAttachment')
+          .mockImplementation(async (_id, filename) => ({
+            id: 'attachment-1',
+            title: filename,
+            mediaType: 'image/png',
+            version: { number: 1, when: '2026-09-20T00:00:01Z' },
+          }) as never);
+        vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+          async (_id, title, storage) => ({
+            id: confluenceId,
+            title,
+            status: 'current',
+            type: 'page',
+            version: { number: 5, when: '2026-09-20T00:00:02Z' },
+            body: { storage: { value: storage } },
+          }) as never,
+        );
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: commitPayload(ws, 'Drawio commit'),
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        const intents = await query<{ kind: string; status: string }>(
+          `SELECT kind, status FROM page_write_intents
+            WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+          [pageId],
+        );
+        return { updateAttachment, intents: intents.rows };
+      } finally {
+        ws.close();
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    }
+
+    it('reserves the non-media kind and uploads nothing for a page with only draw.io previews', async () => {
+      const { updateAttachment, intents } = await commitWith(`<p>text</p>${DRAWIO}`);
+
+      expect(updateAttachment).not.toHaveBeenCalled();
+      expect(intents).toEqual([{ kind: 'collab.commit.confluence', status: 'completed' }]);
+    });
+
+    it('reserves the media kind and uploads exactly the pasted image next to a draw.io preview', async () => {
+      const { updateAttachment, intents } = await commitWith(
+        `<p>text</p>${DRAWIO}<img src="/api/attachments/local-src/pasted.png">`,
+      );
+
+      expect(updateAttachment).toHaveBeenCalledTimes(1);
+      expect(updateAttachment.mock.calls[0]![1]).toBe('pasted.png');
+      expect(intents).toEqual([{ kind: 'collab.commit.confluence.media', status: 'completed' }]);
+    });
+  });
+
+
   it('cancels before remote dispatch when planned pasted-image bytes change', async () => {
     const fixture = await createPastedImageRoot();
     const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({
