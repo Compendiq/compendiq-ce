@@ -533,7 +533,10 @@ flowchart TB
   changed while saving" branch), the baseline becomes the committed labels the
   server returned (it normalizes) and the draft is rebased onto them, keeping
   only the edits made after the submitted snapshot; guarded by
-  `editSessionRef`. A refused reserved-label write (#283) changes neither. If
+  `editSessionRef`. Committed labels are never derived locally: a successful
+  write whose reply carries no valid label set keeps the session open, leaves
+  baseline and draft untouched and warns that the tag change could not be
+  confirmed. A refused reserved-label write (#283) changes neither. If
   both sides touched the same tag, the later write wins; there is no conflict
   dialog.
 - **Save is single-flight per editing session.** `PageViewPage` claims the

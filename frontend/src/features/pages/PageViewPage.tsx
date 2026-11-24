@@ -959,9 +959,16 @@ export function PageViewPage() {
         if (addLabels.length > 0 || removeLabels.length > 0) {
           try {
             const written = await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
-            committedLabels = Array.isArray(written?.labels)
-              ? written.labels
-              : [...baseline.filter((l) => !removeLabels.includes(l)), ...addLabels];
+            // Only the labels the server committed (it normalizes, and peers
+            // may have changed tags) can become the baseline: never derive
+            // them locally. A success without a valid label set leaves the
+            // session open with baseline and draft untouched.
+            if (!Array.isArray(written?.labels) || !written.labels.every((l) => typeof l === 'string')) {
+              if (editSessionRef.current !== session) return;
+              toast.warning('Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.');
+              return;
+            }
+            committedLabels = written.labels;
             setLabelPolicyNotice(null);
           } catch (labelError) {
             // #283: a reserved-label verdict from the server (contradictory

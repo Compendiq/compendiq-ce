@@ -78,8 +78,11 @@ let nextPutOverride: (() => Response) | null;
 // is a server that merges the request's adds and removes into the row it
 // holds now, like applyLabelChanges, and answers the committed labels.
 type LabelPut = { addLabels?: string[]; removeLabels?: string[] };
-let labelMode: 'refuse' | 'apply';
+let labelMode: 'refuse' | 'apply' | 'apply-unacknowledged';
 let labelPuts: LabelPut[];
+// Runs when a label write reaches the server, before it is applied: a peer
+// write that lands first.
+let beforeLabelApply: (() => void) | null;
 let fetchMock: Mock;
 
 function json(value: unknown, status = 200): Response {
@@ -185,6 +188,7 @@ beforeEach(() => {
   nextPutOverride = null;
   labelMode = 'refuse';
   labelPuts = [];
+  beforeLabelApply = null;
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     const method = init?.method ?? 'GET';
@@ -214,14 +218,16 @@ beforeEach(() => {
       };
       return json({ id: 42, title: serverPage.title, version: serverPage.version, source: 'standalone' });
     }
-    if (url === '/api/pages/42/labels' && method === 'PUT' && labelMode === 'apply') {
+    if (url === '/api/pages/42/labels' && method === 'PUT' && labelMode !== 'refuse') {
       const body = JSON.parse(String(init?.body)) as LabelPut;
       labelPuts.push(body);
+      beforeLabelApply?.();
       const removed = body.removeLabels ?? [];
       const labels = serverPage.labels.filter((l) => !removed.includes(l));
       for (const l of body.addLabels ?? []) if (!labels.includes(l)) labels.push(l);
       serverPage = { ...serverPage, labels };
-      return json({ labels });
+      // A 2xx that does not carry the committed set.
+      return labelMode === 'apply-unacknowledged' ? json({}) : json({ labels });
     }
     if (url === '/api/pages/42/labels' && method === 'PUT') {
       labelPuts.push(JSON.parse(String(init?.body)) as LabelPut);
@@ -566,16 +572,43 @@ describe("PageViewPage Save sends only the session's own tag delta (#1931)", { t
     await startEditing();
     await typeText('MY EDIT');
     await addTag('shared');
-    // A peer touched the same tag (added it, then removed it) before this
-    // Save: the session's add is applied last and wins.
-    remoteLabels([]);
-    await refreshLabels(client, []);
+    // A peer adds the session's own new tag and this tab sees it before Save.
+    remoteLabels(['shared']);
+    await refreshLabels(client, ['shared']);
+    // Then the peer removes it again just before the label write is applied.
+    beforeLabelApply = () => remoteLabels([]);
 
     await clickSave();
     await waitFor(() => expect(labelPuts).toHaveLength(1));
+    // The session still sends its own add (a live-cache diff would send none)...
     expect(labelPuts[0]).toEqual({ addLabels: ['shared'], removeLabels: [] });
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+    // ...and, applied last, it wins.
     expect(serverPage.labels).toEqual(['shared']);
+  });
+
+  it('keeps the session open and the draft intact when a successful label write carries no committed set', async () => {
+    labelMode = 'apply-unacknowledged';
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    await addTag('mine');
+    remoteLabels(['peer']);
+    await refreshLabels(client, ['peer']);
+
+    await clickSave();
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
+      'Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.',
+    ));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(await editableBody()).toHaveTextContent('MY EDIT');
+    expect(screen.getByTestId('remove-tag-mine')).toBeInTheDocument();
+    expect(screen.queryByTestId('remove-tag-peer')).toBeNull();
+
+    // The baseline did not move: the retry sends the same delta.
+    await clickSave();
+    await waitFor(() => expect(labelPuts).toHaveLength(2));
+    expect(labelPuts[1]).toEqual({ addLabels: ['mine'], removeLabels: [] });
   });
 
   it('does not mark an untouched session dirty after a foreign tag change, and Cancel opens no discard dialog', async () => {
