@@ -4390,6 +4390,8 @@ describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
     const tcp = '_socket' in transport ? transport._socket : null;
     if (!(tcp instanceof Socket)) throw new Error('ws no longer exposes its TCP socket');
     tcp.pause();
+    // Resumed on failure as well, so a failed assertion cannot leave the transport stalled.
+    onTestFinished(() => { tcp.resume(); });
     let closeEmitted = false;
     transport.on('close', () => { closeEmitted = true; });
     transport.close(1001, 'closing_during_join');
