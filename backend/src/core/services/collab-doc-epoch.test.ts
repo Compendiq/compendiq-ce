@@ -16,7 +16,7 @@ import * as decoding from 'lib0/decoding';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { getPool, query } from '../db/postgres.js';
-import { PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
+import { COLLAB_INIT_LOCK_KEY, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
 import {
   collabDocChannel,
   createCollabRuntime,
@@ -559,54 +559,64 @@ describe.skipIf(!canRun)('document epoch at the room boundaries (#2034)', () => 
     expect(writer.socket.closes).toEqual([]);
   });
 
-  it('an undeclared join into a superseded room that still holds its admission grants nothing and retires it', async () => {
+  it.each(['undeclared', 'current epoch', 'superseded epoch'] as const)(
+    'a join (%s) into a superseded room that still holds its admission retires that room and is decided on a fresh one',
+    async (declares) => {
+      const pageId = nextPageId();
+      const idle = await join(runtimeA!, pageId, 'idle-writer');
+      const superseded = runtimeA!.getRoom(pageId)!;
+      const supersededEpoch = await rowEpoch(pageId);
+      appendParagraph(superseded.doc, 'OLD_GENERATION_EDIT');
+      await endLineage(pageId, '<p>published body</p>', true);
+      const currentEpoch = await rowEpoch(pageId);
+
+      const joined = await join(runtimeA!, pageId, 'joiner', declares === 'undeclared' ? {} : {
+        expectedDocEpoch: {
+          kind: 'declared', epoch: declares === 'current epoch' ? currentEpoch : supersededEpoch,
+        },
+      });
+
+      // The row, re-read under the lifecycle lock inside the join, retired the room.
+      expect(runtimeA!.getRoom(pageId)).not.toBe(superseded);
+      expect(idle.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
+      if (declares === 'superseded epoch') {
+        // The fresh room answers the tab of the old generation.
+        expect(joined.attached.joinRefused).toBe('doc_reset');
+        expect(joined.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
+        expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+        expect(await admissionCounts(pageId)).toEqual({ total: 1, unreleased: 0 });
+        return;
+      }
+      // A tab of the current generation is not told its document changed.
+      expect(joined.attached.joinRefused).toBeUndefined();
+      expect(joined.attached).toMatchObject({ writable: true, lineageVerified: declares === 'current epoch' });
+      expect(joined.socket.closes).toEqual([]);
+      const fresh = runtimeA!.getRoom(pageId)!;
+      expect(fresh.docEpoch).toBe(currentEpoch);
+      expect(probeOf(fresh.doc)).toBe('NEW_LINEAGE_BYTES');
+      expect(yDocToHtml(fresh.doc)).not.toContain('OLD_GENERATION_EDIT');
+      expect(await admissionCounts(pageId)).toEqual({ total: 2, unreleased: 1 });
+    },
+  );
+
+  it('a refused stale tab also retires the stale heap its join found, so its readers do not keep the old document', async () => {
     const pageId = nextPageId();
-    const idle = await join(runtimeA!, pageId, 'idle-writer');
-    const staleEpoch = await rowEpoch(pageId);
-    appendParagraph(runtimeA!.getRoom(pageId)!.doc, 'OLD_GENERATION_EDIT');
-    await endLineage(pageId, '<p>published body</p>', true);
+    await join(runtimeA!, pageId, 'earlier-writer');
+    const supersededEpoch = await rowEpoch(pageId);
+    const reader = await join(runtimeA!, pageId, 'reader', { writable: false });
+    await runtimeA!.detachSocket(pageId, 'earlier-writer');
+    expect(runtimeA!.getRoom(pageId)!.admission).toBeNull();
+    await endLineage(pageId, '<p>published body</p>');
 
-    // The merge under the lifecycle lock proves the room stale. The join fails
-    // like any failed join, and its client reconnects.
-    await expect(join(runtimeA!, pageId, 'undeclared')).rejects.toMatchObject({ reason: 'collab_lineage_changed' });
-    expect(runtimeA!.getRoom(pageId)).toBeUndefined();
-    expect(idle.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
-    expect(await admissionCounts(pageId)).toEqual({ total: 1, unreleased: 0 });
-
-    const retry = await join(runtimeA!, pageId, 'undeclared-retry');
-    expect(retry.attached.writable).toBe(true);
-    const fresh = runtimeA!.getRoom(pageId)!;
-    expect(fresh.docEpoch).toBe(await rowEpoch(pageId));
-    expect(probeOf(fresh.doc)).toBe('NEW_LINEAGE_BYTES');
-    expect(yDocToHtml(fresh.doc)).not.toContain('OLD_GENERATION_EDIT');
     const stale = await join(runtimeA!, pageId, 'stale-tab', {
-      expectedDocEpoch: { kind: 'declared', epoch: staleEpoch },
+      expectedDocEpoch: { kind: 'declared', epoch: supersededEpoch },
     });
+
     expect(stale.attached.joinRefused).toBe('doc_reset');
-    expect(retry.socket.closes).toEqual([]);
-  });
-
-  it('a room that owns an admission accepts only its own epoch; the refused declaration prompts it to check its row', async () => {
-    const pageId = nextPageId();
-    const idle = await join(runtimeA!, pageId, 'idle-writer');
-    const superseded = runtimeA!.getRoom(pageId)!;
-    await endLineage(pageId, '<p>published body</p>', true);
-    const currentEpoch = await rowEpoch(pageId);
-
-    // The declaration matches the row, but this room is not that generation.
-    const refused = await join(runtimeA!, pageId, 'current-tab', {
-      expectedDocEpoch: { kind: 'declared', epoch: currentEpoch },
-    });
-    expect(refused.attached.joinRefused).toBe('doc_reset');
-    expect(superseded.sockets.has('current-tab')).toBe(false);
-    // The declaration was not the reason; the row the room then re-read is.
-    await vi.waitFor(() => expect(runtimeA!.getRoom(pageId)).toBeUndefined());
-    expect(idle.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
-
-    const rejoined = await join(runtimeA!, pageId, 'current-tab-again', {
-      expectedDocEpoch: { kind: 'declared', epoch: currentEpoch },
-    });
-    expect(rejoined.attached).toMatchObject({ writable: true, lineageVerified: true });
+    expect(reader.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
+    expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+    expect(await storedDoc(pageId)).toEqual([]);
+    expect(await admissionCounts(pageId)).toEqual({ total: 1, unreleased: 0 });
   });
 
   it('a superseded room cannot merge: a commit snapshot is refused and the room is retired', async () => {
@@ -901,6 +911,69 @@ describe.skipIf(!canRun)('document epoch join races (#2034)', () => {
     await persist.flushCollabPersist(freshRoom);
     expect(await bodyHtml(pageId)).toBe('<p>next generation</p>');
   });
+
+  it.each(['deleted', 'reseeded'] as const)(
+    'a declared join whose provisional room loads a %s row after its admission committed is refused and keeps no admission',
+    async (fate) => {
+      const pageId = nextPageId();
+      // Pod A holds a provisional heap for a reader; the document is seeded on pod B.
+      const reader = await join(runtimeA!, pageId, 'reader', { writable: false });
+      const provisional = runtimeA!.getRoom(pageId)!;
+      await join(runtimeB!, pageId, 'seeder', { userId: USER_B });
+      const declared = await rowEpoch(pageId);
+      await runtimeB!.detachSocket(pageId, 'seeder');
+      await runtimeB!.dropRoom(pageId);
+      expect(provisional.docEpoch).toBeNull();
+      expect(await admissionCounts(pageId)).toEqual({ total: 1, unreleased: 0 });
+
+      // The provisional room loads its document in a transaction after the
+      // admission's. Hold that load on the collab-init lock.
+      const holder = await getPool().connect();
+      let joining: Promise<{ socket: RecordedSocket; attached: CollabSocket }> | undefined;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
+        joining = join(runtimeA!, pageId, 'declared-tab', { expectedDocEpoch: { kind: 'declared', epoch: declared } });
+        await vi.waitFor(async () => {
+          const waiting = await query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count FROM pg_locks
+              WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND NOT granted
+                AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+            [COLLAB_INIT_LOCK_KEY, pageId],
+          );
+          expect(waiting.rows[0]!.count).toBe('1');
+        }, { timeout: 10_000 });
+        // The declaration matched the row inside the admission transaction, which committed.
+        expect(await admissionCounts(pageId)).toEqual({ total: 2, unreleased: 1 });
+
+        // A publication, or another pod's seed after it, commits in that gap.
+        await endLineage(pageId, '<p>published body</p>', fate === 'reseeded');
+        const replacement = await storedDoc(pageId);
+        await holder.query('ROLLBACK');
+        const refused = await joining;
+
+        expect(refused.attached).toMatchObject({ writable: false, lineageVerified: false, joinRefused: 'doc_reset' });
+        expect(controls(refused.socket)).toEqual([{ type: 'doc_reset' }]);
+        expect(refused.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
+        expect(runtimeA!.getRoom(pageId)?.sockets.has('declared-tab') ?? false).toBe(false);
+        // The admission this join acquired is released, not left behind.
+        expect(await admissionCounts(pageId)).toEqual({ total: 2, unreleased: 0 });
+        await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+        // The document the room ended up with is not the declared one.
+        const stored = await storedDoc(pageId);
+        expect(stored).toHaveLength(1);
+        expect(stored[0]!.doc_epoch).not.toBe(declared);
+        if (fate === 'reseeded') expect(stored).toEqual(replacement);
+        expect(await bodyHtml(pageId)).toBe('<p>published body</p>');
+        // The reader held the provisional HTML document.
+        expect(reader.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+        await joining?.catch(() => undefined);
+      }
+    },
+  );
 });
 
 describe.skipIf(!canRun)('owner convergence without the retire hint (#2034)', () => {

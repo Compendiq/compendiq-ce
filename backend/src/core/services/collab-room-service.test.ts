@@ -626,6 +626,54 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     expect(persisted.rows[0]?.count).toBe('0');
   });
 
+  it.each([
+    ['malformed', { kind: 'malformed' }],
+    ['mismatched', { kind: 'declared', epoch: '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f' }],
+  ] as const)(
+    'a join to a frozen page keeps its read-only outcome with a %s expectedDocEpoch: no epoch decision (#2034)',
+    async (_name, expectedDocEpoch) => {
+      const pageId = nextPageId();
+      await setPageBaselineCreationEnabled(SYSTEM_ADMIN, true);
+      const prepared = await previewPageBaseline(pageId, USER_A);
+      await freezePage({
+        pageId,
+        actorId: USER_A,
+        reason: 'Publish the reviewed page before a collaboration join',
+        expectedContentRevision: prepared.contentRevision,
+        expectedManifestDigest: prepared.manifestDigest,
+      });
+      const state = await query<{ lifecycle_revision: string }>(
+        'SELECT lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+      );
+      const sent: Uint8Array[] = [];
+      const closes: Array<{ code: number; reason: string }> = [];
+
+      // Edit permission and the current lifecycle revision: only the freeze keeps it read-only.
+      const joined = await runtimeA!.attachSocket(pageId, {
+        id: 'frozen-editor',
+        ws: {
+          readyState: 1,
+          send(frame: Uint8Array) { sent.push(frame); },
+          close(code?: number, reason?: string) { closes.push({ code: code ?? 1005, reason: String(reason ?? '') }); },
+        } as unknown as WebSocket,
+        userId: USER_A,
+        writable: true,
+        expectedLifecycleRevision: state.rows[0]!.lifecycle_revision,
+        expectedDocEpoch,
+      });
+
+      expect(joined.writable).toBe(false);
+      expect(joined.joinRefused).toBeUndefined();
+      expect(closes).toEqual([]);
+      expect(runtimeA!.getRoom(pageId)!.sockets.has('frozen-editor')).toBe(true);
+      expect(decodeControlFrames(sent)).toEqual([
+        expect.objectContaining({
+          type: 'page_lifecycle', isFrozen: true, lifecycleRevision: state.rows[0]!.lifecycle_revision,
+        }),
+      ]);
+    },
+  );
+
   it('freeze loses to an admitted editor and leaves its in-memory work mounted', async () => {
     const pageId = nextPageId();
     await setPageBaselineCreationEnabled(SYSTEM_ADMIN, true);
