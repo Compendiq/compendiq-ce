@@ -4297,6 +4297,13 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
         async () => { throw new Error('socket hang up after the request was written'); },
       )).rejects.toThrow('socket hang up');
       await declareCollabCommitUnknown(intent, () => undefined).record();
+      // `record()` never throws and can fall back to latches: the refusal must come
+      // from the committed marker, so pin it in PostgreSQL before the probe is released.
+      const marked = await query<{ marked: boolean }>(
+        'SELECT remote_effect_failed_at IS NOT NULL AS marked FROM page_write_intents WHERE id = $1',
+        [intent.id],
+      );
+      expect(marked.rows).toEqual([{ marked: true }]);
     }],
   ])('never restores editing when %s commits after the replay and before the probe answer', async (_name, refusal, fence) => {
     const { tab, pageId, userId, revision } = await offlineTab(`collab_rejoin_${refusal}`);

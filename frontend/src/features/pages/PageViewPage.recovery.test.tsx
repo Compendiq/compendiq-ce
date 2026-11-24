@@ -1099,7 +1099,7 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
   const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
   const WINDOW_MS = COLLAB_UPGRADE_WINDOW_SEC * 1000;
   const BANNER = 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.';
-  const UNCONFIRMED = 'We could not confirm that the server has your draft, so editing stays paused. Download draft saves it as it was before you pressed Rejoin. You can press Rejoin again.';
+  const UNCONFIRMED = 'We could not confirm that the server has your draft, so editing stays paused. Download draft saves it as it was before you first pressed Rejoin. You can press Rejoin again.';
   let room: Y.Doc;
   let roomDropsUpdates: boolean;
   let handled: WeakMap<Socket, number>;
@@ -1406,7 +1406,12 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
         expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
       });
       expect(document.querySelector('.ProseMirror')).not.toHaveTextContent('Typed offline');
+      return attempt;
     }
+
+    const downloadedFile = async () => JSON.parse(await downloads[downloads.length - 1]!.text()) as {
+      pageId: string; title: string; bodyHtml: string; labels: string[]; lifecycleRevision: string | null;
+    };
 
     it('keeps the earlier copy downloadable until it is downloaded', async () => {
       await succeedAgainstRoomAhead();
@@ -1435,6 +1440,83 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
       fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
       await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
       expect(downloads).toHaveLength(0);
+    });
+
+    it('keeps the copy, with its actions, through a later terminal refusal', async () => {
+      const attempt = await succeedAgainstRoomAhead();
+
+      act(() => { attempt.close(4403, 'forbidden'); });
+      expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
+      // Download draft now writes the editor, which no longer has the text; the copy still does.
+      fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
+      expect((await downloadedFile()).bodyHtml).not.toContain('Typed offline');
+      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
+      expect((await downloadedFile()).bodyHtml).toContain('Typed offline');
+      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
+    });
+
+    it('keeps both copies when another merging Rejoin follows in the same session', async () => {
+      const attempt = await succeedAgainstRoomAhead();
+
+      // A second limit, then a peer adds a paragraph meanwhile: the next merge changes the draft again.
+      act(() => { attempt.close(4403, 'rate_limited'); });
+      await screen.findByText('This editing session is now read-only');
+      publish('Peer addition');
+      const second = await pressRejoin();
+      completeAttempt(second.attempt);
+      await act(async () => { await Promise.resolve(); });
+      act(() => serve(second.attempt));
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+      });
+
+      const downloads2 = await screen.findAllByRole('button', { name: /^Download earlier copy from / });
+      expect(downloads2).toHaveLength(2);
+      expect(screen.getAllByRole('button', { name: /^Dismiss copy from / })).toHaveLength(2);
+      fireEvent.click(downloads2[0]!);
+      const first = await downloadedFile();
+      expect(first.bodyHtml).toContain('Typed offline');
+      // The other one is still there, and is the draft as it was before the second sequence.
+      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
+      const secondCopy = await downloadedFile();
+      expect(secondCopy.bodyHtml).not.toContain('Typed offline');
+      expect(secondCopy.bodyHtml).not.toContain('Peer addition');
+      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
+    });
+
+    it('writes the stored copy unchanged after the title is edited', async () => {
+      await succeedAgainstRoomAhead();
+
+      fireEvent.change(screen.getByTestId('edit-title-input'), { target: { value: 'A title typed afterwards' } });
+      expect(screen.getByTestId('edit-title-input')).toHaveValue('A title typed afterwards');
+      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
+      expect(await downloadedFile()).toMatchObject({
+        pageId: '42', title: 'Recovery article', labels: [], lifecycleRevision: '1',
+      });
+      expect((await downloadedFile()).bodyHtml).toContain('Typed offline');
+    });
+
+    it('hands focus on only when the control owned it: keyboard Dismiss moves to the editor, focus elsewhere stays', async () => {
+      await succeedAgainstRoomAhead();
+
+      const title = screen.getByTestId('edit-title-input');
+      title.focus();
+      // A pointer click that never focused the control leaves focus where it was.
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+      expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument();
+      expect(title).toHaveFocus();
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(title).toHaveFocus();
+    });
+
+    it('moves focus to the editor column when a focused Dismiss is activated', async () => {
+      await succeedAgainstRoomAhead();
+
+      const dismiss = screen.getByRole('button', { name: 'Dismiss' });
+      dismiss.focus();
+      fireEvent.click(dismiss);
+      expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus();
     });
   });
 
