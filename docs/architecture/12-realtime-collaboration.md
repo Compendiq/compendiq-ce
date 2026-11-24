@@ -199,20 +199,48 @@ end that join or leave the socket unverified.
    read-only, **no epoch decision**.
 3. `expectedDocEpoch` is malformed, or declared and different from the page's
    `doc_epoch` (or the page has no row): `doc_reset` control, close `1001
-   doc_reset`, the socket is not attached and no admission is taken. Only the
+   doc_reset`, the socket is not attached and no admission is kept. Only the
    joining socket is affected: the room's other sockets stay, and a refused
    join does not cancel an empty room's eviction.
 4. Otherwise the join is writable: `writable_admission`.
 
-Step 3 is decided twice. A pre-check without locks reads the row: a malformed
-declaration needs no read; a mismatch refuses; a room without an admission
-whose `docEpoch` differs from the row is a stale heap, which is retired and the
-join restarted once against a fresh room. Then the same two conditions run as
-the `precondition` of `admitPageRuntime`, inside the admission transaction
-under the page lifecycle lock that every invalidation, seed and inbound
-publication also takes, so a lineage that changes between the two checks
-leaves no admission behind. A room that already owns an admission accepts
-only a declaration equal to its own `docEpoch`.
+A frozen page is step 2 whatever the join declares: the refused admission
+gives it today's read-only outcome and the declaration is not looked at.
+
+Step 3 is decided at three points, and a declared join is writable only when
+its declaration equals the epoch of the document the room ends up holding:
+
+- *Pre-check, before the admission.* A malformed declaration is refused with
+  no read. Otherwise the row is read without locks. A room whose `docEpoch`
+  differs from the row is a stale heap and is decided first: without an
+  admission the unlocked read is proof (a row that changed never changes
+  back); with an admission the row is read again under the page lifecycle
+  lock. A stale heap is retired (`doc_reset` to its sockets) and the join
+  restarts once against a fresh room, so a tab of the current generation that
+  meets a superseded room is admitted, and a tab of an old generation still
+  causes the stale room it found to be retired before it is refused. Then a
+  declaration that differs from the row refuses the socket.
+- *Admission precondition.* The same conditions run as the `precondition` of
+  `admitPageRuntime`, inside the admission transaction under the page lifecycle
+  lock that every invalidation, seed and inbound publication also takes, so a
+  lineage that changes after the pre-check leaves no admission behind.
+- *After the room has its document.* A provisional room loads, seeds or adopts
+  its document in a transaction after the admission's, and the row can be
+  deleted or reseeded in between. Before the room keeps the admission, the
+  declaration must equal the epoch the room now holds; otherwise the admission
+  this join acquired is released and the socket is refused. A room that already
+  owns an admission accepts only a declaration equal to its own `docEpoch`.
+
+**Not in this change: the final step.** The current-epoch assertion in one
+fenced transaction that also writes `writable_admission` (design D-2034,
+"final step of `attachSocket`") arrives with #2035. Until then a publication
+that commits after the join's last fenced transaction and before the positive
+control is written still lets that control be sent for a document whose
+lineage has just ended. No byte crosses in that window: the socket's first
+frame fails the current-epoch assertion, nothing is applied, and the room is
+retired with `doc_reset`. What the join decision guarantees here is that a
+declared join is never writable in a room that holds another epoch than the
+one it declared.
 
 `CollabSocket.lineageVerified` is true only for a writable socket whose join
 declared the room's epoch. A join that declares nothing is admitted as before
@@ -373,9 +401,12 @@ to write into), and the heap is dropped; the editors keep their documents as
 read-only drafts. The retirement is queued on the room's ownership and is never
 awaited by the persist chain, the bus queue or a frame handler. No "the row
 cannot change while an admission is live" assumption is needed: a stale room
-cannot persist, merge, accept a client frame, grant a writable join, or answer
-or apply a peer exchange, and it is retired at the first of those boundaries it
-reaches.
+cannot persist, merge, accept a client frame, or answer or apply a peer
+exchange, and it is retired at the first of those boundaries it reaches. A
+join into a stale room is refused or restarted by the checks above; the one
+remaining window, a lineage that ends between the join's last transaction and
+its `writable_admission`, is closed by #2035's final step (see *Not in this
+change* above).
 
 **Inbound publication and the retire hint (#2034, amendment A8).** The three
 inbound Confluence writers that update an existing page (scheduled sync

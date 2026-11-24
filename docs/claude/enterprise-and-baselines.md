@@ -278,11 +278,16 @@ the bus queue or a frame handler (schedule it). Bus messages of another
 generation and the retire hint are prompts to re-read the row, never reasons.
 A join that would be writable and declares a malformed or different
 `expectedDocEpoch` is refused (`doc_reset`, `1001 doc_reset`, not attached, no
-admission), first without locks and again as the `precondition` of
-`admitPageRuntime`; an undeclared join is admitted and never
-`lineageVerified`. Do not reintroduce an in-place replacement of the row, a
-process-wide reset flag or a pre-commit freeze. Details:
-`docs/architecture/12-realtime-collaboration.md`.
+admission kept): first without locks, again as the `precondition` of
+`admitPageRuntime`, and once more after a provisional room loaded, seeded or
+adopted its document, because that happens in a later transaction. A declared
+join is writable only in a room whose `docEpoch` equals the declaration. A
+stale heap the join finds is retired first and the join restarts once; a frozen
+page gets no epoch decision. An undeclared join is admitted and never
+`lineageVerified`. The fenced final step that asserts the current epoch in the
+transaction that writes `writable_admission` is #2035, not this change. Do not
+reintroduce an in-place replacement of the row, a process-wide reset flag or a
+pre-commit freeze. Details: `docs/architecture/12-realtime-collaboration.md`.
 
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
