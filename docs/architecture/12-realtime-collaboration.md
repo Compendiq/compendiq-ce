@@ -379,7 +379,8 @@ above. The answer is decoded into a separate temporary document, because the
 local one can change while the attempt runs, and must include the target with
 the relation the Save route uses (`assertCommitSnapshotIncludes`: every clock
 and every deletion, so a deletion-only offline change is covered). One probe
-is in flight; an answer that does not cover the draft is asked again one
+is in flight (the hook's periodic resync stands still meanwhile, so no other
+SyncStep2 can pass for the answer); an answer that does not cover the draft is asked again one
 second later. No proof within `REJOIN_COVERAGE_TIMEOUT_MS` (10 s), or any close
 meanwhile (`1009` for an over-size replay, `1001` for a refused frame, a lost
 transport), ends the attempt unsuccessfully: provider disconnected, draft

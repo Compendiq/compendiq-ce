@@ -584,17 +584,21 @@ flowchart TB
   that attempt's own export, editing resumes and the export is appended, unchanged,
   to an ordered list of earlier copies, each shown as a notice in the same banner
   style: "Your draft was merged with the page", the copy named as from before
-  you first pressed Rejoin (with its time when there is more than one), and
-  **Download earlier copy** and **Dismiss** (native buttons). A copy leaves the
-  list only when it is downloaded or dismissed or the editing session ends; a
-  later refusal or read-only state, a later merge (which appends its own copy) and
-  later title or label edits never hide, replace or rewrite one. Download writes
-  the stored file as it is. A notice action hands focus to the "Page body" region
-  only when the pressed control owned focus, synchronously, before it is removed.
-  Nothing is shown when the merge changed nothing. The editor becomes writable
-  only when the attempt proves the server holds the draft
-  (`docs/architecture/12-realtime-collaboration.md`). No other reason is
-  offered a rejoin.
+  you first pressed Rejoin (with its ordinal, date and time when there is more
+  than one), and **Download earlier copy** and **Dismiss** (native buttons). The
+  handoff follows the hook's explicit `rejoinSucceeded` counter (reset with each
+  session, compared with the document the export was taken in), never the socket's
+  writability: a transient close can land in the same render as the proof. A copy
+  leaves the list only when it is downloaded or dismissed or the editing session
+  ends; a later refusal or read-only state, a later merge (which appends its own
+  copy) and later title or label edits never hide, replace or rewrite one.
+  Download writes the stored file as it is, under its own name
+  (`page-<id>-draft-copy-<ordinal>-<timestamp>.json`). A notice action hands focus
+  to the "Page body" region only when the pressed control owned focus,
+  synchronously, before it is removed. Nothing is shown when the merge changed
+  nothing. The editor becomes writable only when the attempt proves the server
+  holds the draft (`docs/architecture/12-realtime-collaboration.md`). No other
+  reason is offered a rejoin.
 - **An unknown collaborative save pauses editing (#2035).** The
   `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or
   the `1001 commit_unknown` close sets `readOnlyReason: 'commit_unknown'`
