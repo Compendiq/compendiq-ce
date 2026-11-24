@@ -828,11 +828,8 @@ persist them:
   two sentences and no draft. Edits typed after the failed Save are not
   persisted and not merged later; **Download draft** is how a user keeps them.
   Tell users to download the draft before they open the current version. The
-  user whose Save was answered 409 at that point sees "This page was modified
-  in Confluence … while it was being saved. The result of this save is
-  unknown, and editing is paused until that save is resolved." (chip "Result
-  unknown") until the read-only draft replaces it; that notice no longer says
-  the editing session is still open.
+  tab whose Save was answered 409 at that point goes to the same read-only
+  draft on that answer, without waiting for the room to tell it.
 - *What ends it.* Only the intent leaving `pending`: reconcile it (below).
   Nothing else clears the state and no timer does. After settlement a newly
   opened editor is writable again; tabs already on the read-only draft stay
@@ -868,6 +865,16 @@ persist them:
   for that page until the marker commits. A
   backend process older than this change knows neither the marker nor the
   control: follow the rolling-upgrade gate above.
+- *Leftover members of the Redis set.* `collab:commit-unknown:<pageId>` can
+  keep the id of a Save that is long settled, when its process stopped
+  before removing it. That is harmless: a member is only ever compared with
+  the page's current pending Save. The next collaborative Save of the page
+  that fails after dispatch removes members whose intent is settled or does
+  not exist (up to 32 per marker); a page without such a Save keeps them, and
+  the key has no expiry on purpose. To clean up by hand, remove only ids that
+  are not `pending` in `page_write_intents` (`SREM`). Never delete the key or
+  the id of a pending intent: while that Save's marker is not recorded, the
+  member is what stops other processes from accepting edits.
 - *Quiescence.* The room admission of such a page stays active behind the
   pending intent, and its release retries until the intent settles. With the
   marker recorded, the failed Save itself no longer holds its runtime's drain,

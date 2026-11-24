@@ -560,13 +560,31 @@ removes write authority.
   the marker and the latch but publishes nothing; a marker proven during that
   time is announced when the gate opens. From then on every retry repeats the
   cue, and a late marker success publishes it once more.
+- *Retention of the Redis set.* Each owner removes only its own member, so a
+  member can outlive its Save: the owner stopped after the write, or a write
+  that was already on the wire landed after the owner's cleanup. Such a
+  member grants and removes nothing, because a reader asks for the page's
+  current intent only. It is reclaimed when the marker work of any later Save
+  of the page ends (marker proven, or the intent found settled): the owner
+  then samples up to 32 members of the set, reads which of them name a
+  `pending` intent, and removes the others, that is, members whose intent is
+  settled or does not exist. One sample, one read and one removal per marker,
+  not awaited by the Save's answer; a larger set shrinks over several markers.
+  An intent never returns to `pending`, so a removed member can never be the
+  current one again, and the member of a pending intent stays however long
+  its marker is delayed. The key has no TTL for the same reason: an expiry
+  could drop the current intent's latch while its marker cannot be recorded.
+  A page without a later failed Save keeps its leftover members.
 - *The route's 409.* The provider's 409 after dispatch keeps status 409,
   `code: 'confluence_modified'` and the version fields. Its body carries
   `saveOutcome: 'unknown'` (`CollabCommitConflictSchema` in
   `@compendiq/contracts`) and its message no longer says the session is still
   open. The version check before dispatch sends `saveOutcome:
   'not_dispatched'` and the previous message. A body without the field comes
-  from a backend older than this change and is read as `not_dispatched`.
+  from a backend older than this change and is read as `not_dispatched`. The
+  tab that issued the Save acts on `unknown` itself: it enters the read-only
+  draft at once and disconnects, without waiting for the cue or the close
+  (`04-frontend-structure.md`).
 - *Fences.* The cue is only a prompt; these are the barrier. A client frame is
   applied only inside a transaction that asserts the effective state is not
   `unknown`. The `precondition` of a room admission asserts it, so no join

@@ -102,8 +102,13 @@ until the route opens the declaration's gate (`announce()`). The Redis latch
 is a set of intent ids, so a late write cannot replace another Save's member;
 send its commands and the cue through `withRedisCommandDeadline`, which
 removes a still-queued command at the deadline, never through a bare
-`Promise.race`. The route's 409 `confluence_modified` carries `saveOutcome`
-(`not_dispatched` or `unknown`). Frames, the room-admission `precondition` and the
+`Promise.race`. Members are reclaimed only when durable state proves them
+obsolete (intent settled or absent), in a bounded sample after an owner's
+marker work ends; never give the key a TTL or delete a pending intent's
+member. The route's 409 `confluence_modified` carries `saveOutcome`
+(`not_dispatched` or `unknown`); on `unknown` the saving tab enters the
+`commit_unknown` read-only draft from the answer alone
+(`declareCommitUnknown`). Frames, the room-admission `precondition` and the
 final step of `attachSocket` assert the effective state (durable state plus
 the process, room and Redis latches for the same intent) on their
 lifecycle-locked client; `writable_admission` is written only inside that
