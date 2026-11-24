@@ -104,7 +104,7 @@ sequenceDiagram
         B->>B: refreshAccessTokenOnce then reconnect
     else flag off or upgrade rate limited
         F-->>B: close 4403 flag_off or rate_limited
-        B->>B: no reconnect, show the reason, Retry after the upgrade window for rate_limited
+        B->>B: no reconnect, show the reason, Retry after the upgrade window for rate_limited, after the first sync the draft stays read-only and Rejoin follows the same window
     else missing or no page access or folder or trashed
         F-->>B: close 4404
         B->>B: destroy provider do not reconnect
@@ -132,7 +132,7 @@ sequenceDiagram
 |------|--------|------|------------------------------|-----------------------------|
 | **4401** | `unauthorized` | Missing / invalid / expired JWT, deactivated user or changed role (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) | Refresh and rejoin. No session left: "Your session expired" | Refresh and rejoin. No session left: read-only draft |
 | **4403** | `forbidden` | Page access revoked mid-session (60 s permission refresh) | "You cannot join this collaborative session." Fail closed, no Retry | Read-only draft (`permission_loss`) |
-| **4403** | `rate_limited` | More than 20 upgrades by the user in the fixed `COLLAB_UPGRADE_WINDOW_SEC` (60 s) window | "Too many connection attempts". Retry becomes available one full window after the refusal | Read-only draft (`rate_limited`): "Too many connection attempts from your account." No rejoin |
+| **4403** | `rate_limited` | More than 20 upgrades by the user in the fixed `COLLAB_UPGRADE_WINDOW_SEC` (60 s) window | "Too many connection attempts". Retry becomes available one full window after the refusal | Read-only draft (`rate_limited`): "Too many connection attempts from your account." **Rejoin** one full window after the refusal, only for a document with a pinned epoch (#2036, amendment A4); no rejoin otherwise |
 | **4403** | `flag_off` | Flag off at join, or mid-session (every pod tombstones its rooms) | "Collaborative editing has been turned off". The client refetches `GET /api/collab/config`, no Retry | Read-only draft (`flag_off`): "Collaborative editing was turned off." The client also refetches `GET /api/collab/config` |
 | **4403** | `readonly` | 8 refused write frames from a read-only socket after the join (`COLLAB_READONLY_DROP_LIMIT`). Never sent for pre-live buffering | "The collaborative session closed before it finished loading." with Retry | Read-only draft (`readonly`): "The server stopped accepting changes from this tab." |
 | **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden`: read-only draft (`permission_loss`), also for an empty reason |
@@ -308,6 +308,63 @@ that fence's outcome: a lineage change retires the room (`doc_reset`), an
 unknown commit demotes the socket (`commit_unknown`), any other refusal closes
 it `1001 collab_validation_unavailable`. A SyncStep1 from any other socket is
 answered as before, without a transaction.
+
+**Rejoin after a post-sync `rate_limited` (#2036, A4).** The hook keeps the
+provider and `Y.Doc`, stops reconnecting, sets `readOnlyReason: 'rate_limited'`
+and arms one `COLLAB_UPGRADE_WINDOW_SEC` timer; the fixed server window
+started at or before the refusal. Only this reason is offered a rejoin, and
+only for a document with a pinned epoch (amendment A4: an unpinned document is
+never verified, so the server sends it no SyncStep1 and nothing could prove
+the draft arrived). `forbidden`, `flag_off`, `readonly`, unknown and empty
+reasons keep the read-only draft with no rejoin, and nothing rejoins by
+itself. `retry()` then starts one attempt on the same provider with the joined
+lifecycle revision, the pinned epoch and the current access token. The attempt
+owns every close: a terminal `closed` (4401, 4403, 4404) is settled once after
+`connection-close`, 4401 does not refresh the token, and the provider's
+reconnect timer is switched off at the first close so it cannot start a second
+attempt.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser hook
+    participant G as Gateway room
+    B->>G: connect the same provider and Y.Doc with lifecycle revision, pinned epoch and token
+    G-->>B: writable_admission for the joined revision
+    G-->>B: server SyncStep1
+    B->>G: SyncStep2 reply with the draft changes
+    B->>G: SyncStep1 with an empty state vector, sent after that reply
+    G-->>B: SyncStep2 with the whole room state
+    B->>B: decode into a temporary Y.Doc and require the clocks and deletions recorded at connect
+    Note over B: only now readOnlyReason clears and the editor is writable
+```
+
+Success needs all four conditions; the sticky first-sync flag proves none of
+them. (1) A `writable_admission` for the joined revision. (2) A `sync` event of
+this connection. (3) The server's own SyncStep1 (#1928), so a gateway without
+it never succeeds. (4) The coverage proof: the target snapshot is recorded
+when the attempt connects; after the provider has sent its SyncStep2 reply to
+the server's SyncStep1 (scheduled after the stock handler returns) the hook
+sends a SyncStep1 with an empty state vector. The gateway handles a socket's
+frames in order, so its answer follows the replay, which passed the
+current-epoch assertion, and for a verified writer it is the fenced answer
+above. The answer is decoded into a separate temporary document, because the
+local one can change while the attempt runs, and must include the target with
+the relation the Save route uses (`assertCommitSnapshotIncludes`: every clock
+and every deletion, so a deletion-only offline change is covered). One probe
+is in flight; an answer that does not cover the draft is asked again one
+second later. No proof within `REJOIN_COVERAGE_TIMEOUT_MS` (10 s), or any close
+meanwhile (`1009` for an over-size replay, `1001` for a refused frame, a lost
+transport), ends the attempt unsuccessfully: provider disconnected, draft
+kept with `rate_limited`, Rejoin available at once and a status message that
+the server could not be confirmed to hold the draft. A refusal ends it in the
+read-only draft with its own reason (`writable_refused`, `permission_loss`,
+`doc_reset`, `tombstone`, `commit_unknown`, 4401, 4403, 4404); a second
+`rate_limited` restarts the window. Against a pod without #1928 no SyncStep1
+arrives and the attempt ends unsuccessfully after the timeout.
+
+The proof is a live-room statement: the room of the current generation held the
+draft at that moment. It is not a durable publication and does not protect
+against a later unrelated change; Save keeps its own check.
 
 Type-4 control frames (JSON, server to client):
 

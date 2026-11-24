@@ -558,7 +558,22 @@ flowchart TB
   in `readOnlyReason` and each has its own sentence (`readOnlyDraftMessage`);
   `forbidden`, an unknown and an empty reason stay `permission_loss` with "The
   page or your access changed". A post-sync `flag_off` also refetches the
-  collaboration config. No rejoin is offered after the first sync.
+  collaboration config.
+- **Rejoin of a rate-limited draft (#2036, amendment A4).** The hook reports
+  `rejoinOffered` only for a post-sync `rate_limited` of a document with a
+  pinned epoch (`docEpochPinned`), `canRetry` once one full
+  `COLLAB_UPGRADE_WINDOW_SEC` has passed or an attempt ended unconfirmed, and
+  `rejoinAttempt` (`idle`, `attempting`, `unconfirmed`). The read-only banner
+  then shows **Rejoin** beside `Download draft` and `Open current version`,
+  with a status line (`rejoinStatusMessage`). Like the join `Retry` it is inert
+  through `aria-disabled`, never `disabled`, keeps focus, reads `Rejoining…`
+  while the attempt runs and hands orphaned focus to the "Page body" region
+  when it goes away. The banner and both draft controls stay mounted before,
+  during and after an attempt, Save stays blocked and the draft is never
+  discarded. The editor becomes writable only when the attempt proves the
+  server holds the draft (`docs/architecture/12-realtime-collaboration.md`);
+  otherwise the status says the server could not be confirmed and Rejoin stays
+  available. No other reason is offered a rejoin.
 - **An unknown collaborative save pauses editing (#2035).** The
   `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or
   the `1001 commit_unknown` close sets `readOnlyReason: 'commit_unknown'`
