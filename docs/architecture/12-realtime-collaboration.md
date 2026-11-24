@@ -212,14 +212,13 @@ its declaration equals the epoch of the document the room ends up holding:
 
 - *Pre-check, before the admission.* A malformed declaration is refused with
   no read. Otherwise the row is read without locks. A room whose `docEpoch`
-  differs from the row is a stale heap and is decided first: without an
-  admission the unlocked read is proof (a row that changed never changes
-  back); with an admission the row is read again under the page lifecycle
-  lock. A stale heap is retired (`doc_reset` to its sockets) and the join
-  restarts once against a fresh room, so a tab of the current generation that
-  meets a superseded room is admitted, and a tab of an old generation still
-  causes the stale room it found to be retired before it is refused. Then a
-  declaration that differs from the row refuses the socket.
+  differs from that read may be a stale heap and is decided first: the row is
+  read again under the page lifecycle lock, which is the proof. A stale heap is
+  retired (`doc_reset` to its sockets) and the join restarts once against a
+  fresh room, so a tab of the current generation that meets a superseded room
+  is admitted, and a tab of an old generation still causes the stale room it
+  found to be retired before it is refused. Then a declaration that differs
+  from the row refuses the socket.
 - *Admission precondition.* The same conditions run as the `precondition` of
   `admitPageRuntime`, inside the admission transaction under the page lifecycle
   lock that every invalidation, seed and inbound publication also takes, so a
@@ -398,7 +397,14 @@ client declaration or a foreign message alone. After the failing transaction
 has ended, `closeRoomSockets(room, 1001, 'doc_reset')` sends the control,
 closes the sockets and releases the admission without a flush (nothing is left
 to write into), and the heap is dropped; the editors keep their documents as
-read-only drafts. The retirement is queued on the room's ownership and is never
+read-only drafts. A hard delete cascades the collaborative row. The two
+lifecycle-locked re-reads that do not pass the write fence (the revalidation
+after a retire hint or a foreign message, and the join pre-check) therefore
+also read the `pages` row. A page proven absent is not a document reset: its
+room gets the committed-delete teardown, the same
+`closeRoomSockets(room, 4404, 'committed_delete')` call and release handling
+the committed-delete tombstone uses, and whichever of the two arrives later
+finds no room. The retirement is queued on the room's ownership and is never
 awaited by the persist chain, the bus queue or a frame handler. No "the row
 cannot change while an admission is live" assumption is needed: a stale room
 cannot persist, merge, accept a client frame, or answer or apply a peer
