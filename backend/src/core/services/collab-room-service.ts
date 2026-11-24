@@ -2130,6 +2130,13 @@ export async function createCollabRuntime(
         if (!isCollabCommitUnknown(error)) {
           // The fence refused: the socket is closed and cleaned up.
           await unregisterJoin(room, full);
+          if (error instanceof JoinLineageRefusal) {
+            // The room is current; only this join's declaration is not. An
+            // admission it acquired goes before the join is answered.
+            await releaseAdmissionIfNoWriters(room).catch((cleanupError) => {
+              logger.warn({ err: cleanupError, pageId }, 'collab: refused join retained its admission');
+            });
+          }
           const outcome = await joinLineageOutcome(room, socket, declaration, error);
           if (outcome) return outcome;
           try { full.ws.close(1001, 'collab_validation_unavailable'); } catch { /* already closing */ }
@@ -2220,6 +2227,11 @@ export async function createCollabRuntime(
     return withCollabCommitKnown(room.pageId, room, (assertCommitKnown) =>
       withPageWriteTransaction([room.pageId], async (client) => {
         await persist.assertCurrentCollabDocEpoch(client, room.pageId, room.docEpoch);
+        // The room's document is the current generation. A declaration must
+        // name exactly that document: a declared join that no longer matches
+        // the epoch this room ended up with is refused with `doc_reset`,
+        // never admitted unverified. Step 3 of the precedence, before step 4.
+        if (!declarationAdmits(declaration, room.docEpoch)) throw new JoinLineageRefusal('refuse_socket');
         await assertCommitKnown(client);
         if (room.sockets.get(socket.id) !== socket || socket.ws.readyState !== 1) return false;
         if (
@@ -2230,7 +2242,7 @@ export async function createCollabRuntime(
           || !transportAvailable()
         ) throw unavailableSnapshot();
         socket.writable = true;
-        socket.lineageVerified = declaration.kind === 'declared' && declaration.epoch === room.docEpoch;
+        socket.lineageVerified = declaration.kind === 'declared';
         sendBin(socket.ws, encodeControlFrame({
           type: 'writable_admission',
           lifecycleRevision: room.lifecycleRevision,

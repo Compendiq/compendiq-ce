@@ -1364,6 +1364,48 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       });
     }, 30_000);
 
+    it.each([
+      ['an undeclared join fails, so its client reconnects into a fresh room', false],
+      ['a declared join is answered doc_reset', true],
+    ] as const)('admits no join once its room lost its lineage before the final step: %s', async (_name, declared) => {
+      const seed = await seedPage();
+      const pod = await otherRuntime('unknown-final-epoch');
+      const first = (await attachFake(pod, seed, 'final-epoch-first')).socket;
+      const epoch = pod.getRoom(seed.pageId)!.docEpoch!;
+      const paused = pauseJoinAtBookkeeping('unknown-final-epoch', 'final-epoch-join');
+      const socket = fakeSocket('final-epoch-join');
+      const joining = pod.attachSocket(seed.pageId, {
+        id: socket.id,
+        ws: socket.ws,
+        userId: seed.coEditor.userId,
+        writable: true,
+        expectedLifecycleRevision: seed.revision,
+        ...(declared ? { expectedDocEpoch: { kind: 'declared' as const, epoch } } : {}),
+      });
+      joining.catch(() => undefined);
+      await paused.reached;
+
+      // The lineage ends after the join's admission and fresh state, as an
+      // inbound publication ends it: the row of the room's epoch is gone.
+      await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [seed.pageId]);
+      paused.resume();
+
+      if (declared) {
+        expect((await joining).joinRefused).toBe('doc_reset');
+        expect(socket.controls()).toContain('doc_reset');
+        expect(socket.closed()).toEqual({ code: 1001, reason: 'doc_reset' });
+      } else {
+        await expect(joining).rejects.toMatchObject({ reason: 'collab_lineage_changed' });
+        expect(socket.controls()).not.toContain('doc_reset');
+        expect(socket.closed()?.code).toBe(1001);
+      }
+      // The positive cue was never written, and the superseded room is retired.
+      expect(socket.controls()).not.toContain('writable_admission');
+      expect(first.closed()).toEqual({ code: 1001, reason: 'doc_reset' });
+      expect(pod.getRoom(seed.pageId)).toBeUndefined();
+      expect((await admissionRows(seed.pageId)).filter((row) => !row.released)).toEqual([]);
+    }, 30_000);
+
     it('fences a socket on its next frame when the cue was dropped', async () => {
       const seed = await seedPage();
       await joinWritable(seed.pageId, seed.saver.token);
