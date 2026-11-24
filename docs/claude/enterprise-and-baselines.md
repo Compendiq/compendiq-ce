@@ -303,6 +303,10 @@ retired only on that authoritative mismatch, through
 ended; never await the persist chain or take room ownership from inside it,
 the bus queue or a frame handler (schedule it). Bus messages of another
 generation and the retire hint are prompts to re-read the row, never reasons.
+That re-read also reads the `pages` row: a hard delete cascades the
+collaborative row, and a page proven absent gets the committed-delete teardown
+(`closeRoomSockets(room, 4404, 'committed_delete')`, the tombstone's own call),
+never `doc_reset`.
 A join that would be writable and declares a malformed or different
 `expectedDocEpoch` is refused (`doc_reset`, `1001 doc_reset`, not attached, no
 admission kept): first without locks, again as the `precondition` of

@@ -1147,4 +1147,108 @@ describe.skipIf(!canRun)('retire hint (#2034)', () => {
     await persist.flushCollabPersist(roomB);
     expect(await bodyHtml(pageId)).toContain('UNFLUSHED_CURRENT_EDIT');
   });
+
+  describe('a hard-deleted page is not a document reset', () => {
+    /**
+     * A room with a writer, a reader and an unflushed edit on pod B; the page
+     * is hard-deleted under the lifecycle fence, as a committed delete does.
+     * The `pages` row takes the collaborative row with it. The retire hint of
+     * an earlier publication and the delete's own tombstone reach pod B in
+     * the given order.
+     */
+    async function closeDeletedPage(order: 'hint before tombstone' | 'tombstone only') {
+      const pageId = nextPageId();
+      const writer = await join(runtimeB!, pageId, 'writer', { userId: USER_B });
+      const reader = await join(runtimeB!, pageId, 'reader', { writable: false });
+      appendParagraph(runtimeB!.getRoom(pageId)!.doc, 'UNFLUSHED_EDIT');
+      const observed = await observeChannel(pageId);
+      const deleter = await getPool().connect();
+      try {
+        await deleter.query('BEGIN');
+        await deleter.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, pageId]);
+        await deleter.query('DELETE FROM pages WHERE id = $1', [pageId]);
+        if (order === 'hint before tombstone') {
+          // The hint is in flight when the delete commits: pod B's
+          // revalidation already waits for the fence.
+          await runtimeA!.hintDocRetired(pageId);
+          await vi.waitFor(async () => {
+            const waiting = await query<{ count: string }>(
+              `SELECT COUNT(*)::text AS count FROM pg_locks
+                WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND NOT granted
+                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+              [PAGE_LIFECYCLE_LOCK_KEY, pageId],
+            );
+            expect(waiting.rows[0]!.count).toBe('1');
+          }, { timeout: 10_000 });
+        }
+        await deleter.query('COMMIT');
+        if (order === 'hint before tombstone') {
+          // The revalidation proves the page absent before any tombstone exists.
+          await vi.waitFor(() => expect(runtimeB!.getRoom(pageId)).toBeUndefined());
+        }
+        const closedBeforeTombstone = [...writer.socket.closes, ...reader.socket.closes];
+
+        // The delete's after-commit tombstone (tombstoneCollabRoomAfterCommit).
+        await runtimeA!.tombstone(pageId, 4404, 'committed_delete');
+        await vi.waitFor(() => {
+          expect(observed.messages).toContainEqual(expect.objectContaining({ kind: 'tombstone', code: 4404 }));
+          expect(runtimeB!.getRoom(pageId)).toBeUndefined();
+        });
+        const admissions = await query<{ released: boolean; release_kind: string | null }>(
+          `SELECT released_at IS NOT NULL AS released, release_kind
+             FROM page_runtime_admissions WHERE page_id = $1`,
+          [pageId],
+        );
+        return {
+          closedBeforeTombstone,
+          writer: { closes: writer.socket.closes, controls: controlTypes(writer.socket) },
+          reader: { closes: reader.socket.closes, controls: controlTypes(reader.socket) },
+          admissions: admissions.rows,
+          liveMembers: Number(await main!.sCard(`collab:active:${pageId}`)),
+        };
+      } finally {
+        await deleter.query('ROLLBACK').catch(() => undefined);
+        deleter.release();
+        await observed.close();
+      }
+    }
+
+    it('a hint revalidated after the committed delete and before its tombstone closes 4404 committed_delete once; the tombstone is then a no-op', async () => {
+      const hinted = await closeDeletedPage('hint before tombstone');
+
+      const committedDelete = [{ code: 4404, reason: 'committed_delete' }];
+      // Both sockets were closed by the revalidation, with the permanent reason.
+      expect(hinted.closedBeforeTombstone).toEqual([...committedDelete, ...committedDelete]);
+      // The tombstone found no room: exactly one close per socket, never `doc_reset`.
+      expect(hinted.writer.closes).toEqual(committedDelete);
+      expect(hinted.reader.closes).toEqual(committedDelete);
+      expect(hinted.writer.controls).not.toContain('doc_reset');
+      expect(hinted.reader.controls).not.toContain('doc_reset');
+      expect(hinted.liveMembers).toBe(0);
+
+      // One teardown for both orders: the admission ends exactly as the
+      // committed-delete tombstone alone leaves it.
+      const tombstoned = await closeDeletedPage('tombstone only');
+      expect(tombstoned.closedBeforeTombstone).toEqual([]);
+      expect(tombstoned.writer.closes).toEqual(committedDelete);
+      expect(hinted.admissions).toHaveLength(1);
+      expect(hinted.admissions).toEqual(tombstoned.admissions);
+    });
+
+    it('a join that finds the room of a hard-deleted page gives that room the committed-delete close, not doc_reset', async () => {
+      const pageId = nextPageId();
+      const idle = await join(runtimeA!, pageId, 'idle-writer');
+      const reader = await join(runtimeA!, pageId, 'reader', { writable: false });
+      await query('DELETE FROM pages WHERE id = $1', [pageId]);
+
+      // The page is gone: the join fails as any join to a missing page does.
+      await expect(join(runtimeA!, pageId, 'late-join')).rejects.toThrow('Collaborative page is missing');
+
+      for (const socket of [idle.socket, reader.socket]) {
+        expect(socket.closes).toEqual([{ code: 4404, reason: 'committed_delete' }]);
+        expect(controlTypes(socket)).not.toContain('doc_reset');
+      }
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+    });
+  });
 });
