@@ -459,7 +459,8 @@ While the freeze holds the page lifecycle locks it refuses with
 unreleased runtime admission (`assertPageFreezeIdle`). A writable collaborative
 room admission is the common case: it exists from the moment an editor joins
 write-enabled and is released only by a clean disconnect with a successful
-flush or by a server-proven fence. Redis presence is not the authority, and a
+flush, by a server-proven fence, or once its page is proven hard-deleted
+(#1922). Redis presence is not the authority, and a
 read-only viewer holds no admission, so neither blocks. The refusal writes
 nothing: no baseline, reservation, history or lifecycle event. The shared
 client explains it as "someone is editing this article right now — ask them to
@@ -721,10 +722,19 @@ establish a terminal outcome.
 
 A writable room admission remains active until a clean disconnect and successful
 flush, or a server-proven runtime fence. Redis liveness, a missing heartbeat,
-elapsed time, and process age do not expire it. The one non-fence exit is the
-schema-upgrade retirement described under *One-time152 Notion identity snapshot
-upgrade* (`release_kind = 'upgrade_retired'`), which is justified by the write
-gate it closes in the same transaction. A flush that only waits for
+elapsed time, and process age do not expire it. Two exits need neither. One is
+the schema-upgrade retirement described under *One-time152 Notion identity
+snapshot upgrade* (`release_kind = 'upgrade_retired'`), which is justified by
+the write gate it closes in the same transaction. The other is a page proven
+absent (#1922): when the room's final flush fails with `page_not_found`, the
+room re-reads the page inside its release transaction, after the runtime and
+page lifecycle locks, and releases the admission
+(`release_kind = 'clean_disconnect'`) only if the row is gone. A hard-deleted
+page has no row for the room's edits to land in. If the row is still there or
+the proof query fails, the admission is kept; no other flush failure, HTTP 404
+or caller's claim of deletion releases it. A page with a pending intent cannot
+be hard-deleted through the protected delete paths, so this exit is no way
+around a pending intent. A flush that only waits for
 the page's own pending collaborative Save (`collab.commit.confluence` or
 `.media`) is not a failure: the room keeps the admission and retries the flush
 and release once that Save settles, at once on its `pages_version` control and
@@ -1101,7 +1111,8 @@ kind-specific recovery distinguishes three states:
 A Confluence delete whose remote delete is known complete and observed absent
 finishes the local hard delete, attachment/icon cleanup and cache publication in
 the settlement transaction, then closes open collaborative rooms with 4404 after
-COMMIT. An undispatched one restores the hidden row and leaves its rooms open.
+COMMIT; a writable room then releases its admission once it proves the page row
+gone (#1922). An undispatched one restores the hidden row and leaves its rooms open.
 
 Ordinary page updates and draft publications record a successful PUT
 acknowledgment before any follow-up GET. A compact reply is therefore not
