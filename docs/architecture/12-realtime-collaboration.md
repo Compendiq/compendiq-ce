@@ -98,6 +98,8 @@ sequenceDiagram
     N->>F: Upgrade headers forwarded
     F->>F: Map Sec-WebSocket-Protocol JWT onto Authorization Bearer
     F-->>B: 101 Switching Protocols subprotocol compendiq.collab.v1
+    B->>F: on open, y-websocket sends its SyncStep1 and awareness at once
+    Note over F: until goLive, frames are buffered in arrival order, 64 frames and 1 MiB, overflow closes 1013
     F->>F: verify JWT and flag and page row and userCanAccessPage
     alt missing or expired JWT
         F-->>B: close 4401
@@ -109,19 +111,26 @@ sequenceDiagram
         F-->>B: close 4404
         B->>B: destroy provider do not reconnect
     else ok
-        Note over F: frames before live are buffered in order, 64 frames and 1 MiB, overflow closes 1013
-        F->>G: attachSocket with the expectedDocEpoch declaration, load or create room, stamp awareness
+        F->>G: attachSocket with the expectedDocEpoch declaration and goLive, load or create room, stamp awareness
         alt would be writable and the declaration is malformed or names another epoch than the row
             G-->>B: control doc_reset then close 1001 doc_reset, socket not attached, no admission
             B->>B: keep the Y.Doc as a read-only draft, do not reconnect
         else attached
-            G-->>B: control doc_epoch when the room has a persisted document, then page_lifecycle, then writable_admission or its refusal
-            opt lineage-verified writable join
-                G-->>B: server SyncStep1 with the room state vector, directly after writable_admission
-                B->>G: SyncStep2 with what the room lacks, through the fenced write path
+            G-->>B: control doc_epoch when the room has a persisted document, then page_lifecycle
+            alt writable join reaches the fenced final step
+                G->>F: goLive inside the final transaction, buffered frames move to the frame chain behind a gate
+                G-->>B: writable_admission
+                opt lineage-verified writable join
+                    G-->>B: server SyncStep1 with the room state vector
+                    B->>F: SyncStep2 with what the room lacks, queued behind the gate, no 1 MiB budget, 10 MiB maxPayload
+                end
+                F->>G: attachSocket returned and the socket is still open, gate opens, frames handled in arrival order
+                Note over F: closing or closed before that, or a rollback, discards every queued frame
+            else read-only, writable_refused or commit_unknown join
+                G-->>B: permission_loss, writable_refused, or commit_unknown then permission_loss
+                F->>G: attachSocket returned, the socket goes live, buffered frames handled in arrival order
             end
-            B->>G: binary SyncStep1
-            G-->>B: SyncStep2, answered under the admission fence for a lineage-verified writer
+            G-->>B: SyncStep2 answering the buffered SyncStep1, under the admission fence for a lineage-verified writer
             B->>B: first sync pins the doc_epoch of this connection for every later join
             Note over G: read-only peers drop SyncStep2 and Update by first two bytes
         end
@@ -143,15 +152,24 @@ sequenceDiagram
 | **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect |
 | HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
 
-**Before live (#1895).** Until the join completes (JWT, flag, page row,
-access, upgrade limit, edit permission, `attachSocket`), the gateway buffers
-inbound frames in arrival order, at most 64 frames and 1 MiB. When the socket
-goes live they are handled before any later frame, under the same read-only
-rules, so a read-only socket that queued writes still reaches the drop limit.
-An overflow closes `1013 join_backlog`, which y-websocket retries. Buffering
-never produces a 4403. Before the first sync the editor shows exactly one of
-the messages above, never the read-only draft banner or **Download draft**;
-Save stays blocked, and title, tags and icon unlock with the first sync.
+**Before live (#1895, #1928).** y-websocket sends its SyncStep1 and awareness
+as soon as the socket opens, long before the join completes (JWT, flag, page
+row, access, upgrade limit, edit permission, `attachSocket`). Until the socket
+goes live the gateway buffers inbound frames in arrival order, at most 64
+frames and 1 MiB; an overflow closes `1013 join_backlog`, which y-websocket
+retries. Buffering never produces a 4403. A socket goes live at one of two
+points: a writable join that reaches its fenced final step goes live when that
+step calls `goLive` (below), before `writable_admission`; every other join
+goes live when `attachSocket` returns. Before `goLive` the 64-frame /
+1 MiB budget applies. After `goLive` and while `attachSocket` has not yet
+returned, frames are no longer buffered under that budget: they are queued on
+the gated frame chain, each bounded only by the 10 MiB `maxPayload`, and are
+handled once `attachSocket` has returned on a socket that is still open. Either
+way the buffered frames are handled before any later frame, under the same
+read-only rules, so a read-only socket that queued writes still reaches the
+drop limit. Before the first sync the editor shows exactly one of the messages
+above, never the read-only draft banner or **Download draft**; Save stays
+blocked, and title, tags and icon unlock with the first sync.
 
 **Gateway handoff (#1928).** The server SyncStep1 of a lineage-verified
 writable join is written inside the join's fenced final step, so the tab's
@@ -164,13 +182,16 @@ and in arrival order, onto the ordered frame chain behind a gate that opens
 when `attachSocket` has returned; later frames, the reply included, append
 behind them. `attachSocket` never awaits that chain, and no frame is handled
 under the join transaction's lifecycle lock (each frame handler takes its own).
-A rollback of the final transaction, or a close while the chain is gated,
-drops the buffered frames instead of handling them. A join that does not reach
-the final writable step goes live as before, after `attachSocket` returns. The
-10 MiB WebSocket `maxPayload` (`backend/src/app.ts`) is the only bound on the
-reply.
+The gate opens only for a socket that is still open: a rollback of the final
+transaction, a close, or a socket already closing when `attachSocket` returns
+(it can be `CLOSING` before its `close` event and before the detach) drops
+every queued frame instead of handling it, and each frame queued behind the
+gate is handled only while the transport is still open. A join that does not
+reach the final writable step goes live as before, after `attachSocket`
+returns. The 10 MiB WebSocket `maxPayload` (`backend/src/app.ts`) is the only
+bound on the reply.
 
-Close **after** the 101, **before** any SyncStep1. Do not throw
+Close **after** the 101, **before** any buffered SyncStep1 is handled. Do not throw
 `fastify.authenticate` in `onRequest` on this route.
 
 `:pageId` on the wire is integer `pages.id`, never `confluence_id`.

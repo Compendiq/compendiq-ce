@@ -771,7 +771,8 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     // The handoff of a writable join (#1928): the room called `goLive` inside
     // its final step, so frames already go to the chain, which waits until
     // `attachSocket` has returned. `dropped` when the join failed or the
-    // socket closed before that: the chain then skips every frame.
+    // socket closed, or had started closing, before that: the chain then
+    // skips every frame.
     let handoff = 'none' as 'none' | 'gated' | 'open' | 'dropped';
     let releaseHandoff: () => void = () => undefined;
 
@@ -804,8 +805,12 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     /** Append one frame to the ordered chain of a live socket. */
     const chainFrame = (joinedPageId: number, joinedConnId: string, buf: Uint8Array): void => {
       if (!runtime) return;
+      // A frame queued behind the handoff gate runs only while the transport
+      // is still open. A socket can be CLOSING before its `close` event, and
+      // the room's write fence checks membership, not the transport.
+      const queuedBehindGate = handoff === 'gated';
       frameChain = frameChain.then(async () => {
-        if (handoff === 'dropped') return;
+        if (handoff === 'dropped' || (queuedBehindGate && socket.readyState !== 1)) return;
         const result = await runtime.handleInboundFrame(joinedPageId, joinedConnId, buf);
         if (result === 'close_4403') finish(4403, 'readonly');
       }).catch((err) => {
@@ -983,6 +988,12 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         return;
       }
       if (handoff === 'gated') {
+        if (socket.readyState !== 1) {
+          // The socket started closing while the join finished: its `close`
+          // event (and the detach) is still to come. Nothing queued runs.
+          dropGatedFrames();
+          return;
+        }
         // `attachSocket` has returned: the frames that arrived since `goLive` run now.
         handoff = 'open';
         releaseHandoff();
