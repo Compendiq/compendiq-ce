@@ -2346,6 +2346,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       expect(attachmentPosts).toEqual([]);
       expect(pagePuts).toHaveLength(1);
       expect(pagePuts[0]!.storage).toContain('ac:name="drawio"');
+      expect(pagePuts[0]!.storage).toContain('<ac:parameter ac:name="diagramName">Arch</ac:parameter>');
       expect(intents).toEqual([{ kind: 'collab.commit.confluence', status: 'completed' }]);
     });
 
@@ -2359,6 +2360,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       expect(attachmentPosts[0]!.contentType).toMatch(/^multipart\/form-data; boundary=/);
       expect(pagePuts).toHaveLength(1);
       expect(pagePuts[0]!.storage).toContain('ac:name="drawio"');
+      expect(pagePuts[0]!.storage).toContain('<ac:parameter ac:name="diagramName">Arch</ac:parameter>');
       expect(pagePuts[0]!.storage).toContain('ri:filename="pasted.png"');
       expect(intents).toEqual([{ kind: 'collab.commit.confluence.media', status: 'completed' }]);
     });
