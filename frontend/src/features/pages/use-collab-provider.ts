@@ -91,6 +91,13 @@ export interface UseCollabProviderResult {
    */
   rejoinAttempt: CollabRejoinAttempt;
   /**
+   * Counts the Rejoin attempts of this session that succeeded (#2036). It is an
+   * explicit signal, not something to infer from `writable` or
+   * `readOnlyReason`: a close can land in the same render as the proof. It
+   * starts again at 0 with each new session (document).
+   */
+  rejoinSucceeded: number;
+  /**
    * The Save route answered that the collaborative save of `document` has an
    * unknown result (#2035). Enters the state the `commit_unknown` control
    * does, at once: that control may be late or never arrive. A document that
@@ -217,6 +224,7 @@ export function useCollabProvider({
   const [docEpochPinned, setDocEpochPinned] = useState(false);
   const [rejoinOffered, setRejoinOffered] = useState(false);
   const [rejoinAttempt, setRejoinAttempt] = useState<CollabRejoinAttempt>('idle');
+  const [rejoinSucceeded, setRejoinSucceeded] = useState(0);
   // Refetches must not upgrade the epoch of an already-open document.
   const latestRevision = useRef(expectedLifecycleRevision);
   latestRevision.current = expectedLifecycleRevision;
@@ -235,6 +243,7 @@ export function useCollabProvider({
     setDocEpochPinned(false);
     setRejoinOffered(false);
     setRejoinAttempt('idle');
+    setRejoinSucceeded(0);
     if (!enabled || !pageId) {
       setYdoc(null);
       setProvider(null);
@@ -392,6 +401,7 @@ export function useCollabProvider({
       setReadOnlyReason(null);
       setRejoinOffered(false);
       setRejoinAttempt('idle');
+      setRejoinSucceeded((count) => count + 1);
       setConnected(true);
       setWritable(true);
     };
@@ -593,11 +603,13 @@ export function useCollabProvider({
       setDocEpochPinned(false);
       setRejoinOffered(false);
       setRejoinAttempt('idle');
+      setRejoinSucceeded(0);
     };
   }, [enabled, pageId]);
 
   return {
     ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error,
-    reconnecting, canRetry, retry, docEpochPinned, rejoinOffered, rejoinAttempt, declareCommitUnknown,
+    reconnecting, canRetry, retry, docEpochPinned, rejoinOffered, rejoinAttempt, rejoinSucceeded,
+    declareCommitUnknown,
   };
 }

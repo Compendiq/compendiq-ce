@@ -1178,6 +1178,7 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
   let roomDropsUpdates: boolean;
   let handled: WeakMap<Socket, number>;
   let downloads: Blob[];
+  let downloadNames: string[];
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -1185,9 +1186,12 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     roomDropsUpdates = false;
     handled = new WeakMap();
     downloads = [];
+    downloadNames = [];
     URL.createObjectURL = vi.fn((blob: Blob) => { downloads.push(blob); return 'blob:draft'; });
     URL.revokeObjectURL = vi.fn();
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click(this: HTMLAnchorElement) {
+      downloadNames.push(this.download);
+    });
   });
 
   afterEach(() => {
@@ -1545,14 +1549,22 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
         expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
       });
 
-      const downloads2 = await screen.findAllByRole('button', { name: /^Download earlier copy from / });
+      const downloads2 = await screen.findAllByRole('button', { name: /^Download earlier copy \d+ from / });
       expect(downloads2).toHaveLength(2);
-      expect(screen.getAllByRole('button', { name: /^Dismiss copy from / })).toHaveLength(2);
+      // A stable ordinal plus date and time in every accessible label.
+      expect(downloads2[0]).toHaveAccessibleName(/^Download earlier copy 1 from .+\d/);
+      expect(downloads2[1]).toHaveAccessibleName(/^Download earlier copy 2 from /);
+      expect(screen.getAllByRole('button', { name: /^Dismiss copy \d+ from / })).toHaveLength(2);
+      expect(screen.getAllByTestId('collab-merged-copy')[1]).toHaveTextContent('(copy 2 from ');
       fireEvent.click(downloads2[0]!);
       const first = await downloadedFile();
       expect(first.bodyHtml).toContain('Typed offline');
       // The other one is still there, and is the draft as it was before the second sequence.
       fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
+      // Each file gets its own name: the ordinal and the moment it was taken.
+      expect(downloadNames).toHaveLength(2);
+      expect(downloadNames[0]).toMatch(/^page-42-draft-copy-1-\d{8}T\d{6}\.json$/);
+      expect(downloadNames[1]).toMatch(/^page-42-draft-copy-2-\d{8}T\d{6}\.json$/);
       const secondCopy = await downloadedFile();
       expect(secondCopy.bodyHtml).not.toContain('Typed offline');
       expect(secondCopy.bodyHtml).not.toContain('Peer addition');
@@ -1568,6 +1580,30 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
       expect(await downloadedFile()).toMatchObject({
         pageId: '42', title: 'Recovery article', labels: [], lifecycleRevision: '1',
       });
+      expect((await downloadedFile()).bodyHtml).toContain('Typed offline');
+    });
+
+    it('offers the copy when the covering answer and a transient close land in one render', async () => {
+      await limitedWithRoomAhead();
+      const { attempt } = await pressRejoin();
+
+      // The proof clears the read-only reason and a 1006 close clears writability,
+      // delivered in one batch: nothing may be inferred from the socket's state.
+      await act(async () => {
+        attempt.open();
+        serve(attempt);
+        sendControl(attempt, { type: 'writable_admission', lifecycleRevision: '1' });
+        requestReplay(attempt);
+        await Promise.resolve();
+        serve(attempt);
+        attempt.close(1006, 'offline');
+      });
+
+      expect(await screen.findByText('Working offline')).toBeInTheDocument();
+      expect(document.querySelector('.ProseMirror')).not.toHaveTextContent('Typed offline');
+      const notice = await screen.findByTestId('collab-merged-copy');
+      expect(notice).toHaveTextContent('Your draft was merged with the page');
+      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
       expect((await downloadedFile()).bodyHtml).toContain('Typed offline');
     });
 

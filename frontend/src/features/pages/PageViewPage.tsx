@@ -227,11 +227,16 @@ interface DraftFile {
 interface DraftExport {
   takenAt: Date;
   file: DraftFile;
+  /** The session (document) it was taken in: an export never crosses sessions. */
+  document: Y.Doc | null;
 }
 
 /** An export the merge made unrecoverable from the editor; it stays until used or dismissed. */
-interface EarlierCopy extends DraftExport {
+interface EarlierCopy {
+  /** Stable ordinal within the editing session: 1, 2, 3 in the order they were kept. */
   id: number;
+  takenAt: Date;
+  file: DraftFile;
 }
 
 export function PageViewPage() {
@@ -486,39 +491,53 @@ export function PageViewPage() {
     if (rejoinInFlight || !collabCanRetry) return;
     // One immutable export per sequence of presses, taken at the first one.
     if (rejoinDraftExportRef.current === null) {
-      rejoinDraftExportRef.current = { takenAt: new Date(), file: currentDraftFile() };
+      rejoinDraftExportRef.current = { takenAt: new Date(), file: currentDraftFile(), document: collab.ydoc };
     }
     retryCollabJoin();
-  }, [collabCanRetry, currentDraftFile, rejoinInFlight, retryCollabJoin]);
+  }, [collab.ydoc, collabCanRetry, currentDraftFile, rejoinInFlight, retryCollabJoin]);
   // Earlier copies (#2036). Coverage proves the room holds the draft's clocks
   // and deletions, not that the user's text survived the merge (a peer's
   // deletion can win), so a successful attempt whose merged document differs
   // from its own export appends that export, unchanged, to an ordered list.
+  // The handoff follows the hook's explicit success counter, never the
+  // socket's writability: a close can land in the same render as the proof.
   // A copy leaves only when it is downloaded or dismissed, or the editing
   // session ends: never because of a later refusal, merge, or edit.
   const [earlierCopies, setEarlierCopies] = useState<EarlierCopy[]>([]);
+  const handledRejoinSuccessRef = useRef(0);
   useEffect(() => {
-    if (collab.readOnlyReason !== null) return;
+    const successes = collab.rejoinSucceeded;
+    if (successes === 0) {
+      handledRejoinSuccessRef.current = 0;
+      return;
+    }
+    if (successes === handledRejoinSuccessRef.current) return;
+    handledRejoinSuccessRef.current = successes;
     const exported = rejoinDraftExportRef.current;
     rejoinDraftExportRef.current = null;
-    // A session that merely ended or restarted is not writable: nothing to offer.
-    if (exported === null || !collab.writable) return;
+    if (exported === null || exported.document !== collab.ydoc) return;
     const current = editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml;
     if (current === exported.file.bodyHtml) return;
     earlierCopyIdRef.current += 1;
-    const copy: EarlierCopy = { ...exported, id: earlierCopyIdRef.current };
+    const copy: EarlierCopy = { id: earlierCopyIdRef.current, takenAt: exported.takenAt, file: exported.file };
     setEarlierCopies((list) => [...list, copy]);
-  }, [collab.readOnlyReason, collab.writable, editHtml, editorInstance]);
+  }, [collab.rejoinSucceeded, collab.ydoc, editHtml, editorInstance]);
   useEffect(() => {
-    if (!editing || !collabLive) setEarlierCopies((list) => (list.length > 0 ? [] : list));
+    if (editing && collabLive) return;
+    // The editing session ended: a pending export and every kept copy go with it.
+    rejoinDraftExportRef.current = null;
+    earlierCopyIdRef.current = 0;
+    setEarlierCopies((list) => (list.length > 0 ? [] : list));
   }, [collabLive, editing]);
   // The control hands focus on only if it owned it, and before it is removed,
   // so nothing is deferred past a session change or an unmount.
   const settleEarlierCopy = useCallback((copy: EarlierCopy, control: HTMLElement, download: boolean) => {
     if (download) {
+      // A distinct name per copy: ordinal and the moment it was taken.
+      const stamp = copy.takenAt.toISOString().replace(/[-:]/g, '').slice(0, 15);
       triggerDownload(
         new Blob([JSON.stringify(copy.file, null, 2)], { type: 'application/json' }),
-        `page-${copy.file.pageId}-draft.json`,
+        `page-${copy.file.pageId}-draft-copy-${copy.id}-${stamp}.json`,
       );
     }
     if (document.activeElement === control) editorColumnRef.current?.focus();
@@ -1695,7 +1714,11 @@ export function PageViewPage() {
               )}
               {earlierCopies.map((copy) => {
                 const several = earlierCopies.length > 1;
-                const time = copy.takenAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                // Ordinal plus date and time: stable and unambiguous across days.
+                const when = copy.takenAt.toLocaleString([], {
+                  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+                });
+                const label = `${copy.id} from ${when}`;
                 return (
                   <div
                     key={copy.id}
@@ -1705,13 +1728,13 @@ export function PageViewPage() {
                     <p className="font-medium text-foreground">Your draft was merged with the page</p>
                     <p className="mt-1 leading-6 text-muted-foreground">
                       The page changed while you were away, so some of what you typed may no longer appear in it.
-                      {' '}A copy of your draft from before you first pressed Rejoin{several ? ` at ${time}` : ''} is still available.
+                      {' '}A copy of your draft from before you first pressed Rejoin{several ? ` (copy ${label})` : ''} is still available.
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
                         className="nm-button-ghost h-8"
-                        aria-label={several ? `Download earlier copy from ${time}` : undefined}
+                        aria-label={several ? `Download earlier copy ${label}` : undefined}
                         onClick={(event) => settleEarlierCopy(copy, event.currentTarget, true)}
                       >
                         Download earlier copy
@@ -1719,7 +1742,7 @@ export function PageViewPage() {
                       <button
                         type="button"
                         className="nm-button-ghost h-8"
-                        aria-label={several ? `Dismiss copy from ${time}` : undefined}
+                        aria-label={several ? `Dismiss copy ${label}` : undefined}
                         onClick={(event) => settleEarlierCopy(copy, event.currentTarget, false)}
                       >
                         Dismiss
