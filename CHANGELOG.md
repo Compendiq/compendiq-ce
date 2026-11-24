@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Wide article PDF tables no longer wrap fitting carried header text twice per band; text placement and borders are unchanged (#1959).
 
+- Runtime quiescence no longer waits forever when its only blockers are collaborative rooms held by their page's own Save whose Confluence write failed after dispatch: after a 30 s bound `POST /api/admin/page-write-recovery/runtime/quiesce` answers `409 runtime_quiesce_blocked_by_collab_commit` naming the intents, `403` if the administrator lost authority, or `503 runtime_quiesce_classification_unavailable` if the check could not finish. The gate stays closed and nothing is released or acknowledged; terminate the process and fence it with `verified_local_termination` (#1934).
+
 - Article PDFs print imported table captions above the first row and separate words in adjacent paragraphs, list items, line breaks and nested cells (#1969).
 - ODT files written with the standard prefixes no longer return text that was deleted under change tracking; inserted text is kept (#1968).
 - Article PDF downloads keep non-Latin titles and accents in the filename, from both the read toolbar and the inspector (#1963). A title with no usable characters saves as `article-<id>.pdf`.

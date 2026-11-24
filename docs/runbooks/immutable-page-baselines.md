@@ -737,13 +737,16 @@ until it is reconciled. After reconciliation, rooms of the page on other
 runtimes persist on their next edit, last-writer flush or release retry. The
 runtime that ran the Save cannot get there while it hosts a room of that page.
 Reconciliation needs that runtime fenced, and the room admission it holds
-behind the pending intent keeps it from draining, so quiescence never answers
-(#1934). Terminate that process and fence it with independently verified local
-termination (below); where that cannot be verified, the fence fails closed and
-the intent stays pending. Edits that reached only its room since the failed Save
-then survive only in the editors' open tabs; a tab that reconnects does not
-send them again (#1928). Any other flush failure keeps the admission as before
-and schedules no retry.
+behind the pending intent keeps it from draining. Quiescence on that runtime
+therefore answers a definite `409 runtime_quiesce_blocked_by_collab_commit`
+naming the blocking intent once its wait bound has passed (#1934, see
+*Quiescence blocked by its own collaborative Save* below); it never releases
+the admission and never acknowledges. Terminate that process and fence it
+with independently verified local termination (below); where that cannot be
+verified, the fence fails closed and the intent stays pending. Edits that
+reached only its room since the failed Save then survive only in the editors'
+open tabs; a tab that reconnects does not send them again (#1928). Any other
+flush failure keeps the admission as before and schedules no retry.
 
 ## Runtime retirement and fencing
 
@@ -834,6 +837,71 @@ Authorization: Bearer <system-admin-token>
 The result is `{ "unresolvedIntents": <non-negative integer> }`. Remove or
 restart the quiesced process before returning it to service; its writer gate is
 intentionally irreversible for that process lifetime.
+
+### Quiescence blocked by its own collaborative Save (#1934)
+
+Quiescence waits up to 30 s for a full drain. Until then only a drain ends the
+wait. From that bound on, the process classifies what still blocks it: at the
+bound, on every change of its local work (an operation starts or finishes, an
+admission is taken or released, an effect changes state) and at least every
+5 s, re-reading the database each time. One classification has a 10 s
+deadline covering the connection checkout, the administrator check, the read
+and cleanup. A drain always wins: if the process is drained when a timer or a
+classification completes, the request goes on to the normal acknowledgment.
+
+The request answers `409` when nothing else runs (no local operation, no
+running or successful effect continuation) and every remaining room admission
+of this process is on a page whose own collaborative Save
+(`collab.commit.confluence` or `.media`) of this process is still pending with
+a dispatched remote call and no terminal result. Such an intent is enough to
+keep the room's flush, and therefore its admission, from finishing. The body
+names ids and kinds only:
+
+```json
+{
+  "error": "PageWriteError",
+  "reason": "runtime_quiesce_blocked_by_collab_commit",
+  "code": "runtime_quiesce_blocked_by_collab_commit",
+  "message": "…",
+  "blockingIntents": [
+    { "intentId": "<intent UUID>", "kind": "collab.commit.confluence", "pageIds": [42] }
+  ],
+  "runbook": "docs/runbooks/immutable-page-baselines.md"
+}
+```
+
+With a responsive database it arrives at the bound; for a blocker set that
+stays the same it arrives no later than 40 s (bound plus one classification).
+No time is promised while the blockers keep changing, or while any other
+blocker remains (a running operation, a foreign pending intent, an ordinary
+flush failure on a page without such a Save): those keep the unbounded wait
+described above. A running operation is waited for first; the `409` follows
+its drain.
+
+Two other refusals end the request without ids:
+
+- `403 recovery_admin_required`: the administrator was demoted or deactivated
+  after the request was accepted. The administrator is checked again before
+  any id is disclosed.
+- `503 runtime_quiesce_classification_unavailable`: the classification missed
+  its deadline or its database read failed. A late result is discarded, and a
+  connection that arrives after the deadline runs no SQL.
+
+In every refusal the writer gate stays closed (every later write on this
+process answers `409 runtime_quiescing`), no acknowledgment is written, and
+the room admission and the intent stay exactly as they were: nothing is
+released, fenced or force-cleared. Sending the request again re-audits it and
+runs the same wait.
+
+The way out of the `409`: terminate the process, fence it with
+`verified_local_termination` (*Independently verified local termination*
+below), then reconcile each named intent. For
+`collab.commit.confluence.media` that does not unblock the page: the kind is
+`remote_terminal_only`, so after a dispatched upload without a terminal result
+reconciliation still answers `intent_outcome_unrecoverable` and the page stays
+write-blocked. A Save that failed between an image upload and the page update
+leaves a successful upload continuation, which keeps quiescence waiting as
+before; that case is not answered by this `409`.
 
 ### Crashed process with no started effects
 
