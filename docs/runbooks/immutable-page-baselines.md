@@ -827,7 +827,9 @@ persist them:
   blocked. A user who opens the editor while the state holds sees the first
   two sentences and no draft. Edits typed after the failed Save are not
   persisted and not merged later; **Download draft** is how a user keeps them.
-  Tell users to download the draft before they open the current version.
+  Tell users to download the draft before they open the current version. The
+  tab whose Save was answered 409 at that point goes to the same read-only
+  draft on that answer, without waiting for the room to tell it.
 - *What ends it.* Only the intent leaving `pending`: reconcile it (below).
   Nothing else clears the state and no timer does. After settlement a newly
   opened editor is writable again; tabs already on the read-only draft stay
@@ -851,12 +853,28 @@ persist them:
   processes keep accepting edits until that runtime is fenced or quiesced,
   which makes the state hold everywhere. A living process that cannot reach
   PostgreSQL keeps retrying the marker (from 1 s, doubling to 30 s) and
-  meanwhile refuses edits itself, tells the other processes over Redis
-  (`collab:commit-unknown:<pageId>` and a bus cue), and logs
-  `collab.commit_unknown_marker_failed`. A process that got neither the cue nor
-  the key keeps accepting edits for that page until the marker commits. A
+  meanwhile refuses edits itself, tells the other processes over Redis (its
+  intent id in the set `collab:commit-unknown:<pageId>`, and a bus cue), and
+  logs `collab.commit_unknown_marker_failed`. The set is written after the
+  first three marker attempts failed, which can take up to 30 s, and the cue
+  after the Save's request cleanup was attempted. Both Redis commands give up
+  at a 5 s deadline instead of waiting for a stalled connection
+  (`collab.commit_unknown_latch_failed`,
+  `collab.commit_unknown_cue_unpublished`) and are repeated by the next
+  retry. A process that got neither the cue nor the key keeps accepting edits
+  for that page until the marker commits. A
   backend process older than this change knows neither the marker nor the
   control: follow the rolling-upgrade gate above.
+- *Leftover members of the Redis set.* `collab:commit-unknown:<pageId>` can
+  keep the id of a Save that is long settled, when its process stopped
+  before removing it. That is harmless: a member is only ever compared with
+  the page's current pending Save. The next collaborative Save of the page
+  that fails after dispatch removes members whose intent is settled or does
+  not exist (up to 32 per marker); a page without such a Save keeps them, and
+  the key has no expiry on purpose. To clean up by hand, remove only ids that
+  are not `pending` in `page_write_intents` (`SREM`). Never delete the key or
+  the id of a pending intent: while that Save's marker is not recorded, the
+  member is what stops other processes from accepting edits.
 - *Quiescence.* The room admission of such a page stays active behind the
   pending intent, and its release retries until the intent settles. With the
   marker recorded, the failed Save itself no longer holds its runtime's drain,

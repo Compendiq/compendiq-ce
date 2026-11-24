@@ -44,7 +44,12 @@ import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { ArticleReadToolbar } from '../../shared/components/article/ArticleReadToolbar';
 import { AiPolicyChip } from '../../shared/components/badges/AiPolicyChips';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
-import { CollabCommitResponseSchema, type CollabConfig, type SettablePageIcon } from '@compendiq/contracts';
+import {
+  CollabCommitConflictSchema,
+  CollabCommitResponseSchema,
+  type CollabConfig,
+  type SettablePageIcon,
+} from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
@@ -429,6 +434,7 @@ export function PageViewPage() {
   // save's result is unknown that is no longer true, whichever of the HTTP
   // error and the `commit_unknown` control arrived first (#2035).
   const commitUnknown = collab.readOnlyReason === 'commit_unknown';
+  const declareCommitUnknown = collab.declareCommitUnknown;
   useEffect(() => {
     if (commitUnknown && confluenceModified) setConfluenceModified(null);
   }, [commitUnknown, confluenceModified]);
@@ -1022,6 +1028,16 @@ export function PageViewPage() {
         return;
       }
       if (error instanceof ApiError && error.code === 'confluence_modified') {
+        // The typed body tells a Save that was never sent from one whose
+        // result is unknown. Only the first leaves the session open. The
+        // second ends it here, on the route's own answer: the room's
+        // `commit_unknown` control may be late or lost, and until it arrives
+        // the editor would keep taking edits and another Save (#2035).
+        const conflict = CollabCommitConflictSchema.safeParse(error.body);
+        if (document && conflict.success && conflict.data.saveOutcome === 'unknown') {
+          declareCommitUnknown(document);
+          return;
+        }
         setConfluenceModified({
           remoteVersion: error.remoteVersion,
           localVersion: error.localVersion,
@@ -1047,7 +1063,7 @@ export function PageViewPage() {
       saveInFlightRef.current = false;
       setSaveInFlight(false);
     }
-  }, [collab.ydoc, collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
+  }, [collab.ydoc, collabLive, declareCommitUnknown, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
