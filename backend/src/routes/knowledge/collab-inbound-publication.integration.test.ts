@@ -401,6 +401,9 @@ describe.skipIf(!canRun)('inbound publication ends the collaborative lineage (#2
     await vi.waitFor(() => expect(podA.getRoom(pageId)).toBeUndefined());
     expect(previous.socket.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
     expect(await pageRow()).toMatchObject({ body_html: html(BODY_J), body_storage: BODY_J });
+    // The lineage ended with the publication; nothing re-seeds the document
+    // in its place. The next writable join mints the new epoch.
+    expect(await storedEpoch()).toBeNull();
     expect(await unreleasedAdmissions()).toBe(0);
   });
 
