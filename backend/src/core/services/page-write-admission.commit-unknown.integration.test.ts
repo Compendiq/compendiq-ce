@@ -21,6 +21,8 @@ import {
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { closePool, getPool, query } from '../db/postgres.js';
+import { logger } from '../utils/logger.js';
+import { collabDocChannel, createCollabRuntime } from './collab-room-service.js';
 import { getRedisClient, setRedisClient } from './redis-cache.js';
 import {
   _resetCollabCommitUnknownForTest,
@@ -148,9 +150,106 @@ async function effectiveState(
 
 /** Another process: it does not see this process's set. `sharedLatch` is what its Redis read answers. */
 function anotherProcess(
-  sharedLatch: CollabCommitLatches['readSharedLatch'] = processCollabCommitLatches.readSharedLatch,
+  sharedLatch: CollabCommitLatches['sharedLatchNames'] = processCollabCommitLatches.sharedLatchNames,
 ): CollabCommitLatches {
-  return { locallyUnknown: () => false, readSharedLatch: sharedLatch };
+  return { locallyUnknown: () => false, sharedLatchNames: sharedLatch };
+}
+
+/** The intents the page's Redis latch names, read from Redis itself. */
+async function latchMembers(pageId: number): Promise<string[]> {
+  return (await redis.sMembers(collabCommitUnknownKey(pageId))).sort();
+}
+
+async function settleBySql(intentId: string, status = 'reconciled_not_applied'): Promise<void> {
+  await query(
+    `UPDATE page_write_intents
+        SET status = $2, settled_at = NOW(), settlement_reason = 'test settlement', settlement_proof = '{}'::jsonb
+      WHERE id = $1`,
+    [intentId, status],
+  );
+}
+
+interface RedisRelay {
+  url: string;
+  /** Commands that leave the client are kept here and reach Redis only on `release`. */
+  hold: () => void;
+  release: () => void;
+  /** Every connection is cut and new ones are refused until `comeUp`. */
+  goDown: () => void;
+  comeUp: () => void;
+}
+
+/** A TCP relay in front of the real Redis that can stall or cut a client's connection. */
+async function redisRelay(): Promise<RedisRelay> {
+  const target = new URL(process.env.REDIS_URL!);
+  const pairs = new Set<{ downstream: Socket; upstream: Socket; held: Buffer[] }>();
+  let holding = false;
+  let down = false;
+  const server = createServer((downstream) => {
+    if (down) {
+      downstream.destroy();
+      return;
+    }
+    const upstream = createConnection({ host: target.hostname, port: Number(target.port || 6379) });
+    const pair = { downstream, upstream, held: [] as Buffer[] };
+    pairs.add(pair);
+    const drop = (): void => {
+      pairs.delete(pair);
+      downstream.destroy();
+      upstream.destroy();
+    };
+    downstream.on('data', (chunk: Buffer) => {
+      if (holding) pair.held.push(chunk);
+      else upstream.write(chunk);
+    });
+    upstream.on('data', (chunk: Buffer) => { downstream.write(chunk); });
+    for (const socket of [downstream, upstream]) {
+      socket.on('error', drop);
+      socket.on('close', drop);
+    }
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  onTestFinished(async () => {
+    for (const pair of [...pairs]) {
+      pair.downstream.destroy();
+      pair.upstream.destroy();
+    }
+    await new Promise<void>((resolve) => { server.close(() => resolve()); });
+  });
+  const url = new URL(process.env.REDIS_URL!);
+  url.hostname = '127.0.0.1';
+  url.port = String((server.address() as AddressInfo).port);
+  return {
+    url: url.toString(),
+    hold: () => { holding = true; },
+    release: () => {
+      holding = false;
+      for (const pair of pairs) {
+        for (const chunk of pair.held.splice(0)) pair.upstream.write(chunk);
+      }
+    },
+    goDown: () => {
+      down = true;
+      for (const pair of [...pairs]) pair.downstream.destroy();
+    },
+    comeUp: () => { down = false; },
+  };
+}
+
+/** A Redis client of its own behind the relay; the suite's client is restored afterwards. */
+async function relayedClient(relay: RedisRelay): Promise<RedisClientType> {
+  const client = createClient({ url: relay.url }) as RedisClientType;
+  client.on('error', () => undefined);
+  await client.connect();
+  // Registered after the relay's own cleanup, so it runs first.
+  onTestFinished(async () => {
+    setRedisClient(redis);
+    client.destroy();
+  });
+  return client;
 }
 
 /**
@@ -259,7 +358,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
   });
 
   afterEach(async () => {
-    _resetCollabCommitUnknownForTest();
+    await _resetCollabCommitUnknownForTest();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
     const leftover = await redis.keys('collab:commit-unknown:*');
@@ -393,7 +492,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
   describe('effective state', () => {
     it('raises a commit in flight to unknown through each latch that names the same intent, and through no other', async () => {
       const { pageId, intent } = await dispatchedCommit();
-      const noSharedLatch = anotherProcess(async () => null);
+      const noSharedLatch = anotherProcess(async () => false);
       expect(await durableState(pageId)).toEqual({ state: 'in_flight', intentId: intent.id });
       expect(await effectiveState(pageId, { unknownCommitIntentId: null }, noSharedLatch)).toBe('known');
 
@@ -406,10 +505,10 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       // A latch for another intent is cleared by the durable read.
       expect(foreignLatch.unknownCommitIntentId).toBeNull();
 
-      // The Redis key, read by a process that has neither other latch.
-      await redis.set(collabCommitUnknownKey(pageId), randomUUID());
+      // The Redis latch, read by a process that has neither other latch.
+      await redis.sAdd(collabCommitUnknownKey(pageId), randomUUID());
       expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('known');
-      await redis.set(collabCommitUnknownKey(pageId), intent.id);
+      await redis.sAdd(collabCommitUnknownKey(pageId), intent.id);
       const room: CollabCommitRoomLatch = { unknownCommitIntentId: null };
       expect(await effectiveState(pageId, room, anotherProcess())).toBe('unknown');
       // A positive read stays as the room latch: the key itself is no longer needed.
@@ -423,7 +522,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       const declaration = declareCollabCommitUnknown(intent, () => undefined);
       expect(await effectiveState(pageId, { unknownCommitIntentId: null }, {
         locallyUnknown: processCollabCommitLatches.locallyUnknown,
-        readSharedLatch: async () => null,
+        sharedLatchNames: async () => false,
       })).toBe('unknown');
       await declaration.record();
       await release();
@@ -436,7 +535,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
           WHERE id = $1`,
         [intent.id],
       );
-      await redis.set(collabCommitUnknownKey(pageId), intent.id);
+      await redis.sAdd(collabCommitUnknownKey(pageId), intent.id);
       expect(await effectiveState(pageId, room)).toBe('known');
       expect(room.unknownCommitIntentId).toBeNull();
     });
@@ -444,7 +543,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
     it('reads the Redis key outside every transaction and only for a commit in flight without another latch', async () => {
       const pageId = await insertPage();
       const actor = await insertUser();
-      const sharedLatch = vi.fn<CollabCommitLatches['readSharedLatch']>(async (lockedPageId) => {
+      const sharedLatch = vi.fn<CollabCommitLatches['sharedLatchNames']>(async (lockedPageId) => {
         // The fenced transaction has ended: its page lifecycle lock is free.
         const probe = await getPool().connect();
         try {
@@ -455,7 +554,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
         } finally {
           probe.release();
         }
-        return null;
+        return false;
       });
       const latches = anotherProcess(sharedLatch);
 
@@ -490,8 +589,8 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       const first = await reserveCommit(pageId, actor);
       await failAfterDispatch(first);
       let second: PageWriteIntent | undefined;
-      const sharedLatch = vi.fn<CollabCommitLatches['readSharedLatch']>(async () => {
-        if (second) return null;
+      const sharedLatch = vi.fn<CollabCommitLatches['sharedLatchNames']>(async (_pageId, askedFor) => {
+        if (second) return false;
         // Between the two transactions the first Save settles and a later one is dispatched.
         await query(
           `UPDATE page_write_intents
@@ -502,8 +601,9 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
         );
         second = await reserveCommit(pageId, actor);
         await failAfterDispatch(second);
-        // The key still names the first, settled intent.
-        return first.id;
+        // The latch still names the first, settled intent, which is what was asked for.
+        expect(askedFor).toBe(first.id);
+        return true;
       });
       const room: CollabCommitRoomLatch = { unknownCommitIntentId: null };
 
@@ -516,12 +616,17 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
     });
 
     it.each([
-      ['never answers', () => new Promise<string | null>(() => undefined)],
-      ['fails', () => Promise.reject(new Error('READONLY replica'))],
-    ])('reads no latch when Redis %s, within its 250 ms bound', async (_name, answer) => {
+      ['never answers', (relay: RedisRelay) => relay.hold()],
+      ['is unreachable', (relay: RedisRelay) => relay.goDown()],
+    ])('reads no latch when Redis %s, within its 250 ms bound', async (_name, breakConnection) => {
       const { pageId, intent } = await dispatchedCommit();
-      await redis.set(collabCommitUnknownKey(pageId), intent.id);
-      vi.spyOn(redis, 'get').mockImplementation(answer as never);
+      await redis.sAdd(collabCommitUnknownKey(pageId), intent.id);
+      const relay = await redisRelay();
+      const unreliable = await relayedClient(relay);
+      setRedisClient(unreliable);
+      // The latch is there and this process reads it while its connection works.
+      expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('unknown');
+      breakConnection(relay);
       const started = performance.now();
 
       expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('known');
@@ -554,7 +659,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       expect(await durableState(pageId)).toEqual({ state: 'unknown', intentId: intent.id });
       // The proven marker answers for itself; no Redis key was needed.
       expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(false);
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBeNull();
+      expect(await latchMembers(pageId)).toEqual([]);
       expect(cue).not.toHaveBeenCalled();
       declaration.announce();
       expect(cue).toHaveBeenCalledTimes(1);
@@ -610,7 +715,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
 
       expect((await intentRow(intent.id)).marker).toBeInstanceOf(Date);
       expect(await durableState(pageId)).toEqual({ state: 'unknown', intentId: intent.id });
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBeNull();
+      expect(await latchMembers(pageId)).toEqual([]);
     });
 
     it('abandons a stalled attempt at its deadline instead of waiting for it', async () => {
@@ -631,7 +736,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       expect(performance.now() - started).toBeLessThan(4_000);
       expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(true);
       // Without the marker another process learns of it from Redis.
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBe(intent.id);
+      expect(await latchMembers(pageId)).toEqual([intent.id]);
       releaseAll();
       expect((await intentRow(intent.id)).marker).toBeNull();
     });
@@ -645,12 +750,12 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       const declaration = declareCollabCommitUnknown(intent, cue);
       await declaration.record();
       expect((await intentRow(intent.id)).marker).toBeNull();
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBe(intent.id);
+      expect(await latchMembers(pageId)).toEqual([intent.id]);
       // The owner is fenced from its set; a process that reads the key is fenced
       // too; one that cannot read it sees a Save in flight until the marker commits.
       expect(await effectiveState(pageId)).toBe('unknown');
       expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('unknown');
-      expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess(async () => null)))
+      expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess(async () => false)))
         .toBe('known');
       expect(cue).not.toHaveBeenCalled();
       declaration.announce();
@@ -659,7 +764,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       // The failure persists: every background retry repeats the cue and changes nothing.
       await vi.waitFor(() => expect(cue.mock.calls.length).toBeGreaterThanOrEqual(4), { timeout: 10_000 });
       expect(await intentRow(intent.id)).toMatchObject({ status: 'pending', marker: null });
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBe(intent.id);
+      expect(await latchMembers(pageId)).toEqual([intent.id]);
       expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(true);
 
       await release();
@@ -671,7 +776,7 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       await vi.waitFor(() => {
         expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(false);
       }, { timeout: 5_000 });
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBeNull();
+      expect(await latchMembers(pageId)).toEqual([]);
       expect(await durableState(pageId)).toEqual({ state: 'unknown', intentId: intent.id });
       const cuesAtSuccess = cue.mock.calls.length;
       // Real clock on purpose: the retries run on the platform timer against
@@ -686,19 +791,19 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       shortMarkerTimings(150, 100);
       const release = await blockMarker(intent.id);
       await declareCollabCommitUnknown(intent, () => undefined).record();
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBe(intent.id);
-      // The key now names a later failed commit of the same page.
+      expect(await latchMembers(pageId)).toEqual([intent.id]);
+      // A later failed commit of the same page latched its own intent meanwhile.
       const later = randomUUID();
-      await redis.set(collabCommitUnknownKey(pageId), later);
+      await redis.sAdd(collabCommitUnknownKey(pageId), later);
 
       await release();
-      // The process latch goes only after the compare-and-delete has run.
+      // The process latch goes only after this intent's member was removed.
       await vi.waitFor(() => {
         expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(false);
       }, { timeout: 10_000 });
       expect((await intentRow(intent.id)).marker).toBeInstanceOf(Date);
 
-      expect(await redis.get(collabCommitUnknownKey(pageId))).toBe(later);
+      expect(await latchMembers(pageId)).toEqual([later]);
     });
 
     it('retires an orphaned finished upload phase only once the marker is proven', async () => {
@@ -759,6 +864,147 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       expect(await durableState(pageId)).toEqual({ state: 'unknown', intentId: intent.id });
       expect(await waitForDatabaseCondition(async () => !processCollabCommitLatches.locallyUnknown(intent.id)))
         .toBe(true);
+    });
+
+    it('publishes no cue before the gate opens, not from a background retry either, and announces a marker proven meanwhile', async () => {
+      const { intent } = await dispatchedCommit();
+      shortMarkerTimings(150, 50);
+      const release = await blockMarker(intent.id);
+      const cue = vi.fn();
+      const warn = vi.spyOn(logger, 'warn');
+      const failedAttempts = (): number => warn.mock.calls
+        .filter((call) => call[1] === 'collab.commit_unknown_marker_failed').length;
+
+      // The route has not attempted its request-admission release yet.
+      const declaration = declareCollabCommitUnknown(intent, cue);
+      await declaration.record();
+      expect(failedAttempts()).toBe(3);
+      // Background retries run and fail meanwhile.
+      await vi.waitFor(() => expect(failedAttempts()).toBeGreaterThanOrEqual(6), { timeout: 10_000 });
+      expect(cue).not.toHaveBeenCalled();
+
+      // A retry proves the marker while the gate is still closed.
+      await release();
+      await vi.waitFor(() => {
+        expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(false);
+      }, { timeout: 10_000 });
+      expect((await intentRow(intent.id)).marker).toBeInstanceOf(Date);
+      expect(cue).not.toHaveBeenCalled();
+
+      declaration.announce();
+      expect(cue).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a later intent\'s latch when an earlier intent\'s write reaches Redis late', async () => {
+      const relay = await redisRelay();
+      const stalled = await relayedClient(relay);
+      const actor = await insertUser();
+      const pageId = await insertPage();
+      const first = await reserveCommit(pageId, actor);
+      await failAfterDispatch(first);
+      shortMarkerTimings(150, 60_000);
+      const releaseFirst = await blockMarker(first.id);
+
+      // The first owner's Redis connection stalls: its latch write leaves the
+      // client, gets no further, and is abandoned at its deadline.
+      setRedisClient(stalled);
+      relay.hold();
+      await declareCollabCommitUnknown(first, () => undefined).record();
+      expect(await latchMembers(pageId)).toEqual([]);
+
+      // That Save is settled. A later Save of the page fails on another
+      // runtime, whose Redis connection works, and latches its own intent.
+      await releaseFirst();
+      await settleBySql(first.id);
+      setRedisClient(redis);
+      const second = await reserveCommit(pageId, actor);
+      await failAfterDispatch(second);
+      await blockMarker(second.id);
+      await declareCollabCommitUnknown(second, () => undefined).record();
+      expect(await latchMembers(pageId)).toEqual([second.id]);
+
+      // Now the first owner's write arrives.
+      relay.release();
+      await vi.waitFor(async () => {
+        expect(await latchMembers(pageId)).toContain(first.id);
+      }, { timeout: 5_000 });
+
+      // It replaced nothing: a pod that missed the cue still reads the later intent's latch.
+      expect(await latchMembers(pageId)).toContain(second.id);
+      expect(await durableState(pageId)).toEqual({ state: 'in_flight', intentId: second.id });
+      expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('unknown');
+    });
+
+    it('sends neither a latch write nor a cue that expired while Redis was unreachable once it reconnects', async () => {
+      const relay = await redisRelay();
+      const unreachable = await relayedClient(relay);
+      const runtime = await createCollabRuntime(unreachable, 'commit-unknown-unreachable-redis');
+      onTestFinished(() => runtime.close());
+      const { pageId, intent } = await dispatchedCommit();
+      const received: string[] = [];
+      const listener = redis.duplicate() as RedisClientType;
+      await listener.connect();
+      onTestFinished(async () => { await listener.quit(); });
+      await listener.subscribe(collabDocChannel(pageId), (message) => { received.push(message); });
+      shortMarkerTimings(150, 60_000);
+      const release = await blockMarker(intent.id);
+      const warn = vi.spyOn(logger, 'warn');
+      const logged = (message: string): boolean => warn.mock.calls.some((call) => call[1] === message);
+
+      setRedisClient(unreachable);
+      relay.goDown();
+      await vi.waitFor(() => expect(unreachable.isReady).toBe(false), { timeout: 5_000 });
+      // Both commands wait in the client's queue for the reconnect, and both expire there.
+      const declaration = declareCollabCommitUnknown(
+        intent,
+        () => runtime.announceCommitUnknown(pageId, intent.id),
+      );
+      await declaration.record();
+      expect(logged('collab.commit_unknown_latch_failed')).toBe(true);
+      declaration.announce();
+      await vi.waitFor(() => {
+        expect(logged('collab.commit_unknown_cue_unpublished')).toBe(true);
+      }, { timeout: 5_000 });
+
+      // The Save is settled and its declaration withdrawn before Redis is back.
+      await release();
+      await settleBySql(intent.id);
+      await _resetCollabCommitUnknownForTest();
+      relay.comeUp();
+      await vi.waitFor(() => expect(unreachable.isReady).toBe(true), { timeout: 10_000 });
+      // Whatever was still queued has been sent before this answer.
+      await unreachable.ping();
+      await redis.publish(collabDocChannel(pageId), 'after-reconnect');
+      await vi.waitFor(() => expect(received).toContain('after-reconnect'), { timeout: 5_000 });
+
+      expect(await latchMembers(pageId)).toEqual([]);
+      expect(received).toEqual(['after-reconnect']);
+    });
+
+    it('fences a retry that is running when the declarations are reset', async () => {
+      const { intent } = await dispatchedCommit();
+      shortMarkerTimings(150, 50);
+      const release = await blockMarker(intent.id);
+      const cue = vi.fn();
+      const declaration = declareCollabCommitUnknown(intent, cue);
+      await declaration.record();
+      // A background attempt waits long enough for the reset to find it in flight.
+      vi.stubEnv('COLLAB_COMMIT_MARKER_DEADLINE_MS', '2000');
+      declaration.announce();
+      // A background retry published its cue and now waits for the marker.
+      await vi.waitFor(() => expect(cue.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
+      const cuesAtReset = cue.mock.calls.length;
+
+      // The reset is requested while that attempt is in flight; the attempt
+      // then gets through, and the reset waits for it.
+      const reset = _resetCollabCommitUnknownForTest();
+      await release();
+      await reset;
+
+      // The withdrawn retry announced nothing and scheduled nothing.
+      expect(cue.mock.calls.length).toBe(cuesAtReset);
+      expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(false);
+      expect((await intentRow(intent.id)).marker).toBeInstanceOf(Date);
     });
   });
 });

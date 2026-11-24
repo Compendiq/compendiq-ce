@@ -1886,8 +1886,13 @@ const COLLAB_COMMIT_LATCH_READ_MS = 250;
 /** Lookups one fence may spend on intents that keep changing between its transactions. */
 const COLLAB_COMMIT_LATCH_LOOKUPS = 3;
 
-/** Deadline of one marker attempt, its proof read, and each Redis latch write. */
-function collabCommitMarkerDeadlineMs(): number {
+/**
+ * Deadline of one marker transaction, of its proof read, of each Redis latch
+ * write and of each cue publication. The marker transaction and its proof
+ * read each have their own, so the three immediate attempts can take up to six
+ * deadlines before the Redis latch is written.
+ */
+export function collabCommitDeadlineMs(): number {
   return vitestIntOr('COLLAB_COMMIT_MARKER_DEADLINE_MS', 5_000);
 }
 
@@ -1900,7 +1905,11 @@ function collabCommitMarkerRetryDelayMs(attempt: number): number {
   return Math.min(vitestIntOr('COLLAB_COMMIT_MARKER_RETRY_MS', 1_000) * 2 ** attempt, 30_000);
 }
 
-/** Redis latch naming the failed commit of a page while its durable marker is not recorded. */
+/**
+ * Redis set of the intents of a page whose commit failed after dispatch while
+ * their durable marker is not recorded. A set, not a value: a late write for
+ * an earlier intent can only add its own member, never replace a later one's.
+ */
 export function collabCommitUnknownKey(pageId: number): string {
   return `collab:commit-unknown:${pageId}`;
 }
@@ -1978,25 +1987,37 @@ const localUnknownCollabCommits = new Set<string>();
 export type CollabCommitLatches = {
   /** This process declared the intent's outcome unknown (the owner's process-local set). */
   locallyUnknown: (intentId: string) => boolean;
-  /** The intent named by `collab:commit-unknown:<pageId>`. Absent, unreadable and timed out are all `null`. */
-  readSharedLatch: (pageId: number) => Promise<string | null>;
+  /**
+   * Whether `collab:commit-unknown:<pageId>` names the intent. Absent,
+   * unreadable and timed out are all `false`.
+   */
+  sharedLatchNames: (pageId: number, intentId: string) => Promise<boolean>;
 };
 
 /** What a room keeps of a cue or of a positive shared-latch read. */
 export type CollabCommitRoomLatch = { unknownCommitIntentId: string | null };
 
-async function boundedRedis<T>(
-  operation: (redis: RedisClientType) => Promise<T>,
+/**
+ * One Redis command with a real deadline. At the deadline the await is
+ * abandoned and the command is aborted: one still queued in the client (a
+ * connection that is down or reconnecting) is removed and never sent later.
+ * One already written to the socket cannot be recalled, so every command sent
+ * through here must be safe to arrive late.
+ */
+export async function withRedisCommandDeadline<T>(
+  redis: RedisClientType,
   deadlineMs: number,
+  command: (redis: RedisClientType) => Promise<T>,
 ): Promise<T> {
-  const redis = getRedisClient();
-  if (!redis) throw new Error('Redis is not available');
-  const answer = operation(redis);
-  // An unanswered command is abandoned, not awaited: it may still settle later.
+  const abort = new AbortController();
+  const answer = command(redis.withAbortSignal(abort.signal) as RedisClientType);
   answer.catch(() => undefined);
   let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('Redis did not answer in time')), deadlineMs);
+    timer = setTimeout(() => {
+      abort.abort();
+      reject(new Error('Redis did not answer in time'));
+    }, deadlineMs);
     timer.unref();
   });
   try {
@@ -2006,17 +2027,23 @@ async function boundedRedis<T>(
   }
 }
 
-async function readSharedCollabCommitLatch(pageId: number): Promise<string | null> {
+async function sharedCollabCommitLatchNames(pageId: number, intentId: string): Promise<boolean> {
+  const redis = getRedisClient();
+  if (!redis) return false;
   try {
-    return await boundedRedis((redis) => redis.get(collabCommitUnknownKey(pageId)), COLLAB_COMMIT_LATCH_READ_MS);
+    return Number(await withRedisCommandDeadline(
+      redis,
+      COLLAB_COMMIT_LATCH_READ_MS,
+      (client) => client.sIsMember(collabCommitUnknownKey(pageId), intentId),
+    )) === 1;
   } catch {
-    return null;
+    return false;
   }
 }
 
 export const processCollabCommitLatches: CollabCommitLatches = {
   locallyUnknown: (intentId) => localUnknownCollabCommits.has(intentId),
-  readSharedLatch: readSharedCollabCommitLatch,
+  sharedLatchNames: sharedCollabCommitLatchNames,
 };
 
 /**
@@ -2079,7 +2106,7 @@ export async function withCollabCommitKnown<T>(
       }
       sample = {
         intentId: error.intentId,
-        latched: (await latches.readSharedLatch(pageId)) === error.intentId,
+        latched: await latches.sharedLatchNames(pageId, error.intentId),
       };
     }
   }
@@ -2171,7 +2198,7 @@ type CollabCommitMarkerOutcome =
  * proven nor moot.
  */
 async function attemptCollabCommitMarker(intent: PageWriteIntent): Promise<CollabCommitMarkerOutcome> {
-  const deadlineMs = collabCommitMarkerDeadlineMs();
+  const deadlineMs = collabCommitDeadlineMs();
   beginLocalOperation(true);
   try {
     let failure: unknown = null;
@@ -2226,12 +2253,12 @@ async function attemptCollabCommitMarker(intent: PageWriteIntent): Promise<Colla
       [intent.id, COLLAB_COMMIT_INTENT_KINDS, intent.pageIds],
     ));
     const row = proof.rows[0];
-    if (!row || row.status !== 'pending') return 'obsolete';
-    if (row.marked) return 'marked';
+    // Identity first: the row must still be this runtime's commit of this page.
     if (
-      !row.own_commit || !row.started || row.terminal
-      || row.runtime_id !== intent.runtimeId || row.retired
+      !row || row.status !== 'pending' || !row.own_commit || row.runtime_id !== intent.runtimeId
     ) return 'obsolete';
+    if (row.marked) return 'marked';
+    if (!row.started || row.terminal || row.retired) return 'obsolete';
     throw failure ?? new PageWriteError(
       409,
       'collab_commit_marker_unavailable',
@@ -2241,12 +2268,6 @@ async function attemptCollabCommitMarker(intent: PageWriteIntent): Promise<Colla
     finishLocalOperation();
   }
 }
-
-const RELEASE_COLLAB_COMMIT_LATCH_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0`;
 
 type UnknownCollabCommit = {
   intent: PageWriteIntent;
@@ -2258,12 +2279,33 @@ type UnknownCollabCommit = {
   sharedLatchConfirmed: boolean;
   retryAttempt: number;
   retryTimer: NodeJS.Timeout | null;
+  /**
+   * The Save route attempted the release of its request admission, whether
+   * that succeeded or was deferred. No cue is published before, also not by a
+   * background retry.
+   */
+  cueGateOpen: boolean;
+  /** The declaration was withdrawn; whatever it still has in flight does nothing more. */
+  cancelled: boolean;
 };
 
 /** Declarations whose marker is not settled yet; the background retry keeps them for the life of the process. */
 const unknownCollabCommits = new Map<string, UnknownCollabCommit>();
+/** Marker work in flight (immediate attempts or one background retry), by declaration. */
+const unknownCollabCommitRuns = new Map<Promise<void>, UnknownCollabCommit>();
+
+function isWithdrawn(owner: UnknownCollabCommit): boolean {
+  return owner.cancelled || unknownCollabCommits.get(owner.intent.id) !== owner;
+}
+
+function trackUnknownCollabCommitRun(owner: UnknownCollabCommit, run: Promise<void>): Promise<void> {
+  unknownCollabCommitRuns.set(run, owner);
+  void run.finally(() => unknownCollabCommitRuns.delete(run)).catch(() => undefined);
+  return run;
+}
 
 function cueUnknownCollabCommit(owner: UnknownCollabCommit): void {
+  if (owner.cancelled || !owner.cueGateOpen) return;
   try {
     owner.publishCue();
   } catch (error) {
@@ -2271,13 +2313,20 @@ function cueUnknownCollabCommit(owner: UnknownCollabCommit): void {
   }
 }
 
-/** Best effort: without the marker, this key is how another process learns of the failed commit. */
+/**
+ * Best effort: without the marker, this member is how another process learns
+ * of the failed commit. It is added to a set, so a write that arrives late,
+ * after a later Save of the page latched its own intent, replaces nothing.
+ */
 async function writeSharedCollabCommitLatch(owner: UnknownCollabCommit): Promise<void> {
   owner.sharedLatchAttempted = true;
   try {
-    await boundedRedis(
-      (redis) => redis.set(collabCommitUnknownKey(owner.intent.pageIds[0]!), owner.intent.id),
-      collabCommitMarkerDeadlineMs(),
+    const redis = getRedisClient();
+    if (!redis) throw new Error('Redis is not available');
+    await withRedisCommandDeadline(
+      redis,
+      collabCommitDeadlineMs(),
+      (client) => client.sAdd(collabCommitUnknownKey(owner.intent.pageIds[0]!), owner.intent.id),
     );
     owner.sharedLatchConfirmed = true;
   } catch (error) {
@@ -2285,19 +2334,19 @@ async function writeSharedCollabCommitLatch(owner: UnknownCollabCommit): Promise
   }
 }
 
-/** Compare-and-delete: a later intent's latch under the same key is never removed. */
+/** Removes this intent's member only: a later intent's latch under the same key is never touched. */
 async function releaseSharedCollabCommitLatch(owner: UnknownCollabCommit): Promise<void> {
   if (!owner.sharedLatchAttempted) return;
   try {
-    await boundedRedis(
-      (redis) => redis.eval(RELEASE_COLLAB_COMMIT_LATCH_SCRIPT, {
-        keys: [collabCommitUnknownKey(owner.intent.pageIds[0]!)],
-        arguments: [owner.intent.id],
-      }),
-      collabCommitMarkerDeadlineMs(),
+    const redis = getRedisClient();
+    if (!redis) throw new Error('Redis is not available');
+    await withRedisCommandDeadline(
+      redis,
+      collabCommitDeadlineMs(),
+      (client) => client.sRem(collabCommitUnknownKey(owner.intent.pageIds[0]!), owner.intent.id),
     );
   } catch (error) {
-    // A leftover key names a marked or settled intent and is ignored by every reader.
+    // A leftover member names a marked or settled intent and is ignored by every reader.
     logger.debug({ err: error, intentId: owner.intent.id }, 'collab.commit_unknown_latch_release_failed');
   }
 }
@@ -2311,6 +2360,7 @@ async function settleUnknownCollabCommitMarker(owner: UnknownCollabCommit): Prom
     logger.warn({ err: error, intentId: owner.intent.id }, 'collab.commit_unknown_marker_failed');
     return false;
   }
+  if (owner.cancelled) return true;
   owner.outcome = outcome;
   if (outcome === 'marked' && localIntentEffects.get(owner.intent.id) === 'succeeded') {
     // A finished upload phase whose next phase can no longer run. With the
@@ -2321,9 +2371,10 @@ async function settleUnknownCollabCommitMarker(owner: UnknownCollabCommit): Prom
     localIntentFailedRemotePhases.add(owner.intent.id);
     notifyLocalDrainWaiters();
   }
-  // The committed row now answers for itself. The Redis key goes first and the
-  // process latch last, so this process is never the one without a latch.
+  // The committed row now answers for itself. The Redis member goes first and
+  // the process latch last, so this process is never the one without a latch.
   await releaseSharedCollabCommitLatch(owner);
+  if (owner.cancelled) return true;
   unknownCollabCommits.delete(owner.intent.id);
   localUnknownCollabCommits.delete(owner.intent.id);
   logger.info({ intentId: owner.intent.id, pageId: owner.intent.pageIds[0], outcome }, 'collab.commit_unknown_marker');
@@ -2335,22 +2386,32 @@ function scheduleUnknownCollabCommitRetry(owner: UnknownCollabCommit): void {
   owner.retryAttempt += 1;
   owner.retryTimer = setTimeout(() => {
     owner.retryTimer = null;
-    void retryUnknownCollabCommitMarker(owner);
+    void trackUnknownCollabCommitRun(owner, retryUnknownCollabCommitMarker(owner));
   }, delayMs);
   owner.retryTimer.unref();
 }
 
 async function retryUnknownCollabCommitMarker(owner: UnknownCollabCommit): Promise<void> {
-  if (unknownCollabCommits.get(owner.intent.id) !== owner) return;
+  if (isWithdrawn(owner)) return;
   // Without the marker the cue is the only prompt another process gets.
   cueUnknownCollabCommit(owner);
   if (await settleUnknownCollabCommitMarker(owner)) {
     if (owner.outcome === 'marked') cueUnknownCollabCommit(owner);
     return;
   }
-  if (unknownCollabCommits.get(owner.intent.id) !== owner) return;
+  if (isWithdrawn(owner)) return;
   if (!owner.sharedLatchConfirmed) await writeSharedCollabCommitLatch(owner);
+  if (isWithdrawn(owner)) return;
   scheduleUnknownCollabCommitRetry(owner);
+}
+
+async function recordUnknownCollabCommitMarker(owner: UnknownCollabCommit): Promise<void> {
+  for (let attempt = 0; attempt < COLLAB_COMMIT_MARKER_ATTEMPTS; attempt += 1) {
+    if (await settleUnknownCollabCommitMarker(owner)) return;
+    if (isWithdrawn(owner)) return;
+  }
+  await writeSharedCollabCommitLatch(owner);
+  if (!isWithdrawn(owner)) scheduleUnknownCollabCommitRetry(owner);
 }
 
 export type CollabCommitUnknownDeclaration = {
@@ -2362,8 +2423,10 @@ export type CollabCommitUnknownDeclaration = {
    */
   record: () => Promise<void>;
   /**
-   * Publish the cue. The Save route calls this once its request-admission
-   * release was attempted, whether that succeeded or was deferred.
+   * Open the cue gate and publish the cue. The Save route calls this once its
+   * request-admission release was attempted, whether that succeeded or was
+   * deferred. Until then nothing is published, also not by a background
+   * retry; a marker that was proven meanwhile is announced here.
    */
   announce: () => void;
 };
@@ -2373,8 +2436,8 @@ export type CollabCommitUnknownDeclaration = {
  * without a terminal result. Synchronously, before the first await of the
  * caller, every fence of this process treats `intent` as unknown.
  *
- * `publishCue` must not block: it is repeated on every background retry and
- * once more after a late marker success.
+ * `publishCue` must not block: once `announce` opened the gate it is repeated
+ * on every background retry and once more after a late marker success.
  */
 export function declareCollabCommitUnknown(
   intent: PageWriteIntent,
@@ -2389,19 +2452,17 @@ export function declareCollabCommitUnknown(
     sharedLatchConfirmed: false,
     retryAttempt: 0,
     retryTimer: null,
+    cueGateOpen: false,
+    cancelled: false,
   };
   unknownCollabCommits.set(intent.id, owner);
   return {
     record: async () => {
       if (owner.outcome !== 'pending' || owner.retryTimer) return;
-      for (let attempt = 0; attempt < COLLAB_COMMIT_MARKER_ATTEMPTS; attempt += 1) {
-        if (await settleUnknownCollabCommitMarker(owner)) return;
-        if (unknownCollabCommits.get(intent.id) !== owner) return;
-      }
-      await writeSharedCollabCommitLatch(owner);
-      if (unknownCollabCommits.get(intent.id) === owner) scheduleUnknownCollabCommitRetry(owner);
+      await trackUnknownCollabCommitRun(owner, recordUnknownCollabCommitMarker(owner));
     },
     announce: () => {
+      owner.cueGateOpen = true;
       if (owner.outcome !== 'obsolete') cueUnknownCollabCommit(owner);
     },
   };
@@ -2416,10 +2477,20 @@ export function pageWriteIntentHoldsDrain(intentId: string): boolean {
   return state === 'running' || state === 'succeeded';
 }
 
-export function _resetCollabCommitUnknownForTest(): void {
-  for (const owner of unknownCollabCommits.values()) clearTimeout(owner.retryTimer ?? undefined);
+/**
+ * Withdraw every declaration and wait for the marker work that was in flight:
+ * afterwards nothing of an earlier test publishes a cue, schedules a retry or
+ * writes to PostgreSQL or Redis.
+ */
+export async function _resetCollabCommitUnknownForTest(): Promise<void> {
+  for (const owner of [...unknownCollabCommits.values(), ...unknownCollabCommitRuns.values()]) {
+    owner.cancelled = true;
+    clearTimeout(owner.retryTimer ?? undefined);
+    owner.retryTimer = null;
+  }
   unknownCollabCommits.clear();
   localUnknownCollabCommits.clear();
+  await Promise.allSettled([...unknownCollabCommitRuns.keys()]);
 }
 
 export async function getPageWriterRuntimeId(): Promise<string> {

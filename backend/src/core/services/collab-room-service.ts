@@ -29,6 +29,7 @@ import { getRedisClient } from './redis-cache.js';
 import { onReconnect, subscribe } from './redis-cache-bus.js';
 import {
   admitPageRuntime,
+  collabCommitDeadlineMs,
   deferPageRequestAdmissionRelease,
   isCollabCommitPending,
   isCollabCommitUnknown,
@@ -37,6 +38,7 @@ import {
   readCollabCommitState,
   releasePageRuntime,
   withCollabCommitKnown,
+  withRedisCommandDeadline,
   withPageLifecycleRead,
   withPageWriteTransaction,
   type CollabCommitLatches,
@@ -1271,7 +1273,17 @@ export async function createCollabRuntime(
   function announceCommitUnknown(pageId: number, intentId: string): void {
     const room = rooms.get(pageId);
     if (room) void handleCommitUnknownCue(room, intentId);
-    void publish(pageId, { origin: podId, kind: 'commit_unknown', intentId });
+    // Bounded and cancellable: a cue that could not be written before its
+    // deadline is dropped, not left queued for a later reconnect. The owner
+    // repeats it on every marker retry.
+    const cue: CollabBusMessage = { origin: podId, kind: 'commit_unknown', intentId };
+    void withRedisCommandDeadline(
+      main,
+      collabCommitDeadlineMs(),
+      (client) => client.publish(docChannel(pageId), JSON.stringify(cue)),
+    ).catch((err: unknown) => {
+      logger.warn({ err, pageId, intentId }, 'collab.commit_unknown_cue_unpublished');
+    });
   }
 
   function wireDoc(room: CollabRoom): void {
