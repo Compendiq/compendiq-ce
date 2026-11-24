@@ -140,6 +140,87 @@ offers **Download draft** and **Open current version**. The latter requires a
 successful fresh page read before discarding the open draft and asks for
 explicit confirmation; a failed read leaves the draft in place.
 
+### Collaborative document epoch and rolling upgrades (#2034)
+
+`page_collaborative_docs.doc_epoch` identifies a document lineage. A tab that
+was away while a non-collaborative body write or an inbound Confluence
+publication replaced the page declares the epoch it synced with when it
+reconnects; the gateway answers `doc_reset` and closes `1001 doc_reset`
+instead of admitting it, and the tab shows the same read-only draft with
+**Download draft** and **Open current version**. Its document is never merged
+into the rebuilt one, so the page body is not duplicated. The same happens to
+every editor of a room whose row was replaced under it: the room is retired
+and its admission is released without a flush (the published version stays as
+it is); the log line is `collab.lineage_retired`, and a refused join logs
+`collab.join_doc_reset`. A room write that finds its row gone answers
+`collab_lineage_changed` (409) and changes nothing; this is not a writer to
+recover, and no admission is retained by it.
+
+An inbound publication (scheduled sync or bulk Re-sync replacing the body of an
+existing page) now ends the collaborative lineage in the same transaction,
+also while editors are connected. They keep their open documents as drafts;
+nothing they typed after the last persist is written over the published
+version. The conflict policy that decides whether the incoming version wins is
+unchanged.
+
+**Migration 159.** `ADD COLUMN doc_epoch UUID NOT NULL DEFAULT
+gen_random_uuid()` uses a volatile default, which PostgreSQL cannot add as
+metadata only: the statement rewrites `page_collaborative_docs` once under an
+`ACCESS EXCLUSIVE` lock. The table holds one row per page that was edited
+collaboratively, each with the full Yjs state, so the rewrite needs about the
+table's size in free disk space and blocks collaborative loads and persists
+for its duration. It runs at backend startup, before the process serves
+requests. Check the size beforehand on a large installation:
+
+```sql
+SELECT pg_size_pretty(pg_total_relation_size('page_collaborative_docs'));
+```
+
+**Upgrade note.** Let connected editors save before the upgrade. A user whose
+tab is offline or blocked downloads the draft before opening the current
+version. Do not tell anyone to reload a tab that holds unsaved edits: a reload
+discards them.
+
+**Rolling-upgrade gate (several backend processes).** The epoch guarantees
+hold when every collaboration-serving backend process runs this version. The
+default deployment has one backend process, which restarts as a whole, and
+needs no gate. A process older than #2034 ignores the declaration, can still
+overwrite a collaborative row with an unguarded upsert, and resets a document
+in place without changing its epoch, so a deployment with several backend
+processes upgrades in this order:
+
+1. Switch collaborative editing off in Settings.
+2. The switch is cached per process and reaches other processes through the
+   settings event. Call `GET /api/collab/config` on **each** old process
+   directly, not through the load balancer, and require `enabled: false`. Stop
+   a process that cannot be verified.
+3. Replace the processes. New-version processes start with the switch off and
+   accept no join.
+4. Only after **every old-version process has been stopped** and its database
+   sessions have ended (no session of that process left in
+   `pg_stat_activity`, or its runtime fenced through the recovery procedure
+   below), confirm the drain from complete evidence, not from the capped
+   recovery view:
+
+   ```sql
+   SELECT count(*) FROM page_runtime_admissions
+    WHERE released_at IS NULL AND purpose = 'collab_room';
+   ```
+
+   must return 0, and no `collab:active:*` key may have members. A stopped
+   process cannot finish a join that had already passed its flag check; a
+   config answer or an empty count taken while it still runs does not prove
+   that. An admission left by a stopped process is handled by the existing
+   recovery procedure (fence that runtime) and is never force-cleared. If that
+   procedure answers `runtime_termination_unverified`, the gate stays closed
+   and collaboration stays off.
+5. Verify `GET /api/collab/config` on each new process and switch
+   collaborative editing on.
+
+During an ungated mix no guarantee is given; the mixed-version table in
+[`12-realtime-collaboration.md`](../architecture/12-realtime-collaboration.md)
+describes what to expect.
+
 ## Trust and retention boundary
 
 A published CE baseline is an immutable application record. It binds exact

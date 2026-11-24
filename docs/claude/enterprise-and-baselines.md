@@ -263,6 +263,27 @@ It marks the task ids it wrote the same way (`markWrittenTaskIds`, bus kind
 `task_ids`), and that transaction also sets `confluenceTaskIds` in the document's
 `compendiq.meta` Y.Map (#1751).
 
+`page_collaborative_docs.doc_epoch` is the only authority on a collaborative
+document's lineage (#2034): database-generated at the seed insert, constant
+for the life of the row, ended by deleting the row. Nothing in the `Y.Doc`
+carries it. A room never inserts or upserts the row: persist, merge and
+post-Save marks name the epoch they hold and answer `collab_lineage_changed`
+before touching `pages.body_html`; client frames, peer updates, state dumps
+and dump answers assert the row's current epoch on their lifecycle-fenced
+client first, because two rooms can agree on a superseded epoch. A room is
+retired only on that authoritative mismatch, through
+`closeRoomSockets(room, 1001, 'doc_reset')` after the failing transaction
+ended; never await the persist chain or take room ownership from inside it,
+the bus queue or a frame handler (schedule it). Bus messages of another
+generation and the retire hint are prompts to re-read the row, never reasons.
+A join that would be writable and declares a malformed or different
+`expectedDocEpoch` is refused (`doc_reset`, `1001 doc_reset`, not attached, no
+admission), first without locks and again as the `precondition` of
+`admitPageRuntime`; an undeclared join is admitted and never
+`lineageVerified`. Do not reintroduce an in-place replacement of the row, a
+process-wide reset flag or a pre-commit freeze. Details:
+`docs/architecture/12-realtime-collaboration.md`.
+
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
 failure so a later intentional retry remains possible. The button, editor

@@ -238,8 +238,10 @@ sequenceDiagram
   use the same helper: it can claim a body-less placeholder unless a baseline
   references it, and accepts an identical snapshot already stored. A conflicting
   snapshot or storage error rolls back the overwrite, counts the page as failed,
-  and leaves it for the next walk. `SYNC_OVERWROTE_LOCAL_EDITS` is written after
-  commit and before collaborative reconciliation. The superseded version
+  and leaves it for the next walk. The same transaction deletes the page's
+  `page_collaborative_docs` row (#2034): the publication and the end of the
+  collaborative lineage commit together. `SYNC_OVERWROTE_LOCAL_EDITS` is
+  written after commit and before the retire hint. The superseded version
   appears in Version History when its source and number differ from the live
   identity. Routine updates
   save history on a best-effort basis, including when a local save left the
@@ -272,8 +274,13 @@ sequenceDiagram
   only liveness advice. Inbound sync — the scheduled run and the bulk refresh
   alike — skips snapshot-HTML drift unless the remote version is ahead of the
   last recorded `remote_version`; an advance applies the inbound HTML (unless the
-  conflict policy keeps or queues a local edit, see above), rebuilds
-  BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
+  conflict policy keeps or queues a local edit, see above) and deletes the
+  page's `page_collaborative_docs` row in that same transaction, ending the
+  document lineage (`doc_epoch`, #2034) whether or not a room is live. From that
+  COMMIT a room of the previous generation cannot write `body_html` again; the
+  retire hint sent after the COMMIT makes it close its sockets with `doc_reset`
+  / **1001** right away, and the next writable join seeds a new lineage from the
+  published body (see `12-realtime-collaboration.md`). Collaborative commit
   instead takes durable lifecycle admissions, gathers a freshly correlated
   state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
   Redis transport generation before publishing. For a Confluence-sourced page
@@ -332,10 +339,12 @@ match wins:
 The decision never writes the body, publishes the AI policy or audits by
 itself; its only writes are the manual-review queue row and flags. The writer
 publishes the policy once on the same transaction for every outcome, writes
-the body for `apply_incoming`, and after COMMIT calls
-`recordConflictPolicyAudit` and — only when it replaced the body —
-`reconcileCollabAfterInboundBodyWrite` (a live room is reset from the new
-HTML, otherwise the stored collab document is dropped). Repeated runs
+the body for `apply_incoming` and, in that same transaction, deletes the page's
+`page_collaborative_docs` row (#2034, keyed on the accepted publication and
+the exact row it updated, so the unchanged bulk refresh keeps the row). After
+COMMIT it calls `recordConflictPolicyAudit` and, only when it replaced the
+body, `hintCollabDocRetired`, which prompts the page's rooms to re-read their
+row and retire; the hint never fails the sync. Repeated runs
 re-evaluate on purpose: a kept page is re-audited and a queued page stacks
 another `pending_sync_versions` row on every run.
 
@@ -380,8 +389,9 @@ Callers:
     transaction. A failed insert or history collision leaves that row untouched.
     The upsert records the incoming provider version and advances the local
     revision when a snapshot was preserved, using the same rule as bulk refresh.
-  - The overwrite audit is written before the collab reconcile; counts change
-    only after a committed upsert.
+  - The overwrite audit is written after the committed upsert and before the
+    retire hint; counts change only after a committed upsert. A failed delete
+    of the collaborative row rolls the whole publication back.
 
 **Local edit snapshots.** Bulk refresh and scheduled version jumps use
 the same transactional snapshot helper (#2037, #1918). A baseline-linked
