@@ -936,17 +936,44 @@ describe('collaborative join before the first sync (#1895)', () => {
     await waitFor(() => expect(pageReads() > readsBefore).toBe(refetchesPage));
   });
 
-  it('keeps the read-only draft treatment for a 4403 readonly after the first sync', async () => {
+  it.each([
+    ['flag_off', 'Collaborative editing was turned off. Your open draft remains below and is not reapplied automatically.'],
+    ['rate_limited', 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.'],
+    ['readonly', 'The server stopped accepting changes from this tab. Your open draft remains below and is not reapplied automatically.'],
+    ['forbidden', 'The page or your access changed. Your open draft remains below and is not reapplied automatically.'],
+  ])('keeps the read-only draft treatment for a 4403 %s after the first sync (#1927)', async (reason, sentence) => {
     renderPage();
     const socket = await joinWritableSession();
     await pasteBodyText('Synced draft body');
-    act(() => socket.close(4403, 'readonly'));
+    act(() => socket.close(4403, reason));
 
     expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
-    expect(screen.getByText(/Your open draft remains below/)).toBeInTheDocument();
+    expect(screen.getByText(sentence)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open current version' })).toBeInTheDocument();
+    expect(screen.getByTestId('save-page-btn')).toBeDisabled();
     expect(document.querySelector('.ProseMirror')).toHaveTextContent('Synced draft body');
     expect(screen.queryByTestId('collab-join-error')).not.toBeInTheDocument();
+  });
+
+  it('refetches the collaboration config after a 4403 flag_off following the first sync', async () => {
+    const client = renderPage();
+    const socket = await joinWritableSession();
+    collabEnabled = false;
+    act(() => socket.close(4403, 'flag_off'));
+
+    expect(await screen.findByText(
+      'Collaborative editing was turned off. Your open draft remains below and is not reapplied automatically.',
+    )).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(['collab-config'])).toEqual({ enabled: false }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open current version' }));
+    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
+    fireEvent.click(await screen.findByRole('button', { name: /^Edit/ }));
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+    expect(Socket.instances).toHaveLength(1);
   });
 
   it('refetches the collaboration config after flag_off so reopening the editor edits locally', async () => {
