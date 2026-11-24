@@ -118,8 +118,8 @@ runs on the transaction it already holds:
   to `initialPolicy` through `applyAiPolicyOnClient` (attributed to the
   creator, with the canonical label stored and the derived purge/re-queue
   in the same transaction). Events (`policy_changed`) are returned as `changes` and
-  emitted only after COMMIT; the remote-delete reconciler returns an `afterCommit`
-  side effect to close collaborative rooms.
+  emitted only after COMMIT; the delete reconcilers (remote and local) return an
+  `afterCommit` side effect to close collaborative rooms.
 - **Lock order**: runtime epoch → hierarchy → per-page lifecycle →
   `lockAiPolicyForPages` (advisory `AI_POLICY_LOCK_NAMESPACE`, ids ascending)
   → `pages` row `FOR UPDATE`. Callers that lock the row themselves
@@ -128,8 +128,9 @@ runs on the transaction it already holds:
   after COMMIT. A reconciler's applied/not-applied result may carry an
   `afterCommit` side effect; `reconcilePageWriteIntent` awaits it strictly
   after its settlement transaction resolves, never on rollback, and logs a
-  failure instead of failing the already-settled recovery (the remote-delete
-  reconciler closes collaborative rooms this way). An explicit
+  failure instead of failing the already-settled recovery (the remote and
+  local delete reconcilers close collaborative rooms this way, each page id
+  independently via `Promise.allSettled`). An explicit
   re-assertion of the same `all`/`local_only`
   policy bumps the revision and emits, but re-queues no derived work; only
   a real move re-queues, and `none` always purges.

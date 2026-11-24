@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import type { WebSocket } from 'ws';
 import {
   isDbAvailable,
   setupTestDb,
@@ -13,14 +14,28 @@ import {
 import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
-import { initCollabBus } from '../../../core/services/collab-room-service.js';
+import {
+  type CollabRuntime,
+  getDefaultCollabRuntime,
+  initCollabBus,
+} from '../../../core/services/collab-room-service.js';
+import type * as CollabTombstone from '../../../core/services/collab-tombstone.js';
+import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
 import { localAttachmentsDir } from '../../../core/services/local-attachment-service.js';
 import {
+  type PageRuntimeAdmission,
   reconcilePageWriteIntent,
+  releasePageRuntime,
+  withPageWriteTransaction,
   type IntentKind,
 } from '../../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import { registerOrdinaryPageWriteReconcilers } from './ordinary-page-write-reconciler.js';
+
+vi.mock('../../../core/services/collab-tombstone.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof CollabTombstone>();
+  return { ...actual, tombstoneCollabRoomAfterCommit: vi.fn(actual.tombstoneCollabRoomAfterCommit) };
+});
 
 const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 const describeIntegration = dbAvailable && redisAvailable ? describe : describe.skip;
@@ -99,15 +114,41 @@ type LocalDeleteKind = Extract<
   'pages.delete.standalone' | 'pages.delete.local' | 'pages.bulk.delete.local'
 >;
 
+type RecordedClose = { pageId: number; code: number; reason: string };
+
+/** A WebSocket stand-in whose only observable is the server's close call. */
+function recordingSocket(pageId: number, closes: RecordedClose[]): WebSocket {
+  return {
+    readyState: 1,
+    send() {},
+    close(code?: number, reason?: string) {
+      closes.push({ pageId, code: code ?? 1005, reason: String(reason ?? '') });
+    },
+  } as unknown as WebSocket;
+}
+
+/** Rooms the seeded deletions opened; released before the next case truncates. */
+const seededRooms: Array<{
+  runtime: CollabRuntime;
+  pageId: number;
+  admission: PageRuntimeAdmission | null;
+}> = [];
+
 type SeededDeletion = {
   intentId: string;
   pageId: number;
+  pageIds: number[];
   confluenceId: string | null;
   recoveryAdminId: string;
   preserveSharedCache: boolean;
+  closes: RecordedClose[];
+  joinedWritable: boolean;
 };
 
-async function seedCommittedDeletion(kind: LocalDeleteKind): Promise<SeededDeletion> {
+async function seedCommittedDeletion(
+  kind: LocalDeleteKind,
+  options: { room?: 'writable' | 'readonly'; extraStandalonePages?: number; failFirstSettlement?: boolean } = {},
+): Promise<SeededDeletion> {
   const originalActorId = await seedUser('user');
   const recoveryAdminId = await seedUser('admin');
   const standalone = kind === 'pages.delete.standalone';
@@ -124,14 +165,45 @@ async function seedCommittedDeletion(kind: LocalDeleteKind): Promise<SeededDelet
     [confluenceId, standalone ? 'standalone' : 'confluence', originalActorId],
   );
   const pageId = inserted.rows[0]!.id;
-  let revisions = inserted.rows[0]!;
+  const deletedIds = [pageId];
+  const revisionsById = new Map([[pageId, inserted.rows[0]!]]);
+  for (let extra = 0; extra < (options.extraStandalonePages ?? 0); extra += 1) {
+    // Only the standalone multi-page delete (a subtree) has more than one id.
+    const sibling = await query<{ id: number; content_revision: string; lifecycle_revision: string }>(
+      `INSERT INTO pages
+         (confluence_id, space_key, title, source, visibility, created_by_user_id)
+       VALUES (NULL, 'REC', 'Delete recovery child', 'standalone', 'private', $1)
+       RETURNING id, content_revision::text, lifecycle_revision::text`,
+      [originalActorId],
+    );
+    deletedIds.push(sibling.rows[0]!.id);
+    revisionsById.set(sibling.rows[0]!.id, sibling.rows[0]!);
+  }
+  const closes: RecordedClose[] = [];
+  let joinedWritable = false;
+  if (options.room) {
+    // truncateAllTables removed this process's runtime row; a writable join needs it.
+    await withPageWriteTransaction([], async () => undefined);
+    const runtime = getDefaultCollabRuntime()!;
+    // Join first: a pending intent refuses new writable admissions.
+    for (const id of deletedIds) {
+      const joined = await runtime.attachSocket(id, {
+        id: `editor-${randomUUID()}`,
+        ws: recordingSocket(id, closes),
+        userId: originalActorId,
+        writable: options.room === 'writable',
+      });
+      joinedWritable = joined.writable;
+      seededRooms.push({ runtime, pageId: id, admission: runtime.getRoom(id)?.admission ?? null });
+    }
+  }
   if (!standalone) {
     const hidden = await query<{ content_revision: string; lifecycle_revision: string }>(
       `UPDATE pages SET deleted_at = NOW() WHERE id = $1
        RETURNING content_revision::text, lifecycle_revision::text`,
       [pageId],
     );
-    revisions = { id: pageId, ...hidden.rows[0]! };
+    revisionsById.set(pageId, { id: pageId, ...hidden.rows[0]! });
   }
 
   if (standalone) {
@@ -176,7 +248,7 @@ async function seedCommittedDeletion(kind: LocalDeleteKind): Promise<SeededDelet
     ? {
         effectClass: 'local',
         rootPageId: pageId,
-        targetCount: 1,
+        targetCount: deletedIds.length,
         attachmentStores: ['attachment-cache', 'local', 'page-icons'],
       }
     : {
@@ -195,27 +267,25 @@ async function seedCommittedDeletion(kind: LocalDeleteKind): Promise<SeededDelet
       `INSERT INTO page_write_intents
          (id, runtime_id, kind, actor_id, page_ids, revisions, deleted_page_ids,
           recovery_mode, effect, effect_started_at)
-       VALUES ($1, $2, $3, $4, ARRAY[$5]::integer[], $6::jsonb, ARRAY[]::integer[],
+       VALUES ($1, $2, $3, $4, $5::integer[], $6::jsonb, ARRAY[]::integer[],
                'local_verified', $7::jsonb, NOW())`,
       [
         intentId,
         runtimeId,
         kind,
         originalActorId,
-        pageId,
-        JSON.stringify({
-          [pageId]: {
-            contentRevision: revisions.content_revision,
-            lifecycleRevision: revisions.lifecycle_revision,
-          },
-        }),
+        deletedIds,
+        JSON.stringify(Object.fromEntries(deletedIds.map((id) => [id, {
+          contentRevision: revisionsById.get(id)!.content_revision,
+          lifecycleRevision: revisionsById.get(id)!.lifecycle_revision,
+        }]))),
         JSON.stringify(effect),
       ],
     );
-    await client.query('DELETE FROM pages WHERE id = $1', [pageId]);
+    await client.query('DELETE FROM pages WHERE id = ANY($1::integer[])', [deletedIds]);
     await client.query(
-      'UPDATE page_write_intents SET deleted_page_ids = ARRAY[$2]::integer[] WHERE id = $1',
-      [intentId, pageId],
+      'UPDATE page_write_intents SET deleted_page_ids = $2::integer[] WHERE id = $1',
+      [intentId, deletedIds],
     );
     await client.query('COMMIT');
   } catch (error) {
@@ -226,11 +296,25 @@ async function seedCommittedDeletion(kind: LocalDeleteKind): Promise<SeededDelet
   }
 
   await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [originalActorId]);
-  await query(`INSERT INTO ${settlementTargetTable} (intent_id) VALUES ($1)`, [intentId]);
-  const activeKey = `collab:active:${pageId}`;
-  activeKeys.push(activeKey);
-  await redis.set(activeKey, 'stale-writer');
-  return { intentId, pageId, confluenceId, recoveryAdminId, preserveSharedCache };
+  if (options.failFirstSettlement ?? true) {
+    await query(`INSERT INTO ${settlementTargetTable} (intent_id) VALUES ($1)`, [intentId]);
+  }
+  // A writable room owns its own activity set; a read-only one registers none.
+  if (options.room !== 'writable') {
+    const activeKey = `collab:active:${pageId}`;
+    activeKeys.push(activeKey);
+    await redis.set(activeKey, 'stale-writer');
+  }
+  return {
+    intentId,
+    pageId,
+    pageIds: deletedIds,
+    confluenceId,
+    recoveryAdminId,
+    preserveSharedCache,
+    closes,
+    joinedWritable,
+  };
 }
 
 async function seedUnappliedDeletion(kind: LocalDeleteKind): Promise<{
@@ -348,6 +432,13 @@ beforeEach(async () => {
 
 afterEach(async () => {
   if (!dbAvailable || !redisAvailable) return;
+  vi.mocked(tombstoneCollabRoomAfterCommit).mockClear();
+  // A writable room's durable admission can outlive a committed delete, so
+  // release it explicitly before the next case truncates the tables.
+  for (const room of seededRooms.splice(0)) {
+    await room.runtime.tombstone(room.pageId, 1001, 'test_cleanup');
+    if (room.admission) await releasePageRuntime(room.admission).catch(() => undefined);
+  }
   await Promise.all(activeKeys.splice(0).map((key) => redis.del(key)));
 });
 
@@ -418,7 +509,7 @@ describeIntegration('local page-delete recovery', () => {
     'pages.delete.local',
     'pages.bulk.delete.local',
   ] as const)('repairs and retries %s from its committed tombstone without deleting a page twice', async (kind) => {
-    const seeded = await seedCommittedDeletion(kind);
+    const seeded = await seedCommittedDeletion(kind, { room: 'readonly' });
 
     await expect(reconcilePageWriteIntent(seeded.intentId, {
       actorId: seeded.recoveryAdminId,
@@ -440,7 +531,9 @@ describeIntegration('local page-delete recovery', () => {
       await expect(fs.stat(path.join(attachmentCacheDir(String(seeded.pageId)), 'shared-or-stale.bin')))
         .resolves.toBeDefined();
     }
-    expect(await redis.exists(`collab:active:${seeded.pageId}`)).toBe(0);
+    // The settlement rolled back: nothing may close, and the activity marker stays.
+    expect(seeded.closes).toEqual([]);
+    expect(await redis.exists(`collab:active:${seeded.pageId}`)).toBe(1);
 
     // Emulate another pod recreating a stale activity marker after the first
     // recovery process died. The retry must re-run the idempotent tombstone.
@@ -450,6 +543,10 @@ describeIntegration('local page-delete recovery', () => {
       reason: 'Retry the interrupted cleanup publication from durable deletion evidence',
     })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
 
+    // Only the repaired settlement's COMMIT closes the room.
+    expect(seeded.closes).toEqual([
+      { pageId: seeded.pageId, code: 4404, reason: 'committed_delete' },
+    ]);
     expect(await redis.exists(`collab:active:${seeded.pageId}`)).toBe(0);
     expect((await query<{ delete_count: number }>(
       `SELECT delete_count FROM ${deleteProbeTable} WHERE page_id = $1`,
@@ -458,6 +555,74 @@ describeIntegration('local page-delete recovery', () => {
     expect((await query<{ status: string; cache_invalidation_pending: boolean }>(
       `SELECT status, cache_invalidation_pending
          FROM page_write_intents WHERE id = $1`,
+      [seeded.intentId],
+    )).rows[0]).toEqual({ status: 'reconciled_applied', cache_invalidation_pending: false });
+  });
+
+  it.each([
+    'pages.delete.standalone',
+    'pages.delete.local',
+    'pages.bulk.delete.local',
+  ] as const)(
+    'settles %s and closes a writable room hosted by the reconciling runtime without waiting on its own lifecycle lock',
+    async (kind) => {
+      const seeded = await seedCommittedDeletion(kind, { room: 'writable', failFirstSettlement: false });
+      expect(seeded.joinedWritable).toBe(true);
+
+      // Closing the room inside the settlement transaction would wait for this
+      // room's final flush, which needs the page lifecycle lock that
+      // transaction holds: this await would never resolve.
+      await expect(reconcilePageWriteIntent(seeded.intentId, {
+        actorId: seeded.recoveryAdminId,
+        reason: 'Finish the crashed local delete under an open writable room',
+      })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+      expect(seeded.closes).toEqual([
+        { pageId: seeded.pageId, code: 4404, reason: 'committed_delete' },
+      ]);
+      const waiters = await query(
+        `SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND query LIKE '%pg_advisory_xact_lock%'`,
+      );
+      expect(waiters.rows).toEqual([]);
+    },
+    15_000,
+  );
+
+  it('closes every id of a standalone multi-page delete when one tombstone fails, and still settles', async () => {
+    const seeded = await seedCommittedDeletion('pages.delete.standalone', {
+      room: 'readonly',
+      extraStandalonePages: 2,
+      failFirstSettlement: false,
+    });
+    expect(seeded.pageIds).toHaveLength(3);
+    const failingId = [...seeded.pageIds].sort((first, second) => first - second)[0]!;
+    const realTombstone = vi.mocked(tombstoneCollabRoomAfterCommit).getMockImplementation()!;
+    vi.mocked(tombstoneCollabRoomAfterCommit).mockImplementation(async (pageId) => {
+      if (pageId === failingId) throw new Error('simulated tombstone failure');
+      await realTombstone(pageId);
+    });
+    onTestFinished(() => {
+      vi.mocked(tombstoneCollabRoomAfterCommit).mockImplementation(realTombstone);
+    });
+
+    await expect(reconcilePageWriteIntent(seeded.intentId, {
+      actorId: seeded.recoveryAdminId,
+      reason: 'Finish the crashed standalone subtree delete while one room close fails',
+    })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+    const attempted = vi.mocked(tombstoneCollabRoomAfterCommit).mock.calls.map(([pageId]) => pageId);
+    expect([...attempted].sort((first, second) => first - second))
+      .toEqual([...seeded.pageIds].sort((first, second) => first - second));
+    expect(seeded.closes.map(({ pageId }) => pageId).sort((first, second) => first - second))
+      .toEqual(seeded.pageIds.filter((id) => id !== failingId).sort((first, second) => first - second));
+    expect(seeded.closes.every(({ code, reason }) => code === 4404 && reason === 'committed_delete')).toBe(true);
+    expect((await query<{ status: string; cache_invalidation_pending: boolean }>(
+      'SELECT status, cache_invalidation_pending FROM page_write_intents WHERE id = $1',
       [seeded.intentId],
     )).rows[0]).toEqual({ status: 'reconciled_applied', cache_invalidation_pending: false });
   });

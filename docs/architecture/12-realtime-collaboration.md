@@ -348,9 +348,15 @@ Save is pending*).
 A committed hide/delete closes the page's rooms with **4404**
 `committed_delete` on every pod (`collab-tombstone.ts`: local close, then a
 Redis `tombstone` message). Intent recovery converges on the same close: a
-recovered Confluence delete tombstones after its settlement COMMIT, never inside
+recovered delete, remote (`pages.delete.confluence`, `pages.bulk.delete.remote`)
+or local (`pages.delete.standalone`, `pages.delete.local`,
+`pages.bulk.delete.local`), tombstones after its settlement COMMIT, never inside
 it (a writable room's final flush takes the page lifecycle lock that
-transaction holds); an undispatched one restores `deleted_at` and closes
+transaction holds). Each deleted page id is closed independently, so one failing
+close does not skip the others. A rolled-back settlement sends no 4404 and keeps
+`collab:active`; the administrator's retry closes the room. A crash between the
+COMMIT and the close is not retried: sockets close on disconnect and a rejoin
+answers 4404. An undispatched remote delete restores `deleted_at` and closes
 nothing.
 
 ## Feature flag
