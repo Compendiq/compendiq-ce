@@ -28,6 +28,7 @@ import {
   isDbAvailable,
 } from '../../../test-db-helper.js';
 import { query, getPool } from '../../../core/db/postgres.js';
+import { PAGE_LIFECYCLE_LOCK_KEY } from '../../../core/db/advisory-locks.js';
 
 // ── Policy mock ─────────────────────────────────────────────────────────
 // `getSyncConflictPolicy()` reads from the in-process cache populated by
@@ -518,5 +519,59 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
     // Trigger cleared the local-edit markers because the body changed AND
     // the racing UPDATE explicitly NULLed both columns.
     expect(final.local_modified_at).toBeNull();
+  });
+
+  it('a row that regains the Confluence id after the decision took its lifecycle locks is treated as missing: nothing is published (#2034)', async () => {
+    activePolicy = 'confluence-wins';
+    const page = await insertPage({ confluenceId: 'c-flip', spaceKey: 'DOCS', body: 'SYNCED-BODY' });
+    const other = await insertPage({ confluenceId: 'c-flip-other', spaceKey: 'DOCS', body: 'OTHER-BODY' });
+    await query(
+      `INSERT INTO page_collaborative_docs (page_id, doc_state) VALUES ($1, '\\x01'::bytea), ($2, '\\x01'::bytea)`,
+      [page.id, other.id],
+    );
+    const before = { page: await getPageRow(page.id), other: await getPageRow(other.id) };
+    // The id sits on another row when the decision reads which lifecycle locks to take.
+    await query(`UPDATE pages SET confluence_id = 'c-flip-parked' WHERE id = $1`, [page.id]);
+    await query(`UPDATE pages SET confluence_id = 'c-flip' WHERE id = $1`, [other.id]);
+    const args = makeArgs({ confluenceId: 'c-flip', observed: { id: page.id, remote_version: null } });
+
+    const holder = await getPool().connect();
+    let applying: Promise<void> | undefined;
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, other.id]);
+      applying = __internal.applyConflictPolicyForExistingPage(args);
+      await vi.waitFor(async () => {
+        const waiting = await query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+            WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND NOT granted
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+          [PAGE_LIFECYCLE_LOCK_KEY, other.id],
+        );
+        expect(waiting.rows[0]!.n).toBe(1);
+      }, { timeout: 10_000 });
+      // The observed row has the id again before it is read FOR UPDATE: the
+      // same row and counters, but its lifecycle lock is not held.
+      await query(`UPDATE pages SET confluence_id = 'c-flip-other' WHERE id = $1`, [other.id]);
+      await query(`UPDATE pages SET confluence_id = 'c-flip' WHERE id = $1`, [page.id]);
+      await holder.query('ROLLBACK');
+      await applying;
+    } finally {
+      await holder.query('ROLLBACK').catch(() => undefined);
+      holder.release();
+      await applying?.catch(() => undefined);
+    }
+
+    expect(await getPageRow(page.id)).toEqual(before.page);
+    expect(await getPageRow(other.id)).toEqual(before.other);
+    expect(args.counts.pagesUpdated).toBe(0);
+    expect(await getAuditEntriesForPage(page.id)).toEqual([]);
+    const docs = await query<{ page_id: number }>('SELECT page_id FROM page_collaborative_docs ORDER BY page_id');
+    expect(docs.rows.map((row) => row.page_id)).toEqual([page.id, other.id].sort((a, b) => a - b));
+
+    // The next walk holds the row's lock and publishes.
+    await __internal.applyConflictPolicyForExistingPage(args);
+    expect((await getPageRow(page.id)).body_html).toBe('INCOMING-HTML');
+    expect(args.counts.pagesUpdated).toBe(1);
   });
 });

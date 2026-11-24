@@ -21,6 +21,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { insertTestRuntime, isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
+import { PAGE_LIFECYCLE_LOCK_KEY } from '../../../core/db/advisory-locks.js';
 import { logger } from '../../../core/utils/logger.js';
 import { pagesVersionRoutes } from '../../../routes/knowledge/pages-versions.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
@@ -1045,6 +1046,71 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
         .toBe('none');
       expect(counts).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
     } finally {
+      await setAiPolicyEnforcementForTest(false);
+    }
+  });
+
+  it('a row that regains the Confluence id after the upsert took its lifecycle locks is skipped: nothing is published or deleted without its lock (#2034)', async () => {
+    await usePolicy('confluence-wins');
+    await setAiPolicyEnforcementForTest(true);
+    const holder = await getPool().connect();
+    let syncing: Promise<{ pagesCreated: number; pagesUpdated: number; pagesDeleted: number }> | undefined;
+    try {
+      const id = await seedSyncedV5('vj-flip');
+      const otherId = await seedSyncedV5('vj-flip-other');
+      await seedCollabDoc(id);
+      const page: ConfluencePage = {
+        ...upstreamPage('vj-flip'),
+        metadata: { labels: { results: [{ name: 'no-ai' }] } },
+      };
+      upstreamPages.set(page.id, page);
+      // After the conflict decision the id sits on another row, whose lifecycle
+      // lock the upsert transaction therefore waits for.
+      beforeAttachmentList = async (confluenceId) => {
+        if (confluenceId !== 'vj-flip') return;
+        beforeAttachmentList = null;
+        await query(`UPDATE pages SET confluence_id = 'vj-flip-parked' WHERE id = $1`, [id]);
+        await query(`UPDATE pages SET confluence_id = 'vj-flip' WHERE id = $1`, [otherId]);
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, otherId]);
+      };
+
+      syncing = runSync(page, RUN_1);
+      await expect.poll(async () => {
+        const waiting = await query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+            WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND NOT granted
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+          [PAGE_LIFECYCLE_LOCK_KEY, otherId],
+        );
+        return waiting.rows[0]!.n;
+      }, { timeout: 10_000 }).toBe(1);
+      // The decided row has the id again before the upsert reads it FOR UPDATE:
+      // same row, same counters, but its lifecycle lock is not held.
+      await query(`UPDATE pages SET confluence_id = 'vj-flip-other' WHERE id = $1`, [otherId]);
+      await query(`UPDATE pages SET confluence_id = 'vj-flip' WHERE id = $1`, [id]);
+      await holder.query('ROLLBACK');
+      const counts = await syncing;
+
+      expect(await row(id)).toMatchObject({ body_html: '<p>A v5</p>', version: 5, remote_version: 5 });
+      expect(await row(otherId)).toMatchObject({ body_html: '<p>A v5</p>', version: 5, remote_version: 5 });
+      expect(await collabDocStored(id)).toBe(true);
+      expect(await snapshots(id)).toEqual([]);
+      expect(await syncAudits(id)).toEqual([]);
+      expect(counts).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
+      // As on every other skip exit, the AI policy this walk observed is published.
+      expect((await query<{ ai_policy: string }>('SELECT ai_policy FROM pages WHERE id = $1', [id])).rows[0]!.ai_policy)
+        .toBe('none');
+
+      // The next walk holds the row's lock and publishes.
+      const next = await runSync(page, RUN_2);
+      expect(await row(id)).toMatchObject({ version: 7, remote_version: 7 });
+      expect(await collabDocStored(id)).toBe(false);
+      expect(next.pagesUpdated).toBe(1);
+    } finally {
+      await holder.query('ROLLBACK').catch(() => undefined);
+      holder.release();
+      await syncing?.catch(() => undefined);
       await setAiPolicyEnforcementForTest(false);
     }
   });
