@@ -768,6 +768,18 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     let connId: string | null = null;
     const runtime = getDefaultCollabRuntime();
     let frameChain = Promise.resolve();
+    // The handoff of a writable join (#1928): the room called `goLive` inside
+    // its final step, so frames already go to the chain, which waits until
+    // `attachSocket` has returned. `dropped` when the join failed or the
+    // socket closed before that: the chain then skips every frame.
+    let handoff = 'none' as 'none' | 'gated' | 'open' | 'dropped';
+    let releaseHandoff: () => void = () => undefined;
+
+    const dropGatedFrames = (): void => {
+      if (handoff !== 'gated') return;
+      handoff = 'dropped';
+      releaseHandoff();
+    };
 
     const pingTimer = setInterval(() => {
       if (socket.readyState === 1) {
@@ -780,12 +792,47 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     let securityTimer: ReturnType<typeof setInterval> | null = null;
 
     const finish = (code: number, reason: string): void => {
+      dropGatedFrames();
       if (closed) return;
       closed = true;
       pending.length = 0;
       clearInterval(pingTimer);
       clearInterval(securityTimer ?? undefined);
       try { socket.close(code, reason); } catch { /* */ }
+    };
+
+    /** Append one frame to the ordered chain of a live socket. */
+    const chainFrame = (joinedPageId: number, joinedConnId: string, buf: Uint8Array): void => {
+      if (!runtime) return;
+      frameChain = frameChain.then(async () => {
+        if (handoff === 'dropped') return;
+        const result = await runtime.handleInboundFrame(joinedPageId, joinedConnId, buf);
+        if (result === 'close_4403') finish(4403, 'readonly');
+      }).catch((err) => {
+        logger.warn({ err, pageId: joinedPageId }, 'collab: inbound frame failed');
+        finish(1001, 'internal');
+      });
+    };
+
+    /**
+     * Called by the room inside the fenced final step of a writable join,
+     * before it writes `writable_admission` and its SyncStep1: the reply can
+     * arrive before `attachSocket` returns and can be larger than the pre-live
+     * buffer, so from here on frames skip that buffer. The buffered frames move
+     * once, in arrival order, onto the chain behind a gate that opens when
+     * `attachSocket` has returned; later frames append behind them. Nothing
+     * here awaits, so no frame is processed under the join's lifecycle lock.
+     */
+    const goLive = (): void => {
+      if (live || closed || pageId === null || connId === null) return;
+      live = true;
+      handoff = 'gated';
+      // The lib target predates Promise.withResolvers.
+      const gate = new Promise<void>((resolve) => { releaseHandoff = resolve; });
+      frameChain = frameChain.then(() => gate);
+      const queuedFrames = pending.splice(0);
+      pendingBytes = 0;
+      for (const buf of queuedFrames) chainFrame(pageId, connId, buf);
     };
 
     socket.on('message', (data) => {
@@ -805,15 +852,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         pendingBytes += buf.byteLength;
         return;
       }
-      const joinedPageId = pageId;
-      const joinedConnId = connId;
-      frameChain = frameChain.then(async () => {
-        const result = await runtime.handleInboundFrame(joinedPageId, joinedConnId, buf);
-        if (result === 'close_4403') finish(4403, 'readonly');
-      }).catch((err) => {
-        logger.warn({ err, pageId: joinedPageId }, 'collab: inbound frame failed');
-        finish(1001, 'internal');
-      });
+      chainFrame(pageId, connId, buf);
     });
 
     socket.on('pong', () => {
@@ -821,6 +860,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     });
 
     socket.on('close', () => {
+      dropGatedFrames();
       closed = true;
       clearInterval(pingTimer);
       clearInterval(securityTimer ?? undefined);
@@ -911,6 +951,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         writable: requestedWritable,
         expectedLifecycleRevision,
         expectedDocEpoch,
+        goLive,
         identity: {
           id: auth.userId,
           name: meta.name,
@@ -941,6 +982,11 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         await runtime.detachSocket(pageId, connId);
         return;
       }
+      if (handoff === 'gated') {
+        // `attachSocket` has returned: the frames that arrived since `goLive` run now.
+        handoff = 'open';
+        releaseHandoff();
+      }
       const securityPageId = pageId;
       const securityConnId = connId;
       securityTimer = setInterval(() => {
@@ -967,6 +1013,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         ));
       }, 60_000);
       if (typeof securityTimer.unref === 'function') securityTimer.unref();
+      if (live) return;
       live = true;
       const queuedFrames = pending.splice(0);
       for (const buf of queuedFrames) {

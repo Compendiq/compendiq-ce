@@ -185,6 +185,17 @@ export type CollabSocketJoin = Pick<CollabSocket, 'id' | 'ws' | 'userId' | 'writ
   expectedLifecycleRevision?: string | null;
   /** Omitted means `absent`. */
   expectedDocEpoch?: CollabDocEpochDeclaration;
+  /**
+   * The gateway's handoff (#1928). Called at most once, synchronously, inside
+   * the fenced final step of a writable join, before `writable_admission` and
+   * the server SyncStep1 are written: from then on the transport must route
+   * the socket's frames onto its live path, because the reply to that
+   * SyncStep1 can arrive before `attachSocket` returns and can exceed the
+   * pre-live buffer. The transport must not process those frames before
+   * `attachSocket` has returned, and drops them if it throws or the socket
+   * closes first. A join that never reaches that step does not call it.
+   */
+  goLive?: () => void;
 };
 
 export type CollabCommitSnapshot = {
@@ -343,6 +354,14 @@ function encodeAwarenessFrame(update: Uint8Array): Uint8Array {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
   encoding.writeVarUint8Array(encoder, update);
+  return encoding.toUint8Array(encoder);
+}
+
+/** The server's SyncStep1: the room document's state vector, asking the client for what the room lacks (#1928). */
+function encodeSyncStep1Frame(doc: Y.Doc): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_SYNC);
+  syncProtocol.writeSyncStep1(encoder, doc);
   return encoding.toUint8Array(encoder);
 }
 
@@ -1793,6 +1812,14 @@ export async function createCollabRuntime(
 
     const syncMutation = header.messageType === MESSAGE_SYNC
       && (header.syncSubtype === SYNC_STEP2 || header.syncSubtype === SYNC_UPDATE);
+    // A SyncStep1 from a socket the server itself holds as a writable,
+    // lineage-verified writer is answered only under the admission fence
+    // (#1928): its answer is what that writer later relies on as the current
+    // generation's state. Every other SyncStep1 is answered as before.
+    const verifiedSyncStep1 = header.messageType === MESSAGE_SYNC
+      && header.syncSubtype === SYNC_STEP1
+      && socket.writable
+      && socket.lineageVerified;
     const allowedReadonly = header.messageType === MESSAGE_AWARENESS
       || header.messageType === MESSAGE_QUERY_AWARENESS
       || (header.messageType === MESSAGE_SYNC && header.syncSubtype === SYNC_STEP1);
@@ -1820,30 +1847,32 @@ export async function createCollabRuntime(
           syncProtocol.readSyncMessage(decoder, encoder, room.doc, connId);
           if (encoding.length(encoder) > 1) sendBin(socket.ws, encoding.toUint8Array(encoder));
         };
-        if (syncMutation) {
+        if (syncMutation || verifiedSyncStep1) {
           const admission = room.admission;
           if (!admission) {
             socket.writable = false;
-            return recordReadonlyViolation(room, socket);
+            return syncMutation ? recordReadonlyViolation(room, socket) : 'dropped';
           }
           const docEpoch = room.docEpoch;
           try {
             let applied = false;
             // The page's own pending collaborative Save does not fence an
-            // in-memory apply: it publishes the snapshot it captured before
-            // reserving, and this room's persist waits for it (#1763). That
-            // holds for a Save in flight only: once its outcome is unknown,
-            // nothing more is applied (#2035). A foreign pending write, a
-            // stale lifecycle or admission, a fenced runtime or an unreadable
-            // fence still closes below.
+            // in-memory apply or answer: it publishes the snapshot it captured
+            // before reserving, and this room's persist waits for it (#1763).
+            // That holds for a Save in flight only: once its outcome is
+            // unknown, nothing more is applied or answered (#2035). A foreign
+            // pending write, a stale lifecycle or admission, a fenced runtime
+            // or an unreadable fence still closes below.
             await withCollabCommitKnown(pageId, room, (assertCommitKnown) =>
               withPageWriteTransaction([pageId], async (client) => {
-                // The frame is applied on behalf of the current generation only:
-                // the row must still carry this room's epoch (#2034).
+                // The frame is applied, or the answer encoded, on behalf of the
+                // current generation only: the row must still carry this
+                // room's epoch (#2034).
                 await persist.assertCurrentCollabDocEpoch(client, pageId, docEpoch);
                 await assertCommitKnown(client);
                 // Disconnect/demotion can win while this frame waits for the
-                // lifecycle lock. It must not write behind their final flush.
+                // lifecycle lock. It must not write behind their final flush,
+                // nor answer a socket that is no longer a writer.
                 if (rooms.get(pageId) !== room || room.sockets.get(connId) !== socket
                   || !socket.writable || room.admission?.id !== admission.id) return;
                 apply();
@@ -2125,7 +2154,7 @@ export async function createCollabRuntime(
     if (writable) {
       let granted = false;
       try {
-        granted = await grantWriteAuthority(room, full, declaration);
+        granted = await grantWriteAuthority(room, full, declaration, socket.goLive);
       } catch (error) {
         if (!isCollabCommitUnknown(error)) {
           // The fence refused: the socket is closed and cleaned up.
@@ -2203,17 +2232,19 @@ export async function createCollabRuntime(
   }
 
   /**
-   * The final step of a writable join (#2034, #2035), after every awaited
-   * preparation and with the socket registered without write authority. One
-   * admission-fenced transaction re-asserts that the room's document is the
-   * current generation and that the page's own collaborative commit is not
-   * unknown and then, still inside it and without awaiting anything else,
-   * makes the final checks, marks the socket writable and writes
-   * `writable_admission`. The unknown-outcome marker, every settlement and
-   * every invalidation, seed and reset take the same lifecycle lock: either
-   * the marker commits first and this join sees it, or the socket is a
-   * registered writer before the marker commits and the cue or its next frame
-   * demotes it. The positive cue is never written outside this fence.
+   * The final step of a writable join (#2034, #2035, #1928), after every
+   * awaited preparation and with the socket registered without write
+   * authority. One admission-fenced transaction re-asserts that the room's
+   * document is the current generation and that the page's own collaborative
+   * commit is not unknown and then, still inside it and without awaiting
+   * anything else, makes the final checks, hands the socket to the
+   * transport's live path (`goLive`), marks the socket writable and writes
+   * `writable_admission`, followed by one server SyncStep1 when the join is
+   * lineage-verified. The unknown-outcome marker, every settlement and every
+   * invalidation, seed and reset take the same lifecycle lock: either the
+   * marker commits first and this join sees it, or the socket is a registered
+   * writer before the marker commits and the cue or its next frame demotes it.
+   * The positive cue and the SyncStep1 are never written outside this fence.
    *
    * False when the socket left during the join; throws when the fence refuses.
    */
@@ -2221,6 +2252,7 @@ export async function createCollabRuntime(
     room: CollabRoom,
     socket: CollabSocket,
     declaration: CollabDocEpochDeclaration,
+    goLive: (() => void) | undefined,
   ): Promise<boolean> {
     const admission = room.admission;
     if (!admission) throw unavailableSnapshot();
@@ -2241,12 +2273,19 @@ export async function createCollabRuntime(
           || room.demotionReason !== null
           || !transportAvailable()
         ) throw unavailableSnapshot();
+        goLive?.();
         socket.writable = true;
         socket.lineageVerified = declaration.kind === 'declared';
         sendBin(socket.ws, encodeControlFrame({
           type: 'writable_admission',
           lifecycleRevision: room.lifecycleRevision,
         }));
+        // Ask the tab once for what the room lacks: frames refused or lost
+        // before this connection and edits made offline. Only a tab whose
+        // document is of this room's lineage may answer; an undeclared join
+        // could merge another generation (#2034). Its SyncStep2 takes the
+        // fenced `syncMutation` path like any other write.
+        if (socket.lineageVerified) sendBin(socket.ws, encodeSyncStep1Frame(room.doc));
         return true;
       }, { admission, ownCollabCommit: 'proceed' }), commitLatches);
   }

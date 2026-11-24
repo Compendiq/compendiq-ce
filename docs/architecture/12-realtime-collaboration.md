@@ -116,8 +116,12 @@ sequenceDiagram
             B->>B: keep the Y.Doc as a read-only draft, do not reconnect
         else attached
             G-->>B: control doc_epoch when the room has a persisted document, then page_lifecycle, then writable_admission or its refusal
+            opt lineage-verified writable join
+                G-->>B: server SyncStep1 with the room state vector, directly after writable_admission
+                B->>G: SyncStep2 with what the room lacks, through the fenced write path
+            end
             B->>G: binary SyncStep1
-            G-->>B: SyncStep2 only, the server does not currently send SyncStep1, see issue 1928
+            G-->>B: SyncStep2, answered under the admission fence for a lineage-verified writer
             B->>B: first sync pins the doc_epoch of this connection for every later join
             Note over G: read-only peers drop SyncStep2 and Update by first two bytes
         end
@@ -148,6 +152,23 @@ An overflow closes `1013 join_backlog`, which y-websocket retries. Buffering
 never produces a 4403. Before the first sync the editor shows exactly one of
 the messages above, never the read-only draft banner or **Download draft**;
 Save stays blocked, and title, tags and icon unlock with the first sync.
+
+**Gateway handoff (#1928).** The server SyncStep1 of a lineage-verified
+writable join is written inside the join's fenced final step, so the tab's
+SyncStep2 reply can arrive before `attachSocket` returns and can be larger than
+the pre-live buffer (an offline edit). The route therefore passes
+`attachSocket` a `goLive` callback, which that final step calls synchronously,
+inside its transaction and before it writes `writable_admission` and the
+SyncStep1. `goLive` marks the socket live and moves the pre-live buffer, once
+and in arrival order, onto the ordered frame chain behind a gate that opens
+when `attachSocket` has returned; later frames, the reply included, append
+behind them. `attachSocket` never awaits that chain, and no frame is handled
+under the join transaction's lifecycle lock (each frame handler takes its own).
+A rollback of the final transaction, or a close while the chain is gated,
+drops the buffered frames instead of handling them. A join that does not reach
+the final writable step goes live as before, after `attachSocket` returns. The
+10 MiB WebSocket `maxPayload` (`backend/src/app.ts`) is the only bound on the
+reply.
 
 Close **after** the 101, **before** any SyncStep1. Do not throw
 `fastify.authenticate` in `onRequest` on this route.
@@ -206,7 +227,8 @@ end that join or leave the socket unverified.
 4. The page's own collaborative commit is unknown (#2035, below): the socket
    is attached read-only and sent `commit_unknown`, then `permission_loss`. It
    never receives `writable_admission` and takes no admission.
-5. Otherwise the join is writable: `writable_admission`.
+5. Otherwise the join is writable: `writable_admission`, then one server
+   SyncStep1 when the join is lineage-verified (#1928, below).
 
 A frozen page is step 2 whatever the join declares: the refused admission
 gives it today's read-only outcome and the declaration is not looked at.
@@ -242,18 +264,50 @@ The last of them also decides step 4:
   compares a declaration with the epoch the room ended up with, and asserts
   that the page's own commit is not unknown. Still inside that transaction,
   and without awaiting anything else, it makes the last socket, room and
-  transport checks, marks the socket writable and writes `writable_admission`.
-  A lineage that ended meanwhile retires the room (a declared join is answered
-  `doc_reset`, an undeclared one is closed `1001` and reconnects into a fresh
-  room); a declaration that no longer matches is refused with `doc_reset`,
-  never admitted unverified. If the transaction fails the socket is closed and
-  cleaned up. The positive control is never written outside this fence.
+  transport checks, calls the gateway's `goLive` (#1928), marks the socket
+  writable and writes `writable_admission`, followed by the server SyncStep1
+  of a lineage-verified join. A lineage that ended meanwhile retires the room
+  (a declared join is answered `doc_reset`, an undeclared one is closed `1001`
+  and reconnects into a fresh room); a declaration that no longer matches is
+  refused with `doc_reset`, never admitted unverified. If the transaction
+  fails the socket is closed and cleaned up. The positive control and the
+  SyncStep1 are never written outside this fence.
 
 `CollabSocket.lineageVerified` is true only for a writable socket whose join
 declared the room's epoch. A join that declares nothing is admitted as before
 and is never verified, a first join included (amendment A1: a first join has an
-empty document and nothing to replay). #1928 sends its server SyncStep1 only
-to writable, lineage-verified sockets.
+empty document and nothing to replay).
+
+**Server SyncStep1 (#1928).** y-websocket sends a local edit only while its
+socket is open and never queues it, so a frame refused with `1001
+collab_validation_unavailable` or lost to a close, and an edit made while the
+tab was disconnected after its first sync, would stay only in the tab: a later
+collaborative Save then answers `409 collab_snapshot_not_received`. A
+writable, lineage-verified join is therefore sent exactly one SyncStep1
+carrying `room.doc`'s state vector, directly after `writable_admission` in the
+fenced final step, and never again on that socket. The tab answers with a
+SyncStep2 holding what the room lacks; it takes the ordinary fenced
+`syncMutation` path (current-epoch assertion, unknown-commit fence, admission
+and writable checks), so it grants nothing a writable socket could not already
+send unprompted. No SyncStep1 goes to a read-only, `writable_refused`,
+`commit_unknown` or demoted socket (a read-only socket's SyncStep2 would count
+toward `COLLAB_READONLY_DROP_LIMIT`), nor to an undeclared join, whose
+document could belong to another lineage (#2034). A tab that is refused a
+write for its lifecycle or permission disconnects and never reconnects, so a
+fenced draft is not replayed.
+
+**Fenced answer to a verified writer (#1928).** A client SyncStep1 that
+arrives on a socket the server holds as writable and lineage-verified (server
+state, never a client claim) is answered inside an admission-fenced
+transaction with `ownCollabCommit: 'proceed'`, like the replay, so a healthy
+Save in flight does not refuse it. That transaction asserts the room's current
+epoch, that the socket is still attached and writable under the room's
+admission, and that the page's own commit is not `unknown`; only then is the
+SyncStep2 encoded and queued. A failed assertion sends no answer and follows
+that fence's outcome: a lineage change retires the room (`doc_reset`), an
+unknown commit demotes the socket (`commit_unknown`), any other refusal closes
+it `1001 collab_validation_unavailable`. A SyncStep1 from any other socket is
+answered as before, without a transaction.
 
 Type-4 control frames (JSON, server to client):
 
@@ -465,10 +519,10 @@ on again. During an ungated mix no guarantee is given; this is what to expect:
 
 | Situation | Behaviour |
 |---|---|
-| Old pod serves a join | Ignores `expectedDocEpoch` and sends no `doc_epoch`: today's behaviour on that socket |
+| Old pod serves a join | Ignores `expectedDocEpoch`, sends no `doc_epoch` and no server SyncStep1 (#1928): today's behaviour on that socket |
 | Old pod writes the collab row | A new row gets a fresh epoch from the column default. Its unguarded upsert can still overwrite a row, and its in-place reset keeps the epoch (the reason for the gate) |
 | Old pod's bus messages | Carry no `docEpoch`; handled as before |
-| Tab that synced on a new pod, later merged replacement content on an old pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. An old pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned is unverified |
+| Tab that synced on a new pod, later merged replacement content on an old pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. An old pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned is unverified and is sent no server SyncStep1 |
 | Old bundle on a new pod | Declares nothing and ignores `doc_epoch`: admitted as before, never verified |
 | New bundle on an old pod | Never receives `doc_epoch`, so it never pins and declares nothing |
 | Old pod runs a Save that fails after dispatch (#2035) | It records no marker and sends no cue. Every pod reads the intent as `in_flight` and keeps accepting edits, as before this change, until that pod's runtime is fenced or quiesced; from then on the state is `unknown` on every new pod |
@@ -496,8 +550,9 @@ cancelled Save, or one settled by recovery) a waiting persist runs again on the
 next edit or the last-writer flush, and a deferred release retries from 1 s,
 doubling to 30 s. Any other pending page write, a stale lifecycle or admission,
 and a fenced runtime still close a writable socket with
-`1001 collab_validation_unavailable`, and that refused frame is not requested
-again (#1928).
+`1001 collab_validation_unavailable`. The tab reconnects, and when that join
+is lineage-verified the server SyncStep1 asks it again for the refused frame
+(#1928).
 
 **When that Save fails after dispatch (#2035).** The transience above holds
 for a Save in flight only. A Save whose remote phase ends without a terminal
