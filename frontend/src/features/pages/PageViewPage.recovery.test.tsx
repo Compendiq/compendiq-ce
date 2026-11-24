@@ -8,7 +8,7 @@ import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { COLLAB_UPGRADE_WINDOW_SEC, CollabCommitSchema } from '@compendiq/contracts';
-import { REJOIN_COVERAGE_TIMEOUT_MS } from './use-collab-provider';
+import { REJOIN_COVERAGE_TIMEOUT_MS } from './collab-rejoin-attempt';
 import { toast } from 'sonner';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
@@ -1099,14 +1099,16 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
   const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
   const WINDOW_MS = COLLAB_UPGRADE_WINDOW_SEC * 1000;
   const BANNER = 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.';
-  const UNCONFIRMED = 'The server could not be confirmed to hold this draft, so editing stays paused. Your draft is unchanged here. You can try Rejoin again.';
+  const UNCONFIRMED = 'We could not confirm that the server has your draft, so editing stays paused. Download draft saves it as it was before you pressed Rejoin. You can press Rejoin again.';
   let room: Y.Doc;
+  let roomDropsUpdates: boolean;
   let handled: WeakMap<Socket, number>;
   let downloads: Blob[];
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     room = new Y.Doc();
+    roomDropsUpdates = false;
     handled = new WeakMap();
     downloads = [];
     URL.createObjectURL = vi.fn((blob: Blob) => { downloads.push(blob); return 'blob:draft'; });
@@ -1127,6 +1129,8 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
       if (decoding.readVarUint(decoder) !== 0) continue;
       const reply = encoding.createEncoder();
       encoding.writeVarUint(reply, 0);
+      // A room that lost the replay still answers every SyncStep1.
+      if (roomDropsUpdates && decoding.peekVarUint(decoder) !== syncProtocol.messageYjsSyncStep1) continue;
       syncProtocol.readSyncMessage(decoder, reply, room, 'client');
       if (encoding.length(reply) > 1) socket.receive(encoding.toUint8Array(reply));
     }
@@ -1314,4 +1318,108 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
       expect(Socket.instances).toHaveLength(1);
     },
   );
+
+  /** The room's published paragraph; the first join hydrates it. */
+  function publish(text: string) {
+    const paragraph = new Y.XmlElement('paragraph');
+    const content = new Y.XmlText();
+    content.insert(0, text);
+    paragraph.insert(0, [content]);
+    room.getXmlFragment('default').push([paragraph]);
+  }
+
+  function completeAttempt(socket: Socket) {
+    act(() => {
+      socket.open();
+      serve(socket);
+      sendControl(socket, { type: 'writable_admission', lifecycleRevision: '1' });
+      requestReplay(socket);
+    });
+  }
+
+  it('keeps the offline text recoverable through Download draft when the room is ahead and the proof fails', async () => {
+    publish('Published paragraph');
+    renderPage();
+    const first = await startCollabEdit();
+    act(() => {
+      first.open();
+      sendControl(first, { type: 'doc_epoch', epoch: EPOCH });
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeSyncStep2(encoder, room);
+      first.receive(encoding.toUint8Array(encoder));
+      sendControl(first, { type: 'writable_admission', lifecycleRevision: '1' });
+    });
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveTextContent('Published paragraph');
+    });
+    // Typed while offline; a peer removes the whole paragraph meanwhile.
+    act(() => first.close(1006, 'offline'));
+    await pasteBodyText('Typed offline');
+    room.transact(() => room.getXmlFragment('default').delete(0, 1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    const second = Socket.instances[1]!;
+    act(() => { second.open(); second.close(4403, 'rate_limited'); });
+    await screen.findByText('This editing session is now read-only');
+
+    roomDropsUpdates = true;
+    const { attempt } = await pressRejoin();
+    completeAttempt(attempt);
+    await act(async () => { await Promise.resolve(); });
+    act(() => serve(attempt));
+
+    // The room's deletion merged into the only open document, taking the text with it.
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).not.toHaveTextContent('Typed offline');
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
+    expect(screen.getByTestId('collab-rejoin-status')).toHaveTextContent(UNCONFIRMED);
+    expect(screen.getByTestId('collab-rejoin-status')).not.toHaveTextContent('unchanged');
+    for (let press = 0; press < 2; press += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
+      const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
+      expect(saved.bodyHtml).toContain('Typed offline');
+      if (press === 1) break;
+      // Across a further press the export stays the one taken before the first attempt.
+      const again = await pressRejoin();
+      await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
+      expect(again.attempt.readyState).toBe(Socket.CLOSED);
+    }
+  });
+
+  it('hands focus to the editor column when the control was only reached by keyboard after the attempt started', async () => {
+    await limitedSession();
+    await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS); });
+    const rejoin = screen.getByRole('button', { name: 'Rejoin' });
+    // Activated without taking focus, then reached with Tab while it reads "Rejoining…".
+    fireEvent.click(rejoin);
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    expect(rejoin).not.toHaveFocus();
+    rejoin.focus();
+    expect(rejoin).toHaveFocus();
+
+    const attempt = Socket.instances[1]!;
+    completeAttempt(attempt);
+    await act(async () => { await Promise.resolve(); });
+    act(() => serve(attempt));
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
+  });
+
+  it('never takes focus from a control that survives the attempt', async () => {
+    await limitedSession();
+    const { rejoin, attempt } = await pressRejoin();
+    const download = screen.getByRole('button', { name: 'Download draft' });
+    download.focus();
+    expect(rejoin).not.toHaveFocus();
+    act(() => {
+      attempt.open();
+      sendControl(attempt, { type: 'permission_loss', reason: 'edit_permission_revoked' });
+    });
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument());
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(download).toHaveFocus();
+  });
 });

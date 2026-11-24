@@ -6,7 +6,8 @@ import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { useAuthStore } from '../../stores/auth-store';
-import { REJOIN_COVERAGE_TIMEOUT_MS, useCollabProvider } from './use-collab-provider';
+import { REJOIN_COVERAGE_TIMEOUT_MS } from './collab-rejoin-attempt';
+import { useCollabProvider } from './use-collab-provider';
 
 // Only the network boundary is replaced. The provider, protocol decoder,
 // awareness and Y.Doc are real, including reconnection and outgoing updates.
@@ -856,8 +857,8 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     const flush = () => act(async () => { await Promise.resolve(); });
 
     /** One provider and one document throughout: a pinned, writable session whose 4403 closes it. */
-    function limited({ pin = true, reason = 'rate_limited', offline = true }: {
-      pin?: boolean; reason?: string; offline?: boolean;
+    function limited({ pin = true, reason = 'rate_limited', offline = true, lead = 0 }: {
+      pin?: boolean; reason?: string; offline?: boolean; lead?: number;
     } = {}) {
       const gateway = new Gateway('Published text');
       const writables: boolean[] = [];
@@ -876,6 +877,7 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       const draft = view.result.current.ydoc!;
       const provider = view.result.current.provider!;
       expect(view.result.current.writable).toBe(true);
+      if (lead > 0) act(() => { vi.advanceTimersByTime(lead); });
       act(() => { first.close(4403, reason); });
       // Typed after the close: the editor stays editable while disconnected.
       if (offline) act(() => { draft.getText('draft').insert(14, ' + offline'); });
@@ -1196,6 +1198,47 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       act(() => { useAuthStore.getState().setAuth('jwt-other', { ...user, id: '00000000-0000-4000-8000-000000000002' }); });
       act(() => { session.result.current.retry(); });
       expect(Socket.instances).toHaveLength(1);
+    });
+
+    /** Every SyncStep1 the client sent: its own opening one, resyncs and the probe. */
+    const step1Frames = (socket: Socket) => socket.sent.filter((frame) => frame[0] === 0 && frame[1] === 0).length;
+
+    it('holds the periodic resync back while an attempt runs, so its answer cannot pass for the probe\'s', async () => {
+      // The provider's 30 s interval is anchored to its creation: closed at 25 s,
+      // the window ends at 85 s and the next tick (90 s) falls inside the attempt.
+      const session = limited({ lead: 25_000 });
+      const { result, gateway } = session;
+      const attempt = await rejoin(session);
+      act(() => { attempt.open(); gateway.pump(attempt); admission(attempt); gateway.requestReplay(attempt); });
+      await flush();
+      expect(probes(attempt)).toBe(1);
+      expect(step1Frames(attempt)).toBe(2);
+
+      // The tick passes while the probe's answer is still on its way.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(step1Frames(attempt)).toBe(2);
+      expect(result.current.writable).toBe(false);
+      act(() => { gateway.pump(attempt); });
+      expect(result.current).toMatchObject({ writable: true, readOnlyReason: null });
+      expect(probes(attempt)).toBe(1);
+
+      // Afterwards the resync behaves as it always did.
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(step1Frames(attempt)).toBe(3);
+    });
+
+    it('sends no probe when no server SyncStep1 arrived, however long the room has already held the draft', async () => {
+      const session = limited({ offline: false });
+      const { result, gateway } = session;
+      const attempt = await rejoin(session);
+      // A gateway without #1928: synced and admitted, but it never asks for the replay.
+      act(() => { attempt.open(); gateway.pump(attempt); admission(attempt); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS - 1); });
+      expect(probes(attempt)).toBe(0);
+      expect(result.current).toMatchObject({ writable: false, rejoinAttempt: 'attempting' });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(result.current).toMatchObject({ writable: false, rejoinAttempt: 'unconfirmed', canRetry: true });
+      expect(probes(attempt)).toBe(0);
     });
   });
 });

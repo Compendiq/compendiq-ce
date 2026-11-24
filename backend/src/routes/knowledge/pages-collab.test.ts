@@ -33,7 +33,9 @@ vi.mock('node:dns/promises', () => ({
   }),
 }));
 
-import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
+import { insertTestRuntime, setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
+// The code `useCollabProvider` runs for a manual Rejoin (#2036); it is free of React.
+import { createRejoinController } from '../../../../frontend/src/features/pages/collab-rejoin-attempt.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
@@ -3977,8 +3979,8 @@ interface HookTab {
   closes: Array<{ code: number; reason: string }>;
   /** Server SyncStep1 frames this tab received, over all its connections. */
   serverSyncStep1s: () => number;
-  /** The update of every SyncStep2 this tab received, in arrival order. */
-  syncStep2s: Uint8Array[];
+  /** Called with every control this tab receives. */
+  controlListeners: Array<(control: TestControl) => void>;
 }
 
 function openHookTab(pageId: number, token: string, revision: string): HookTab {
@@ -3988,7 +3990,7 @@ function openHookTab(pageId: number, token: string, revision: string): HookTab {
   let candidate: string | null = null;
   let hasSynced = false;
   let serverSyncStep1s = 0;
-  const syncStep2s: Uint8Array[] = [];
+  const controlListeners: Array<(control: TestControl) => void> = [];
   const provider = new WebsocketProvider(`${baseWs}/api/collab`, String(pageId), doc, {
     protocols: [COLLAB_WS_PROTOCOL, token],
     params: { expectedLifecycleRevision: revision },
@@ -3996,18 +3998,13 @@ function openHookTab(pageId: number, token: string, revision: string): HookTab {
   });
   const answerSync = provider.messageHandlers[MESSAGE_SYNC]!;
   provider.messageHandlers[MESSAGE_SYNC] = (encoder, decoder, origin, emitSynced, messageType) => {
-    const kind = decoding.peekVarUint(decoder);
-    if (kind === SYNC_STEP1) serverSyncStep1s += 1;
-    if (kind === SYNC_STEP2) {
-      const ahead = decoding.clone(decoder);
-      decoding.readVarUint(ahead);
-      syncStep2s.push(decoding.readVarUint8Array(ahead).slice());
-    }
+    if (decoding.peekVarUint(decoder) === SYNC_STEP1) serverSyncStep1s += 1;
     answerSync(encoder, decoder, origin, emitSynced, messageType);
   };
   provider.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
     const control = JSON.parse(decoding.readVarString(decoder)) as TestControl;
     controls.push(control);
+    for (const listener of controlListeners) listener(control);
     const epoch = CollabDocEpochControlSchema.safeParse(control);
     if (epoch.success && !hasSynced) candidate = epoch.data.epoch;
   };
@@ -4026,7 +4023,7 @@ function openHookTab(pageId: number, token: string, revision: string): HookTab {
     provider.destroy();
     doc.destroy();
   });
-  return { provider, doc, controls, closes, serverSyncStep1s: () => serverSyncStep1s, syncStep2s };
+  return { provider, doc, controls, closes, serverSyncStep1s: () => serverSyncStep1s, controlListeners };
 }
 
 /** Synced and writable on the current connection, whose controls start after `since`. */
@@ -4157,43 +4154,156 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     }
   }, 30_000);
 
-  it('the hook\'s rejoin sequence on one provider and document: replay requested, coverage proven by the empty-vector probe, Save 200 (#2036)', async () => {
-    const { tab, pageId, token, revision } = await pinnedTab('collab_rejoin_probe');
-    const pinned = new URL(tab.provider.url).searchParams.get('expectedDocEpoch');
-    // The post-sync 4403 leaves the provider disconnected; the tab keeps typing.
-    tab.provider.disconnect();
-    await vi.waitFor(() => expect(tab.provider.wsconnected).toBe(false));
-    typeInto(tab.doc, 'TYPED_WHILE_RATE_LIMITED');
-    // The attempt's target: clocks and deletions of the document when it connected.
-    const target = Y.snapshot(tab.doc);
-    const since = tab.controls.length;
-    const requested = tab.serverSyncStep1s();
+  const OFFLINE = 'TYPED_WHILE_RATE_LIMITED';
+  const PROBE = [0, 0, 1, 0];
 
-    tab.provider.connect();
+  /** A tab whose post-sync 4403 left its provider disconnected, typing on. */
+  async function offlineTab(name: string, text: string | null = OFFLINE) {
+    const session = await pinnedTab(name);
+    session.tab.provider.disconnect();
+    await vi.waitFor(() => expect(session.tab.provider.wsconnected).toBe(false));
+    if (text !== null) typeInto(session.tab.doc, text);
+    return session;
+  }
 
-    // Same provider, same document, the joined revision and the pinned epoch.
-    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(pinned);
-    await hookTabWritable(tab, since);
-    await vi.waitFor(() => expect(tab.serverSyncStep1s()).toBe(requested + 1), { timeout: 10_000 });
-    // The hook probes once the provider's SyncStep2 reply to that SyncStep1 has been sent.
-    await Promise.resolve();
-    const answered = tab.syncStep2s.length;
-    const probe = encoding.createEncoder();
-    encoding.writeVarUint(probe, MESSAGE_SYNC);
-    syncProtocol.writeSyncStep1(probe, new Y.Doc());
-    tab.provider.ws!.send(encoding.toUint8Array(probe));
-    await vi.waitFor(() => expect(tab.syncStep2s.length).toBeGreaterThan(answered), { timeout: 10_000 });
+  /**
+   * The production attempt on this tab's provider and document. Only the
+   * hook's routing of controls and closes into it is written out here: the
+   * attempt, its SyncStep1 observation, the probe and the proof are the shared
+   * code, and `succeeded` is the one thing that makes the editor writable.
+   */
+  function rejoinRun(tab: HookTab, pageId: number, revision: string) {
+    const run = { succeeded: false, unconfirmed: false, refusal: null as string | null, roomAtSuccess: '' };
+    const controller = createRejoinController(tab.provider, {
+      onSucceeded: () => {
+        run.succeeded = true;
+        run.roomAtSuccess = liveRoomHtml(pageId);
+      },
+      onUnconfirmed: () => { run.unconfirmed = true; },
+    });
+    const refuse = (type: string) => {
+      run.refusal = type;
+      controller.cancel();
+    };
+    tab.controlListeners.push((control) => {
+      if (!controller.running) return;
+      if (control.type === 'writable_admission' && control.lifecycleRevision === revision) controller.admit();
+      else if (['writable_refused', 'permission_loss', 'doc_reset', 'tombstone', 'commit_unknown'].includes(control.type)) {
+        refuse(control.type);
+      }
+    });
+    tab.provider.on('connection-close', (event: CloseEvent | null) => {
+      if (!controller.running) return;
+      tab.provider.shouldConnect = false;
+      if (event?.code === 1001 && (event.reason === 'doc_reset' || event.reason === 'commit_unknown')) refuse(event.reason);
+      else if (event === null || event.code < 4400 || event.code >= 4500) controller.fail();
+    });
+    let send: { mock: { calls: unknown[][] } } | null = null;
+    return {
+      run,
+      controller,
+      press: () => {
+        controller.start(tab.doc);
+        send = vi.spyOn(tab.provider.ws!, 'send');
+      },
+      probesSent: () => (send?.mock.calls ?? []).filter(([frame]) => (
+        frame instanceof Uint8Array && frame.length === PROBE.length && PROBE.every((byte, i) => frame[i] === byte)
+      )).length,
+    };
+  }
 
-    // The answer is the room's whole state; decoded on its own it includes the draft.
-    const probeDoc = new Y.Doc();
-    onTestFinished(() => probeDoc.destroy());
-    Y.applyUpdate(probeDoc, tab.syncStep2s.at(-1)!);
-    const answer = Y.snapshot(probeDoc);
-    for (const [client, clock] of target.sv) expect(answer.sv.get(client) ?? 0).toBeGreaterThanOrEqual(clock);
-    expect(Y.equalDeleteSets(answer.ds, Y.mergeDeleteSets([answer.ds, target.ds]))).toBe(true);
-    expect(liveRoomHtml(pageId)).toContain('TYPED_WHILE_RATE_LIMITED');
+  // Real sockets and a real room: "nothing arrives afterwards" can only be
+  // observed by letting wall time pass, so fake timers cannot stand in here.
+  const pause = (ms: number) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    return promise;
+  };
+
+  it('pressing Rejoin restores editing only with the room\'s own answer, and a following Save returns 200 (#2036)', async () => {
+    const { tab, pageId, token, revision } = await offlineTab('collab_rejoin_save');
+    const attempt = rejoinRun(tab, pageId, revision);
+
+    attempt.press();
+
+    // Same provider and document, the joined revision and the pinned epoch.
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toMatch(/^[0-9a-f-]{36}$/);
+    await vi.waitFor(() => expect(attempt.run.succeeded).toBe(true), { timeout: 12_000 });
+    // Writable only after the room held the draft; the server asked for it once.
+    expect(attempt.run.roomAtSuccess).toContain(OFFLINE);
+    expect(attempt.probesSent()).toBe(1);
+    expect(tab.serverSyncStep1s()).toBe(1);
     const saved = await saveTabSnapshot(pageId, token, revision, tab.doc);
     expect(saved.statusCode, saved.body).toBe(200);
+  }, 30_000);
+
+  /** Runs `fence` inside the probe's fenced answer: after the replay was applied, before the answer. */
+  function betweenReplayAndAnswer(pageId: number, fence: () => Promise<void>) {
+    const real = persist.assertCurrentCollabDocEpoch;
+    let fired = false;
+    const barrier = vi.spyOn(persist, 'assertCurrentCollabDocEpoch').mockImplementation(async (...args) => {
+      // The replay's own check precedes its apply; this one follows it.
+      if (!fired && liveRoomHtml(pageId).includes(OFFLINE)) {
+        fired = true;
+        await fence();
+      }
+      return real(...args);
+    });
+    onTestFinished(() => barrier.mockRestore());
+    return () => fired;
+  }
+
+  it.each([
+    ['an epoch invalidation', 'doc_reset', async (pageId: number) => {
+      await query('UPDATE page_collaborative_docs SET doc_epoch = gen_random_uuid() WHERE page_id = $1', [pageId]);
+    }],
+    ['an unknown-outcome marker (no cue is delivered)', 'commit_unknown', async (pageId: number) => {
+      const runtimeId = await insertTestRuntime();
+      await query(
+        `INSERT INTO page_write_intents
+           (id, runtime_id, kind, page_ids, revisions, recovery_mode, effect,
+            effect_started_at, remote_effect_started_at, remote_effect_failed_at)
+         VALUES (gen_random_uuid(), $1, 'collab.commit.confluence', ARRAY[$2]::int[], '{}'::jsonb,
+                 'remote_conditional', $3::jsonb, NOW(), NOW(), NOW())`,
+        [runtimeId, pageId, JSON.stringify({
+          effectClass: 'remote', pageId, confluenceId: 'cf-2036', expectedRemoteVersion: '4',
+          intendedStateDigest: 'a'.repeat(64),
+        })],
+      );
+    }],
+  ])('never restores editing when %s commits after the replay and before the probe answer', async (_name, refusal, fence) => {
+    const { tab, pageId, revision } = await offlineTab(`collab_rejoin_${refusal}`);
+    const attempt = rejoinRun(tab, pageId, revision);
+    const fired = betweenReplayAndAnswer(pageId, () => fence(pageId));
+
+    attempt.press();
+
+    await vi.waitFor(() => expect(attempt.run.refusal).toBe(refusal), { timeout: 12_000 });
+    expect(fired()).toBe(true);
+    expect(attempt.probesSent()).toBe(1);
+    // Nothing arrives afterwards that could count as proof; the draft is still the tab's.
+    await pause(1_500);
+    expect(attempt.run.succeeded).toBe(false);
+    expect(attempt.run.unconfirmed).toBe(false);
+    expect(yDocToHtml(tab.doc)).toContain(OFFLINE);
+  }, 30_000);
+
+  it('sends no probe when no server SyncStep1 arrived, although the room already holds the draft', async () => {
+    const { tab, pageId, revision } = await offlineTab('collab_rejoin_nostep1', null);
+    // An undeclared join is admitted but never lineage-verified, so it is not asked for a replay.
+    tab.provider.params = { expectedLifecycleRevision: revision };
+    const since = tab.controls.length;
+    const requested = tab.serverSyncStep1s();
+    const attempt = rejoinRun(tab, pageId, revision);
+
+    attempt.press();
+
+    await hookTabWritable(tab, since);
+    await pause(1_500);
+    expect(tab.serverSyncStep1s()).toBe(requested);
+    expect(attempt.probesSent()).toBe(0);
+    expect(attempt.run.succeeded).toBe(false);
+    attempt.controller.cancel();
   }, 30_000);
 });
 

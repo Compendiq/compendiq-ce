@@ -204,7 +204,7 @@ function rejoinStatusMessage(attempt: CollabRejoinAttempt, available: boolean): 
     return 'Rejoining. Editing resumes once the server is confirmed to hold your draft.';
   }
   if (attempt === 'unconfirmed') {
-    return 'The server could not be confirmed to hold this draft, so editing stays paused. Your draft is unchanged here. You can try Rejoin again.';
+    return 'We could not confirm that the server has your draft, so editing stays paused. Download draft saves it as it was before you pressed Rejoin. You can press Rejoin again.';
   }
   return available ? 'You can rejoin now.' : 'Rejoin becomes available after a minute.';
 }
@@ -431,23 +431,47 @@ export function PageViewPage() {
   }, [joinRetryInFlight, collabPreSync, collab.error, collab.readOnlyReason]);
   // Rejoin of the read-only draft (#2036) follows the join Retry pattern: the
   // control stays mounted and focusable as `aria-disabled` while the attempt
-  // runs, and focus it held is rehomed when the control goes away.
+  // runs. An attempt merges what the room holds into the open document, so the
+  // draft is exported once, as it was when the first attempt started, and
+  // Download draft serves that export until editing is restored.
   const { rejoinOffered, rejoinAttempt } = collab;
   const rejoinInFlight = rejoinAttempt === 'attempting';
-  const rejoinButtonRef = useRef<HTMLButtonElement>(null);
+  const rejoinButtonRef = useRef<HTMLButtonElement | null>(null);
   const rejoinHadFocusRef = useRef(false);
+  const rejoinDraftExportRef = useRef<string | null>(null);
+  // Focus is read when the control leaves the document (React detaches the ref
+  // before removing the node), not when it was pressed: the user may only reach
+  // it by keyboard after the attempt started.
+  const setRejoinButton = useCallback((node: HTMLButtonElement | null) => {
+    if (node === null) {
+      rejoinHadFocusRef.current = rejoinButtonRef.current !== null &&
+        document.activeElement === rejoinButtonRef.current;
+    }
+    rejoinButtonRef.current = node;
+  }, []);
   const handleRejoin = useCallback(() => {
     if (rejoinInFlight || !collabCanRetry) return;
-    rejoinHadFocusRef.current = document.activeElement === rejoinButtonRef.current;
+    if (rejoinDraftExportRef.current === null) {
+      rejoinDraftExportRef.current = editorInstance && !editorInstance.isDestroyed
+        ? editorInstance.getHTML()
+        : editHtml;
+    }
     retryCollabJoin();
-  }, [collabCanRetry, rejoinInFlight, retryCollabJoin]);
+  }, [collabCanRetry, editHtml, editorInstance, rejoinInFlight, retryCollabJoin]);
+  useEffect(() => {
+    if (collab.readOnlyReason === null) rejoinDraftExportRef.current = null;
+  }, [collab.readOnlyReason]);
+  // A Rejoin that vanished with focus on it hands focus to the named editor
+  // column, unless something else took it (a surviving control keeps it) or the
+  // page changed first.
   useEffect(() => {
     if (rejoinOffered || !rejoinHadFocusRef.current) return;
     rejoinHadFocusRef.current = false;
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       if (document.activeElement === document.body) editorColumnRef.current?.focus();
     });
-  }, [rejoinOffered]);
+    return () => cancelAnimationFrame(frame);
+  }, [id, rejoinOffered]);
   const mergedViewers = useMemo(
     () => (collabLive
       ? mergePresence(presenceViewers, collab.awarenessUsers)
@@ -779,7 +803,8 @@ export function PageViewPage() {
   }, [discardAndExit]);
 
   const downloadOpenDraft = useCallback(() => {
-    const bodyHtml = editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml;
+    const bodyHtml = rejoinDraftExportRef.current ??
+      (editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml);
     triggerDownload(new Blob([JSON.stringify({
       pageId: id,
       title: editTitle,
@@ -1586,7 +1611,7 @@ export function PageViewPage() {
                   <div className="mt-2 flex flex-wrap gap-2">
                     {writeLocked && rejoinOffered && (
                       <button
-                        ref={rejoinButtonRef}
+                        ref={setRejoinButton}
                         type="button"
                         className="nm-button-ghost h-8 aria-disabled:cursor-default aria-disabled:opacity-70"
                         aria-disabled={rejoinInFlight || !collab.canRetry || undefined}
