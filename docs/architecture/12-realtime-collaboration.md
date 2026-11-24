@@ -262,10 +262,13 @@ doubling to 30 s. A Save whose Confluence write failed after dispatch stays
 pending as an unknown outcome until it is reconciled, and the room's edits stay
 unpersisted until then (see the immutable-page baselines runbook). Known limit:
 the runtime that ran such a Save cannot drain while it hosts a room of the
-page, so its quiescence answers `409 runtime_quiesce_blocked_by_collab_commit`
-naming the intent after a 30 s bound instead of acknowledging (#1934); the
-admission is not released, and the way out is terminating that process and
-fencing it with `verified_local_termination`.
+page. When that is all that is left (no local operation or effect continuation
+running, and every room admission it holds is on a page with its own such
+Save), its quiescence answers `409 runtime_quiesce_blocked_by_collab_commit`
+naming the intent after a 30 s bound instead of acknowledging (#1934); any
+other remaining blocker keeps the wait. The admission is not released, and the
+way out is terminating that process and fencing it with
+`verified_local_termination`.
 Any other pending page write, a stale lifecycle or admission, and a fenced
 runtime still close a writable socket with `1001 collab_validation_unavailable`,
 and that refused frame is not requested again (#1928). No close code or control

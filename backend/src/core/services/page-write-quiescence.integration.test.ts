@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { createClient, type RedisClientType } from 'redis';
 import type { WebSocket } from 'ws';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../db/postgres.js';
@@ -206,6 +206,98 @@ async function assertGateClosed(r: Replica): Promise<void> {
     .rejects.toMatchObject({ statusCode: 409, reason: 'runtime_quiescing' });
 }
 
+/**
+ * Hold the administrator's row `FOR UPDATE` on the suite's pool. `release`
+ * is idempotent and belongs in a `finally`, so a failed assertion never
+ * strands the lock (or its lease) for later tests.
+ */
+async function holdAdministratorRow(): Promise<{ pid: number; release: () => Promise<void> }> {
+  const holder = await getPool().connect();
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    const failure = await holder.query('ROLLBACK').then(() => undefined, (error: unknown) => error);
+    holder.release(failure instanceof Error ? failure : undefined);
+  };
+  try {
+    await holder.query('BEGIN');
+    await holder.query('SELECT 1 FROM users WHERE id = $1 FOR UPDATE', [ADMIN]);
+    const pid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+    return { pid, release };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+/** The one backend of this test database that waits on `holderPid`'s lock. */
+async function waiterBlockedBy(holderPid: number): Promise<number> {
+  let waiter = 0;
+  await until(async () => {
+    const rows = await query<{ pid: number }>(
+      `SELECT pid FROM pg_stat_activity
+        WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
+      [holderPid],
+    );
+    expect(rows.rows).toHaveLength(1);
+    waiter = rows.rows[0]!.pid;
+  });
+  return waiter;
+}
+
+/**
+ * The replica's next pool checkout parks until `deliver()` hands it a real
+ * connection, whose `query` is spied first. `deliver` is idempotent and
+ * belongs in a `finally`, so no checkout is left pending.
+ */
+function stallNextCheckout(r: Replica) {
+  const pool = r.pg.getPool();
+  const connect = pool.connect.bind(pool) as () => Promise<PoolClient>;
+  let lease: ((client: PoolClient) => void) | undefined;
+  let delivered = false;
+  const stalled = vi.spyOn(pool, 'connect').mockImplementationOnce(
+    (() => new Promise<PoolClient>((resolve) => { lease = resolve; })) as unknown as typeof pool.connect,
+  );
+  return {
+    reached: () => stalled.mock.calls.length > 0,
+    deliver: async (): Promise<MockInstance | undefined> => {
+      if (!lease || delivered) return undefined;
+      delivered = true;
+      const late = await connect();
+      const lateQuery = vi.spyOn(late, 'query');
+      lease(late);
+      return lateQuery;
+    },
+  };
+}
+
+/**
+ * The replica's next pool checkout parks its COMMIT until `open()`. `open`
+ * is idempotent and belongs in a `finally`, so no transaction is left open.
+ */
+function gateNextCommit(r: Replica): { reached: () => boolean; open: () => void } {
+  const pool = r.pg.getPool();
+  const connect = pool.connect.bind(pool) as () => Promise<PoolClient>;
+  let reached = false;
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  vi.spyOn(pool, 'connect').mockImplementationOnce((async () => {
+    const client = await connect();
+    const original = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+    client.query = (async (...args: unknown[]) => {
+      if (args[0] === 'COMMIT') {
+        reached = true;
+        client.query = original as PoolClient['query'];
+        await gate;
+      }
+      return original(...args);
+    }) as PoolClient['query'];
+    return client;
+  }) as unknown as typeof pool.connect);
+  return { reached: () => reached, open };
+}
+
 /** Every classification read on this replica's pool, observed on the real client. */
 function observeClassifications(r: Replica): { reads: () => number } {
   const pool = r.pg.getPool();
@@ -381,26 +473,23 @@ describe.skipIf(!canRun)('bounded runtime quiescence (#1934)', () => {
       fakeTimers();
       const { outcome } = quiesce(r);
       await parked(r);
-      const pool = r.pg.getPool();
-      const connect = pool.connect.bind(pool) as () => Promise<PoolClient>;
-      let lease!: (client: PoolClient) => void;
-      const stalled = vi.spyOn(pool, 'connect').mockImplementationOnce(
-        (() => new Promise<PoolClient>((resolve) => { lease = resolve; })) as unknown as typeof pool.connect,
-      );
-      await vi.advanceTimersByTimeAsync(30_000);
-      await until(() => expect(stalled).toHaveBeenCalled());
-      // Another release path drains the runtime while the classifier is stuck.
-      await r.admission.releasePageRuntime(admission);
-      await vi.advanceTimersByTimeAsync(10_000);
-      await until(() => expect(outcome.settled).toBe(true));
-      expect(outcome.error).toBeUndefined();
-      expect(outcome.value).toMatchObject({ acknowledgmentId: (await acknowledgment(r.runtimeId))!.ack });
-      // The lease that arrives after the deadline runs no SQL.
-      const late = await connect();
-      const lateQuery = vi.spyOn(late, 'query');
-      lease(late);
-      await until(() => expect(pool.idleCount).toBeGreaterThan(0));
-      expect(lateQuery).not.toHaveBeenCalled();
+      const stall = stallNextCheckout(r);
+      try {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await until(() => expect(stall.reached()).toBe(true));
+        // Another release path drains the runtime while the classifier is stuck.
+        await r.admission.releasePageRuntime(admission);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await until(() => expect(outcome.settled).toBe(true));
+        expect(outcome.error).toBeUndefined();
+        expect(outcome.value).toMatchObject({ acknowledgmentId: (await acknowledgment(r.runtimeId))!.ack });
+        // The lease that arrives after the deadline runs no SQL.
+        const lateQuery = await stall.deliver();
+        await until(() => expect(r.pg.getPool().idleCount).toBeGreaterThan(0));
+        expect(lateQuery).not.toHaveBeenCalled();
+      } finally {
+        await stall.deliver();
+      }
     });
 
     it('an empty admission set never yields the 409: a running local operation alone keeps today\'s wait', async () => {
@@ -515,37 +604,41 @@ describe.skipIf(!canRun)('bounded runtime quiescence (#1934)', () => {
       fakeTimers();
       const { outcome } = quiesce(r);
       await parked(r);
-      const pool = r.pg.getPool();
-      const connect = pool.connect.bind(pool) as () => Promise<PoolClient>;
-      let readDone = false;
-      let openCommit!: () => void;
-      const commitGate = new Promise<void>((resolve) => { openCommit = resolve; });
-      vi.spyOn(pool, 'connect').mockImplementationOnce((async () => {
-        const client = await connect();
-        const original = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
-        client.query = (async (...args: unknown[]) => {
-          if (args[0] === 'COMMIT') {
-            readDone = true;
-            await commitGate;
-            client.query = original as PoolClient['query'];
-          }
-          return original(...args);
-        }) as PoolClient['query'];
-        return client;
-      }) as unknown as typeof pool.connect);
       // The request is parked: the next checkout is the classification's.
-      await vi.advanceTimersByTimeAsync(30_000);
-      await until(() => expect(readDone).toBe(true));
-      // The read saw the plain admission (not qualifying). It is released now.
-      await r.admission.releasePageRuntime(plain);
-      openCommit();
-      // No further fake time: the generation change alone re-classifies.
-      await until(() => expect(outcome.settled).toBe(true));
-      expect(outcome.error).toMatchObject({
-        statusCode: 409,
-        blockingIntents: [{ intentId: own.intent.id, kind: 'collab.commit.confluence', pageIds: [own.pageId] }],
-      });
+      const commit = gateNextCommit(r);
+      try {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await until(() => expect(commit.reached()).toBe(true));
+        // The read saw the plain admission (not qualifying). It is released now.
+        await r.admission.releasePageRuntime(plain);
+        commit.open();
+        // No further fake time: the generation change alone re-classifies.
+        await until(() => expect(outcome.settled).toBe(true));
+        expect(outcome.error).toMatchObject({
+          statusCode: 409,
+          blockingIntents: [{ intentId: own.intent.id, kind: 'collab.commit.confluence', pageIds: [own.pageId] }],
+        });
+      } finally {
+        commit.open();
+      }
     });
+
+    /** A refusal without ids that left the gate closed and nothing acknowledged, released or settled. */
+    async function expectUnavailableRefusal(
+      r: Replica,
+      own: { pageId: number; intent: { id: string } },
+      error: unknown,
+    ): Promise<void> {
+      expect(error).toBeInstanceOf(r.admission.PageWriteError);
+      expect(error).toMatchObject({ statusCode: 503, reason: 'runtime_quiesce_classification_unavailable' });
+      expect(error).not.toHaveProperty('blockingIntents');
+      expect(error).not.toHaveProperty('message', expect.stringContaining(own.intent.id));
+      expect(r.admission._pageWriterQuiescenceWaitersForTest()).toBe(0);
+      expect(await acknowledgment(r.runtimeId)).toEqual({ quiesced: false, ack: null, fenced: false });
+      expect(await intentState(own.intent.id)).toEqual({ status: 'pending', remote_started: true, terminal: false });
+      expect(await activePurposes(own.pageId)).toEqual(['collab_room']);
+      await assertGateClosed(r);
+    }
 
     it.each(['checkout', 'administrator lock', 'COMMIT'] as const)(
       'a database stall at %s answers 503 at bound + budget without ids, acknowledgment or a late effect',
@@ -555,78 +648,77 @@ describe.skipIf(!canRun)('bounded runtime quiescence (#1934)', () => {
         fakeTimers();
         const { outcome } = quiesce(r);
         await parked(r);
-        const pool = r.pg.getPool();
-        const connect = pool.connect.bind(pool) as () => Promise<PoolClient>;
-        let reached = false;
-        let lease: ((client: PoolClient) => void) | undefined;
-        let openCommit: (() => void) | undefined;
-        let blocker: PoolClient | undefined;
-        if (stall === 'checkout') {
-          vi.spyOn(pool, 'connect').mockImplementationOnce((() => new Promise<PoolClient>((resolve) => {
-            reached = true;
-            lease = resolve;
-          })) as unknown as typeof pool.connect);
-        } else if (stall === 'COMMIT') {
-          const gate = new Promise<void>((resolve) => { openCommit = resolve; });
-          vi.spyOn(pool, 'connect').mockImplementationOnce((async () => {
-            const client = await connect();
-            const original = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
-            client.query = (async (...args: unknown[]) => {
-              if (args[0] === 'COMMIT') {
-                reached = true;
-                await gate;
-              }
-              return original(...args);
-            }) as PoolClient['query'];
-            return client;
-          }) as unknown as typeof pool.connect);
-        } else {
-          blocker = await getPool().connect();
-          await blocker.query('BEGIN');
-          await blocker.query('SELECT 1 FROM users WHERE id = $1 FOR UPDATE', [ADMIN]);
-        }
         // Stalls are installed once the request is parked, after its audit.
-        await vi.advanceTimersByTimeAsync(30_000);
-        if (stall === 'administrator lock') {
-          await until(async () => {
-            const waiting = await query(
-              `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FOR SHARE%'`,
-            );
-            expect(waiting.rows).toHaveLength(1);
-          });
-        } else {
-          await until(() => expect(reached).toBe(true));
+        const checkout = stall === 'checkout' ? stallNextCheckout(r) : undefined;
+        const commit = stall === 'COMMIT' ? gateNextCommit(r) : undefined;
+        const holder = stall === 'administrator lock' ? await holdAdministratorRow() : undefined;
+        try {
+          await vi.advanceTimersByTimeAsync(30_000);
+          if (holder) await waiterBlockedBy(holder.pid);
+          else await until(() => expect((checkout ?? commit)!.reached()).toBe(true));
+          await vi.advanceTimersByTimeAsync(10_000 - 1);
+          expect(outcome.settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(1);
+          await until(() => expect(outcome.settled).toBe(true));
+          // Let the abandoned classification finish late: it changes nothing.
+          if (checkout) {
+            const lateQuery = await checkout.deliver();
+            await until(() => expect(r.pg.getPool().idleCount).toBeGreaterThan(0));
+            expect(lateQuery).not.toHaveBeenCalled();
+          }
+          commit?.open();
+          await holder?.release();
+        } finally {
+          await checkout?.deliver();
+          commit?.open();
+          await holder?.release();
         }
-        await vi.advanceTimersByTimeAsync(10_000 - 1);
-        expect(outcome.settled).toBe(false);
-        await vi.advanceTimersByTimeAsync(1);
-        await until(() => expect(outcome.settled).toBe(true));
-        expect(outcome.error).toBeInstanceOf(r.admission.PageWriteError);
-        expect(outcome.error).toMatchObject({ statusCode: 503, reason: 'runtime_quiesce_classification_unavailable' });
-        expect(outcome.error).not.toHaveProperty('blockingIntents');
-        expect(outcome.error).not.toHaveProperty('message', expect.stringContaining(own.intent.id));
-        expect(r.admission._pageWriterQuiescenceWaitersForTest()).toBe(0);
-
-        // Let the abandoned classification finish late: it changes nothing.
-        if (lease) {
-          const late = await connect();
-          const lateQuery = vi.spyOn(late, 'query');
-          lease(late);
-          await until(() => expect(pool.idleCount).toBeGreaterThan(0));
-          expect(lateQuery).not.toHaveBeenCalled();
-        }
-        openCommit?.();
-        if (blocker) {
-          await blocker.query('ROLLBACK');
-          blocker.release();
-        }
-        expect(await acknowledgment(r.runtimeId)).toEqual({ quiesced: false, ack: null, fenced: false });
-        expect(await intentState(own.intent.id)).toEqual({ status: 'pending', remote_started: true, terminal: false });
-        expect(await activePurposes(own.pageId)).toEqual(['collab_room']);
-        expect(r.admission._pageWriterQuiescenceWaitersForTest()).toBe(0);
-        await assertGateClosed(r);
+        await expectUnavailableRefusal(r, own, outcome.error);
       },
     );
+
+    it('an unexpected loss of the classifier connection answers 503 instead of an uncaught error', async () => {
+      const r = await replica();
+      const own = await qualifyingAdmission(r);
+      fakeTimers();
+      const { outcome } = quiesce(r);
+      await parked(r);
+      const holder = await holdAdministratorRow();
+      try {
+        await vi.advanceTimersByTimeAsync(30_000);
+        const waiter = await waiterBlockedBy(holder.pid);
+        await query('SELECT pg_terminate_backend($1)', [waiter]);
+        // No fake time: the loss itself settles the request, before its deadline.
+        await until(() => expect(outcome.settled).toBe(true));
+      } finally {
+        await holder.release();
+      }
+      await expectUnavailableRefusal(r, own, outcome.error);
+      // The broken connection was discarded, not returned to the pool.
+      await expect(r.pg.query('SELECT 1 AS ok')).resolves.toMatchObject({ rows: [{ ok: 1 }] });
+    });
+
+    it('a classification observed after its monotonic deadline answers 503 even before the timer runs', async () => {
+      const r = await replica();
+      const own = await qualifyingAdmission(r);
+      fakeTimers();
+      const { outcome } = quiesce(r);
+      await parked(r);
+      const commit = gateNextCommit(r);
+      try {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await until(() => expect(commit.reached()).toBe(true));
+        // A late event loop: the budget has passed on the monotonic clock,
+        // but the (fake) deadline timer has not run.
+        const now = performance.now.bind(performance);
+        vi.spyOn(performance, 'now').mockImplementation(() => now() + 10_000);
+        commit.open();
+        await until(() => expect(outcome.settled).toBe(true));
+      } finally {
+        commit.open();
+      }
+      await expectUnavailableRefusal(r, own, outcome.error);
+    });
 
     it.each([
       ['role removed', "UPDATE users SET role = 'user' WHERE id = $1"],

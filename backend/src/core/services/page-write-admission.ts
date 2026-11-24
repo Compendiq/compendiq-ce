@@ -625,7 +625,8 @@ export function _pageWriterQuiescenceWaitersForTest(): number {
  * the only possible cause. The administrator is rechecked at this disclosure
  * point. One end-to-end deadline covers checkout, BEGIN, the administrator
  * lock, the read and cleanup; on expiry the lease is destroyed, not awaited,
- * and a lease that arrives later runs no SQL.
+ * and a lease that arrives later runs no SQL. An outcome observed after the
+ * monotonic cutoff is discarded even when the deadline timer has not run yet.
  */
 async function classifyQuiescenceBlockers(
   runtimeId: string,
@@ -646,6 +647,7 @@ async function classifyQuiescenceBlockers(
   const expired = new Promise<never>((_resolve, reject) => {
     controller.signal.addEventListener('abort', () => reject(unavailable), { once: true });
   });
+  const cutoff = performance.now() + PAGE_WRITER_QUIESCE_CLASSIFY_BUDGET_MS;
   const deadline = setTimeout(() => controller.abort(unavailable), PAGE_WRITER_QUIESCE_CLASSIFY_BUDGET_MS);
   const read = withPagePublicationTransaction(async (client) => {
     await assertActiveRecoveryAdmin(client, actorId);
@@ -678,6 +680,7 @@ async function classifyQuiescenceBlockers(
   try {
     rows = await Promise.race([read, expired]);
   } catch (error) {
+    if (performance.now() >= cutoff) throw unavailable;
     if (error instanceof PageWriteError && error.reason === 'recovery_admin_required') throw error;
     if (error !== unavailable) {
       logger.warn({ err: error, runtimeId }, 'page-writer quiescence: blocker classification failed');
@@ -686,6 +689,7 @@ async function classifyQuiescenceBlockers(
   } finally {
     clearTimeout(deadline);
   }
+  if (performance.now() >= cutoff) throw unavailable;
   const blocked = new Set<string>();
   const intents = new Map<string, QuiesceBlockingIntent>();
   for (const row of rows) {

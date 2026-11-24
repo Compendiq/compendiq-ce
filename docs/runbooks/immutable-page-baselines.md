@@ -737,11 +737,14 @@ until it is reconciled. After reconciliation, rooms of the page on other
 runtimes persist on their next edit, last-writer flush or release retry. The
 runtime that ran the Save cannot get there while it hosts a room of that page.
 Reconciliation needs that runtime fenced, and the room admission it holds
-behind the pending intent keeps it from draining. Quiescence on that runtime
-therefore answers a definite `409 runtime_quiesce_blocked_by_collab_commit`
+behind the pending intent keeps it from draining. When that is all that is
+left on that runtime (no local operation or effect continuation running, and
+every room admission it holds is on a page with its own such Save), quiescence
+there answers a definite `409 runtime_quiesce_blocked_by_collab_commit`
 naming the blocking intent once its wait bound has passed (#1934, see
-*Quiescence blocked by its own collaborative Save* below); it never releases
-the admission and never acknowledges. Terminate that process and fence it
+*Quiescence blocked by its own collaborative Save* below); any other remaining
+blocker keeps the wait. It never releases the admission and never
+acknowledges. Terminate that process and fence it
 with independently verified local termination (below); where that cannot be
 verified, the fence fails closed and the intent stays pending. Edits that
 reached only its room since the failed Save then survive only in the editors'
@@ -884,11 +887,13 @@ Two other refusals end the request without ids:
   after the request was accepted. The administrator is checked again before
   any id is disclosed.
 - `503 runtime_quiesce_classification_unavailable`: the classification missed
-  its deadline or its database read failed. A late result is discarded, and a
-  connection that arrives after the deadline runs no SQL.
+  its deadline, its database read failed or its connection was lost (the
+  broken connection is discarded). A result that arrives after the deadline is
+  discarded, and a connection that arrives after the deadline runs no SQL.
 
-In every refusal the writer gate stays closed (every later write on this
-process answers `409 runtime_quiescing`), no acknowledgment is written, and
+In every refusal the writer gate stays closed (this process refuses every new
+admission and effect with `409 runtime_quiescing`; an already admitted
+continuation may still finish), no acknowledgment is written, and
 the room admission and the intent stay exactly as they were: nothing is
 released, fenced or force-cleared. Sending the request again re-audits it and
 runs the same wait.
