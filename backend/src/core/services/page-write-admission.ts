@@ -1896,7 +1896,7 @@ function collabCommitMarkerDeadlineMs(): number {
  * (`COLLAB_COMMIT_MARKER_RETRY_MS`, read per call so a test can change it),
  * doubling, capped at 30 s.
  */
-export function collabCommitMarkerRetryDelayMs(attempt: number): number {
+function collabCommitMarkerRetryDelayMs(attempt: number): number {
   return Math.min(vitestIntOr('COLLAB_COMMIT_MARKER_RETRY_MS', 1_000) * 2 ** attempt, 30_000);
 }
 
@@ -2117,7 +2117,8 @@ async function inBoundedTransaction<T>(
   const attempt = (async (): Promise<T> => {
     const checkedOut = await getPool().connect();
     // A destroyed or broken connection also emits `error` on its client.
-    checkedOut.on('error', () => undefined);
+    const ignoreConnectionError = (): void => undefined;
+    checkedOut.on('error', ignoreConnectionError);
     client = checkedOut;
     let broken = false;
     try {
@@ -2141,7 +2142,7 @@ async function inBoundedTransaction<T>(
     } finally {
       if (!released) {
         released = true;
-        checkedOut.removeAllListeners('error');
+        checkedOut.off('error', ignoreConnectionError);
         checkedOut.release(broken ? true : undefined);
       }
     }
