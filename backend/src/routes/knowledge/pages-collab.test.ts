@@ -3265,8 +3265,9 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     ws.close();
   });
 
-  it('Confluence 5xx → local version unchanged, room live', async () => {
+  it('Confluence 5xx after dispatch → local version unchanged, the room fails closed (#2035)', async () => {
     const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const closed = waitClose(ws);
     vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
       id: confluenceId,
       title: 'Conf page',
@@ -3292,9 +3293,10 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     );
     expect(page.rows[0]!.version).toBe(4);
     expect(page.rows[0]!.title).toBe('Conf page');
-    expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
-    expect(ws.readyState).toBe(WebSocket.OPEN);
-    ws.close();
+    // The Save's outcome is unknown: its writer is closed, the room keeps its admission.
+    expect(await closed).toMatchObject({ code: 1001, reason: 'commit_unknown' });
+    expect(await getRedisClient()!.sMembers(`collab:active:${pageId}`))
+      .toEqual([expect.stringMatching(/:room$/)]);
   });
 
   // #1623 — exercises the REAL `isConfluenceEnabled` against Postgres: the

@@ -16,6 +16,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import {
   PageLifecycleEventSchema,
+  type CollabCommitUnknownControl,
   type CollabDocEpochControl,
   type CollabWritableAdmissionControl,
   type PageLifecycleEvent,
@@ -30,10 +31,15 @@ import {
   admitPageRuntime,
   deferPageRequestAdmissionRelease,
   isCollabCommitPending,
+  isCollabCommitUnknown,
   PageWriteError,
+  processCollabCommitLatches,
+  readCollabCommitState,
   releasePageRuntime,
+  withCollabCommitKnown,
   withPageLifecycleRead,
   withPageWriteTransaction,
+  type CollabCommitLatches,
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
 import * as persist from './collab-persistence.js';
@@ -92,6 +98,7 @@ export type CollabControl =
   | PageLifecycleEvent
   | CollabWritableAdmissionControl
   | CollabDocEpochControl
+  | CollabCommitUnknownControl
   | { type: 'permission_loss'; reason: 'edit_permission_revoked' }
   | {
       type: 'writable_refused';
@@ -109,7 +116,8 @@ export type CollabBusKind =
   | 'state_dump_request'
   | 'state_dump'
   | 'image_markers'
-  | 'task_ids';
+  | 'task_ids'
+  | 'commit_unknown';
 
 export type CollabBusMessage = {
   origin: string;
@@ -127,6 +135,8 @@ export type CollabBusMessage = {
   docEpoch?: string;
   /** On a `doc_reset` tombstone: a retire hint, a prompt to re-read the row, not a reset. */
   hint?: boolean;
+  /** On a `commit_unknown` cue (#2035): the collaborative commit whose outcome its owner declared unknown. */
+  intentId?: string;
 };
 
 export interface CollabIdentity {
@@ -152,6 +162,17 @@ export interface CollabSocket {
   lineageVerified: boolean;
   /** The join was refused for its document lineage: `doc_reset` was sent, the socket closed and never attached. */
   joinRefused?: 'doc_reset';
+  /**
+   * The unknown collaborative commit this socket was sent `commit_unknown`
+   * for (#2035); a repeated cue for the same intent sends nothing more.
+   */
+  commitUnknownIntentId?: string;
+  /**
+   * The socket lost, or was not given, write authority only because the
+   * page's own collaborative commit is unknown (#2035). Its mutating frames
+   * are dropped without counting as read-only violations.
+   */
+  commitUnknownGated?: boolean;
 }
 
 /** The gateway's reading of the `expectedDocEpoch` join parameter (#2034). */
@@ -216,6 +237,13 @@ export interface CollabRoom {
   lineageRetiring: boolean;
   /** An older pod announced its in-place reset (untagged `freeze`): no persist and no state dump until its tombstone. */
   resetFrozen: boolean;
+  /**
+   * The page's collaborative commit that a cue or the Redis latch declared
+   * unknown on this pod before its durable marker was read (#2035). It raises
+   * `in_flight` to `unknown` for that intent only and is cleared when the
+   * durable read shows another intent or none.
+   */
+  unknownCommitIntentId: string | null;
   onLineageChanged: (docEpoch: string) => void;
 }
 
@@ -262,6 +290,14 @@ export interface CollabRuntime {
    * replaced (#2034).
    */
   hintDocRetired: (pageId: number) => Promise<void>;
+  /**
+   * The owner's cue that the page's own collaborative commit failed after
+   * dispatch (#2035): the local room and, over Redis, every other pod's room
+   * re-read the durable state under the lifecycle lock and demote their
+   * writable sockets while that intent is still pending. Never blocks. The cue
+   * is only a prompt; the frame and join fences are the barrier.
+   */
+  announceCommitUnknown: (pageId: number, intentId: string) => void;
   close: () => Promise<void>;
 }
 
@@ -439,14 +475,17 @@ function busDocEpoch(value: unknown): string | undefined {
 /**
  * Admission precondition of a join (#2034): inside the admission transaction,
  * under the page lifecycle lock that every invalidation, seed and inbound
- * publication also takes. A throw leaves no admission behind.
+ * publication also takes. A throw leaves no admission behind. False when the
+ * join gets no decision here: the page is gone, or its lifecycle is not the
+ * one the join expected, which keeps its existing outcome (the admission is
+ * released again).
  */
 async function assertJoinLineage(
   client: PoolClient,
   room: CollabRoom,
   expectedLifecycleRevision: string | undefined,
   declaration: CollabDocEpochDeclaration,
-): Promise<void> {
+): Promise<boolean> {
   const state = await client.query<{ lifecycle_revision: string; doc_epoch: string | null }>(
     `SELECT p.lifecycle_revision::text, d.doc_epoch::text
        FROM pages p
@@ -455,22 +494,32 @@ async function assertJoinLineage(
     [room.pageId],
   );
   const row = state.rows[0];
-  if (!row) return;
-  // A lifecycle the join did not expect keeps its existing outcome (the
-  // admission is released again); it gets no epoch decision.
-  if (expectedLifecycleRevision !== undefined && row.lifecycle_revision !== expectedLifecycleRevision) return;
+  if (!row) return false;
+  if (expectedLifecycleRevision !== undefined && row.lifecycle_revision !== expectedLifecycleRevision) return false;
   if (declaration.kind === 'declared' && row.doc_epoch !== declaration.epoch) {
     throw new JoinLineageRefusal('refuse_socket');
   }
   if (room.docEpoch !== null && row.doc_epoch !== room.docEpoch) {
     throw new JoinLineageRefusal('stale_heap');
   }
+  return true;
 }
+
+export type CollabRuntimeOptions = {
+  /**
+   * The unknown-commit latches of the process this runtime stands for (#2035).
+   * Defaults to this process's own. A test that runs a second runtime as
+   * another process gives it its own, so it does not see this process's set.
+   */
+  commitLatches?: CollabCommitLatches;
+};
 
 export async function createCollabRuntime(
   main: RedisClientType,
   podId: string = randomUUID(),
+  options: CollabRuntimeOptions = {},
 ): Promise<CollabRuntime> {
+  const commitLatches = options.commitLatches ?? processCollabCommitLatches;
   const rooms = new Map<number, CollabRoom>();
   const inflight = new Map<number, Promise<CollabRoom>>();
   const ownership = new Map<number, Promise<void>>();
@@ -1147,6 +1196,72 @@ export async function createCollabRuntime(
     }
   }
 
+  /** `commit_unknown`, once per socket and intent (#2035). */
+  function tellCommitUnknown(socket: CollabSocket, intentId: string): void {
+    if (socket.commitUnknownIntentId === intentId) return;
+    socket.commitUnknownIntentId = intentId;
+    sendBin(socket.ws, encodeControlFrame({ type: 'commit_unknown' }));
+  }
+
+  /**
+   * Take write authority from one socket because the page's own collaborative
+   * commit is unknown (#2035). Synchronous, so a caller can demote under the
+   * page lifecycle lock. Per-socket accounting is that of a permission
+   * demotion. `permission_loss` follows `commit_unknown` for a client that
+   * predates the new control: it keeps its document as a read-only draft and
+   * does not reconnect. The room admission, `persistable`, the `room` suffix
+   * and a deferred release are left alone: the socket's close runs the
+   * existing release path, which waits for the intent to settle.
+   */
+  function demoteForUnknownCommit(room: CollabRoom, socket: CollabSocket, intentId: string): void {
+    socket.writable = false;
+    socket.commitUnknownGated = true;
+    room.heldActiveSuffixes.delete(socket.id);
+    void sremSuffixes(room.pageId, [socket.id]);
+    tellCommitUnknown(socket, intentId);
+    sendBin(socket.ws, encodeControlFrame({ type: 'permission_loss', reason: 'edit_permission_revoked' }));
+    try { socket.ws.close(1001, 'commit_unknown'); } catch { /* already closing */ }
+    logger.info(
+      { pageId: room.pageId, userId: socket.userId, connId: socket.id, intentId },
+      'collab.commit_unknown_demoted',
+    );
+  }
+
+  /**
+   * A cue is only a prompt (#2035). One read of the durable state under the
+   * page lifecycle lock decides: while `intentId` is still the page's pending
+   * commit (already `unknown`, or `in_flight`, for which the owner's cue is
+   * the evidence), the room latches it and every socket that is writable at
+   * that instant is demoted, inside that transaction and without an await.
+   * Settlement and a join's final step take the same lock, so a delayed or
+   * repeated cue for a settled intent does nothing and can never reach a
+   * socket that became writable afterwards. Read-only sockets are told and
+   * stay connected. Never awaited by the room's inbound queue.
+   */
+  async function handleCommitUnknownCue(room: CollabRoom, intentId: string): Promise<void> {
+    try {
+      await withPageLifecycleRead(room.pageId, async (client) => {
+        const durable = await readCollabCommitState(client, room.pageId);
+        if (durable.state === 'none' || durable.intentId !== intentId) return;
+        if (rooms.get(room.pageId) !== room) return;
+        room.unknownCommitIntentId = intentId;
+        for (const socket of [...room.sockets.values()]) {
+          if (socket.writable) demoteForUnknownCommit(room, socket, intentId);
+          else tellCommitUnknown(socket, intentId);
+        }
+      });
+    } catch (error) {
+      // Nothing was decided. The frame and join fences do not depend on the cue.
+      logger.warn({ err: error, pageId: room.pageId, intentId }, 'collab: unknown-commit cue could not be checked');
+    }
+  }
+
+  function announceCommitUnknown(pageId: number, intentId: string): void {
+    const room = rooms.get(pageId);
+    if (room) void handleCommitUnknownCue(room, intentId);
+    void publish(pageId, { origin: podId, kind: 'commit_unknown', intentId });
+  }
+
   function wireDoc(room: CollabRoom): void {
     room.doc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin === persist.COLLAB_MERGE_ORIGIN) {
@@ -1255,6 +1370,7 @@ export async function createCollabRuntime(
       docEpoch: null,
       lineageRetiring: false,
       resetFrozen: false,
+      unknownCommitIntentId: null,
       onLineageChanged: (docEpoch) => { void scheduleLineageRetirement(room, docEpoch); },
     };
     wireDoc(room);
@@ -1321,15 +1437,26 @@ export async function createCollabRuntime(
     declaration: CollabDocEpochDeclaration,
   ): Promise<boolean> {
     if (room.admission) {
+      const admission = room.admission;
       // An unreadable admission is not an absent one. Keep ownership and
       // surface the failure rather than leaking this token behind a new one.
-      await withPageWriteTransaction([room.pageId], async () => undefined, {
-        admission: room.admission,
-        ownCollabCommit: 'proceed',
-      });
+      // The same transaction reads the state of the page's own commit; an
+      // unknown one is acted on only after the lifecycle and epoch outcomes,
+      // which come first in the join outcome precedence (#2035).
+      let unknownCommit: unknown = null;
+      try {
+        await withCollabCommitKnown(room.pageId, room, (assertCommitKnown) =>
+          withPageWriteTransaction([room.pageId], assertCommitKnown, {
+            admission,
+            ownCollabCommit: 'proceed',
+          }), commitLatches);
+      } catch (error) {
+        if (!isCollabCommitUnknown(error)) throw error;
+        unknownCommit = error;
+      }
       if (
         expectedLifecycleRevision !== undefined
-        && room.admission.lifecycleRevision !== expectedLifecycleRevision
+        && admission.lifecycleRevision !== expectedLifecycleRevision
       ) return false;
       // The room already owns an admission, so only its own generation may
       // join it. A declaration is not evidence against the room; its row is.
@@ -1337,14 +1464,23 @@ export async function createCollabRuntime(
         void revalidateRoomLineage(room);
         throw new JoinLineageRefusal('refuse_socket');
       }
+      if (unknownCommit) throw unknownCommit;
       return true;
     }
     const initializing = (async () => {
       let acquired: PageRuntimeAdmission | null = null;
       try {
-        acquired = await admitPageRuntime(room.pageId, userId, 'collab_room', undefined, {
-          precondition: (client) => assertJoinLineage(client, room, expectedLifecycleRevision, declaration),
-        });
+        // The epoch decision, then the state of the page's own commit (#2035):
+        // both under the lifecycle lock of the admission transaction, so a
+        // join cannot acquire an admission after the unknown-outcome marker.
+        acquired = await withCollabCommitKnown(room.pageId, room, (assertCommitKnown) =>
+          admitPageRuntime(room.pageId, userId, 'collab_room', undefined, {
+            precondition: async (client) => {
+              if (await assertJoinLineage(client, room, expectedLifecycleRevision, declaration)) {
+                await assertCommitKnown(client);
+              }
+            },
+          }), commitLatches);
         if (
           expectedLifecycleRevision !== undefined
           && acquired.lifecycleRevision !== expectedLifecycleRevision
@@ -1640,6 +1776,10 @@ export async function createCollabRuntime(
     const allowedReadonly = header.messageType === MESSAGE_AWARENESS
       || header.messageType === MESSAGE_QUERY_AWARENESS
       || (header.messageType === MESSAGE_SYNC && header.syncSubtype === SYNC_STEP1);
+    // A socket that holds no write authority only because the page's own
+    // collaborative commit is unknown is not violating a read-only role: its
+    // late frames are dropped without counting toward the drop limit (#2035).
+    if (socket.commitUnknownGated && !socket.writable && !allowedReadonly) return 'dropped';
     if (syncMutation && !transportAvailable()) {
       socket.writable = false;
       try { socket.ws.close(1001, 'collab_transport_unavailable'); } catch { /* already closing */ }
@@ -1671,20 +1811,24 @@ export async function createCollabRuntime(
             let applied = false;
             // The page's own pending collaborative Save does not fence an
             // in-memory apply: it publishes the snapshot it captured before
-            // reserving, and this room's persist waits for it (#1763). A foreign
-            // pending write, a stale lifecycle or admission, a fenced runtime or
-            // an unreadable fence still closes below.
-            await withPageWriteTransaction([pageId], async (client) => {
-              // The frame is applied on behalf of the current generation only:
-              // the row must still carry this room's epoch (#2034).
-              await persist.assertCurrentCollabDocEpoch(client, pageId, docEpoch);
-              // Disconnect/demotion can win while this frame waits for the
-              // lifecycle lock. It must not write behind their final flush.
-              if (rooms.get(pageId) !== room || room.sockets.get(connId) !== socket
-                || !socket.writable || room.admission?.id !== admission.id) return;
-              apply();
-              applied = true;
-            }, { admission, ownCollabCommit: 'proceed' });
+            // reserving, and this room's persist waits for it (#1763). That
+            // holds for a Save in flight only: once its outcome is unknown,
+            // nothing more is applied (#2035). A foreign pending write, a
+            // stale lifecycle or admission, a fenced runtime or an unreadable
+            // fence still closes below.
+            await withCollabCommitKnown(pageId, room, (assertCommitKnown) =>
+              withPageWriteTransaction([pageId], async (client) => {
+                // The frame is applied on behalf of the current generation only:
+                // the row must still carry this room's epoch (#2034).
+                await persist.assertCurrentCollabDocEpoch(client, pageId, docEpoch);
+                await assertCommitKnown(client);
+                // Disconnect/demotion can win while this frame waits for the
+                // lifecycle lock. It must not write behind their final flush.
+                if (rooms.get(pageId) !== room || room.sockets.get(connId) !== socket
+                  || !socket.writable || room.admission?.id !== admission.id) return;
+                apply();
+                applied = true;
+              }, { admission, ownCollabCommit: 'proceed' }), commitLatches);
             if (!applied) return 'dropped';
           } catch (err) {
             if (persist.isCollabLineageChanged(err)) {
@@ -1692,6 +1836,17 @@ export async function createCollabRuntime(
               // room, this one included; it is not awaited by the frame chain.
               logger.info({ pageId, connId }, 'collab.packet_lineage_changed');
               void scheduleLineageRetirement(room, docEpoch);
+              return 'dropped';
+            }
+            if (isCollabCommitUnknown(err)) {
+              // Nothing was applied, and the fenced transaction has ended.
+              logger.info({ pageId, connId, intentId: err.intentId }, 'collab.packet_commit_unknown');
+              if (room.sockets.get(connId) === socket && socket.writable) {
+                demoteForUnknownCommit(room, socket, err.intentId);
+              }
+              // The room's other writers are demoted under the lifecycle lock,
+              // exactly as a cue would; this handler does not wait for it.
+              void handleCommitUnknownCue(room, err.intentId);
               return 'dropped';
             }
             // A failed read is not a released token. Keep ownership until
@@ -1828,8 +1983,13 @@ export async function createCollabRuntime(
       refusalReason = 'lifecycle_revision_stale';
     }
     let writable = false;
-    // Only a join that would be writable gets an epoch decision (#2034); a
-    // join that stays read-only for permission or lifecycle keeps its outcome.
+    // Step 4 of the join outcome precedence (#2035): the page's own
+    // collaborative commit is unknown, so this join, writable otherwise, is
+    // attached read-only and told `commit_unknown`.
+    let unknownCommitIntentId: string | null = null;
+    // Only a join that would be writable gets an epoch decision (#2034) and
+    // an unknown-commit decision; a join that stays read-only for permission
+    // or lifecycle keeps its outcome.
     if (socket.writable && refusalReason === undefined && room.demotionReason === null) {
       const decision = await decideJoinLineage(room, declaration);
       if (decision === 'refuse') return refuseJoinForLineage(room, socket);
@@ -1845,9 +2005,13 @@ export async function createCollabRuntime(
           declaration,
         );
       } catch (error) {
-        const outcome = await joinLineageOutcome(room, socket, declaration, error);
-        if (outcome) return outcome;
-        throw error;
+        if (!isCollabCommitUnknown(error)) {
+          const outcome = await joinLineageOutcome(room, socket, declaration, error);
+          if (outcome) return outcome;
+          throw error;
+        }
+        // No admission was acquired for this join.
+        unknownCommitIntentId = error.intentId;
       }
       if (writable && room.admission) {
         try {
@@ -1862,42 +2026,44 @@ export async function createCollabRuntime(
         }
       }
     }
-    if (!socket.writable) {
+    if (!socket.writable || unknownCommitIntentId !== null) {
       try {
         await refreshReaderRoom(room);
       } catch (error) {
-        if (!persist.isCollabLineageChanged(error)) throw error;
-        // This heap holds a document whose row is gone or replaced.
-        await retireRoomOwned(room, room.docEpoch);
-        return 'restart';
+        if (persist.isCollabLineageChanged(error)) {
+          // This heap holds a document whose row is gone or replaced.
+          await retireRoomOwned(room, room.docEpoch);
+          return 'restart';
+        }
+        // A gated join is attached to be told `commit_unknown`; a room state
+        // that could not be refreshed does not turn that into a failed join.
+        if (unknownCommitIntentId === null) throw error;
+        logger.info({ err: error, pageId }, 'collab: gated join attached without a fresh room state');
       }
     }
     if (
       socket.writable
       && !writable
+      && unknownCommitIntentId === null
       && refusalReason === undefined
       && !room.isFrozen
       && expectedLifecycleRevision !== undefined
     ) {
       refusalReason = 'lifecycle_revision_stale';
     }
+    // Registered without write authority; only the final step grants it.
     const full: CollabSocket = {
       id: socket.id,
       ws: socket.ws,
       userId: socket.userId,
-      writable,
+      writable: false,
       readonlyDrops: 0,
       awarenessClientIds: new Set(),
-      lineageVerified: writable
-        && declaration.kind === 'declared'
-        && room.docEpoch !== null
-        && declaration.epoch === room.docEpoch,
+      lineageVerified: false,
       ...(socket.identity ? { identity: socket.identity } : {}),
       ...(refusalReason ? { writableRefusalReason: refusalReason } : {}),
     };
     if (full.ws.readyState !== 1) {
-      full.writable = false;
-      full.lineageVerified = false;
       await releaseAdmissionIfNoWriters(room);
       return full;
     }
@@ -1912,11 +2078,9 @@ export async function createCollabRuntime(
       await saddActive(pageId, full.id);
       room.heldActiveSuffixes.add(full.id);
     }
-    // A close or permission loss may have arrived during Redis bookkeeping.
+    // A close may have arrived during Redis bookkeeping.
     if (rooms.get(pageId) !== room || room.sockets.get(full.id) !== full || full.ws.readyState !== 1) {
-      full.writable = false;
-      full.lineageVerified = false;
-      room.sockets.delete(full.id);
+      await unregisterJoin(room, full);
       await releaseAdmissionIfNoWriters(room);
       return full;
     }
@@ -1927,11 +2091,47 @@ export async function createCollabRuntime(
       sendBin(full.ws, encodeControlFrame({ type: 'doc_epoch', epoch: room.docEpoch }));
     }
     sendBin(full.ws, encodeControlFrame(lifecycleControl(room)));
-    if (full.writable) {
-      sendBin(full.ws, encodeControlFrame({
-        type: 'writable_admission',
-        lifecycleRevision: room.lifecycleRevision,
-      }));
+    if (writable) {
+      let granted = false;
+      try {
+        granted = await grantWriteAuthority(room, full, declaration);
+      } catch (error) {
+        if (!isCollabCommitUnknown(error)) {
+          // The fence refused: the socket is closed and cleaned up.
+          await unregisterJoin(room, full);
+          const outcome = await joinLineageOutcome(room, socket, declaration, error);
+          if (outcome) return outcome;
+          try { full.ws.close(1001, 'collab_validation_unavailable'); } catch { /* already closing */ }
+          await releaseAdmissionIfNoWriters(room).catch((cleanupError) => {
+            logger.warn({ err: cleanupError, pageId }, 'collab: failed join retained its admission');
+          });
+          throw error;
+        }
+        // The marker committed, or a latch arrived, after this join's admission.
+        unknownCommitIntentId = error.intentId;
+      }
+      if (!granted && unknownCommitIntentId === null) {
+        // The socket left during the join.
+        await unregisterJoin(room, full);
+        await releaseAdmissionIfNoWriters(room);
+        return full;
+      }
+    }
+    if (unknownCommitIntentId !== null) {
+      // `permission_loss` follows for a client that predates `commit_unknown`:
+      // it keeps its document as a read-only draft and does not reconnect.
+      full.commitUnknownGated = true;
+      tellCommitUnknown(full, unknownCommitIntentId);
+      sendBin(full.ws, encodeControlFrame({ type: 'permission_loss', reason: 'edit_permission_revoked' }));
+      if (writable) {
+        // Gated at the final step. This socket never wrote: its active member
+        // goes, and an admission without writers takes the existing release
+        // path, which waits for the intent to settle.
+        if (room.heldActiveSuffixes.delete(full.id)) await sremSuffixes(pageId, [full.id]);
+        await releaseAdmissionIfNoWriters(room).catch((cleanupError) => {
+          logger.warn({ err: cleanupError, pageId }, 'collab: gated join retained its admission');
+        });
+      }
     } else if (refusalReason) {
       sendBin(full.ws, encodeControlFrame({
         type: 'writable_refused',
@@ -1946,9 +2146,66 @@ export async function createCollabRuntime(
       }));
     }
     logger.info({
-      pageId, userId: full.userId, writable: full.writable, lineageVerified: full.lineageVerified, connId: full.id,
+      pageId,
+      userId: full.userId,
+      writable: full.writable,
+      lineageVerified: full.lineageVerified,
+      commitUnknown: unknownCommitIntentId !== null,
+      connId: full.id,
     }, 'collab.join');
     return full;
+  }
+
+  /** Undo a join's registration and its `collab:active` member. The caller settles the room's admission. */
+  async function unregisterJoin(room: CollabRoom, socket: CollabSocket): Promise<void> {
+    socket.writable = false;
+    socket.lineageVerified = false;
+    if (room.sockets.get(socket.id) === socket) room.sockets.delete(socket.id);
+    if (room.heldActiveSuffixes.delete(socket.id)) await sremSuffixes(room.pageId, [socket.id]);
+  }
+
+  /**
+   * The final step of a writable join (#2034, #2035), after every awaited
+   * preparation and with the socket registered without write authority. One
+   * admission-fenced transaction re-asserts that the room's document is the
+   * current generation and that the page's own collaborative commit is not
+   * unknown and then, still inside it and without awaiting anything else,
+   * makes the final checks, marks the socket writable and writes
+   * `writable_admission`. The unknown-outcome marker, every settlement and
+   * every invalidation, seed and reset take the same lifecycle lock: either
+   * the marker commits first and this join sees it, or the socket is a
+   * registered writer before the marker commits and the cue or its next frame
+   * demotes it. The positive cue is never written outside this fence.
+   *
+   * False when the socket left during the join; throws when the fence refuses.
+   */
+  async function grantWriteAuthority(
+    room: CollabRoom,
+    socket: CollabSocket,
+    declaration: CollabDocEpochDeclaration,
+  ): Promise<boolean> {
+    const admission = room.admission;
+    if (!admission) throw unavailableSnapshot();
+    return withCollabCommitKnown(room.pageId, room, (assertCommitKnown) =>
+      withPageWriteTransaction([room.pageId], async (client) => {
+        await persist.assertCurrentCollabDocEpoch(client, room.pageId, room.docEpoch);
+        await assertCommitKnown(client);
+        if (room.sockets.get(socket.id) !== socket || socket.ws.readyState !== 1) return false;
+        if (
+          rooms.get(room.pageId) !== room
+          || room.admission?.id !== admission.id
+          || room.isFrozen
+          || room.demotionReason !== null
+          || !transportAvailable()
+        ) throw unavailableSnapshot();
+        socket.writable = true;
+        socket.lineageVerified = declaration.kind === 'declared' && declaration.epoch === room.docEpoch;
+        sendBin(socket.ws, encodeControlFrame({
+          type: 'writable_admission',
+          lifecycleRevision: room.lifecycleRevision,
+        }));
+        return true;
+      }, { admission, ownCollabCommit: 'proceed' }), commitLatches);
   }
 
   async function detachSocket(pageId: number, connId: string): Promise<void> {
@@ -2177,6 +2434,14 @@ export async function createCollabRuntime(
       if (!parsed || typeof parsed !== 'object' || !('origin' in parsed) || !('kind' in parsed)) return;
       const candidate = parsed as CollabBusMessage;
       if (typeof candidate.origin !== 'string' || typeof candidate.kind !== 'string') return;
+      if (candidate.kind === 'commit_unknown') {
+        // Outside the room's inbound queue: the cue must not wait behind a
+        // peer message that is itself waiting for the page lifecycle lock.
+        if (candidate.origin !== podId && typeof candidate.intentId === 'string') {
+          void handleCommitUnknownCue(room, candidate.intentId);
+        }
+        return;
+      }
       enqueue(room, candidate);
     });
     subscriber = sub;
@@ -2235,6 +2500,7 @@ export async function createCollabRuntime(
     tombstone: (pageId, code, reason) => withRoomOwnership(pageId, () => tombstone(pageId, code, reason)),
     tombstoneAll,
     broadcastControl,
+    announceCommitUnknown,
     markUploadedImages,
     markWrittenTaskIds,
     prepareCommitSnapshot: (pageId, userId, revision) =>
