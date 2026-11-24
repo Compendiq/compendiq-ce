@@ -661,39 +661,43 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
 
     const ws = await openWritableWhatwg(pageId, token);
     await waitOpen(ws);
-    // No 2 s autosave may run: only the close's own flush can make the edit durable.
-    const autosave = vi.spyOn(persist, 'scheduleCollabPersist').mockImplementation(() => undefined);
+    const doc = new Y.Doc();
     try {
-      const doc = new Y.Doc();
+      applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+      const paragraph = new Y.XmlElement('paragraph');
+      const typed = new Y.XmlText();
+      typed.insert(0, 'TYPED_BEFORE_TRASH');
+      paragraph.insert(0, [typed]);
+      doc.getXmlFragment('default').push([paragraph]);
+      // The test's own waits keep their real-clock timeouts: arm them first.
+      const replyAfterEdit = waitSyncStep2(ws);
+      const closedP = waitClose(ws);
+      // Hold the room's real 2 s persist debounce: `setTimeout` is faked and
+      // never advanced until the room has closed, so only the close's own
+      // flush can make the edit durable. Sockets, PostgreSQL and Redis keep
+      // their real I/O; native timers armed earlier are still cleared natively.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       try {
-        applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
-        const paragraph = new Y.XmlElement('paragraph');
-        const typed = new Y.XmlText();
-        typed.insert(0, 'TYPED_BEFORE_TRASH');
-        paragraph.insert(0, [typed]);
-        doc.getXmlFragment('default').push([paragraph]);
         ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
         // The reply is ordered after the update on the same socket.
-        await exchangeSyncStep1(ws, doc);
-      } finally {
-        doc.destroy();
-      }
-      // Accepted by the room, which asked for an autosave that never runs.
-      expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_BEFORE_TRASH');
-      expect(autosave).toHaveBeenCalled();
-      expect(await persist.htmlFromPersistedDoc(pageId) ?? '').not.toContain('TYPED_BEFORE_TRASH');
-      const closedP = waitClose(ws);
+        ws.send(encodeSyncStep1(doc));
+        await replyAfterEdit;
+        expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_BEFORE_TRASH');
+        expect(await persist.htmlFromPersistedDoc(pageId) ?? '').not.toContain('TYPED_BEFORE_TRASH');
 
-      const del = await app.inject({
-        method: 'DELETE',
-        url: `/api/pages/${pageId}`,
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(del.statusCode).toBe(200);
-      const closed = await closedP;
-      expect(closed.code).toBe(4404);
+        const del = await app.inject({
+          method: 'DELETE',
+          url: `/api/pages/${pageId}`,
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(del.statusCode).toBe(200);
+        const closed = await closedP;
+        expect(closed.code).toBe(4404);
+      } finally {
+        vi.useRealTimers();
+      }
     } finally {
-      autosave.mockRestore();
+      doc.destroy();
     }
     // Trash keeps the row: the close flushed the edit, then released (#1922 control).
     expect(await persist.htmlFromPersistedDoc(pageId)).toContain('TYPED_BEFORE_TRASH');
