@@ -791,24 +791,50 @@ describe.skipIf(!canRun)('unknown collaborative commit — real PostgreSQL and R
       expect((await intentRow(intent.id)).status).toBe('pending');
     });
 
-    it('leaves a later intent\'s Redis latch in place when the earlier marker finally commits', async () => {
+    it('reclaims the members of settled and unknown intents when an owner\'s marker work ends, and leaves the current intent\'s latch in place', async () => {
+      const actor = await insertUser();
+      const pageId = await insertPage();
+      // An earlier Save of the page failed and latched; it was reconciled
+      // while its owner could not remove the member.
+      const earlier = await reserveCommit(pageId, actor);
+      await failAfterDispatch(earlier);
+      await settleBySql(earlier.id);
+      const neverAnIntent = randomUUID();
+      await redis.sAdd(collabCommitUnknownKey(pageId), [earlier.id, neverAnIntent, 'not-an-intent-id']);
+      // The page's current Save failed too, and its marker cannot be recorded yet.
+      const current = await reserveCommit(pageId, actor);
+      await failAfterDispatch(current);
+      shortMarkerTimings(150, 60_000);
+      await blockMarker(current.id);
+      await declareCollabCommitUnknown(current, () => undefined).record();
+      expect(await latchMembers(pageId)).toEqual(
+        [earlier.id, neverAnIntent, 'not-an-intent-id', current.id].sort(),
+      );
+
+      // The earlier Save's owner gets back to its marker and finds the intent settled.
+      await declareCollabCommitUnknown(earlier, () => undefined).record();
+
+      await vi.waitFor(async () => {
+        expect(await latchMembers(pageId)).toEqual([current.id]);
+      }, { timeout: 5_000 });
+      // The delayed marker cost the current intent nothing: another process still reads its latch.
+      expect((await intentRow(current.id)).marker).toBeNull();
+      expect(await durableState(pageId)).toEqual({ state: 'in_flight', intentId: current.id });
+      expect(await effectiveState(pageId, { unknownCommitIntentId: null }, anotherProcess())).toBe('unknown');
+    });
+
+    it('reclaims a bounded number of stale members per marker, also when the marker is recorded at once', async () => {
       const { pageId, intent } = await dispatchedCommit();
-      shortMarkerTimings(150, 100);
-      const release = await blockMarker(intent.id);
+      const stale = Array.from({ length: 100 }, () => randomUUID());
+      await redis.sAdd(collabCommitUnknownKey(pageId), stale);
+
+      // The marker commits on the first attempt: this owner never wrote a member of its own.
       await declareCollabCommitUnknown(intent, () => undefined).record();
-      expect(await latchMembers(pageId)).toEqual([intent.id]);
-      // A later failed commit of the same page latched its own intent meanwhile.
-      const later = randomUUID();
-      await redis.sAdd(collabCommitUnknownKey(pageId), later);
+      // The reset waits for the reclamation that followed the marker.
+      await _resetCollabCommitUnknownForTest();
 
-      await release();
-      // The process latch goes only after this intent's member was removed.
-      await vi.waitFor(() => {
-        expect(processCollabCommitLatches.locallyUnknown(intent.id)).toBe(false);
-      }, { timeout: 10_000 });
       expect((await intentRow(intent.id)).marker).toBeInstanceOf(Date);
-
-      expect(await latchMembers(pageId)).toEqual([later]);
+      expect(await redis.sCard(collabCommitUnknownKey(pageId))).toBe(68);
     });
 
     it('retires an orphaned finished upload phase only once the marker is proven', async () => {

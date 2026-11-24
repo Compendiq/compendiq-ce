@@ -1885,6 +1885,9 @@ const COLLAB_COMMIT_MARKER_ATTEMPTS = 3;
 const COLLAB_COMMIT_LATCH_READ_MS = 250;
 /** Lookups one fence may spend on intents that keep changing between its transactions. */
 const COLLAB_COMMIT_LATCH_LOOKUPS = 3;
+/** Members of a page's latch set one prune looks at; the rest wait for the next prune. */
+const COLLAB_COMMIT_LATCH_PRUNE_MEMBERS = 32;
+const INTENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Deadline of one marker transaction, of its proof read, of each Redis latch
@@ -2351,6 +2354,48 @@ async function releaseSharedCollabCommitLatch(owner: UnknownCollabCommit): Promi
   }
 }
 
+/**
+ * Reclaims members of a page's latch set that the durable state proves
+ * obsolete: their intent is settled, or no such intent exists. Each owner
+ * removes only its own member, so a member whose owner stopped after the
+ * write, or whose write landed after the owner's cleanup, would otherwise
+ * stay for good. An intent never returns to `pending`, so a member removed
+ * here can never be the current one again. The member of a pending intent
+ * stays, however long its marker is delayed.
+ *
+ * Runs where an owner has just read the committed intent row, so PostgreSQL
+ * answers. Best effort and bounded: one sample of the set, one read, one
+ * removal.
+ */
+async function pruneSharedCollabCommitLatches(pageId: number): Promise<void> {
+  try {
+    const redis = getRedisClient();
+    if (!redis) return;
+    const key = collabCommitUnknownKey(pageId);
+    const members = await withRedisCommandDeadline(
+      redis,
+      COLLAB_COMMIT_LATCH_READ_MS,
+      (client) => client.sRandMemberCount(key, COLLAB_COMMIT_LATCH_PRUNE_MEMBERS),
+    );
+    if (members.length === 0) return;
+    const intentIds = members.filter((member) => INTENT_ID_PATTERN.test(member));
+    const pending = new Set<string>();
+    if (intentIds.length > 0) {
+      const rows = await inBoundedTransaction(collabCommitDeadlineMs(), (client) => client.query<{ id: string }>(
+        `SELECT id FROM page_write_intents WHERE id = ANY($1::uuid[]) AND status = 'pending'`,
+        [intentIds],
+      ));
+      for (const row of rows.rows) pending.add(row.id);
+    }
+    const obsolete = members.filter((member) => !pending.has(member.toLowerCase()));
+    if (obsolete.length === 0) return;
+    await withRedisCommandDeadline(redis, collabCommitDeadlineMs(), (client) => client.sRem(key, obsolete));
+  } catch (error) {
+    // Nothing was reclaimed. A stale member is ignored by every reader.
+    logger.debug({ err: error, pageId }, 'collab.commit_unknown_latch_prune_failed');
+  }
+}
+
 /** One marker attempt; true once nothing is left to record. */
 async function settleUnknownCollabCommitMarker(owner: UnknownCollabCommit): Promise<boolean> {
   let outcome: CollabCommitMarkerOutcome;
@@ -2378,6 +2423,10 @@ async function settleUnknownCollabCommitMarker(owner: UnknownCollabCommit): Prom
   unknownCollabCommits.delete(owner.intent.id);
   localUnknownCollabCommits.delete(owner.intent.id);
   logger.info({ intentId: owner.intent.id, pageId: owner.intent.pageIds[0], outcome }, 'collab.commit_unknown_marker');
+  // Leftovers of earlier Saves of this page, whose owners could not remove
+  // them. Not awaited by the caller: the Save's answer and a late cue do not
+  // wait for it. A reset does.
+  void trackUnknownCollabCommitRun(owner, pruneSharedCollabCommitLatches(owner.intent.pageIds[0]!));
   return true;
 }
 
