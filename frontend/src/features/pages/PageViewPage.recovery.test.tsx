@@ -4,9 +4,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import * as Y from 'yjs';
+import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { COLLAB_UPGRADE_WINDOW_SEC, CollabCommitSchema } from '@compendiq/contracts';
+import { REJOIN_COVERAGE_TIMEOUT_MS } from './use-collab-provider';
 import { toast } from 'sonner';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
@@ -1091,4 +1093,225 @@ describe('unknown collaborative save (#2035)', () => {
     expect(screen.queryByTestId('confluence-modified-alert')).not.toBeInTheDocument();
     expect(screen.queryByText(/session is still open/)).not.toBeInTheDocument();
   });
+});
+
+describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)', () => {
+  const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+  const WINDOW_MS = COLLAB_UPGRADE_WINDOW_SEC * 1000;
+  const BANNER = 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.';
+  const UNCONFIRMED = 'The server could not be confirmed to hold this draft, so editing stays paused. Your draft is unchanged here. You can try Rejoin again.';
+  let room: Y.Doc;
+  let handled: WeakMap<Socket, number>;
+  let downloads: Blob[];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    room = new Y.Doc();
+    handled = new WeakMap();
+    downloads = [];
+    URL.createObjectURL = vi.fn((blob: Blob) => { downloads.push(blob); return 'blob:draft'; });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    room.destroy();
+  });
+
+  /** Answers each sync frame the client sent since the last call, as the room does. */
+  function serve(socket: Socket) {
+    let index = handled.get(socket) ?? 0;
+    for (; index < socket.sent.length; index++) {
+      const decoder = decoding.createDecoder(socket.sent[index]!);
+      if (decoding.readVarUint(decoder) !== 0) continue;
+      const reply = encoding.createEncoder();
+      encoding.writeVarUint(reply, 0);
+      syncProtocol.readSyncMessage(decoder, reply, room, 'client');
+      if (encoding.length(reply) > 1) socket.receive(encoding.toUint8Array(reply));
+    }
+    handled.set(socket, index);
+  }
+
+  function requestReplay(socket: Socket) {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 0);
+    syncProtocol.writeSyncStep1(encoder, room);
+    socket.receive(encoding.toUint8Array(encoder));
+  }
+
+  async function joinPinnedSession() {
+    const socket = await startCollabEdit();
+    act(() => {
+      socket.open();
+      sendControl(socket, { type: 'doc_epoch', epoch: EPOCH });
+      synchronize(socket);
+      sendControl(socket, { type: 'writable_admission', lifecycleRevision: '1' });
+    });
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+    return socket;
+  }
+
+  /** A pinned session with a typed draft, closed by a post-sync 4403. */
+  async function limitedSession(reason = 'rate_limited') {
+    renderPage();
+    const socket = await joinPinnedSession();
+    await pasteBodyText('Typed before the limit');
+    act(() => socket.close(4403, reason));
+    await screen.findByText('This editing session is now read-only');
+  }
+
+  const pressRejoin = async () => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS); });
+    const rejoin = screen.getByRole('button', { name: 'Rejoin' });
+    rejoin.focus();
+    fireEvent.click(rejoin);
+    await waitFor(() => expect(Socket.instances.length).toBeGreaterThan(1));
+    return { rejoin, attempt: Socket.instances[Socket.instances.length - 1]! };
+  };
+
+  const expectDraftControls = async () => {
+    expect(screen.getByText('This editing session is now read-only')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open current version' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
+    const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
+    expect(saved.bodyHtml).toContain('Typed before the limit');
+    expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+    expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+    expect(document.querySelector('.ProseMirror')).toHaveTextContent('Typed before the limit');
+  };
+
+  it('shows an inert Rejoin beside the draft controls until one full upgrade window has passed', async () => {
+    await limitedSession();
+
+    expect(screen.getByText(BANNER)).toBeInTheDocument();
+    const rejoin = screen.getByRole('button', { name: 'Rejoin' });
+    // Unavailable, never native `disabled`: a disabled control drops focus.
+    expect(rejoin).toHaveAttribute('aria-disabled', 'true');
+    expect(rejoin).toBeEnabled();
+    expect(screen.getByTestId('collab-rejoin-status')).toHaveTextContent('Rejoin becomes available after a minute.');
+    rejoin.focus();
+    fireEvent.click(rejoin);
+    expect(Socket.instances).toHaveLength(1);
+    expect(rejoin).toHaveFocus();
+    await expectDraftControls();
+
+    // The exact boundary is pinned in use-collab-provider.test.ts; the page's clock also runs in real time.
+    await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS - 10_000); });
+    expect(rejoin).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(rejoin).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByTestId('collab-rejoin-status')).toHaveTextContent('You can rejoin now.');
+    // The control never retries by itself.
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * WINDOW_MS); });
+    expect(Socket.instances).toHaveLength(1);
+    await expectDraftControls();
+  });
+
+  it('keeps the banner, Download draft and Open current version through the attempt, then edits again once the server holds the draft', async () => {
+    await limitedSession();
+    const { rejoin, attempt } = await pressRejoin();
+
+    // The control stays mounted and focusable while the attempt runs.
+    expect(screen.getByRole('button', { name: 'Rejoining…' })).toBe(rejoin);
+    expect(rejoin).toHaveAttribute('aria-disabled', 'true');
+    expect(rejoin).toHaveFocus();
+    expect(screen.getByTestId('collab-rejoin-status')).toHaveTextContent(
+      'Rejoining. Editing resumes once the server is confirmed to hold your draft.',
+    );
+    fireEvent.click(rejoin);
+    expect(Socket.instances).toHaveLength(2);
+    await expectDraftControls();
+
+    act(() => {
+      attempt.open();
+      serve(attempt);
+      sendControl(attempt, { type: 'writable_admission', lifecycleRevision: '1' });
+    });
+    // Admitted, synced and still unproven: nothing is editable yet.
+    await expectDraftControls();
+    act(() => requestReplay(attempt));
+    await act(async () => { await Promise.resolve(); });
+    await expectDraftControls();
+    act(() => serve(attempt));
+
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+    expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
+    expect(document.querySelector('.ProseMirror')).toHaveTextContent('Typed before the limit');
+    // The focus the control held is handed to the named editor column, not dropped to <body>.
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
+    expect(Socket.instances).toHaveLength(2);
+  });
+
+  it('names an unconfirmed server, keeps Rejoin available and the draft downloadable, and lets it be pressed again', async () => {
+    await limitedSession();
+    const { rejoin, attempt } = await pressRejoin();
+    act(() => { attempt.open(); serve(attempt); sendControl(attempt, { type: 'writable_admission', lifecycleRevision: '1' }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
+
+    expect(screen.getByTestId('collab-rejoin-status')).toHaveTextContent(UNCONFIRMED);
+    expect(screen.getByText(BANNER)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rejoin' })).toBe(rejoin);
+    expect(rejoin).not.toHaveAttribute('aria-disabled');
+    expect(rejoin).toHaveFocus();
+    await expectDraftControls();
+
+    fireEvent.click(rejoin);
+    await waitFor(() => expect(Socket.instances).toHaveLength(3));
+    expect(screen.getByRole('button', { name: 'Rejoining…' })).toBe(rejoin);
+    const again = Socket.instances[2]!;
+    act(() => { again.open(); serve(again); sendControl(again, { type: 'writable_admission', lifecycleRevision: '1' }); requestReplay(again); });
+    await act(async () => { await Promise.resolve(); });
+    act(() => serve(again));
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+  });
+
+  it('removes Rejoin and rehomes its focus when the attempt is refused, keeping the draft controls', async () => {
+    await limitedSession();
+    const { attempt } = await pressRejoin();
+    act(() => {
+      attempt.open();
+      sendControl(attempt, { type: 'permission_loss', reason: 'edit_permission_revoked' });
+    });
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument());
+    expect(screen.getByText('The page or your access changed. Your open draft remains below and is not reapplied automatically.'))
+      .toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
+    await expectDraftControls();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * WINDOW_MS); });
+    expect(Socket.instances).toHaveLength(2);
+  });
+
+  it('offers no Rejoin for a document that never pinned an epoch', async () => {
+    renderPage();
+    const socket = await joinWritableSession();
+    await pasteBodyText('Typed before the limit');
+    act(() => socket.close(4403, 'rate_limited'));
+    expect(await screen.findByText(BANNER)).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2 * WINDOW_MS); });
+    expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('collab-rejoin-status')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+  });
+
+  it.each(['forbidden', 'flag_off', 'readonly', 'something_new', ''])(
+    'offers no Rejoin after a pinned 4403 %j',
+    async (reason) => {
+      await limitedSession(reason);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2 * WINDOW_MS); });
+      expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
+      expect(screen.queryByTestId('collab-rejoin-status')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Open current version' })).toBeInTheDocument();
+      expect(Socket.instances).toHaveLength(1);
+    },
+  );
 });

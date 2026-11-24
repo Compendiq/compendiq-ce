@@ -76,7 +76,12 @@ import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../shared/lib/
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
-import { useCollabProvider, type CollabReadOnlyReason, type UseCollabProviderResult } from './use-collab-provider';
+import {
+  useCollabProvider,
+  type CollabReadOnlyReason,
+  type CollabRejoinAttempt,
+  type UseCollabProviderResult,
+} from './use-collab-provider';
 import { mergePresence } from './merge-presence';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
@@ -187,6 +192,21 @@ function readOnlyDraftMessage(reason: CollabReadOnlyReason | null): string {
     default:
       return 'The page or your access changed. Your open draft remains below and is not reapplied automatically.';
   }
+}
+
+/**
+ * Status line of the Rejoin offered after a post-sync `rate_limited` (#2036,
+ * A4). It claims only what the client knows: the server is never said to hold
+ * the draft until the attempt proved it.
+ */
+function rejoinStatusMessage(attempt: CollabRejoinAttempt, available: boolean): string {
+  if (attempt === 'attempting') {
+    return 'Rejoining. Editing resumes once the server is confirmed to hold your draft.';
+  }
+  if (attempt === 'unconfirmed') {
+    return 'The server could not be confirmed to hold this draft, so editing stays paused. Your draft is unchanged here. You can try Rejoin again.';
+  }
+  return available ? 'You can rejoin now.' : 'Rejoin becomes available after a minute.';
 }
 
 export function PageViewPage() {
@@ -409,6 +429,25 @@ export function PageViewPage() {
       if (document.activeElement === document.body) editorColumnRef.current?.focus();
     });
   }, [joinRetryInFlight, collabPreSync, collab.error, collab.readOnlyReason]);
+  // Rejoin of the read-only draft (#2036) follows the join Retry pattern: the
+  // control stays mounted and focusable as `aria-disabled` while the attempt
+  // runs, and focus it held is rehomed when the control goes away.
+  const { rejoinOffered, rejoinAttempt } = collab;
+  const rejoinInFlight = rejoinAttempt === 'attempting';
+  const rejoinButtonRef = useRef<HTMLButtonElement>(null);
+  const rejoinHadFocusRef = useRef(false);
+  const handleRejoin = useCallback(() => {
+    if (rejoinInFlight || !collabCanRetry) return;
+    rejoinHadFocusRef.current = document.activeElement === rejoinButtonRef.current;
+    retryCollabJoin();
+  }, [collabCanRetry, rejoinInFlight, retryCollabJoin]);
+  useEffect(() => {
+    if (rejoinOffered || !rejoinHadFocusRef.current) return;
+    rejoinHadFocusRef.current = false;
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.body) editorColumnRef.current?.focus();
+    });
+  }, [rejoinOffered]);
   const mergedViewers = useMemo(
     () => (collabLive
       ? mergePresence(presenceViewers, collab.awarenessUsers)
@@ -1539,7 +1578,24 @@ export function PageViewPage() {
                       ? readOnlyDraftMessage(collab.readOnlyReason)
                       : 'Changes stay in this tab while the connection is unavailable. Reconnect before saving.'}
                   </p>
+                  {writeLocked && rejoinOffered && (
+                    <p className="mt-1 leading-6 text-muted-foreground" data-testid="collab-rejoin-status">
+                      {rejoinStatusMessage(rejoinAttempt, collab.canRetry)}
+                    </p>
+                  )}
                   <div className="mt-2 flex flex-wrap gap-2">
+                    {writeLocked && rejoinOffered && (
+                      <button
+                        ref={rejoinButtonRef}
+                        type="button"
+                        className="nm-button-ghost h-8 aria-disabled:cursor-default aria-disabled:opacity-70"
+                        aria-disabled={rejoinInFlight || !collab.canRetry || undefined}
+                        onClick={handleRejoin}
+                        data-testid="collab-rejoin"
+                      >
+                        {rejoinInFlight ? 'Rejoining…' : 'Rejoin'}
+                      </button>
+                    )}
                     <button type="button" className="nm-button-ghost h-8" onClick={downloadOpenDraft}>Download draft</button>
                     <button type="button" className="nm-button-ghost h-8" onClick={() => setConfirmReloadOpen(true)}>Open current version</button>
                   </div>

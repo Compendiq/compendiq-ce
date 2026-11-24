@@ -3977,6 +3977,8 @@ interface HookTab {
   closes: Array<{ code: number; reason: string }>;
   /** Server SyncStep1 frames this tab received, over all its connections. */
   serverSyncStep1s: () => number;
+  /** The update of every SyncStep2 this tab received, in arrival order. */
+  syncStep2s: Uint8Array[];
 }
 
 function openHookTab(pageId: number, token: string, revision: string): HookTab {
@@ -3986,6 +3988,7 @@ function openHookTab(pageId: number, token: string, revision: string): HookTab {
   let candidate: string | null = null;
   let hasSynced = false;
   let serverSyncStep1s = 0;
+  const syncStep2s: Uint8Array[] = [];
   const provider = new WebsocketProvider(`${baseWs}/api/collab`, String(pageId), doc, {
     protocols: [COLLAB_WS_PROTOCOL, token],
     params: { expectedLifecycleRevision: revision },
@@ -3993,7 +3996,13 @@ function openHookTab(pageId: number, token: string, revision: string): HookTab {
   });
   const answerSync = provider.messageHandlers[MESSAGE_SYNC]!;
   provider.messageHandlers[MESSAGE_SYNC] = (encoder, decoder, origin, emitSynced, messageType) => {
-    if (decoding.peekVarUint(decoder) === SYNC_STEP1) serverSyncStep1s += 1;
+    const kind = decoding.peekVarUint(decoder);
+    if (kind === SYNC_STEP1) serverSyncStep1s += 1;
+    if (kind === SYNC_STEP2) {
+      const ahead = decoding.clone(decoder);
+      decoding.readVarUint(ahead);
+      syncStep2s.push(decoding.readVarUint8Array(ahead).slice());
+    }
     answerSync(encoder, decoder, origin, emitSynced, messageType);
   };
   provider.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
@@ -4017,7 +4026,7 @@ function openHookTab(pageId: number, token: string, revision: string): HookTab {
     provider.destroy();
     doc.destroy();
   });
-  return { provider, doc, controls, closes, serverSyncStep1s: () => serverSyncStep1s };
+  return { provider, doc, controls, closes, serverSyncStep1s: () => serverSyncStep1s, syncStep2s };
 }
 
 /** Synced and writable on the current connection, whose controls start after `since`. */
@@ -4146,6 +4155,45 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
       expect(html).not.toContain('recovery-seed');
       expect(html).not.toContain('STALE_OFFLINE_EDIT');
     }
+  }, 30_000);
+
+  it('the hook\'s rejoin sequence on one provider and document: replay requested, coverage proven by the empty-vector probe, Save 200 (#2036)', async () => {
+    const { tab, pageId, token, revision } = await pinnedTab('collab_rejoin_probe');
+    const pinned = new URL(tab.provider.url).searchParams.get('expectedDocEpoch');
+    // The post-sync 4403 leaves the provider disconnected; the tab keeps typing.
+    tab.provider.disconnect();
+    await vi.waitFor(() => expect(tab.provider.wsconnected).toBe(false));
+    typeInto(tab.doc, 'TYPED_WHILE_RATE_LIMITED');
+    // The attempt's target: clocks and deletions of the document when it connected.
+    const target = Y.snapshot(tab.doc);
+    const since = tab.controls.length;
+    const requested = tab.serverSyncStep1s();
+
+    tab.provider.connect();
+
+    // Same provider, same document, the joined revision and the pinned epoch.
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(pinned);
+    await hookTabWritable(tab, since);
+    await vi.waitFor(() => expect(tab.serverSyncStep1s()).toBe(requested + 1), { timeout: 10_000 });
+    // The hook probes once the provider's SyncStep2 reply to that SyncStep1 has been sent.
+    await Promise.resolve();
+    const answered = tab.syncStep2s.length;
+    const probe = encoding.createEncoder();
+    encoding.writeVarUint(probe, MESSAGE_SYNC);
+    syncProtocol.writeSyncStep1(probe, new Y.Doc());
+    tab.provider.ws!.send(encoding.toUint8Array(probe));
+    await vi.waitFor(() => expect(tab.syncStep2s.length).toBeGreaterThan(answered), { timeout: 10_000 });
+
+    // The answer is the room's whole state; decoded on its own it includes the draft.
+    const probeDoc = new Y.Doc();
+    onTestFinished(() => probeDoc.destroy());
+    Y.applyUpdate(probeDoc, tab.syncStep2s.at(-1)!);
+    const answer = Y.snapshot(probeDoc);
+    for (const [client, clock] of target.sv) expect(answer.sv.get(client) ?? 0).toBeGreaterThanOrEqual(clock);
+    expect(Y.equalDeleteSets(answer.ds, Y.mergeDeleteSets([answer.ds, target.ds]))).toBe(true);
+    expect(liveRoomHtml(pageId)).toContain('TYPED_WHILE_RATE_LIMITED');
+    const saved = await saveTabSnapshot(pageId, token, revision, tab.doc);
+    expect(saved.statusCode, saved.body).toBe(200);
   }, 30_000);
 });
 

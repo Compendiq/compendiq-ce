@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, cleanup } from '@testing-library/react';
 import { COLLAB_UPGRADE_WINDOW_SEC, COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
 import * as Y from 'yjs';
+import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { useAuthStore } from '../../stores/auth-store';
-import { useCollabProvider } from './use-collab-provider';
+import { REJOIN_COVERAGE_TIMEOUT_MS, useCollabProvider } from './use-collab-provider';
 
 // Only the network boundary is replaced. The provider, protocol decoder,
 // awareness and Y.Doc are real, including reconnection and outgoing updates.
@@ -790,6 +791,411 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       expect(result.current.error).toBeNull();
       await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
       expect(Socket.instances).toHaveLength(2);
+    });
+  });
+
+  describe('rejoin after a post-sync rate_limited (#2036)', () => {
+    const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+    const WINDOW_MS = COLLAB_UPGRADE_WINDOW_SEC * 1000;
+    // messageSync, SyncStep1, a state vector of one byte: no client at all.
+    const PROBE = [0, 0, 1, 0];
+
+    /** A gateway that holds the document and answers sync frames in arrival order, as the room does. */
+    class Gateway {
+      readonly doc = new Y.Doc();
+      private readonly handled = new WeakMap<Socket, number>();
+      /** The replay is received but not applied (a room that lost it). */
+      dropUpdates = false;
+      /** Nothing is answered (a gateway whose SyncStep2 never arrives). */
+      silent = false;
+
+      constructor(text: string) {
+        this.doc.getText('draft').insert(0, text);
+      }
+
+      text() {
+        return this.doc.getText('draft').toString();
+      }
+
+      /** The join's first state, as `hydrate` does for a server that holds this document. */
+      hydrate(socket: Socket) {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeSyncStep2(encoder, this.doc);
+        socket.receive(encoding.toUint8Array(encoder));
+      }
+
+      /** The server's own SyncStep1, written right after `writable_admission` (#1928). */
+      requestReplay(socket: Socket) {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeSyncStep1(encoder, this.doc);
+        socket.receive(encoding.toUint8Array(encoder));
+      }
+
+      /** Handles each sync frame the client sent since the last call and answers it. */
+      pump(socket: Socket) {
+        let index = this.handled.get(socket) ?? 0;
+        for (; index < socket.sent.length; index++) {
+          const decoder = decoding.createDecoder(socket.sent[index]!);
+          if (decoding.readVarUint(decoder) !== 0) continue;
+          const reply = encoding.createEncoder();
+          encoding.writeVarUint(reply, 0);
+          if (decoding.peekVarUint(decoder) !== syncProtocol.messageYjsSyncStep1 && this.dropUpdates) continue;
+          syncProtocol.readSyncMessage(decoder, reply, this.doc, 'client');
+          if (encoding.length(reply) > 1 && !this.silent) socket.receive(encoding.toUint8Array(reply));
+        }
+        this.handled.set(socket, index);
+      }
+    }
+
+    const probes = (socket: Socket) => socket.sent.filter(
+      (frame) => frame.length === PROBE.length && PROBE.every((byte, i) => frame[i] === byte),
+    ).length;
+    const admission = (socket: Socket) => control(socket, { type: 'writable_admission', lifecycleRevision: '1' });
+    const flush = () => act(async () => { await Promise.resolve(); });
+
+    /** One provider and one document throughout: a pinned, writable session whose 4403 closes it. */
+    function limited({ pin = true, reason = 'rate_limited', offline = true }: {
+      pin?: boolean; reason?: string; offline?: boolean;
+    } = {}) {
+      const gateway = new Gateway('Published text');
+      const writables: boolean[] = [];
+      const view = renderHook(() => {
+        const state = useCollabProvider({ pageId: '42', enabled: true, expectedLifecycleRevision: '1' });
+        writables.push(state.writable);
+        return state;
+      });
+      const first = Socket.instances[0]!;
+      act(() => {
+        first.open();
+        if (pin) control(first, { type: 'doc_epoch', epoch: EPOCH });
+        gateway.hydrate(first);
+        admission(first);
+      });
+      const draft = view.result.current.ydoc!;
+      const provider = view.result.current.provider!;
+      expect(view.result.current.writable).toBe(true);
+      act(() => { first.close(4403, reason); });
+      // Typed after the close: the editor stays editable while disconnected.
+      if (offline) act(() => { draft.getText('draft').insert(14, ' + offline'); });
+      writables.length = 0;
+      return { ...view, gateway, draft, provider, writables };
+    }
+    type Limited = ReturnType<typeof limited>;
+
+    /** Waits out the window and presses Rejoin; returns the attempt's socket. */
+    async function rejoin(session: Limited, waitWindow = true): Promise<Socket> {
+      if (waitWindow) await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS); });
+      expect(session.result.current.canRetry).toBe(true);
+      const opened = Socket.instances.length;
+      act(() => { session.result.current.retry(); });
+      expect(Socket.instances).toHaveLength(opened + 1);
+      return Socket.instances[opened]!;
+    }
+
+    /** The server's side of the healthy join up to and including the probe answer. */
+    async function join(socket: Socket, gateway: Gateway) {
+      act(() => { socket.open(); gateway.pump(socket); admission(socket); gateway.requestReplay(socket); });
+      await flush();
+      act(() => { gateway.pump(socket); });
+    }
+
+    const expectSameDraft = (session: Limited, text = 'Published text + offline') => {
+      expect(session.result.current.ydoc).toBe(session.draft);
+      expect(session.result.current.provider).toBe(session.provider);
+      expect(session.draft.getText('draft').toString()).toBe(text);
+    };
+
+    it('keeps the draft read-only, stops reconnecting and offers Rejoin only after one full upgrade window', async () => {
+      const session = limited();
+      const { result } = session;
+      expect(result.current).toMatchObject({
+        error: 'forbidden', readOnlyReason: 'rate_limited', writable: false, rejoinOffered: true,
+        rejoinAttempt: 'idle', canRetry: false, docEpochPinned: true,
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS - 1); });
+      expect(result.current.canRetry).toBe(false);
+      act(() => { result.current.retry(); });
+      expect(Socket.instances).toHaveLength(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(result.current.canRetry).toBe(true);
+      // Never by itself.
+      await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+      expect(Socket.instances).toHaveLength(1);
+      expectSameDraft(session);
+    });
+
+    it('offers no Rejoin for a document without a pinned epoch', async () => {
+      const session = limited({ pin: false });
+      expect(session.result.current).toMatchObject({
+        readOnlyReason: 'rate_limited', rejoinOffered: false, canRetry: false, docEpochPinned: false,
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(2 * WINDOW_MS); });
+      expect(session.result.current.canRetry).toBe(false);
+      act(() => { session.result.current.retry(); });
+      expect(Socket.instances).toHaveLength(1);
+    });
+
+    it.each([
+      ['forbidden', 'forbidden', 'permission_loss'],
+      ['flag_off', 'flag_off', 'flag_off'],
+      ['readonly', 'readonly', 'readonly'],
+      ['an unknown reason', 'something_new', 'permission_loss'],
+      ['an empty reason', '', 'permission_loss'],
+    ])('offers no Rejoin after a 4403 %s', async (_name, reason, expected) => {
+      const session = limited({ reason });
+      expect(session.result.current.readOnlyReason).toBe(expected);
+      expect(session.result.current.rejoinOffered).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2 * WINDOW_MS); });
+      expect(session.result.current.canRetry).toBe(false);
+      act(() => { session.result.current.retry(); });
+      expect(Socket.instances).toHaveLength(1);
+      expectSameDraft(session);
+    });
+
+    it('restarts the window on a second rate_limited and never retries by itself', async () => {
+      const session = limited();
+      const attempt = await rejoin(session);
+      act(() => { attempt.open(); attempt.close(4403, 'rate_limited'); });
+      expect(session.result.current).toMatchObject({
+        readOnlyReason: 'rate_limited', rejoinOffered: true, rejoinAttempt: 'idle', canRetry: false, writable: false,
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS - 1); });
+      expect(session.result.current.canRetry).toBe(false);
+      act(() => { session.result.current.retry(); });
+      expect(Socket.instances).toHaveLength(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(session.result.current.canRetry).toBe(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * WINDOW_MS); });
+      expect(Socket.instances).toHaveLength(2);
+      expect(session.writables).not.toContain(true);
+      expectSameDraft(session);
+    });
+
+    it('restores editing only when all four conditions hold, and sends the offline edits first', async () => {
+      const session = limited();
+      const { result, gateway } = session;
+      const attempt = await rejoin(session);
+      expect(new URL(attempt.url).searchParams.get('expectedDocEpoch')).toBe(EPOCH);
+      expect(new URL(attempt.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+      expect(attempt.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-old']);
+      expect(result.current).toMatchObject({ rejoinAttempt: 'attempting', canRetry: false, writable: false });
+
+      // The sync of this connection alone changes nothing; neither does the admission.
+      act(() => { attempt.open(); gateway.pump(attempt); });
+      expect(result.current.writable).toBe(false);
+      act(() => { admission(attempt); });
+      expect(result.current.writable).toBe(false);
+      // The server's SyncStep1 asks for the replay; the probe follows the reply, never precedes it.
+      act(() => { gateway.requestReplay(attempt); });
+      expect(probes(attempt)).toBe(0);
+      await flush();
+      expect(probes(attempt)).toBe(1);
+      expect(result.current.writable).toBe(false);
+      expect(gateway.text()).toBe('Published text');
+      const rendersBefore = session.writables.length;
+      act(() => { gateway.pump(attempt); });
+
+      expect(gateway.text()).toBe('Published text + offline');
+      expect(result.current).toMatchObject({
+        writable: true, connected: true, readOnlyReason: null, error: null,
+        rejoinOffered: false, rejoinAttempt: 'idle', canRetry: false,
+      });
+      expect(session.writables.slice(0, rendersBefore)).not.toContain(true);
+      expectSameDraft(session);
+
+      // Normal reconnect behaviour resumes.
+      act(() => { attempt.close(1006, 'offline'); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(Socket.instances).toHaveLength(3);
+      expect(result.current.rejoinOffered).toBe(false);
+    });
+
+    it.each([
+      ['the writable admission', async (s: Socket, g: Gateway) => {
+        act(() => { s.open(); g.pump(s); g.requestReplay(s); });
+        await flush();
+        act(() => { g.pump(s); });
+      }],
+      ['a sync event of this connection', async (s: Socket, g: Gateway) => {
+        g.silent = true;
+        act(() => { s.open(); g.pump(s); admission(s); g.requestReplay(s); });
+        await flush();
+        act(() => { g.pump(s); });
+      }],
+      ['the server SyncStep1, with the first-sync flag and the sync of this connection', async (s: Socket, g: Gateway) => {
+        act(() => { s.open(); g.pump(s); admission(s); });
+        await flush();
+      }],
+      ['coverage of the draft', async (s: Socket, g: Gateway) => {
+        g.dropUpdates = true;
+        await join(s, g);
+      }],
+    ])('stays read-only without %s and ends unconfirmed after the timeout', async (_name, drive) => {
+      const session = limited();
+      const { result, gateway } = session;
+      const attempt = await rejoin(session);
+      await drive(attempt, gateway);
+      expect(result.current).toMatchObject({ writable: false, readOnlyReason: 'rate_limited', rejoinAttempt: 'attempting' });
+      await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS - 1); });
+      expect(result.current.rejoinAttempt).toBe('attempting');
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(result.current).toMatchObject({
+        writable: false, connected: false, readOnlyReason: 'rate_limited', rejoinOffered: true,
+        rejoinAttempt: 'unconfirmed', canRetry: true,
+      });
+      expect(attempt.readyState).toBe(Socket.CLOSED);
+      expect(session.writables).not.toContain(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(Socket.instances).toHaveLength(2);
+      expectSameDraft(session);
+    });
+
+    it('asks again one second after an answer that did not cover the draft, with one probe in flight', async () => {
+      const session = limited();
+      const { result, gateway, draft } = session;
+      const attempt = await rejoin(session);
+      gateway.dropUpdates = true;
+      await join(attempt, gateway);
+      expect(probes(attempt)).toBe(1);
+      expect(result.current.writable).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+      expect(probes(attempt)).toBe(1);
+
+      // The room catches up with the draft by other means; the next answer covers it.
+      gateway.dropUpdates = false;
+      Y.applyUpdate(gateway.doc, Y.encodeStateAsUpdate(draft));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(probes(attempt)).toBe(2);
+      expect(result.current.writable).toBe(false);
+      act(() => { gateway.pump(attempt); });
+      expect(result.current).toMatchObject({ writable: true, readOnlyReason: null });
+      expectSameDraft(session);
+    });
+
+    it.each([
+      ['a gateway that applies the replay', false, true],
+      ['a gateway that lost the replay', true, false],
+    ])('covers a deletion-only offline change through the deletions: %s', async (_name, dropUpdates, succeeds) => {
+      const session = limited({ offline: false });
+      const { result, gateway, draft } = session;
+      act(() => { draft.getText('draft').delete(0, 10); });
+      const attempt = await rejoin(session);
+      gateway.dropUpdates = dropUpdates;
+      await join(attempt, gateway);
+      // Deleting advances no clock: the state vectors alone already match.
+      expect(result.current.writable).toBe(succeeds);
+      if (!succeeds) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
+        expect(result.current).toMatchObject({ writable: false, rejoinAttempt: 'unconfirmed' });
+      }
+      expectSameDraft(session, 'text');
+    });
+
+    it.each([
+      ['writable_refused', (s: Socket) => control(s, {
+        type: 'writable_refused', reason: 'lifecycle_revision_stale',
+        expectedLifecycleRevision: '1', currentLifecycleRevision: '3',
+      }), 'lifecycle_changed'],
+      ['permission_loss', (s: Socket) => control(s, { type: 'permission_loss', reason: 'edit_permission_revoked' }), 'permission_loss'],
+      ['doc_reset', (s: Socket) => { control(s, { type: 'doc_reset' }); s.close(1001, 'doc_reset'); }, 'document_changed'],
+      ['the doc_reset close', (s: Socket) => s.close(1001, 'doc_reset'), 'document_changed'],
+      ['tombstone', (s: Socket) => control(s, { type: 'tombstone' }), 'not_found'],
+      ['commit_unknown', (s: Socket) => control(s, { type: 'commit_unknown' }), 'commit_unknown'],
+      ['the commit_unknown close', (s: Socket) => s.close(1001, 'commit_unknown'), 'commit_unknown'],
+      ['4401, without a token refresh', (s: Socket) => s.close(4401, 'unauthorized'), 'unauthorized'],
+      ['4403 forbidden', (s: Socket) => s.close(4403, 'forbidden'), 'permission_loss'],
+      ['4403 flag_off', (s: Socket) => s.close(4403, 'flag_off'), 'flag_off'],
+      ['4403 readonly', (s: Socket) => s.close(4403, 'readonly'), 'readonly'],
+      ['4404', (s: Socket) => s.close(4404, 'not_found'), 'not_found'],
+    ])('ends a Rejoin refused by %s in the read-only draft with its own reason', async (_name, arrive, reason) => {
+      const refresh = vi.spyOn(globalThis, 'fetch');
+      const session = limited();
+      const { result, provider } = session;
+      const attempt = await rejoin(session);
+      const disconnect = vi.spyOn(provider, 'disconnect');
+      act(() => { attempt.open(); admission(attempt); });
+      expect(result.current.writable).toBe(false);
+      act(() => { arrive(attempt); });
+
+      expect(result.current).toMatchObject({
+        readOnlyReason: reason, writable: false, connected: false, rejoinOffered: false,
+        rejoinAttempt: 'idle', canRetry: false,
+      });
+      expect(session.writables).not.toContain(true);
+      expect(attempt.readyState).toBe(Socket.CLOSED);
+      // The terminal close that follows `connection-close` is settled once.
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+      expect(Socket.instances).toHaveLength(2);
+      expect(refresh).not.toHaveBeenCalled();
+      act(() => { result.current.retry(); });
+      expect(Socket.instances).toHaveLength(2);
+      expectSameDraft(session);
+    });
+
+    it.each([
+      [1006, 'offline'],
+      [1013, 'join_backlog'],
+      [1009, 'message_too_big'],
+      [1001, 'collab_frame_refused'],
+    ])('keeps rate_limited with Rejoin available at once after a transient close %i during the replay', async (code, reason) => {
+      const session = limited();
+      const { result, gateway } = session;
+      const attempt = await rejoin(session);
+      act(() => { attempt.open(); gateway.pump(attempt); admission(attempt); gateway.requestReplay(attempt); });
+      await flush();
+      act(() => { attempt.close(code, reason); });
+
+      expect(result.current).toMatchObject({
+        readOnlyReason: 'rate_limited', writable: false, connected: false, rejoinOffered: true,
+        rejoinAttempt: 'unconfirmed', canRetry: true,
+      });
+      // y-websocket's own reconnect timer must not start a second attempt.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(Socket.instances).toHaveLength(2);
+
+      // A fresh press is available at once and works again.
+      const again = await rejoin(session, false);
+      await join(again, gateway);
+      expect(result.current).toMatchObject({ writable: true, readOnlyReason: null });
+      expect(gateway.text()).toBe('Published text + offline');
+      expectSameDraft(session);
+    });
+
+    it('lets no stale y-websocket timer of an ended attempt open a second connection', async () => {
+      const session = limited();
+      const first = await rejoin(session);
+      act(() => { first.open(); first.close(1006, 'offline'); });
+      // Pressed again before the library's own reconnect delay has elapsed.
+      const second = await rejoin(session, false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(Socket.instances).toHaveLength(3);
+      expect(session.result.current.rejoinAttempt).toBe('attempting');
+      act(() => { second.open(); second.close(1006, 'offline'); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(Socket.instances).toHaveLength(3);
+      expect(session.result.current).toMatchObject({ rejoinAttempt: 'unconfirmed', canRetry: true, writable: false });
+    });
+
+    it('lets no token change act on a running attempt', async () => {
+      const session = limited();
+      const attempt = await rejoin(session);
+      act(() => { attempt.open(); });
+      act(() => { useAuthStore.getState().setAuth('jwt-newer', user); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS - 1); });
+      expect(Socket.instances).toHaveLength(2);
+      expect(attempt.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-old']);
+      expect(session.result.current.rejoinAttempt).toBe('attempting');
+    });
+
+    it('refuses to rejoin for another account', async () => {
+      const session = limited();
+      await act(async () => { await vi.advanceTimersByTimeAsync(WINDOW_MS); });
+      act(() => { useAuthStore.getState().setAuth('jwt-other', { ...user, id: '00000000-0000-4000-8000-000000000002' }); });
+      act(() => { session.result.current.retry(); });
+      expect(Socket.instances).toHaveLength(1);
     });
   });
 });
