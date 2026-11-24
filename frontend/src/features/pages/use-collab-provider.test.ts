@@ -442,9 +442,17 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(result.current.ydoc!.getText('draft').toString()).toBe('Joined after retry');
   });
 
-  it.each(['readonly', 'rate_limited', 'flag_off', 'forbidden'])(
+  it.each([
+    ['readonly', 'readonly'],
+    ['rate_limited', 'rate_limited'],
+    ['flag_off', 'flag_off'],
+    ['forbidden', 'permission_loss'],
+    ['an unknown reason', 'permission_loss'],
+    ['an empty reason', 'permission_loss'],
+  ])(
     'keeps a 4403 "%s" after the first sync on the read-only draft path (#1895)',
-    (reason) => {
+    (name, expected) => {
+      const reason = name === 'an unknown reason' ? 'something_new' : name === 'an empty reason' ? '' : name;
       const { result } = renderHook(() => useCollabProvider({
         pageId: '42', enabled: true, expectedLifecycleRevision: '1',
       }));
@@ -458,7 +466,7 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       act(() => { draft.getText('draft').insert(12, ' with edits'); });
       act(() => { socket.close(4403, reason); });
       expect(result.current.error).toBe('forbidden');
-      expect(result.current.readOnlyReason).toBe('permission_loss');
+      expect(result.current.readOnlyReason).toBe(expected);
       expect(result.current.ydoc).toBe(draft);
       expect(draft.getText('draft').toString()).toBe('Synced draft with edits');
       expect(result.current.canRetry).not.toBe(true);

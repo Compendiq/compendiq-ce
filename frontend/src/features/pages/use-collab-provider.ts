@@ -35,7 +35,10 @@ export type CollabReadOnlyReason =
   | 'permission_loss'
   | 'document_changed'
   | 'unauthorized'
-  | 'not_found';
+  | 'not_found'
+  | 'flag_off'
+  | 'rate_limited'
+  | 'readonly';
 
 export interface UseCollabProviderResult {
   ydoc: Y.Doc | null;
@@ -103,6 +106,18 @@ function terminalJoinError(
   const refusal = CollabRefusalReasonSchema.safeParse(reason);
   if (hasSynced || !refusal.success) return 'forbidden';
   return PRE_SYNC_REFUSALS[refusal.data];
+}
+
+/**
+ * Read-only reason for a 4403 after the first sync (#1927): the three reasons
+ * the gateway names are carried to the banner; `forbidden`, an unknown and an
+ * empty reason stay `permission_loss` (fail closed).
+ */
+function postSyncReadOnlyReason(code: number, reason: string, hasSynced: boolean): CollabReadOnlyReason {
+  if (code !== 4403 || !hasSynced) return 'permission_loss';
+  const refusal = CollabRefusalReasonSchema.safeParse(reason);
+  if (!refusal.success || refusal.data === 'forbidden') return 'permission_loss';
+  return refusal.data;
 }
 
 /**
@@ -349,7 +364,7 @@ export function useCollabProvider({
       const joinError = terminalJoinError(event.code, event.reason, hasSynced);
       if (joinError === 'forbidden' || joinError === 'not_found') {
         setError(joinError);
-        preserveReadOnly(joinError === 'forbidden' ? 'permission_loss' : 'not_found');
+        preserveReadOnly(joinError === 'forbidden' ? postSyncReadOnlyReason(event.code, event.reason, hasSynced) : 'not_found');
       } else if (joinError) {
         refuseBeforeSync(joinError);
       }

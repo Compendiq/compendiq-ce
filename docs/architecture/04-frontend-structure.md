@@ -553,7 +553,12 @@ flowchart TB
   orphaned focus to the editor column, a region named "Page body". `flag_off`
   refetches the config, and lifecycle and reset refusals refetch the page, so
   closing and reopening the editor uses current state. After the first sync
-  every 4403 keeps the read-only draft treatment above.
+  every 4403 keeps the read-only draft treatment above, and the banner names
+  the reason (#1927): `flag_off`, `rate_limited` and `readonly` reach the page
+  in `readOnlyReason` and each has its own sentence (`readOnlyDraftMessage`);
+  `forbidden`, an unknown and an empty reason stay `permission_loss` with "The
+  page or your access changed". A post-sync `flag_off` also refetches the
+  collaboration config. No rejoin is offered after the first sync.
 - **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
   ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
   caret palette. `@tiptap/extension-collaboration-caret` — not the v2
