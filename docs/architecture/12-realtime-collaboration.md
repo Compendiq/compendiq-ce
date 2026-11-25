@@ -445,14 +445,20 @@ without a transaction.
 provider and `Y.Doc`, stops reconnecting, sets `readOnlyReason: 'rate_limited'`
 and arms one `COLLAB_UPGRADE_WINDOW_SEC` timer; the fixed server window
 started at or before the refusal. Only this reason is offered a rejoin, and
-only for a document with a pinned epoch (amendment A4: an unpinned document is
-never verified, so the server sends it no SyncStep1 and nothing could prove
-the draft arrived). `forbidden`, `flag_off`, `readonly`, unknown and empty
+only for a document with a pinned epoch. That is the eligibility rule of the
+manual Rejoin (amendment A4), not a limit on verification: an empty unpinned
+document can be verified on a first join through the empty-document marker,
+but a tab that never took a pin has no epoch to declare on a later connect, so
+a rejoin of it would not be tied to the room's lineage and the proof would have
+nothing to anchor to. `forbidden`, `flag_off`, `readonly`, unknown and empty
 reasons keep the read-only draft with no rejoin, and nothing rejoins by
 itself. `retry()` then starts one attempt on the same provider with the joined
-lifecycle revision, the pinned epoch (`expectedDocEpoch`, never the
-empty-document marker `expectedDocEmpty`, whatever the document holds; the
-reconnect after the attempt's one token refresh declares the same) and the current access token. The attempt
+lifecycle revision, the pinned epoch (`expectedDocEpoch`) and `docReplaySafe=1`
+(the gateway sends its own SyncStep1, which the proof needs, only to a
+writable, lineage-verified socket that declared it), and the current access
+token, never the empty-document marker `expectedDocEmpty`, whatever the
+document holds. The press, a second press and the reconnect after the
+attempt's one token refresh all send the same. The attempt
 logic is `collab-rejoin-attempt.ts`, free of React, so the live-gateway tests
 run the same code as the hook. The attempt owns every close, which changes the
 automatic behaviour described in the close table for as long as it runs: a
