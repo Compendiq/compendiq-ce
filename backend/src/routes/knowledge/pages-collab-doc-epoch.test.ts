@@ -30,7 +30,8 @@ vi.mock('node:dns/promises', () => ({
 
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import { PAGE_LIFECYCLE_LOCK_KEY } from '../../core/db/advisory-locks.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 import { refreshCollabFlag } from '../../core/services/collab-flag.js';
@@ -546,7 +547,7 @@ describe.skipIf(!canRun)('expectedDocEpoch declarations at the gateway (#2034)',
     expect(await admissionCounts(pageId)).toEqual({ total: 0, unreleased: 0 });
   });
 
-  it('the marker on a join that stays read-only for its lifecycle revision keeps that outcome, well-formed or not', async () => {
+  it('the marker on a join that stays read-only for its lifecycle revision gets no epoch decision; with the revision it is decided, malformed refused and well-formed verified', async () => {
     const { token, userId } = await createUser('epoch_marker_readonly');
     const pageId = await insertStandalone(userId, '<p>BODY</p>');
     const revision = await lifecycleRevision(pageId);
@@ -574,5 +575,96 @@ describe.skipIf(!canRun)('expectedDocEpoch declarations at the gateway (#2034)',
     expect(await writable.closed).toEqual({ code: 1001, reason: 'doc_reset' });
     expect(room(pageId)!.sockets.size).toBe(2);
     expect(await admissionCounts(pageId)).toEqual({ total: 0, unreleased: 0 });
+
+    // And the well-formed marker on a join that would be writable is verified:
+    // the read-only outcome above is the precedence, not a marker the gateway ignores.
+    const verified = rawJoin(pageId, token, `?expectedLifecycleRevision=${revision}&expectedDocEmpty=1`);
+    await vi.waitFor(() => expect(verified.controls.map((control) => control.type)).toContain('writable_admission'));
+    expect([...room(pageId)!.sockets.values()].filter((socket) => socket.writable))
+      .toMatchObject([{ lineageVerified: true }]);
+    expect(await admissionCounts(pageId)).toEqual({ total: 1, unreleased: 1 });
   });
+});
+
+describe.skipIf(!canRun)('a lineage that ends during a join that declares an empty document (#2034)', () => {
+  it('fails that join with a transient 1001 and no doc_reset, retires the superseded room, and verifies the tab\'s retry against the new epoch', async () => {
+    const { token, userId } = await createUser('epoch_marker_race');
+    const pageId = await insertStandalone(userId, '<p>ORIGINAL_BODY</p>');
+    const revision = await lifecycleRevision(pageId);
+
+    // A first join with the marker seeds the document; its room holds the page's admission.
+    const tabA = openTab(pageId, token, revision);
+    await tabSynced(tabA);
+    await tabWritable(tabA);
+    const firstEpoch = (await rowEpoch(pageId))!;
+    const superseded = room(pageId)!;
+    expect([...superseded.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(await admissionCounts(pageId)).toEqual({ total: 1, unreleased: 1 });
+
+    // An inbound publication holds the page lifecycle lock: body replaced and
+    // the collaborative row deleted in one transaction, not committed yet.
+    const publication = await getPool().connect();
+    onTestFinished(async () => {
+      await publication.query('ROLLBACK').catch(() => undefined);
+      publication.release();
+    });
+    await publication.query('BEGIN');
+    await publication.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, pageId]);
+    await publication.query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    await publication.query(
+      `UPDATE pages SET body_html = '<p>PUBLISHED_BODY</p>', body_text = 'PUBLISHED_BODY' WHERE id = $1`, [pageId],
+    );
+
+    // A second tab opens the page. Its unlocked pre-check still reads the first
+    // epoch, so the join goes on into the live room and waits for the lock.
+    const tabB = openTab(pageId, token, revision);
+    expect(tabB.joinParams().get('expectedDocEmpty')).toBe('1');
+    await vi.waitFor(async () => {
+      const waiting = await query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM pg_locks
+          WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND NOT granted
+            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+        [PAGE_LIFECYCLE_LOCK_KEY, pageId],
+      );
+      expect(waiting.rows[0]!.count).toBe('1');
+    }, { timeout: 10_000 });
+    expect(tabB.closes).toEqual([]);
+    expect(tabB.controls).toEqual([]);
+
+    // The publication commits. The join's fenced merge finds the row gone.
+    await publication.query('COMMIT');
+
+    // The room of the ended lineage is retired: its editor keeps a read-only draft.
+    await vi.waitFor(() => expect(tabA.closes).toEqual([{ code: 1001, reason: 'doc_reset' }]), { timeout: 10_000 });
+    expect(tabA.controls.at(-1)).toEqual({ type: 'doc_reset' });
+    expect(superseded.sockets.size).toBe(0);
+
+    // The losing tab named no epoch, so nothing of its own was replaced: its
+    // join fails as a join and y-websocket retries with the still-empty document.
+    await tabSynced(tabB);
+    await tabWritable(tabB);
+    expect(tabB.closes).toHaveLength(1);
+    expect(tabB.closes[0]!.code).toBe(1001);
+    expect(tabB.closes[0]!.reason).not.toBe('doc_reset');
+    // The losing connection got no control at all: no doc_reset, no positive admission.
+    const secondEpoch = await rowEpoch(pageId);
+    expect(secondEpoch).not.toBeNull();
+    expect(secondEpoch).not.toBe(firstEpoch);
+    expect(tabB.controls.map((control) => control.type)).toEqual(['doc_epoch', 'page_lifecycle', 'writable_admission']);
+    expect(tabB.controls[0]).toEqual({ type: 'doc_epoch', epoch: secondEpoch });
+
+    // The retry seeded the next generation and is verified against it.
+    const current = room(pageId)!;
+    expect(current).not.toBe(superseded);
+    expect(current.docEpoch).toBe(secondEpoch);
+    expect([...current.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(tabB.pinnedEpoch()).toBe(secondEpoch);
+    expect(await admissionCounts(pageId)).toEqual({ total: 2, unreleased: 1 });
+    // Nothing crossed between the generations.
+    expect(occurrences(yDocToHtml(tabB.doc), 'PUBLISHED_BODY')).toBe(1);
+    expect(yDocToHtml(tabB.doc)).not.toContain('ORIGINAL_BODY');
+    expect(occurrences(yDocToHtml(tabA.doc), 'ORIGINAL_BODY')).toBe(1);
+    expect(yDocToHtml(tabA.doc)).not.toContain('PUBLISHED_BODY');
+    expect(await bodyHtml(pageId)).toBe('<p>PUBLISHED_BODY</p>');
+  }, 40_000);
 });
