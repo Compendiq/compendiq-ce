@@ -894,8 +894,9 @@ process and fence it with independently verified local termination (below);
 where that cannot be verified, the fence fails closed and the intent stays
 pending. Edits that reached only its room while that Save was running then survive
 only in the editors' open tabs. The server SyncStep1 (#1928) asks a reconnecting
-tab for them only on a writable, lineage-verified join, which a page whose commit
-is unknown never grants; a tab told `commit_unknown` keeps them as a read-only
+tab for them only on a writable, lineage-verified join (a pinned epoch that
+matches the page, or the empty-document marker of a tab that holds nothing),
+which a page whose commit is unknown never grants; a tab told `commit_unknown` keeps them as a read-only
 draft with **Download draft** and does not reconnect. Any other flush failure
 keeps the admission as before and schedules no retry.
 
@@ -1067,8 +1068,9 @@ Consequences and the remaining manual work:
    collaborative-room edits matter. A still-live old replica loses its write
    gate and room admissions at the retirement; its editors' unflushed work stays
    only in their tabs (those tabs never pinned a document epoch on the old
-   replica, so a reconnecting tab is not sent the server SyncStep1 that would
-   ask for it again, #1928). Never
+   replica and hold content, so a reconnecting tab declares neither an epoch
+   nor the empty-document marker and is not sent the server SyncStep1 that
+   would ask for it again, #1928). Never
    restart an old image after the cutover: it would register a fresh active
    epoch the guard cannot distinguish from a live one.
 2. **An epoch with dispatched unknown work still needs a termination-verified

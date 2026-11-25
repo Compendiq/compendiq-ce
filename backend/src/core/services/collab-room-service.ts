@@ -2358,7 +2358,8 @@ export async function createCollabRuntime(
         }));
         // Ask the tab once for what the room lacks: frames refused or lost
         // before this connection and edits made offline. Only a tab whose
-        // document is of this room's lineage may answer; an undeclared join
+        // document is of this room's lineage, or that declared it holds none
+        // (a first join: its reply is empty), may answer; an undeclared join
         // could merge another generation (#2034). Its SyncStep2 takes the
         // fenced `syncMutation` path like any other write.
         if (socket.lineageVerified) sendBin(socket.ws, encodeSyncStep1Frame(room.doc));
