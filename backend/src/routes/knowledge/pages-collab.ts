@@ -11,7 +11,7 @@ import * as Y from 'yjs';
 import {
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
-  CollabDocEpochSchema,
+  CollabJoinDeclarationSchema,
   CollabCommitResponseSchema,
   CollabCommitSchema,
   CollabConfigSchema,
@@ -941,14 +941,23 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         && /^\d+$/.test(rawExpectedLifecycleRevision)
         ? rawExpectedLifecycleRevision
         : null;
-      // `expectedDocEpoch` (#2034) is not a credential: it can only end this
-      // join or leave the socket unverified. Anything but one UUID (an empty
-      // value, a repeated parameter, other text) is malformed, never absent.
-      const rawExpectedDocEpoch = (request.query as { expectedDocEpoch?: unknown }).expectedDocEpoch;
-      const parsedDocEpoch = CollabDocEpochSchema.safeParse(rawExpectedDocEpoch);
-      const expectedDocEpoch: CollabDocEpochDeclaration = rawExpectedDocEpoch === undefined
-        ? { kind: 'absent' }
-        : parsedDocEpoch.success ? { kind: 'declared', epoch: parsedDocEpoch.data } : { kind: 'malformed' };
+      // The lineage declaration (#2034) is not a credential: it can only end
+      // this join or decide whether the socket is lineage-verified.
+      // `expectedDocEpoch` names the epoch of the client's document;
+      // `expectedDocEmpty` says the client holds no document, a claim the
+      // server cannot check. Anything else that is present (an empty or other
+      // value, a repeated parameter, both parameters) is malformed, never absent.
+      const declarationQuery = request.query as { expectedDocEpoch?: unknown; expectedDocEmpty?: unknown };
+      const parsedDeclaration = CollabJoinDeclarationSchema.safeParse({
+        expectedDocEpoch: declarationQuery.expectedDocEpoch,
+        expectedDocEmpty: declarationQuery.expectedDocEmpty,
+      });
+      let expectedDocEpoch: CollabDocEpochDeclaration;
+      if (!parsedDeclaration.success) expectedDocEpoch = { kind: 'malformed' };
+      else if (parsedDeclaration.data.expectedDocEpoch !== undefined) {
+        expectedDocEpoch = { kind: 'declared', epoch: parsedDeclaration.data.expectedDocEpoch };
+      } else if (parsedDeclaration.data.expectedDocEmpty !== undefined) expectedDocEpoch = { kind: 'empty' };
+      else expectedDocEpoch = { kind: 'absent' };
       const requestedWritable = await userCanEditPage(auth.userId, pageId);
       const meta = await fetchUserMeta(auth.userId);
       connId = randomUUID();

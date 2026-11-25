@@ -834,8 +834,8 @@ persist them:
   Nothing else clears the state and no timer does. After settlement a newly
   opened editor is writable again; tabs already on the read-only draft stay
   there until the user opens the current version.
-- *How to see it.* The intent carries `remote_effect_failed_at` (migration
-  160):
+- *How to see it.* The intent carries the failure marker
+  (`remote_effect_failed_at`, migration 160):
 
   ```sql
   SELECT id, kind, page_ids, runtime_id, remote_effect_started_at, remote_effect_failed_at
@@ -846,43 +846,44 @@ persist them:
      AND remote_terminal_result IS NULL;
   ```
 
-  The marker never settles, cancels or releases anything, and reconciliation
-  does not read it. Do not set or clear it by hand.
-- *Limits of the marker.* A row without the marker is not proof of a healthy
-  Save. A process that died mid-Save recorded none: its rooms on other
-  processes keep accepting edits until that runtime is fenced or quiesced,
-  which makes the state hold everywhere. A living process that cannot reach
-  PostgreSQL keeps retrying the marker (from 1 s, doubling to 30 s) and
-  meanwhile refuses edits itself, tells the other processes over Redis (its
-  intent id in the set `collab:commit-unknown:<pageId>`, and a bus cue), and
-  logs `collab.commit_unknown_marker_failed`. The set is written after the
-  first three marker attempts failed, which can take up to 30 s, and the cue
+  The failure marker never settles, cancels or releases anything, and
+  reconciliation does not read it. Do not set or clear it by hand.
+- *Limits of the failure marker.* A row without the failure marker is not
+  proof of a healthy Save. A process that died mid-Save recorded none: its
+  rooms on other processes keep accepting edits until that runtime is fenced
+  or quiesced, which makes the state hold everywhere. A living process that
+  cannot reach PostgreSQL keeps retrying the failure marker (from 1 s,
+  doubling to 30 s) and meanwhile refuses edits itself, tells the other
+  processes over Redis (its intent id in the set
+  `collab:commit-unknown:<pageId>`, and a bus cue), and logs
+  `collab.commit_unknown_marker_failed`. The set is written after the first
+  three failure marker attempts failed, which can take up to 30 s, and the cue
   after the Save's request cleanup was attempted. Both Redis commands give up
   at a 5 s deadline instead of waiting for a stalled connection
   (`collab.commit_unknown_latch_failed`,
   `collab.commit_unknown_cue_unpublished`) and are repeated by the next
   retry. A process that got neither the cue nor the key keeps accepting edits
-  for that page until the marker commits. A
-  backend process older than this change knows neither the marker nor the
-  control: follow the rolling-upgrade gate above.
+  for that page until the failure marker commits. A backend process older
+  than this change knows neither the failure marker nor the control: follow
+  the rolling-upgrade gate above.
 - *Leftover members of the Redis set.* `collab:commit-unknown:<pageId>` can
   keep the id of a Save that is long settled, when its process stopped
   before removing it. That is harmless: a member is only ever compared with
   the page's current pending Save. The next collaborative Save of the page
   that fails after dispatch removes members whose intent is settled or does
-  not exist (up to 32 per marker); a page without such a Save keeps them, and
-  the key has no expiry on purpose. To clean up by hand, remove only ids that
-  are not `pending` in `page_write_intents` (`SREM`). Never delete the key or
-  the id of a pending intent: while that Save's marker is not recorded, the
-  member is what stops other processes from accepting edits.
+  not exist (up to 32 per failure marker); a page without such a Save keeps
+  them, and the key has no expiry on purpose. To clean up by hand, remove only
+  ids that are not `pending` in `page_write_intents` (`SREM`). Never delete
+  the key or the id of a pending intent: while that Save's failure marker is
+  not recorded, the member is what stops other processes from accepting edits.
 - *Quiescence.* The room admission of such a page stays active behind the
   pending intent, and its release retries until the intent settles. With the
-  marker recorded, the failed Save itself no longer holds its runtime's drain,
-  also when it failed between an upload and the page update. A runtime that
-  hosts no room of the page can therefore acknowledge quiescence. A runtime
-  that hosts one still waits behind that room admission (#1934). While the
-  marker is not recorded, a Save that failed between its phases keeps holding
-  the drain as before.
+  failure marker recorded, the failed Save itself no longer holds its
+  runtime's drain, also when it failed between an upload and the page update.
+  A runtime that hosts no room of the page can therefore acknowledge
+  quiescence. A runtime that hosts one still waits behind that room admission
+  (#1934). While the failure marker is not recorded, a Save that failed
+  between its phases keeps holding the drain as before.
 
 After reconciliation, rooms of the page on other runtimes persist on their
 next edit, last-writer flush or release retry. The runtime that ran the Save

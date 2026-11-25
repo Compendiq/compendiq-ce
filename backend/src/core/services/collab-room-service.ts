@@ -157,9 +157,11 @@ export interface CollabSocket {
   awarenessClientIds: Set<number>;
   writableRefusalReason?: 'lifecycle_revision_required' | 'lifecycle_revision_stale';
   /**
-   * The join declared the epoch of the room's persisted document (#2034).
-   * Server state, never a client claim; false for every read-only socket and
-   * for a join that declared nothing.
+   * The join's declaration fits the room's persisted document (#2034): it
+   * named that document's epoch, or it said the client holds no document at
+   * all (a claim the server cannot check; such a client has nothing of
+   * another lineage to bring). Kept by the server for this socket; false for
+   * every read-only socket and for a join that declared nothing.
    */
   lineageVerified: boolean;
   /** The join was refused for its document lineage: `doc_reset` was sent, the socket closed and never attached. */
@@ -177,9 +179,14 @@ export interface CollabSocket {
   commitUnknownGated?: boolean;
 }
 
-/** The gateway's reading of the `expectedDocEpoch` join parameter (#2034). */
+/**
+ * The gateway's reading of the join's lineage declaration (#2034), the
+ * `expectedDocEpoch` and `expectedDocEmpty` parameters: nothing, "I hold no
+ * document", "I hold the document of this epoch", or anything else.
+ */
 export type CollabDocEpochDeclaration =
   | { kind: 'absent' }
+  | { kind: 'empty' }
   | { kind: 'malformed' }
   | { kind: 'declared'; epoch: string };
 
@@ -500,10 +507,23 @@ function busDocEpoch(value: unknown): string | undefined {
  * Whether a join with this declaration may be writable in a room that holds
  * the document `docEpoch` (#2034). A declaration names the lineage of the
  * client's `Y.Doc`; only the room of that lineage may admit it. `absent`
- * claims nothing and is admitted as before.
+ * claims nothing and is admitted as before; `empty` names no epoch, so it
+ * cannot differ from any.
  */
 function declarationAdmits(declaration: CollabDocEpochDeclaration, docEpoch: string | null): boolean {
   return declaration.kind === 'absent'
+    || declaration.kind === 'empty'
+    || (declaration.kind === 'declared' && declaration.epoch === docEpoch);
+}
+
+/**
+ * Whether a writable join with this declaration is lineage-verified in a room
+ * that holds the document `docEpoch`: the client's document is that lineage,
+ * or the client holds none. Only called after every check of the join passed.
+ */
+function declarationVerifies(declaration: CollabDocEpochDeclaration, docEpoch: string | null): boolean {
+  if (docEpoch === null) return false;
+  return declaration.kind === 'empty'
     || (declaration.kind === 'declared' && declaration.epoch === docEpoch);
 }
 
@@ -2040,8 +2060,9 @@ export async function createCollabRuntime(
     }
     if (!persist.isCollabLineageChanged(error)) return null;
     // A seed, adoption or merge under the lifecycle lock found this room's row
-    // gone or replaced. A declared join is answered `doc_reset`; an undeclared
-    // one fails and its client reconnects into a fresh room.
+    // gone or replaced. A join that named an epoch is answered `doc_reset`; one
+    // that named none (undeclared, or an empty document) fails and its client
+    // reconnects into a fresh room.
     await retireRoomOwned(room, room.docEpoch);
     return declaration.kind === 'declared' ? refuseJoinForLineage(room, socket) : null;
   }
@@ -2285,13 +2306,15 @@ export async function createCollabRuntime(
    * document is the current generation and that the page's own collaborative
    * commit is not unknown and then, still inside it and without awaiting
    * anything else, makes the final checks, hands the socket to the
-   * transport's live path (`goLive`), marks the socket writable and writes
-   * `writable_admission`, followed by one server SyncStep1 when the join is
-   * lineage-verified. The unknown-outcome marker, every settlement and every
-   * invalidation, seed and reset take the same lifecycle lock: either the
-   * marker commits first and this join sees it, or the socket is a registered
-   * writer before the marker commits and the cue or its next frame demotes it.
-   * The positive cue and the SyncStep1 are never written outside this fence.
+   * transport's live path (`goLive`), marks the socket writable, decides
+   * whether it is lineage-verified and writes `writable_admission`, followed
+   * by one server SyncStep1 when the join is lineage-verified (a declared
+   * epoch or the empty-document marker). The unknown-outcome marker, every
+   * settlement and every invalidation, seed and reset take the same
+   * lifecycle lock: either the marker commits first and this join sees it,
+   * or the socket is a registered writer before the marker commits and the
+   * cue or its next frame demotes it. The positive cue and the SyncStep1 are
+   * never written outside this fence.
    *
    * False when the socket left during the join; throws when the fence refuses.
    */
@@ -2306,10 +2329,13 @@ export async function createCollabRuntime(
     return withCollabCommitKnown(room.pageId, room, (assertCommitKnown) =>
       withPageWriteTransaction([room.pageId], async (client) => {
         await persist.assertCurrentCollabDocEpoch(client, room.pageId, room.docEpoch);
-        // The room's document is the current generation. A declaration must
-        // name exactly that document: a declared join that no longer matches
-        // the epoch this room ended up with is refused with `doc_reset`,
-        // never admitted unverified. Step 3 of the precedence, before step 4.
+        // The room's document is the current generation. A declared epoch
+        // must name exactly that document: a declared join that no longer
+        // matches the epoch this room ended up with is refused with
+        // `doc_reset`, never admitted unverified. An `empty` declaration
+        // names no epoch, so it has nothing to compare; the assertion above
+        // and the commit-state check below apply to it as to every join.
+        // Step 3 of the precedence, before step 4.
         if (!declarationAdmits(declaration, room.docEpoch)) throw new JoinLineageRefusal('refuse_socket');
         await assertCommitKnown(client);
         if (room.sockets.get(socket.id) !== socket || socket.ws.readyState !== 1) return false;
@@ -2322,7 +2348,10 @@ export async function createCollabRuntime(
         ) throw unavailableSnapshot();
         goLive?.();
         socket.writable = true;
-        socket.lineageVerified = declaration.kind === 'declared';
+        // The only place a socket becomes lineage-verified: writable, in a
+        // room that holds its persisted document, declared as that document's
+        // epoch or as no document at all (#2034).
+        socket.lineageVerified = declarationVerifies(declaration, room.docEpoch);
         sendBin(socket.ws, encodeControlFrame({
           type: 'writable_admission',
           lifecycleRevision: room.lifecycleRevision,

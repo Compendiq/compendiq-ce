@@ -1,13 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
+  COLLAB_DOC_EMPTY_MARKER,
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabConfigSchema,
   CollabCommitConflictSchema,
   CollabCommitSchema,
   CollabCommitUnknownControlSchema,
+  CollabDocEmptyMarkerSchema,
   CollabDocEpochControlSchema,
   CollabDocEpochSchema,
+  CollabJoinDeclarationSchema,
   CollabCommitResponseSchema,
   CollabRefusalReasonSchema,
   CollabWritableAdmissionControlSchema,
@@ -94,6 +97,43 @@ describe('collab contracts (#1444)', () => {
     // A repeated query parameter reaches the route as an array.
     expect(CollabDocEpochSchema.safeParse([epoch, epoch]).success).toBe(false);
     expect(CollabDocEpochSchema.safeParse(undefined).success).toBe(false);
+  });
+
+  it('accepts exactly one value for the empty-document marker (#2034)', () => {
+    expect(COLLAB_DOC_EMPTY_MARKER).toBe('1');
+    expect(CollabDocEmptyMarkerSchema.parse('1')).toBe('1');
+    for (const malformed of ['', ' ', '0', 'true', '01', '1 ', 1, true, null, ['1', '1']]) {
+      expect(CollabDocEmptyMarkerSchema.safeParse(malformed).success, JSON.stringify(malformed)).toBe(false);
+    }
+  });
+
+  it('lets a join declare an epoch, an empty document or nothing, never both (#2034)', () => {
+    const epoch = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+    const declared = CollabJoinDeclarationSchema.parse({ expectedDocEpoch: epoch });
+    expect(declared).toEqual({ expectedDocEpoch: epoch });
+    const empty = CollabJoinDeclarationSchema.parse({ expectedDocEmpty: '1' });
+    expect(empty).toEqual({ expectedDocEmpty: '1' });
+    // Old bundles send neither parameter; a route passes both keys as undefined.
+    expect(CollabJoinDeclarationSchema.safeParse({}).success).toBe(true);
+    const absent = CollabJoinDeclarationSchema.parse({ expectedDocEpoch: undefined, expectedDocEmpty: undefined });
+    expect(absent.expectedDocEpoch).toBeUndefined();
+    expect(absent.expectedDocEmpty).toBeUndefined();
+
+    for (const malformed of [
+      // The marker names no epoch, so the two together contradict each other.
+      { expectedDocEpoch: epoch, expectedDocEmpty: '1' },
+      { expectedDocEpoch: 'not-a-uuid', expectedDocEmpty: '1' },
+      { expectedDocEmpty: '' },
+      { expectedDocEmpty: 'true' },
+      { expectedDocEmpty: '0' },
+      // A repeated query parameter reaches the route as an array.
+      { expectedDocEmpty: ['1', '1'] },
+      { expectedDocEpoch: '' },
+      { expectedDocEpoch: [epoch, epoch] },
+      { expectedDocEpoch: epoch, expectedDocEmpty: '' },
+    ]) {
+      expect(CollabJoinDeclarationSchema.safeParse(malformed).success, JSON.stringify(malformed)).toBe(false);
+    }
   });
 
   it('parses the doc_epoch control strictly (#2034)', () => {
