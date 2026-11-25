@@ -103,7 +103,7 @@ sequenceDiagram
     F->>F: verify JWT and flag and page row and userCanAccessPage
     alt missing or expired JWT
         F-->>B: close 4401
-        B->>B: refreshAccessTokenOnce then reconnect; in a manual Rejoin attempt the same, once per attempt and only for the document's own account (a second 4401, no session or another account ends it in the read-only draft)
+        B->>B: refreshAccessTokenOnce then reconnect. In a manual Rejoin attempt the same, once per attempt and only for the document's own account (a second 4401, no session or another account ends it in the read-only draft)
     else flag off or upgrade rate limited
         F-->>B: close 4403 flag_off or rate_limited
         B->>B: no reconnect, show the reason, Retry after the upgrade window for rate_limited, after the first sync the draft stays read-only and Rejoin follows the same window
@@ -386,7 +386,7 @@ sequenceDiagram
     G-->>B: SyncStep2 with the whole room state
     B->>B: decode into a temporary Y.Doc and require the clocks and deletions recorded at connect
     Note over B: only now readOnlyReason clears and the editor is writable
-    Note over B,G: a transient close, no proof within 10 s of the current connection, or a refresh that fails or stalls ends it unconfirmed; a terminal refusal or a second 4401 ends it in the read-only draft
+    Note over B,G: a transient close, no proof within 10 s of the current connection, or a refresh that fails or stalls ends it unconfirmed. A terminal refusal or a second 4401 ends it in the read-only draft
 ```
 
 Success needs all four conditions; the sticky first-sync flag proves none of

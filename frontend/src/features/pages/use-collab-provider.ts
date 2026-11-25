@@ -365,6 +365,7 @@ export function useCollabProvider({
       const replacesRateLimit = reason === 'commit_unknown' && readOnlyNow === 'rate_limited';
       if (cancelled || (blocked && !rejoin.running && !replacesRateLimit)) return;
       rejoin.cancel();
+      clearTimeout(refreshWaitTimer);
       blocked = true;
       setWritable(false);
       setConnected(false);
