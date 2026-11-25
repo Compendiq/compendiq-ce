@@ -281,18 +281,22 @@ decision applies to it unchanged. The last of them also decides step 4:
   authority, and one admission-fenced transaction decides: it asserts on its
   own lifecycle-locked client that the row still carries the room's epoch,
   compares a declared epoch with the epoch the room ended up with, and asserts
-  that the page's own commit is not unknown. The marker names no epoch, so
-  there is nothing to compare for it; the current-epoch assertion and the
-  commit-state check apply to it as to every join. Still inside that
-  transaction, and without awaiting anything else, it makes the last socket,
-  room and transport checks, marks the socket writable, sets
-  `lineageVerified` (below) and writes `writable_admission`. A lineage that
-  ended meanwhile retires the room (a join that named an epoch is answered
-  `doc_reset`; one that named none, undeclared or with the marker, is closed
-  `1001` and reconnects into a fresh room); a declared epoch that no longer
-  matches is refused with `doc_reset`, never admitted unverified. If the
-  transaction fails the socket is closed and cleaned up. The positive control
-  is never written outside this fence.
+  that the page's own commit is not unknown. The empty-document marker
+  (`expectedDocEmpty`) names no epoch, so there is nothing to compare for it;
+  the current-epoch assertion and the commit-state check apply to it as to
+  every join. Still inside that transaction, and without awaiting anything
+  else, it makes the last socket, room and transport checks, marks the socket
+  writable, sets `lineageVerified` (below) and writes `writable_admission`. A
+  lineage that ended meanwhile retires the room (a join that named an epoch is
+  answered `doc_reset`; one that named none, undeclared or with the
+  empty-document marker, is closed `1001` and reconnects into a fresh room); a
+  declared epoch that no longer matches is refused with `doc_reset`, never
+  admitted unverified. If the transaction fails the socket is closed and
+  cleaned up. The positive control is never written outside this fence. The
+  fence does not cover reads: an ordinary client SyncStep1 is still answered
+  from the room's document without a fenced transaction, so a socket can be
+  sent a superseded document's bytes until the room is retired. The fenced
+  answer arrives with #1928.
 
 `CollabSocket.lineageVerified` is true only for a writable socket whose join
 went through those points and either declared the room's epoch or declared an
@@ -537,9 +541,9 @@ before `expectedDocEmpty`: it has the column, the `doc_epoch` control and
 | Epoch-aware pod without the marker serves a join | Ignores `expectedDocEmpty`, so a first join is admitted unverified there. It still sends `doc_epoch` and reads `expectedDocEpoch`: the tab pins at its first sync, and its later joins are decided by the epoch like on a new pod |
 | Epoch-aware bundle without the marker on a new pod | Its first join declares nothing: admitted as before, unverified. After its first sync it is pinned and declares the epoch: a rejoin is verified on a match and gets `doc_reset` on a mismatch |
 | New bundle on an epoch-aware pod without the marker | Its marker is ignored on the first join (unverified); it pins from that pod's `doc_epoch` and declares the epoch afterwards |
-| Old pod runs a Save that fails after dispatch (#2035) | It records no marker and sends no cue. Every pod reads the intent as `in_flight` and keeps accepting edits, as before this change, until that pod's runtime is fenced or quiesced; from then on the state is `unknown` on every new pod |
-| Old pod hosts sockets of a page whose Save failed on a new pod (#2035) | It does not know `commit_unknown` or the marker: its sockets stay writable and their edits stay unpersisted, as before. A new pod cannot add the barrier to an old pod's sockets |
-| Old bundle on a new pod, `commit_unknown` (#2035) | Ignores the control and acts on the `permission_loss` that follows it: read-only draft with **Download draft**, no reconnect. Its banner keeps the generic sentence |
+| A pod without #2035 runs a Save that fails after dispatch | It records no failure marker (`remote_effect_failed_at`) and sends no cue. Every pod reads the intent as `in_flight` and keeps accepting edits, as before this change, until that pod's runtime is fenced or quiesced; from then on the state is `unknown` on every pod with #2035 |
+| A pod without #2035 hosts sockets of a page whose Save failed on a pod with #2035 | It does not know `commit_unknown` or the failure marker (`remote_effect_failed_at`): its sockets stay writable and their edits stay unpersisted, as before. A pod with #2035 cannot add the barrier to the sockets of a pod without it |
+| A bundle without #2035 on a pod with #2035, `commit_unknown` | Ignores the control and acts on the `permission_loss` that follows it: read-only draft with **Download draft**, no reconnect. Its banner keeps the generic sentence |
 
 **While the page's own collaborative Save is pending (#1763).** A Confluence
 commit compares its provider read with `pages.remote_version`, including
@@ -578,11 +582,12 @@ removes write authority.
 - *Durable state.* One read under the page lifecycle lock looks for the
   pending `collab.commit.confluence[.media]` intent of exactly this page whose
   remote effect started and has no terminal result. `none`: no such intent.
-  `unknown`: it carries the marker `page_write_intents.remote_effect_failed_at`
-  (migration 160), or a recovery claimed it (`recovery_started_at`), or its
-  owning runtime is fenced or quiesced. `in_flight` otherwise. The marker
-  exists because the issue's predicate alone is also true during a healthy
-  Save (amendment A3). Reconciliation does not read it.
+  `unknown`: it carries the failure marker
+  (`page_write_intents.remote_effect_failed_at`, migration 160), or a recovery
+  claimed it (`recovery_started_at`), or its owning runtime is fenced or
+  quiesced. `in_flight` otherwise. The failure marker exists because the
+  issue's predicate alone is also true during a healthy Save (amendment A3).
+  Reconciliation does not read it.
 - *Effective state on a pod.* The durable state, raised from `in_flight` to
   `unknown` when a latch names the same intent: the owner's process-local set,
   the room's `unknownCommitIntentId` (set by a cue), or the Redis key
@@ -596,16 +601,17 @@ removes write authority.
   ignored.
 - *Trigger and owner procedure.* On every exit of the commit route that leaves
   its own intent in that shape, the owner (1) adds the intent to its
-  process-local set synchronously, (2) records the marker in a transaction
-  that locks the runtime row, the page lifecycle and then the intent row, with
-  an exact-match `UPDATE` and a proof read of the committed row (up to three
-  immediate attempts; the transaction and the proof read are each abandoned
-  at their own 5 s deadline, so the attempts can take up to 30 s), (3) once the
-  marker is proven, retires a finished upload phase whose next phase can no
-  longer run, so that intent no longer holds the runtime's drain, (4) without
-  a proven marker adds its intent id to the Redis key and keeps retrying with
-  a backoff from 1 s to 30 s for the life of the process, removing its own
-  member afterwards, and (5) publishes the bus cue
+  process-local set synchronously, (2) records the failure marker in a
+  transaction that locks the runtime row, the page lifecycle and then the
+  intent row, with an exact-match `UPDATE` and a proof read of the committed
+  row (up to three immediate attempts; the transaction and the proof read are
+  each abandoned at their own 5 s deadline, so the attempts can take up to
+  30 s), (3) once the failure marker is proven, retires a finished upload
+  phase whose next phase can no longer run, so that intent no longer holds the
+  runtime's drain, (4) without a proven failure marker adds its intent id to
+  the Redis key and keeps retrying with a backoff from 1 s to 30 s for the
+  life of the process, removing its own member afterwards, and (5) publishes
+  the bus cue
   `{ kind: 'commit_unknown', intentId }`. It is not triggered by the version
   check before dispatch, a cancelled reservation, any failure before dispatch,
   a failure after a terminal result was recorded, or a standalone commit.
@@ -618,28 +624,30 @@ removes write authority.
   own intent id and cannot replace the member of a later Save, and a late cue
   is checked against the durable state by its receiver. A cue that missed its
   deadline is logged `collab.commit_unknown_cue_unpublished` and repeated by
-  the next marker retry.
+  the next failure marker retry.
 - *When the cue is published.* Never before the route attempted (completed or
   deferred) the release of its request admission: the declaration keeps a
-  gate that the route opens in its `finally`. A background marker retry that
-  runs while the route is still in its 409 readback or its cleanup records
-  the marker and the latch but publishes nothing; a marker proven during that
-  time is announced when the gate opens. From then on every retry repeats the
-  cue, and a late marker success publishes it once more.
+  gate that the route opens in its `finally`. A background failure marker
+  retry that runs while the route is still in its 409 readback or its cleanup
+  records the failure marker and the latch but publishes nothing; a failure
+  marker proven during that time is announced when the gate opens. From then
+  on every retry repeats the cue, and a late failure marker success publishes
+  it once more.
 - *Retention of the Redis set.* Each owner removes only its own member, so a
   member can outlive its Save: the owner stopped after the write, or a write
   that was already on the wire landed after the owner's cleanup. Such a
   member grants and removes nothing, because a reader asks for the page's
-  current intent only. It is reclaimed when the marker work of any later Save
-  of the page ends (marker proven, or the intent found settled): the owner
-  then samples up to 32 members of the set, reads which of them name a
-  `pending` intent, and removes the others, that is, members whose intent is
-  settled or does not exist. One sample, one read and one removal per marker,
-  not awaited by the Save's answer; a larger set shrinks over several markers.
-  An intent never returns to `pending`, so a removed member can never be the
-  current one again, and the member of a pending intent stays however long
-  its marker is delayed. The key has no TTL for the same reason: an expiry
-  could drop the current intent's latch while its marker cannot be recorded.
+  current intent only. It is reclaimed when the failure marker work of any
+  later Save of the page ends (failure marker proven, or the intent found
+  settled): the owner then samples up to 32 members of the set, reads which of
+  them name a `pending` intent, and removes the others, that is, members whose
+  intent is settled or does not exist. One sample, one read and one removal
+  per failure marker, not awaited by the Save's answer; a larger set shrinks
+  over several failure markers. An intent never returns to `pending`, so a
+  removed member can never be the current one again, and the member of a
+  pending intent stays however long its failure marker is delayed. The key has
+  no TTL for the same reason: an expiry could drop the current intent's latch
+  while its failure marker cannot be recorded.
   A page without a later failed Save keeps its leftover members.
 - *The route's 409.* The provider's 409 after dispatch keeps status 409,
   `code: 'confluence_modified'` and the version fields. Its body carries
@@ -654,10 +662,11 @@ removes write authority.
 - *Fences.* The cue is only a prompt; these are the barrier. A client frame is
   applied only inside a transaction that asserts the effective state is not
   `unknown`. The `precondition` of a room admission asserts it, so no join
-  acquires an admission after the marker. The final step of the join (above)
-  asserts it in the transaction that writes `writable_admission`: either the
-  marker commits first and the join is gated, or the socket is a registered
-  writer before the marker commits and the cue or its next frame demotes it.
+  acquires an admission after the failure marker. The final step of the join
+  (above) asserts it in the transaction that writes `writable_admission`:
+  either the failure marker commits first and the join is gated, or the socket
+  is a registered writer before the failure marker commits and the cue or its
+  next frame demotes it.
   Peer replication, state dumps and room loads are unchanged, because an edit
   a pod accepted under its fence must still converge.
 - *Cue.* A pod that receives the cue reads the durable state once under the
@@ -682,16 +691,17 @@ removes write authority.
   there until the user opens the current version. Edits typed after the
   failed Save are not persisted or merged: **Download draft** is the recovery
   path.
-- *Limits (amendment A3).* A process that died mid-Save recorded no marker:
-  its intent reads `in_flight` until its runtime is fenced or quiesced. While
-  a living owner cannot record the marker, the owner is fenced from its own
-  set; another pod is fenced, for joins and for frames alike, as soon as a cue
-  reached its room or it reads the Redis key; a pod with neither keeps
-  admitting joins and applying frames, as for a Save in flight, until the
-  marker commits. The key is written only after the immediate marker attempts
-  failed (up to 30 s), and the cue only after the route's release attempt, so
-  both can be later than the failure itself. During that time an orphaned
-  finished upload phase keeps the owner's quiesce waiting, as before.
+- *Limits (amendment A3).* A process that died mid-Save recorded no failure
+  marker: its intent reads `in_flight` until its runtime is fenced or
+  quiesced. While a living owner cannot record the failure marker, the owner
+  is fenced from its own set; another pod is fenced, for joins and for frames
+  alike, as soon as a cue reached its room or it reads the Redis key; a pod
+  with neither keeps admitting joins and applying frames, as for a Save in
+  flight, until the failure marker commits. The key is written only after the
+  immediate failure marker attempts failed (up to 30 s), and the cue only
+  after the route's release attempt, so both can be later than the failure
+  itself. During that time an orphaned finished upload phase keeps the owner's
+  quiesce waiting, as before.
 
 ## Neighborhoods
 
