@@ -165,13 +165,14 @@ class CollabWebsocketProvider extends WebsocketProvider {
  * - 4401 on `closed` (shouldConnect already false) → refresh JWT, set
  *   `protocols`, `connect()` on the same instance.
  * - A document keeps the lifecycle revision it joined with across reconnects.
- * - A document keeps the epoch it first synced with (#2034): the `doc_epoch`
- *   control of the connection that delivers the first sync is pinned and sent
- *   as `expectedDocEpoch` on every later join (y-websocket rebuilds its URL
- *   on each connect). Until then a join sends `expectedDocEmpty` while the
+ * - A document keeps the epoch of the first connection that syncs it (#2034):
+ *   that connection's `doc_epoch` control is pinned and sent as
+ *   `expectedDocEpoch` on every later join (y-websocket rebuilds its URL on
+ *   each connect). Until then a join sends `expectedDocEmpty` while the
  *   document holds nothing, and declares nothing once it holds content of an
  *   unknown lineage. The pin never changes; a first sync without the control
- *   stays unpinned.
+ *   stays unpinned. The pin does not prove the document was empty before that
+ *   sync: an earlier connection may have left updates in it.
  * - A writable admission is acknowledged explicitly; page state is not permission.
  * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
  *   disconnect it, and never silently replay it into a new lifecycle.
@@ -249,8 +250,9 @@ export function useCollabProvider({
     let retryReady = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     // The `doc_epoch` control of the current connection, until the first sync
-    // pins it. The document is empty before that sync, so the epoch named by
-    // the connection that fills it is the lineage the document belongs to.
+    // pins it: the pin is the candidate of the first connection that syncs.
+    // An earlier connection that dropped before its sync may already have left
+    // updates in the document, so the pin is not a proof about those bytes.
     let docEpochCandidate: string | null = null;
     const joinedRevision = latestRevision.current;
     const doc = new Y.Doc();

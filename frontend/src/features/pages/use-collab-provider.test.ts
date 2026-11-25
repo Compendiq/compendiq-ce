@@ -929,6 +929,40 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         expect(declared(second)).toBeNull();
       });
 
+      it('is not sent while the document holds only a parked deletion it cannot apply yet', async () => {
+        // An edit and its deletion: the second update is a delete set without a struct.
+        const server = new Y.Doc();
+        const updates: Uint8Array[] = [];
+        server.on('update', (bytes: Uint8Array) => updates.push(bytes));
+        server.getText('draft').insert(0, 'first');
+        server.getText('draft').delete(0, 5);
+        server.destroy();
+        const deletion = updates[1]!;
+        expect(Y.decodeUpdate(deletion).structs).toEqual([]);
+        expect(Y.decodeUpdate(deletion).ds.clients.size).toBe(1);
+
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        // A retry that still holds nothing sends the marker again.
+        act(() => { first.open(); });
+        const second = await reconnect(first);
+        expect(marker(second)).toBe('1');
+
+        // The deletion arrives without the edit it deletes. No clock and no
+        // deletion is integrated and no struct is parked, but Yjs keeps the
+        // delete set and sends it along with the document's state.
+        act(() => { second.open(); update(second, deletion); });
+        const doc = result.current.ydoc!;
+        expect(Y.equalSnapshots(Y.snapshot(doc), Y.emptySnapshot)).toBe(true);
+        expect(doc.store.pendingStructs).toBeNull();
+        expect(Y.decodeUpdate(Y.encodeStateAsUpdate(doc)).ds.clients.size).toBe(1);
+
+        const third = await reconnect(second);
+        expect(marker(third)).toBeNull();
+        expect(declared(third)).toBeNull();
+      });
+
       it('is the only parameter of a join without a lifecycle revision', () => {
         renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
         expect(new URL(Socket.instances[0]!.url).search).toBe('?expectedDocEmpty=1');

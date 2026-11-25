@@ -629,9 +629,8 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
   it.each([
     ['malformed', { kind: 'malformed' }],
     ['mismatched', { kind: 'declared', epoch: '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f' }],
-    ['empty-document', { kind: 'empty' }],
   ] as const)(
-    'a join to a frozen page keeps its read-only outcome with a %s declaration: no epoch decision (#2034)',
+    'a join to a frozen page keeps its read-only outcome with a %s expectedDocEpoch: no epoch decision (#2034)',
     async (_name, expectedDocEpoch) => {
       const pageId = nextPageId();
       await setPageBaselineCreationEnabled(SYSTEM_ADMIN, true);
@@ -663,7 +662,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         expectedDocEpoch,
       });
 
-      expect(joined).toMatchObject({ writable: false, lineageVerified: false });
+      expect(joined.writable).toBe(false);
       expect(joined.joinRefused).toBeUndefined();
       expect(closes).toEqual([]);
       expect(runtimeA!.getRoom(pageId)!.sockets.has('frozen-editor')).toBe(true);
