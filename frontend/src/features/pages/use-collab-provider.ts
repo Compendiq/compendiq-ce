@@ -4,6 +4,7 @@ import { WebsocketProvider } from 'y-websocket';
 import * as decoding from 'lib0/decoding';
 import { Awareness } from 'y-protocols/awareness';
 import {
+  COLLAB_DOC_EMPTY_MARKER,
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabDocEpochControlSchema,
@@ -106,6 +107,34 @@ function terminalJoinError(
 }
 
 /**
+ * Whether `doc` provably holds nothing (#2034): an empty state vector, an
+ * empty delete set, and no update parked for a missing dependency (Yjs sends
+ * parked updates along with its state).
+ */
+function holdsNoDocument(doc: Y.Doc): boolean {
+  return doc.store.pendingStructs === null
+    && doc.store.pendingDs === null
+    && Y.equalSnapshots(Y.snapshot(doc), Y.emptySnapshot);
+}
+
+/**
+ * y-websocket reads `url` once for every connection it opens, so the lineage
+ * declaration of a join is decided here, per connect (#2034). A pinned
+ * document declares its epoch through `params.expectedDocEpoch` and never the
+ * marker. An unpinned document adds `expectedDocEmpty` exactly while it holds
+ * nothing. An unpinned document with content (a connection that dropped
+ * before its first sync after applying updates, a first sync without the
+ * `doc_epoch` control) declares nothing.
+ */
+class CollabWebsocketProvider extends WebsocketProvider {
+  override get url(): string {
+    const url = super.url;
+    if (this.params.expectedDocEpoch !== undefined || !holdsNoDocument(this.doc)) return url;
+    return `${url}${url.includes('?') ? '&' : '?'}expectedDocEmpty=${COLLAB_DOC_EMPTY_MARKER}`;
+  }
+}
+
+/**
  * y-websocket 3.1 provider for `/api/collab/:pageId`.
  *
  * - `if (!token) return` — never `protocols: [v1, '']`.
@@ -115,8 +144,10 @@ function terminalJoinError(
  * - A document keeps the epoch it first synced with (#2034): the `doc_epoch`
  *   control of the connection that delivers the first sync is pinned and sent
  *   as `expectedDocEpoch` on every later join (y-websocket rebuilds its URL
- *   from `params` on each connect). Nothing is declared on the first join. The
- *   pin never changes; a first sync without the control stays unpinned.
+ *   on each connect). Until then a join sends `expectedDocEmpty` while the
+ *   document holds nothing, and declares nothing once it holds content of an
+ *   unknown lineage. The pin never changes; a first sync without the control
+ *   stays unpinned.
  * - A writable admission is acknowledged explicitly; page state is not permission.
  * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
  *   disconnect it, and never silently replay it into a new lifecycle.
@@ -201,7 +232,7 @@ export function useCollabProvider({
     };
     awareness.on('update', refreshAwareness);
 
-    const ws = new WebsocketProvider(collabWsUrl(), String(pageId), doc, {
+    const ws = new CollabWebsocketProvider(collabWsUrl(), String(pageId), doc, {
       protocols: [COLLAB_WS_PROTOCOL, token],
       params: joinedRevision === undefined ? {} : { expectedLifecycleRevision: joinedRevision },
       disableBc: true,

@@ -110,7 +110,7 @@ sequenceDiagram
         B->>B: destroy provider do not reconnect
     else ok
         Note over F: frames before live are buffered in order, 64 frames and 1 MiB, overflow closes 1013
-        F->>G: attachSocket with the expectedDocEpoch declaration, load or create room, stamp awareness
+        F->>G: attachSocket with the lineage declaration, expectedDocEpoch or expectedDocEmpty, load or create room, stamp awareness
         alt would be writable and the declaration is malformed or names another epoch than the row
             G-->>B: control doc_reset then close 1001 doc_reset, socket not attached, no admission
             B->>B: keep the Y.Doc as a read-only draft, do not reconnect
@@ -134,7 +134,7 @@ sequenceDiagram
 | **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden` |
 | **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
 | **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
-| **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable declared a malformed `expectedDocEpoch` or another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
+| **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable made a malformed declaration (a malformed `expectedDocEpoch` or `expectedDocEmpty`, or both together) or declared another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
 | **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect |
 | HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
 
@@ -169,7 +169,8 @@ load, from `INSERT … RETURNING` on the seed, from the row when a provisional
 room adopts the persisted document. It is `null` exactly while the room has no
 persisted document (an HTML-only reader room).
 
-The client learns the epoch from a type-4 control and declares it on rejoin:
+The client learns the epoch from a type-4 control and declares on every join
+which document it holds:
 
 - **Control.** When a socket is attached to a room with a persisted document,
   the gateway sends `{ type: 'doc_epoch', epoch }` before the lifecycle and
@@ -180,15 +181,38 @@ The client learns the epoch from a type-4 control and declares it on rejoin:
   first sync is forgotten. The pin never changes afterwards; later controls are
   ignored. A document whose first sync came without the control (older pod,
   provisional room) stays unpinned for its lifetime.
-- **Declaration.** The pin is written to the provider's `params`, which
-  y-websocket 3.1 turns into the URL on every connect, so each later join
-  carries `expectedDocEpoch=<uuid>`. A first join declares nothing. The
-  gateway reads the parameter as `absent`, `declared` (exactly one UUID) or
-  `malformed` (an empty value, a repeated parameter, any other text).
+- **Declaration.** Two optional join parameters, decided for each connect
+  (y-websocket 3.1 builds the URL on every connect; the hook's provider
+  subclass decides there). They exclude each other:
+  - `expectedDocEpoch=<uuid>`: "I hold the document of this epoch". Sent by a
+    pinned document on every later join (the pin is written to the provider's
+    `params`), and never together with the marker.
+  - `expectedDocEmpty=1`: "I hold no document" (the empty-document marker,
+    a flag whose only value is `1`). Sent by an unpinned document exactly
+    while it is provably empty: an empty Yjs state vector, an empty delete set
+    and no update parked for a missing dependency. That is a tab's first join,
+    and each retry of it that still has nothing.
+  - Neither: an unpinned document that holds content, for example a
+    connection that applied updates and dropped before its first sync, or a
+    first sync that came without the control. Browser bundles that predate a
+    parameter also send neither.
 
-The epoch is not a credential. Authentication, page access, edit permission
-and the lifecycle checks run first and are unchanged; a declaration can only
-end that join or leave the socket unverified.
+  The gateway reads the pair with `CollabJoinDeclarationSchema` as `absent`
+  (neither), `declared` (exactly one UUID), `empty` (exactly the marker) or
+  `malformed` (an empty value, a repeated parameter, any other text, or both
+  parameters together).
+
+Neither parameter is a credential. Authentication, page access, edit
+permission and the lifecycle checks run first and are unchanged; a declaration
+can only end that join or decide whether the socket is lineage-verified.
+
+**Trust in the empty-document marker.** The server cannot check the claim. A
+client that sets the marker while it holds content is in the same position as
+any writer, who can already write arbitrary content into the document: the
+marker grants no access and skips no check a writable join passes. It exists
+so that the joins that never set it, old bundles and partially synced tabs,
+stay unverified and are not asked to send their contents (#1928 sends its
+SyncStep1 to verified sockets only).
 
 **Join outcome precedence** (first match wins):
 
@@ -197,18 +221,24 @@ end that join or leave the socket unverified.
 2. The join would not be writable (no edit permission, a frozen page, a
    missing or stale `expectedLifecycleRevision`): today's outcome, attached
    read-only, **no epoch decision**.
-3. `expectedDocEpoch` is malformed, or declared and different from the page's
-   `doc_epoch` (or the page has no row): `doc_reset` control, close `1001
-   doc_reset`, the socket is not attached and no admission is kept. Only the
-   joining socket is affected: the room's other sockets stay, and a refused
-   join does not cancel an empty room's eviction.
+3. The declaration is malformed (`expectedDocEpoch` or `expectedDocEmpty`
+   malformed, or both present), or it declares an epoch different from the
+   page's `doc_epoch` (or the page has no row): `doc_reset` control, close
+   `1001 doc_reset`, the socket is not attached and no admission is kept. Only
+   the joining socket is affected: the room's other sockets stay, and a refused
+   join does not cancel an empty room's eviction. The marker alone names no
+   epoch, so it is never a mismatch: it passes this step in a page without a
+   row, where its join seeds the document.
 4. Otherwise the join is writable: `writable_admission`.
 
 A frozen page is step 2 whatever the join declares: the refused admission
 gives it today's read-only outcome and the declaration is not looked at.
 
-Step 3 is decided at three points, and a declared join is writable only when
-its declaration equals the epoch of the document the room ends up holding:
+Step 3 is decided at three points, the same for every declaration. A declared
+join is writable only when its declaration equals the epoch of the document
+the room ends up holding; a join with the marker passes each point's
+declaration comparison, because it names no epoch, and each point's stale-heap
+decision applies to it unchanged:
 
 - *Pre-check, before the admission.* A malformed declaration is refused with
   no read. Otherwise the row is read without locks. A room whose `docEpoch`
@@ -230,10 +260,11 @@ its declaration equals the epoch of the document the room ends up holding:
   lineage that changes after the pre-check leaves no admission behind.
 - *After the room has its document.* A provisional room loads, seeds or adopts
   its document in a transaction after the admission's, and the row can be
-  deleted or reseeded in between. Before the room keeps the admission, the
-  declaration must equal the epoch the room now holds; otherwise the admission
-  this join acquired is released and the socket is refused. A room that already
-  owns an admission accepts only a declaration equal to its own `docEpoch`.
+  deleted or reseeded in between. Before the room keeps the admission, a
+  declared epoch must equal the epoch the room now holds; otherwise the
+  admission this join acquired is released and the socket is refused. A room
+  that already owns an admission accepts a declared epoch only when it equals
+  its own `docEpoch`.
 
 **Not in this change: the final step.** The current-epoch assertion in one
 fenced transaction that also writes `writable_admission` (design D-2034,
@@ -247,10 +278,17 @@ declared join is never writable in a room that holds another epoch than the
 one it declared.
 
 `CollabSocket.lineageVerified` is true only for a writable socket whose join
-declared the room's epoch. A join that declares nothing is admitted as before
-and is never verified, a first join included (amendment A1: a first join has an
-empty document and nothing to replay). #1928 sends its server SyncStep1 only
-to writable, lineage-verified sockets.
+went through those points and either declared the room's epoch or declared an
+empty document (owner decision of 2026-11-25, which replaces amendment A1 for
+the first join: a client that holds nothing has nothing of another lineage to
+bring). The room's epoch is then established: the marker's own join seeded or
+adopted the document, or joined the room that holds it. A join that declares
+nothing is admitted as before and is never verified. A lineage that ends
+during a join (`collab_lineage_changed` from the seed, adoption or merge)
+answers `doc_reset` to a join that named an epoch; a join that named none,
+undeclared or with the marker, fails as a join (`1001`) and its client
+reconnects into a fresh room. #1928 sends its server SyncStep1 only to
+writable, lineage-verified sockets.
 
 Type-4 control frames (JSON, server to client):
 
@@ -468,12 +506,12 @@ on again. During an ungated mix no guarantee is given; this is what to expect:
 
 | Situation | Behaviour |
 |---|---|
-| Old pod serves a join | Ignores `expectedDocEpoch` and sends no `doc_epoch`: today's behaviour on that socket |
+| Old pod serves a join | Ignores `expectedDocEpoch` and `expectedDocEmpty` and sends no `doc_epoch`: today's behaviour on that socket |
 | Old pod writes the collab row | A new row gets a fresh epoch from the column default. Its unguarded upsert can still overwrite a row, and its in-place reset keeps the epoch (the reason for the gate) |
 | Old pod's bus messages | Carry no `docEpoch`; handled as before |
-| Tab that synced on a new pod, later merged replacement content on an old pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. An old pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned is unverified |
-| Old bundle on a new pod | Declares nothing and ignores `doc_epoch`: admitted as before, never verified |
-| New bundle on an old pod | Never receives `doc_epoch`, so it never pins and declares nothing |
+| Tab that synced on a new pod, later merged replacement content on an old pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. An old pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned and holds content is unverified |
+| Old bundle on a new pod | Declares nothing and ignores `doc_epoch`: admitted as before, never verified, a first join included |
+| New bundle on an old pod | Never receives `doc_epoch`, so it never pins; it sends the marker while its document is empty, which the old pod ignores, and nothing afterwards |
 
 **While the page's own collaborative Save is pending (#1763).** A Confluence
 commit compares its provider read with `pages.remote_version`, including

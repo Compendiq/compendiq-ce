@@ -280,17 +280,25 @@ That re-read also reads the `pages` row: a hard delete cascades the
 collaborative row, and a page proven absent gets the committed-delete teardown
 (`closeRoomSockets(room, 4404, 'committed_delete')`, the tombstone's own call),
 never `doc_reset`.
-A join that would be writable and declares a malformed or different
-`expectedDocEpoch` is refused (`doc_reset`, `1001 doc_reset`, not attached, no
-admission kept): first without locks, again as the `precondition` of
-`admitPageRuntime`, and once more after a provisional room loaded, seeded or
-adopted its document, because that happens in a later transaction. A declared
-join is writable only in a room whose `docEpoch` equals the declaration. A
-stale heap the join finds is retired first and the join restarts once; a frozen
-page gets no epoch decision. An undeclared join is admitted and never
-`lineageVerified`. The fenced final step that asserts the current epoch in the
-transaction that writes `writable_admission` is #2035, not this change. Do not
-reintroduce an in-place replacement of the row, a process-wide reset flag or a
+A join that would be writable and makes a malformed declaration, or declares
+another `expectedDocEpoch` than the row's, is refused (`doc_reset`, `1001
+doc_reset`, not attached, no admission kept): first without locks, again as
+the `precondition` of `admitPageRuntime`, and once more after a provisional
+room loaded, seeded or adopted its document, because that happens in a later
+transaction. A declared join is writable only in a room whose `docEpoch`
+equals the declaration. A stale heap the join finds is retired first and the
+join restarts once; a frozen page gets no epoch decision. The empty-document
+marker `expectedDocEmpty=1` (an unpinned client whose `Y.Doc` holds nothing; a
+first join) names no epoch: it is never a mismatch, goes through the same
+points, and its writable join is `lineageVerified` like a declared one. The
+marker together with `expectedDocEpoch`, or any other marker value, is
+malformed. The server cannot check the claim; it grants nothing a writer does
+not already have, and exists so that joins that send neither parameter (old
+bundles, partially synced tabs) stay unverified. An undeclared join is admitted
+and never `lineageVerified`. The fenced final step that asserts the current
+epoch in the transaction that writes `writable_admission` is #2035, not this
+change. Do not reintroduce an in-place replacement of the row, a process-wide
+reset flag or a
 pre-commit freeze. Details: `docs/architecture/12-realtime-collaboration.md`.
 
 Page Save is single-flight per editing session. Claim the flight synchronously

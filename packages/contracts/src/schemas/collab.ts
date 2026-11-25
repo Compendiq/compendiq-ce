@@ -47,6 +47,28 @@ export type CollabWritableAdmissionControl = z.infer<
 export const CollabDocEpochSchema = z.string().uuid();
 export type CollabDocEpoch = z.infer<typeof CollabDocEpochSchema>;
 
+/**
+ * Value of the `expectedDocEmpty` join parameter (#2034). The parameter is a
+ * flag: set, it says "my `Y.Doc` holds nothing". `1` is its only value.
+ */
+export const COLLAB_DOC_EMPTY_MARKER = '1' as const;
+export const CollabDocEmptyMarkerSchema = z.literal(COLLAB_DOC_EMPTY_MARKER);
+
+/**
+ * What a join to `/api/collab/:pageId` declares about the document its client
+ * holds (#2034), as query parameters: the epoch that document was synced
+ * from, or that it holds no document, or nothing. The two parameters exclude
+ * each other; anything this schema rejects is a malformed declaration, never
+ * an absent one. Neither parameter is a credential, and the server cannot
+ * check the empty-document claim.
+ */
+export const CollabJoinDeclarationSchema = z.union([
+  z.object({ expectedDocEpoch: CollabDocEpochSchema, expectedDocEmpty: z.undefined().optional() }),
+  z.object({ expectedDocEpoch: z.undefined().optional(), expectedDocEmpty: CollabDocEmptyMarkerSchema }),
+  z.object({ expectedDocEpoch: z.undefined().optional(), expectedDocEmpty: z.undefined().optional() }),
+]);
+export type CollabJoinDeclaration = z.infer<typeof CollabJoinDeclarationSchema>;
+
 /** Server control frame naming the lineage of the document a socket is attached to. */
 export const CollabDocEpochControlSchema = z.object({
   type: z.literal('doc_epoch'),

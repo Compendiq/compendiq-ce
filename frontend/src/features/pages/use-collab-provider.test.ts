@@ -685,5 +685,133 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
       expect(Socket.instances).toHaveLength(2);
     });
+
+    describe('empty-document marker', () => {
+      const marker = (socket: Socket) => new URL(socket.url).searchParams.get('expectedDocEmpty');
+      /** A Yjs update frame, as a peer's edit reaches a socket outside the sync handshake. */
+      const update = (socket: Socket, bytes: Uint8Array) => {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeUpdate(encoder, bytes);
+        socket.receive(encoding.toUint8Array(encoder));
+      };
+      /** The updates of two successive edits; the second cannot be integrated without the first. */
+      const twoEdits = (): [Uint8Array, Uint8Array] => {
+        const server = new Y.Doc();
+        const updates: Uint8Array[] = [];
+        server.on('update', (bytes: Uint8Array) => updates.push(bytes));
+        server.getText('draft').insert(0, 'first');
+        server.getText('draft').insert(5, ' second');
+        server.destroy();
+        return [updates[0]!, updates[1]!];
+      };
+      /** The server's SyncStep2 for a document that holds nothing. */
+      const hydrateEmpty = (socket: Socket) => {
+        const server = new Y.Doc();
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeSyncStep2(encoder, server);
+        socket.receive(encoding.toUint8Array(encoder));
+        server.destroy();
+      };
+
+      it('is decided for each connect: sent while the unpinned document is empty, dropped once it holds content, replaced by the epoch once pinned', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        expect(declared(first)).toBeNull();
+        expect(new URL(first.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+
+        // The connection drops before it delivered anything: still empty.
+        act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); });
+        const second = await reconnect(first);
+        expect(marker(second)).toBe('1');
+        expect(declared(second)).toBeNull();
+
+        // A peer's edit arrives before the first sync, then the connection drops.
+        act(() => { second.open(); update(second, twoEdits()[0]); });
+        expect(result.current.synced).toBe(false);
+        expect(result.current.ydoc!.getText('draft').toString()).toBe('first');
+        const third = await reconnect(second);
+        expect(marker(third)).toBeNull();
+        expect(declared(third)).toBeNull();
+
+        // The first sync pins: from here the epoch is declared and never the marker.
+        act(() => {
+          third.open();
+          control(third, { type: 'doc_epoch', epoch: EPOCH });
+          hydrate(third);
+        });
+        expect(result.current.docEpochPinned).toBe(true);
+        const fourth = await reconnect(third);
+        expect(declared(fourth)).toBe(EPOCH);
+        expect(marker(fourth)).toBeNull();
+      });
+
+      it('is never sent for a pinned document, even one that is still empty', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        act(() => {
+          first.open();
+          control(first, { type: 'doc_epoch', epoch: EPOCH });
+          hydrateEmpty(first);
+        });
+        expect(result.current.synced).toBe(true);
+        expect(result.current.docEpochPinned).toBe(true);
+        expect(Y.encodeStateAsUpdate(result.current.ydoc!)).toEqual(Y.encodeStateAsUpdate(new Y.Doc()));
+
+        const second = await reconnect(first);
+        expect(declared(second)).toBe(EPOCH);
+        expect(marker(second)).toBeNull();
+      });
+
+      it('is sent again by an unpinned document that synced and still holds nothing', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        act(() => { first.open(); hydrateEmpty(first); });
+        expect(result.current.synced).toBe(true);
+        expect(result.current.docEpochPinned).toBe(false);
+
+        const second = await reconnect(first);
+        expect(marker(second)).toBe('1');
+        expect(declared(second)).toBeNull();
+      });
+
+      it('is not sent for an unpinned document that holds content: such a join declares nothing', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        // A first sync without the control (an older pod, a provisional room) never pins.
+        act(() => { first.open(); control(first, lifecycle('1')); hydrate(first); });
+        expect(result.current.docEpochPinned).toBe(false);
+
+        const second = await reconnect(first);
+        expect(marker(second)).toBeNull();
+        expect(declared(second)).toBeNull();
+        expect(new URL(second.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+      });
+
+      it('is not sent while the document holds an update parked for a missing dependency', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        // Only the second edit arrives: nothing is integrated, but Yjs keeps
+        // the update and would send it along with the document's state.
+        act(() => { first.open(); update(first, twoEdits()[1]); });
+        const doc = result.current.ydoc!;
+        expect(doc.getText('draft').toString()).toBe('');
+        expect(Y.decodeStateVector(Y.encodeStateVector(doc)).size).toBe(0);
+
+        const second = await reconnect(first);
+        expect(marker(second)).toBeNull();
+        expect(declared(second)).toBeNull();
+      });
+
+      it('is the only parameter of a join without a lifecycle revision', () => {
+        renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
+        expect(new URL(Socket.instances[0]!.url).search).toBe('?expectedDocEmpty=1');
+      });
+    });
   });
 });

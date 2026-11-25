@@ -145,18 +145,25 @@ export interface CollabSocket {
   awarenessClientIds: Set<number>;
   writableRefusalReason?: 'lifecycle_revision_required' | 'lifecycle_revision_stale';
   /**
-   * The join declared the epoch of the room's persisted document (#2034).
-   * Server state, never a client claim; false for every read-only socket and
-   * for a join that declared nothing.
+   * The join's declaration fits the room's persisted document (#2034): it
+   * named that document's epoch, or it said the client holds no document at
+   * all (a claim the server cannot check; such a client has nothing of
+   * another lineage to bring). Kept by the server for this socket; false for
+   * every read-only socket and for a join that declared nothing.
    */
   lineageVerified: boolean;
   /** The join was refused for its document lineage: `doc_reset` was sent, the socket closed and never attached. */
   joinRefused?: 'doc_reset';
 }
 
-/** The gateway's reading of the `expectedDocEpoch` join parameter (#2034). */
+/**
+ * The gateway's reading of the join's lineage declaration (#2034), the
+ * `expectedDocEpoch` and `expectedDocEmpty` parameters: nothing, "I hold no
+ * document", "I hold the document of this epoch", or anything else.
+ */
 export type CollabDocEpochDeclaration =
   | { kind: 'absent' }
+  | { kind: 'empty' }
   | { kind: 'malformed' }
   | { kind: 'declared'; epoch: string };
 
@@ -443,10 +450,23 @@ function busDocEpoch(value: unknown): string | undefined {
  * Whether a join with this declaration may be writable in a room that holds
  * the document `docEpoch` (#2034). A declaration names the lineage of the
  * client's `Y.Doc`; only the room of that lineage may admit it. `absent`
- * claims nothing and is admitted as before.
+ * claims nothing and is admitted as before; `empty` names no epoch, so it
+ * cannot differ from any.
  */
 function declarationAdmits(declaration: CollabDocEpochDeclaration, docEpoch: string | null): boolean {
   return declaration.kind === 'absent'
+    || declaration.kind === 'empty'
+    || (declaration.kind === 'declared' && declaration.epoch === docEpoch);
+}
+
+/**
+ * Whether a writable join with this declaration is lineage-verified in a room
+ * that holds the document `docEpoch`: the client's document is that lineage,
+ * or the client holds none. Only called after every check of the join passed.
+ */
+function declarationVerifies(declaration: CollabDocEpochDeclaration, docEpoch: string | null): boolean {
+  if (docEpoch === null) return false;
+  return declaration.kind === 'empty'
     || (declaration.kind === 'declared' && declaration.epoch === docEpoch);
 }
 
@@ -1844,8 +1864,9 @@ export async function createCollabRuntime(
     }
     if (!persist.isCollabLineageChanged(error)) return null;
     // A seed, adoption or merge under the lifecycle lock found this room's row
-    // gone or replaced. A declared join is answered `doc_reset`; an undeclared
-    // one fails and its client reconnects into a fresh room.
+    // gone or replaced. A join that named an epoch is answered `doc_reset`; one
+    // that named none (undeclared, or an empty document) fails and its client
+    // reconnects into a fresh room.
     await retireRoomOwned(room, room.docEpoch);
     return declaration.kind === 'declared' ? refuseJoinForLineage(room, socket) : null;
   }
@@ -1954,10 +1975,7 @@ export async function createCollabRuntime(
       writable,
       readonlyDrops: 0,
       awarenessClientIds: new Set(),
-      lineageVerified: writable
-        && declaration.kind === 'declared'
-        && room.docEpoch !== null
-        && declaration.epoch === room.docEpoch,
+      lineageVerified: writable && declarationVerifies(declaration, room.docEpoch),
       ...(socket.identity ? { identity: socket.identity } : {}),
       ...(refusalReason ? { writableRefusalReason: refusalReason } : {}),
     };
