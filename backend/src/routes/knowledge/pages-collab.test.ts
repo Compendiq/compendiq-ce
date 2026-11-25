@@ -48,6 +48,7 @@ import { generateAccessToken, generateRefreshToken, revokeAllUserTokens } from '
 import { logger } from '../../core/utils/logger.js';
 import {
   COLLAB_DOC_EMPTY_MARKER,
+  COLLAB_DOC_REPLAY_SAFE,
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabDocEpochControlSchema,
@@ -4025,7 +4026,15 @@ class MarkerProvider extends WebsocketProvider {
   }
 }
 
-function openHookTab(pageId: number, token: string, revision: string, { marker = true } = {}): HookTab {
+/**
+ * `marker: false` is a bundle from before the empty-document marker;
+ * `replaySafe: false` is a bundle from before #1928 (#2034/#2035): it sends
+ * no `docReplaySafe` and keeps a document that holds bytes from before its
+ * first sync. The current bundle has both.
+ */
+function openHookTab(
+  pageId: number, token: string, revision: string, { marker = true, replaySafe = marker } = {},
+): HookTab {
   const controls: TestControl[] = [];
   const closes: Array<{ code: number; reason: string }> = [];
   const replies: Uint8Array[] = [];
@@ -4041,7 +4050,7 @@ function openHookTab(pageId: number, token: string, revision: string, { marker =
     controlListeners,
     replies,
     connect: () => {
-      if (marker && !session.hasSynced() && !holdsNothing(session.doc)) {
+      if (replaySafe && !session.hasSynced() && !holdsNothing(session.doc)) {
         session.provider.destroy();
         session.doc.destroy();
         session = openSession();
@@ -4059,7 +4068,10 @@ function openHookTab(pageId: number, token: string, revision: string, { marker =
     const Provider = marker ? MarkerProvider : WebsocketProvider;
     const provider = new Provider(`${baseWs}/api/collab`, String(pageId), doc, {
       protocols: [COLLAB_WS_PROTOCOL, token],
-      params: { expectedLifecycleRevision: revision },
+      params: {
+        expectedLifecycleRevision: revision,
+        ...(replaySafe ? { docReplaySafe: COLLAB_DOC_REPLAY_SAFE } : {}),
+      },
       disableBc: true,
     });
     const answerSync = provider.messageHandlers[MESSAGE_SYNC]!;
@@ -4206,7 +4218,36 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     expect(tab.serverSyncStep1s()).toBe(1);
   }, 30_000);
 
-  it('in one live room, a marked empty tab is asked and a join that declares nothing is not; the latter is asked once its rejoin declares the pinned epoch', async () => {
+  it.each([
+    ['a client with the replay-safe capability is asked once on its marked first join and once on its pinned rejoin', true],
+    ['a client without it (#2034/#2035 bundle) is verified on both joins and never asked', false],
+  ] as const)('%s', async (_case, replaySafe) => {
+    const { token, userId } = await createUser(`collab_syncstep1_capability_${replaySafe ? 'yes' : 'no'}`);
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>capability-seed</p>' });
+    await enableCollabFlag();
+    const revision = await pageLifecycleRevision(pageId);
+    const runtime = getDefaultCollabRuntime()!;
+    const tab = openHookTab(pageId, token, revision, { replaySafe });
+    const joinUrl = new URL(tab.provider.url);
+    expect(joinUrl.searchParams.get('expectedDocEmpty')).toBe('1');
+    expect(joinUrl.searchParams.get('docReplaySafe')).toBe(replaySafe ? '1' : null);
+
+    await hookTabWritable(tab);
+    expect([...runtime.getRoom(pageId)!.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(tab.serverSyncStep1s()).toBe(replaySafe ? 1 : 0);
+
+    const epoch = runtime.getRoom(pageId)!.docEpoch;
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(epoch);
+    const since = tab.controls.length;
+    tab.provider.disconnect();
+    tab.provider.connect();
+    await hookTabWritable(tab, since);
+    expect([...runtime.getRoom(pageId)!.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(tab.serverSyncStep1s()).toBe(replaySafe ? 2 : 0);
+    expect(tab.controls.slice(since).map((control) => control.type)).not.toContain('doc_reset');
+  }, 30_000);
+
+  it('in one live room, a marked empty tab is asked and a join that declares nothing is not; a pre-marker bundle\'s pinned rejoin is verified but, without the capability, not asked', async () => {
     const { token, userId } = await createUser('collab_syncstep1_undeclared');
     const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>undeclared-seed</p>' });
     await enableCollabFlag();
@@ -4228,18 +4269,25 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     expect(undeclared.serverSyncStep1s()).toBe(0);
     expect(marked.serverSyncStep1s()).toBe(1);
 
-    // Pinned at the first sync, the undeclared tab's rejoin declares the epoch and is asked.
+    // Pinned at the first sync, the undeclared tab's rejoin declares the epoch
+    // and is verified; a bundle from before #1928 sends no capability and is not asked.
     expect(new URL(undeclared.provider.url).searchParams.get('expectedDocEpoch')).toBe(room.docEpoch);
+    expect(new URL(undeclared.provider.url).searchParams.has('docReplaySafe')).toBe(false);
     const since = undeclared.controls.length;
     undeclared.provider.disconnect();
     undeclared.provider.connect();
     await hookTabWritable(undeclared, since);
-    expect(undeclared.serverSyncStep1s()).toBe(1);
+    const rejoined = [...getDefaultCollabRuntime()!.getRoom(pageId)!.sockets.values()];
+    expect(rejoined.filter((socket) => socket.lineageVerified)).toHaveLength(2);
+    expect(undeclared.serverSyncStep1s()).toBe(0);
     expect(marked.serverSyncStep1s()).toBe(1);
   }, 30_000);
 
-  it('a tab that received an edit of lineage A before its first sync and dropped joins lineage B from a clean document; its pinned rejoin is asked and nothing of A reaches B or the database', async () => {
-    const { token, userId } = await createUser('collab_syncstep1_partial_sync');
+  it.each([
+    ['the current bundle joins lineage B from a clean document; its pinned rejoin is asked', true],
+    ['a bundle without #1928 keeps the bytes and pins B; its verified rejoin is never asked', false],
+  ] as const)('a tab that received an edit of lineage A before its first sync and dropped: %s, and nothing of A reaches B or the database', async (_case, replaySafe) => {
+    const { token, userId } = await createUser(`collab_syncstep1_partial_sync_${replaySafe ? 'current' : 'older'}`);
     const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>lineage-a-seed</p>' });
     await enableCollabFlag();
     const revision = await pageLifecycleRevision(pageId);
@@ -4257,7 +4305,7 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     const writer = openHookTab(pageId, token, revision);
     await hookTabWritable(writer);
     const epochA = runtime.getRoom(pageId)!.docEpoch;
-    const tab = openHookTab(pageId, token, revision);
+    const tab = openHookTab(pageId, token, revision, { replaySafe });
     tab.loseSyncStep2 = true;
     await vi.waitFor(() => {
       expect(tab.controls.map((control) => control.type)).toContain('writable_admission');
@@ -4287,31 +4335,42 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     });
     expect(put.statusCode, put.body).toBe(200);
 
-    // The tab reconnects from a clean document: the marker join seeds lineage B and is verified.
+    // The tab reconnects. The current bundle starts from a clean document: its
+    // marker join seeds lineage B and is verified. A bundle without #1928
+    // reconnects the document it kept; it declares nothing and pins B.
     tab.loseSyncStep2 = false;
     let since = tab.controls.length;
     tab.connect();
-    expect(tab.doc).not.toBe(stale);
+    if (replaySafe) expect(tab.doc).not.toBe(stale);
+    else expect(tab.doc).toBe(stale);
     await hookTabWritable(tab, since);
     const roomB = runtime.getRoom(pageId)!;
     expect(roomB.docEpoch).not.toBe(epochA);
-    expect([...roomB.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect([...roomB.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: replaySafe }]);
     expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(roomB.docEpoch);
 
-    // A later rejoin declares B and is asked; its reply is handled on the fenced path.
+    // A later rejoin declares B and is verified. Only a replay-safe client is
+    // asked; its reply is handled on the fenced path.
     const asked = tab.serverSyncStep1s();
     const handledBefore = handledReplies.length;
     since = tab.controls.length;
     tab.provider.disconnect();
     tab.provider.connect();
     await hookTabWritable(tab, since);
-    expect(tab.serverSyncStep1s()).toBe(asked + 1);
-    await vi.waitFor(() => expect(handledReplies.slice(handledBefore)).toContain('ok'), { timeout: 10_000 });
-
+    expect([...runtime.getRoom(pageId)!.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
     const fromA = (update: Uint8Array) => Y.decodeUpdate(update).structs
       .map((struct) => struct.id.client)
       .filter((client) => lineageA.has(client));
-    expect(fromA(replyUpdate(tab.replies.at(-1)!))).toEqual([]);
+    if (replaySafe) {
+      expect(tab.serverSyncStep1s()).toBe(asked + 1);
+      await vi.waitFor(() => expect(handledReplies.slice(handledBefore)).toContain('ok'), { timeout: 10_000 });
+      expect(fromA(replyUpdate(tab.replies.at(-1)!))).toEqual([]);
+    } else {
+      // The stale document still holds A's edit, parked; it is never asked for it.
+      expect(tab.doc.store.pendingStructs).not.toBeNull();
+      expect(tab.serverSyncStep1s()).toBe(0);
+    }
+
     const room = runtime.getRoom(pageId)!;
     expect(room.docEpoch).toBe(roomB.docEpoch);
     expect(room.doc.store.pendingStructs).toBeNull();
@@ -4530,6 +4589,7 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     // Same provider and document, the joined revision and the pinned epoch.
     expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toMatch(/^[0-9a-f-]{36}$/);
     expect(new URL(tab.provider.url).searchParams.has('expectedDocEmpty')).toBe(false);
+    expect(new URL(tab.provider.url).searchParams.get('docReplaySafe')).toBe('1');
     await vi.waitFor(() => expect(attempt.run.succeeded).toBe(true), { timeout: 12_000 });
     // Writable only after the room held the draft; the Rejoin's connection was asked for it once.
     expect(attempt.run.roomAtSuccess).toContain(OFFLINE);

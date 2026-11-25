@@ -945,12 +945,20 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       // this join or decide whether the socket is lineage-verified.
       // `expectedDocEpoch` names the epoch of the client's document;
       // `expectedDocEmpty` says the client holds no document, a claim the
-      // server cannot check. Anything else that is present (an empty or other
-      // value, a repeated parameter, both parameters) is malformed, never absent.
-      const declarationQuery = request.query as { expectedDocEpoch?: unknown; expectedDocEmpty?: unknown };
+      // server cannot check. `docReplaySafe` (#1928) says the client never
+      // replays bytes it received before a first sync; it only decides
+      // whether a verified writer is sent the server SyncStep1. Anything else
+      // that is present (an empty or other value, a repeated parameter, both
+      // document parameters) is malformed, never absent.
+      const declarationQuery = request.query as {
+        expectedDocEpoch?: unknown;
+        expectedDocEmpty?: unknown;
+        docReplaySafe?: unknown;
+      };
       const parsedDeclaration = CollabJoinDeclarationSchema.safeParse({
         expectedDocEpoch: declarationQuery.expectedDocEpoch,
         expectedDocEmpty: declarationQuery.expectedDocEmpty,
+        docReplaySafe: declarationQuery.docReplaySafe,
       });
       let expectedDocEpoch: CollabDocEpochDeclaration;
       if (!parsedDeclaration.success) expectedDocEpoch = { kind: 'malformed' };
@@ -958,6 +966,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         expectedDocEpoch = { kind: 'declared', epoch: parsedDeclaration.data.expectedDocEpoch };
       } else if (parsedDeclaration.data.expectedDocEmpty !== undefined) expectedDocEpoch = { kind: 'empty' };
       else expectedDocEpoch = { kind: 'absent' };
+      const docReplaySafe = parsedDeclaration.success && parsedDeclaration.data.docReplaySafe !== undefined;
       const requestedWritable = await userCanEditPage(auth.userId, pageId);
       const meta = await fetchUserMeta(auth.userId);
       connId = randomUUID();
@@ -968,6 +977,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         writable: requestedWritable,
         expectedLifecycleRevision,
         expectedDocEpoch,
+        docReplaySafe,
         goLive,
         identity: {
           id: auth.userId,

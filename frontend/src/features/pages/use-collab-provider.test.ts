@@ -1077,9 +1077,61 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         expect(Y.encodeStateAsUpdate(result.current.ydoc!)).toEqual(emptyState());
       });
 
-      it('is the only parameter of a join without a lifecycle revision', () => {
+      it('is, with the replay-safe capability, the only parameter of a join without a lifecycle revision', () => {
         renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
-        expect(new URL(Socket.instances[0]!.url).search).toBe('?expectedDocEmpty=1');
+        expect(new URL(Socket.instances[0]!.url).search).toBe('?docReplaySafe=1&expectedDocEmpty=1');
+      });
+    });
+
+    describe('replay-safe capability (#1928)', () => {
+      const capability = (socket: Socket) => new URL(socket.url).searchParams.getAll('docReplaySafe');
+
+      it('is declared once on every connect: the first join, a retry, a pinned rejoin and a 4401 refresh', async () => {
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+          accessToken: 'jwt-fresh', user,
+        }), { status: 200, headers: { 'content-type': 'application/json' } }));
+        mount();
+        const first = Socket.instances[0]!;
+        expect(capability(first)).toEqual(['1']);
+        act(() => { first.open(); });
+        const retry = await reconnect(first);
+        expect(capability(retry)).toEqual(['1']);
+        act(() => {
+          retry.open();
+          control(retry, { type: 'doc_epoch', epoch: EPOCH });
+          hydrate(retry);
+        });
+        const pinned = await reconnect(retry);
+        expect(declared(pinned)).toBe(EPOCH);
+        expect(capability(pinned)).toEqual(['1']);
+        act(() => { pinned.open(); });
+        await act(async () => { pinned.close(4401, 'unauthorized'); });
+        const refreshed = Socket.instances.at(-1)!;
+        expect(refreshed).not.toBe(pinned);
+        expect(refreshed.protocols[1]).toBe('jwt-fresh');
+        expect(declared(refreshed)).toBe(EPOCH);
+        expect(capability(refreshed)).toEqual(['1']);
+      });
+
+      it('is declared on Retry, and on the clean session that replaces a document holding bytes from before its first sync', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        act(() => { first.open(); first.close(4403, 'readonly'); });
+        expect(result.current.canRetry).toBe(true);
+        act(() => { result.current.retry(); });
+        const retried = Socket.instances[1]!;
+        expect(capability(retried)).toEqual(['1']);
+
+        const peer = new Y.Doc();
+        peer.getText('draft').insert(0, 'before the first sync');
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(peer));
+        peer.destroy();
+        act(() => { retried.open(); retried.receive(encoding.toUint8Array(encoder)); });
+        const clean = await reconnect(retried);
+        expect(result.current.ydoc!.getText('draft').toString()).toBe('');
+        expect(capability(clean)).toEqual(['1']);
       });
     });
   });
@@ -1244,6 +1296,39 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
         expect(session.result.current.rejoinAttempt).toBe('unconfirmed');
         expect(declared(await rejoin(session, false))).toEqual({ epoch: EPOCH, marker: null });
+      });
+
+      it('sends docReplaySafe=1 on every connect of a Rejoin next to the pinned epoch, so the proof still gets the server SyncStep1', async () => {
+        vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
+          JSON.stringify({ accessToken: 'jwt-fresh', user }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ));
+        const safe = (socket: Socket) => new URL(socket.url).searchParams.getAll('docReplaySafe');
+        const session = limited();
+        const { result, gateway } = session;
+        expect(safe(Socket.instances[0]!)).toEqual(['1']);
+
+        // The press, and a second press after the first attempt ended unconfirmed.
+        const first = await rejoin(session);
+        expect(safe(first)).toEqual(['1']);
+        expect(declared(first).epoch).toBe(EPOCH);
+        await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
+        expect(result.current.rejoinAttempt).toBe('unconfirmed');
+        const second = await rejoin(session, false);
+        expect(safe(second)).toEqual(['1']);
+        expect(declared(second).epoch).toBe(EPOCH);
+
+        // The token-refresh reconnect of the second attempt.
+        await act(async () => { second.close(4401, 'unauthorized'); });
+        const refreshed = Socket.instances[Socket.instances.length - 1]!;
+        expect(refreshed.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
+        expect(safe(refreshed)).toEqual(['1']);
+        expect(declared(refreshed).epoch).toBe(EPOCH);
+
+        // A gateway that answers the declaration with its SyncStep1 gives the proof what it needs.
+        await join(refreshed, gateway);
+        expect(result.current).toMatchObject({ writable: true, readOnlyReason: null });
+        expect(gateway.text()).toBe('Published text + offline');
       });
 
       it('keeps declaring the pinned epoch on the reconnect after the token refresh inside an attempt', async () => {

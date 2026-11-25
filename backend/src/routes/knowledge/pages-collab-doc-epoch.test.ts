@@ -465,6 +465,11 @@ describe.skipIf(!canRun)('expectedDocEpoch declarations at the gateway (#2034)',
     ['a marker without a value', (_epoch: string) => 'expectedDocEmpty='],
     ['another marker value', (_epoch: string) => 'expectedDocEmpty=true'],
     ['a repeated marker', (_epoch: string) => 'expectedDocEmpty=1&expectedDocEmpty=1'],
+    // The replay-safe capability (#1928) is read with the declaration.
+    ['a replay-safe capability without a value beside an epoch', (epoch: string) => `expectedDocEpoch=${epoch}&docReplaySafe=`],
+    ['another replay-safe capability value beside the marker', (_epoch: string) => 'expectedDocEmpty=1&docReplaySafe=true'],
+    ['a repeated replay-safe capability', (epoch: string) => `expectedDocEpoch=${epoch}&docReplaySafe=1&docReplaySafe=1`],
+    ['a replay-safe capability of another value on an undeclared join', (_epoch: string) => 'docReplaySafe=0'],
   ] as const)(
     '%s is a malformed declaration: 1001 doc_reset, not attached, no admission and no write',
     async (_kind, parameter) => {

@@ -7,6 +7,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import { Awareness } from 'y-protocols/awareness';
 import {
   COLLAB_DOC_EMPTY_MARKER,
+  COLLAB_DOC_REPLAY_SAFE,
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabCommitUnknownControlSchema,
@@ -226,6 +227,10 @@ interface CleanRestart {
  *   reset (new Y.Doc, awareness and provider; the editor rebinds to them).
  *   It keeps the backoff and `reconnecting`, and declares the marker. Before
  *   the first sync the editor holds no user content, so nothing is lost.
+ * - Every connect sends `docReplaySafe=1` (#1928), Retry and token refresh
+ *   included: the clean-document rule above makes this bundle safe to ask for
+ *   what the room lacks, and the server sends its SyncStep1 only to a
+ *   verified writer that says so. It grants nothing.
  * - A writable admission is acknowledged explicitly; page state is not permission.
  * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
  *   disconnect it, and never silently replay it into a new lifecycle.
@@ -367,7 +372,14 @@ export function useCollabProvider({
     // The periodic resync is the hook's own (below), not the provider's.
     const ws = new CollabWebsocketProvider(collabWsUrl(), String(pageId), doc, {
       protocols: [COLLAB_WS_PROTOCOL, token],
-      params: joinedRevision === undefined ? {} : { expectedLifecycleRevision: joinedRevision },
+      // Every connect says this bundle is replay-safe (#1928): it never pins
+      // or replays bytes received before a first sync (`restartClean`). Only
+      // then does the server ask it for what the room lacks. Later `params`
+      // updates keep it.
+      params: {
+        ...(joinedRevision === undefined ? {} : { expectedLifecycleRevision: joinedRevision }),
+        docReplaySafe: COLLAB_DOC_REPLAY_SAFE,
+      },
       disableBc: true,
       awareness,
       // A clean restart connects at the end of setup, after its backoff.
