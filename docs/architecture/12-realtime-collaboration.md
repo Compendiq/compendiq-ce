@@ -122,7 +122,7 @@ sequenceDiagram
                 G-->>B: writable_admission
                 opt lineage-verified writable join, a matching expectedDocEpoch or expectedDocEmpty
                     G-->>B: server SyncStep1 with the room state vector
-                    B->>F: SyncStep2 with what the room lacks, empty on a first join, queued behind the gate, no 1 MiB budget, 10 MiB maxPayload
+                    B->>F: SyncStep2 with what the room lacks, normally empty on a fresh first join, queued behind the gate, no 1 MiB budget, 10 MiB maxPayload
                 end
                 F->>G: attachSocket returned and the socket is still open, gate opens, frames handled in arrival order
                 Note over F: closing or closed before that, or a rollback, discards every queued frame
@@ -224,11 +224,21 @@ which document it holds:
   closes before the first sync is forgotten. The pin never changes afterwards;
   later controls are ignored. A document whose first sync came without the
   control (pre-epoch pod, provisional room) stays unpinned for its lifetime.
-  The pin does not prove that the document held nothing before that sync: an
-  earlier connection that dropped before its own first sync can have left
-  applied or parked updates in it, and they are pinned to the later
-  connection's epoch with everything else. Until then such a document declares
-  nothing (below), so its joins stay unverified.
+- **Clean document (#1928).** Only a clean document is pinned. A connection
+  can leave bytes in the document before its first sync: an Update fanned out
+  to a socket the room has already registered, or a sync cut short. If that
+  connection closes, the bytes' lineage is unknown; the room they came from
+  may have been retired since. The hook therefore never connects such a
+  document again. Before the next connect, whether y-websocket's own retry
+  (after the same backoff, still shown as reconnecting) or an explicit one
+  (token refresh, Retry), it ends the session through its own session reset:
+  a new `Y.Doc`, awareness and provider, to which the editor rebinds. The
+  new document is empty and declares the marker. Before the first sync the
+  editor holds no user content, so nothing is lost. A pin therefore covers
+  every byte of its document: all of them came from the connection that
+  synced it, or after it. A pinned document keeps its `Y.Doc` across
+  reconnects as before (same-epoch recovery), and so does a document whose
+  first sync came without the control.
 - **Declaration.** Two optional join parameters, decided for each connect
   (y-websocket 3.1 builds the URL on every connect; the hook's provider
   subclass decides there). They exclude each other:
@@ -239,13 +249,15 @@ which document it holds:
     a flag whose only value is `1`). Sent by an unpinned document exactly
     while it is provably empty: an empty Yjs state vector, an empty delete set
     and no update parked for a missing dependency. That is a tab's first join,
-    and each retry of it that still has nothing.
-  - Neither: an unpinned document that holds content, for example a
-    connection that applied or parked updates and dropped before its first
-    sync, or a first sync that came without the control. Older browser bundles
-    differ: one that predates the epoch sends neither on every join; an
-    epoch-aware one that predates the marker sends neither on its first join
-    and its pinned epoch on later ones.
+    and each retry of it, which starts from a clean document when the previous
+    connection left bytes behind.
+  - Neither: an unpinned document that holds content, which with the current
+    bundle is only a document whose first sync came without the control.
+    Older browser bundles differ: one that predates the epoch sends neither on
+    every join; an epoch-aware one that predates the marker sends neither on
+    its first join and its pinned epoch on later ones. Both, and a bundle with
+    the marker but without #1928, also reconnect a document that kept bytes
+    from before its first sync (see *Mixed versions*).
 
   The gateway reads the pair with `CollabJoinDeclarationSchema` as `absent`
   (neither), `declared` (exactly one UUID), `empty` (exactly the marker) or
@@ -352,7 +364,11 @@ empty document (owner decision of 2026-11-25, which replaces amendment A1 for
 the first join: a client that holds nothing has nothing of another lineage to
 bring). The room's epoch is then established: the marker's own join seeded or
 adopted the document, or joined the room that holds it. A join that declares
-nothing is admitted as before and is never verified. A lineage that ends
+nothing is admitted as before and is never verified. Every path that takes
+write authority from a socket (a permission or `commit_unknown` demotion, a
+lifecycle demotion, a refused frame, a lost transport) clears
+`lineageVerified` with `writable`, so the field is false on every read-only
+socket (#1928). A lineage that ends
 during a join (`collab_lineage_changed` from the seed, adoption or merge)
 answers `doc_reset` to a join that named an epoch; a join that named none,
 undeclared or with the marker, fails as a join (`1001`) and its client
@@ -366,8 +382,13 @@ collaborative Save then answers `409 collab_snapshot_not_received`. A
 writable, lineage-verified join is therefore sent exactly one SyncStep1
 carrying `room.doc`'s state vector, directly after `writable_admission` in the
 fenced final step, and never again on that socket. That includes a tab's first
-join, verified through the empty-document marker: its document is empty, so
-its SyncStep2 carries nothing and changes nothing in the room. The tab answers
+join, verified through the empty-document marker. In the normal case, a fresh
+tab whose document is still empty when the SyncStep1 arrives, its SyncStep2
+carries nothing and changes nothing in the room. That is not a wire
+guarantee: the marker describes the document at connect, and in a live room
+an Update can reach the socket before the SyncStep1, so the reply can carry
+that room's own bytes back (or a delete set without structs); like every
+reply it is applied only through the fenced path. The tab answers
 with a SyncStep2 holding what the room lacks; it takes the ordinary fenced
 `syncMutation` path (current-epoch assertion, unknown-commit fence, admission
 and writable checks), so it grants nothing a writable socket could not already
@@ -612,7 +633,11 @@ on again. During an ungated mix no guarantee is given. Two kinds of older
 peer exist. *Pre-epoch* is a version without #2034: no `doc_epoch`, neither
 join parameter. *Epoch-aware without the marker* is a build of #2034 from
 before `expectedDocEmpty`: it has the column, the `doc_epoch` control and
-`expectedDocEpoch`, and does not know the marker. This is what to expect:
+`expectedDocEpoch`, and does not know the marker. *Marker-aware without
+#1928* is a build of #2034 or #2035 with `expectedDocEmpty`: it verifies a
+marker join or a matching epoch, but sends no server SyncStep1, answers every
+client SyncStep1 without the fence, and its bundle does not replace a document
+that kept bytes from before its first sync. This is what to expect:
 
 | Situation | Behaviour |
 |---|---|
@@ -623,8 +648,10 @@ before `expectedDocEmpty`: it has the column, the `doc_epoch` control and
 | Pre-epoch bundle on a new pod | Declares nothing and ignores `doc_epoch` on every join: admitted as before, never verified and never sent a server SyncStep1, a first join included |
 | New bundle on a pre-epoch pod | Never receives `doc_epoch`, so it never pins; it sends the marker while its document is empty, which the pod ignores, and nothing afterwards |
 | Epoch-aware pod without the marker serves a join | Ignores `expectedDocEmpty`, so a first join is admitted unverified there. It still sends `doc_epoch` and reads `expectedDocEpoch`: the tab pins at its first sync, and its later joins are decided by the epoch like on a new pod |
-| Epoch-aware bundle without the marker on a new pod | Its first join declares nothing: admitted as before, unverified, no server SyncStep1. After its first sync it is pinned and declares the epoch: a rejoin is verified (and sent the server SyncStep1) on a match and gets `doc_reset` on a mismatch |
+| Epoch-aware bundle without the marker on a new pod | Its first join declares nothing: admitted as before, unverified, no server SyncStep1. After its first sync it is pinned and declares the epoch: a rejoin is verified (and sent the server SyncStep1) on a match and gets `doc_reset` on a mismatch. Like a marker-aware bundle without #1928 (below), it keeps bytes received before its first sync |
 | New bundle on an epoch-aware pod without the marker | Its marker is ignored on the first join (unverified); it pins from that pod's `doc_epoch` and declares the epoch afterwards |
+| Marker-aware pod without #1928 serves a join | Reads the marker and the epoch and sets `lineageVerified` as a new pod does, but sends no server SyncStep1 and answers every client SyncStep1 from the room's document without the fence. An edit refused or made offline is not collected on that pod (the #1928 gap stays there) |
+| Marker-aware bundle without #1928 on a new pod | Verified as a new bundle is, and sent the server SyncStep1. It keeps a document that received bytes before its first sync and pins the epoch of a later connection: if the earlier room's lineage ended meanwhile, its later verified rejoin answers the SyncStep1 with those bytes, and they reach the new room. Reload such tabs after the upgrade |
 | A pod without #2035 runs a Save that fails after dispatch | It records no failure marker (`remote_effect_failed_at`) and sends no cue. Every pod reads the intent as `in_flight` and keeps accepting edits, as before this change, until that pod's runtime is fenced or quiesced; from then on the state is `unknown` on every pod with #2035 |
 | A pod without #2035 hosts sockets of a page whose Save failed on a pod with #2035 | It does not know `commit_unknown` or the failure marker (`remote_effect_failed_at`): its sockets stay writable and their edits stay unpersisted, as before. A pod with #2035 cannot add the barrier to the sockets of a pod without it |
 | A bundle without #2035 on a pod with #2035, `commit_unknown` | Ignores the control and acts on the `permission_loss` that follows it: read-only draft with **Download draft**, no reconnect. Its banner keeps the generic sentence |

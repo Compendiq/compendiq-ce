@@ -528,6 +528,16 @@ function declarationVerifies(declaration: CollabDocEpochDeclaration, docEpoch: s
 }
 
 /**
+ * Takes write authority from a socket. A socket without it is never
+ * lineage-verified: verification belongs to a writer, and every reader of the
+ * field sees false on a read-only socket.
+ */
+function revokeWriteAuthority(socket: CollabSocket): void {
+  socket.writable = false;
+  socket.lineageVerified = false;
+}
+
+/**
  * Admission precondition of a join (#2034): inside the admission transaction,
  * under the page lifecycle lock that every invalidation, seed and inbound
  * publication also takes. A throw leaves no admission behind. False when the
@@ -1275,7 +1285,7 @@ export async function createCollabRuntime(
     const room = rooms.get(pageId);
     const socket = room?.sockets.get(connId);
     if (!room || !socket || !socket.writable) return;
-    socket.writable = false;
+    revokeWriteAuthority(socket);
     sendBin(socket.ws, encodeControlFrame({ type: 'permission_loss', reason: 'edit_permission_revoked' }));
     await sremSuffixes(pageId, [connId]);
     room.heldActiveSuffixes.delete(connId);
@@ -1304,7 +1314,7 @@ export async function createCollabRuntime(
    * existing release path, which waits for the intent to settle.
    */
   function demoteForUnknownCommit(room: CollabRoom, socket: CollabSocket, intentId: string): void {
-    socket.writable = false;
+    revokeWriteAuthority(socket);
     socket.commitUnknownGated = true;
     room.heldActiveSuffixes.delete(socket.id);
     void sremSuffixes(room.pageId, [socket.id]);
@@ -1897,7 +1907,7 @@ export async function createCollabRuntime(
     // late frames are dropped without counting toward the drop limit (#2035).
     if (socket.commitUnknownGated && !socket.writable && !allowedReadonly) return 'dropped';
     if (syncMutation && !transportAvailable()) {
-      socket.writable = false;
+      revokeWriteAuthority(socket);
       try { socket.ws.close(1001, 'collab_transport_unavailable'); } catch { /* already closing */ }
       return 'dropped';
     }
@@ -1919,7 +1929,7 @@ export async function createCollabRuntime(
         if (syncMutation || verifiedSyncStep1) {
           const admission = room.admission;
           if (!admission) {
-            socket.writable = false;
+            revokeWriteAuthority(socket);
             return syncMutation ? recordReadonlyViolation(room, socket) : 'dropped';
           }
           const docEpoch = room.docEpoch;
@@ -1969,7 +1979,7 @@ export async function createCollabRuntime(
             }
             // A failed read is not a released token. Keep ownership until
             // the disconnect flush or an authoritative retirement confirms it.
-            socket.writable = false;
+            revokeWriteAuthority(socket);
             logger.info({ err, pageId, connId }, 'collab.packet_fenced');
             try { socket.ws.close(1001, 'collab_validation_unavailable'); } catch { /* already closing */ }
             return 'dropped';
@@ -2293,8 +2303,7 @@ export async function createCollabRuntime(
 
   /** Undo a join's registration and its `collab:active` member. The caller settles the room's admission. */
   async function unregisterJoin(room: CollabRoom, socket: CollabSocket): Promise<void> {
-    socket.writable = false;
-    socket.lineageVerified = false;
+    revokeWriteAuthority(socket);
     if (room.sockets.get(socket.id) === socket) room.sockets.delete(socket.id);
     if (room.heldActiveSuffixes.delete(socket.id)) await sremSuffixes(room.pageId, [socket.id]);
   }
@@ -2504,7 +2513,7 @@ export async function createCollabRuntime(
       clearTimeout(room.persistTimer);
       room.persistTimer = null;
     }
-    for (const socket of room.sockets.values()) socket.writable = false;
+    for (const socket of room.sockets.values()) revokeWriteAuthority(socket);
     await sremSuffixes(room.pageId, room.heldActiveSuffixes);
     room.heldActiveSuffixes.clear();
     sendControl(room, lifecycleControl(room));
@@ -2565,7 +2574,7 @@ export async function createCollabRuntime(
     for (const round of dumpRounds.values()) round.finish(false);
     for (const room of rooms.values()) {
       for (const socket of room.sockets.values()) {
-        socket.writable = false;
+        revokeWriteAuthority(socket);
         try { socket.ws.close(1001, 'collab_transport_unavailable'); } catch { /* already closing */ }
       }
     }
