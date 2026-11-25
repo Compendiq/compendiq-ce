@@ -388,8 +388,8 @@ export function useCollabProvider({
       }
     });
     ws.on('connection-close', (event: CloseEvent | null) => {
-      // A connection that closed before the first sync filled nothing: its
-      // epoch is not this document's.
+      // A connection that closed before its first sync cannot supply the pin:
+      // its candidate is discarded. Document updates it applied are retained.
       if (!hasSynced) docEpochCandidate = null;
       if (cancelled) return;
       setConnected(false);
