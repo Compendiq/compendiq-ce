@@ -7,7 +7,7 @@ import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { useAuthStore } from '../../stores/auth-store';
 import { REJOIN_COVERAGE_TIMEOUT_MS } from './collab-rejoin-attempt';
-import { useCollabProvider } from './use-collab-provider';
+import { REJOIN_REFRESH_WAIT_MS, useCollabProvider } from './use-collab-provider';
 
 // Only the network boundary is replaced. The provider, protocol decoder,
 // awareness and Y.Doc are real, including reconnection and outgoing updates.
@@ -76,6 +76,7 @@ function lifecycle(revision: string, frozen = false) {
 }
 
 const user = { id: '00000000-0000-4000-8000-000000000001', username: 'me', role: 'user' as const };
+const OTHER_USER = { ...user, id: '00000000-0000-4000-8000-000000000002' };
 
 describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
   beforeEach(() => {
@@ -877,11 +878,11 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     } = {}) {
       const gateway = new Gateway('Published text');
       const writables: boolean[] = [];
-      const view = renderHook(() => {
-        const state = useCollabProvider({ pageId: '42', enabled: true, expectedLifecycleRevision: '1' });
+      const view = renderHook(({ pageId }) => {
+        const state = useCollabProvider({ pageId, enabled: true, expectedLifecycleRevision: '1' });
         writables.push(state.writable);
         return state;
-      });
+      }, { initialProps: { pageId: '42' } });
       const first = Socket.instances[0]!;
       act(() => {
         first.open();
@@ -1262,7 +1263,8 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         const { result, gateway } = session;
         const first = await rejoin(session);
         await refuse(first);
-        await act(async () => { await vi.advanceTimersByTimeAsync(3 * REJOIN_COVERAGE_TIMEOUT_MS); });
+        // Longer than the proof limit, shorter than the refresh's own bound.
+        await act(async () => { await vi.advanceTimersByTimeAsync(2 * REJOIN_COVERAGE_TIMEOUT_MS); });
         expect(result.current).toMatchObject({ rejoinAttempt: 'attempting', canRetry: false, writable: false });
         expect(Socket.instances).toHaveLength(2);
         await act(async () => { held.resolve(freshResponse()); await Promise.resolve(); });
@@ -1356,6 +1358,123 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         expect(Socket.instances).toHaveLength(2);
         expect(refresh).toHaveBeenCalledTimes(1);
         expect(result.current).toMatchObject({ readOnlyReason: 'commit_unknown', writable: false, rejoinAttempt: 'idle' });
+      });
+
+      it('refuses to refresh when the account changed before the 4401, and opens nothing', async () => {
+        const refresh = refreshWith(async () => freshResponse());
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        act(() => { useAuthStore.getState().setAuth('jwt-other', OTHER_USER); });
+        await refuse(first);
+
+        expect(refresh).not.toHaveBeenCalled();
+        expect(result.current).toMatchObject({
+          error: 'unauthorized', readOnlyReason: 'unauthorized', writable: false, rejoinOffered: false, rejoinAttempt: 'idle',
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+        expect(Socket.instances).toHaveLength(2);
+        expectSameDraft(session);
+      });
+
+      it('does not reopen the old provider with a refresh result of another account', async () => {
+        // The refresh is browser-cookie scoped: it can hand back another account's session.
+        const refresh = refreshWith(async () => new Response(
+          JSON.stringify({ accessToken: 'jwt-other', user: OTHER_USER }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ));
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+
+        expect(refresh).toHaveBeenCalledTimes(1);
+        expect(Socket.instances).toHaveLength(2);
+        expect(Socket.instances.some((s) => s.protocols.includes('jwt-other'))).toBe(false);
+        expect(result.current).toMatchObject({
+          error: 'unauthorized', readOnlyReason: 'unauthorized', writable: false, rejoinOffered: false, rejoinAttempt: 'idle',
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+        expect(Socket.instances).toHaveLength(2);
+        expectSameDraft(session);
+      });
+
+      it('ends unconfirmed when the refresh never settles, ignores its late result and keeps Rejoin usable', async () => {
+        const held = Promise.withResolvers<Response>();
+        const refresh = refreshWith(() => held.promise);
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+        await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_REFRESH_WAIT_MS - 1); });
+        expect(result.current).toMatchObject({ rejoinAttempt: 'attempting', canRetry: false });
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(result.current).toMatchObject({
+          readOnlyReason: 'rate_limited', writable: false, rejoinOffered: true, rejoinAttempt: 'unconfirmed', canRetry: true,
+        });
+        expect(Socket.instances).toHaveLength(2);
+
+        // A new press is a new attempt; the old refresh settling now must not touch it.
+        const again = await rejoin(session, false);
+        expect(Socket.instances).toHaveLength(3);
+        await act(async () => { held.resolve(freshResponse()); await vi.advanceTimersByTimeAsync(1); });
+        expect(Socket.instances).toHaveLength(3);
+        expect(again.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-old']);
+        expect(result.current).toMatchObject({ rejoinAttempt: 'attempting', writable: false });
+        // The shared rotation was neither cancelled nor replayed.
+        expect(refresh).toHaveBeenCalledTimes(1);
+      });
+
+      it('opens nothing when the editor is unmounted while the refresh is held', async () => {
+        const held = Promise.withResolvers<Response>();
+        const refresh = refreshWith(() => held.promise);
+        const session = limited();
+        const first = await rejoin(session);
+        await refuse(first);
+        session.unmount();
+        await act(async () => { held.resolve(freshResponse()); await vi.advanceTimersByTimeAsync(2 * REJOIN_REFRESH_WAIT_MS); });
+        expect(Socket.instances).toHaveLength(2);
+        expect(refresh).toHaveBeenCalledTimes(1);
+      });
+
+      it('opens nothing for the old page when the page changes while the refresh is held', async () => {
+        const held = Promise.withResolvers<Response>();
+        refreshWith(() => held.promise);
+        const session = limited();
+        const first = await rejoin(session);
+        await refuse(first);
+        session.rerender({ pageId: '43' });
+        const opened = Socket.instances.length;
+        expect(session.result.current.ydoc).not.toBe(session.draft);
+        await act(async () => { held.resolve(freshResponse()); await vi.advanceTimersByTimeAsync(2 * REJOIN_REFRESH_WAIT_MS); });
+        // Only the new page's own first connection exists; nothing carries the refreshed token.
+        expect(Socket.instances).toHaveLength(opened);
+        expect(Socket.instances.some((s) => s.protocols.includes('jwt-fresh'))).toBe(false);
+        expect(session.result.current.rejoinAttempt).toBe('idle');
+      });
+
+      it('ends in the read-only draft when the refreshed join receives doc_reset', async () => {
+        refreshWith(async () => freshResponse());
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+        const second = Socket.instances[2]!;
+        act(() => {
+          second.open();
+          admission(second);
+          control(second, { type: 'doc_reset' });
+          second.close(1001, 'doc_reset');
+        });
+
+        expect(result.current).toMatchObject({
+          readOnlyReason: 'document_changed', writable: false, rejoinOffered: false, rejoinAttempt: 'idle', canRetry: false,
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+        act(() => { result.current.retry(); });
+        expect(Socket.instances).toHaveLength(3);
+        expect(session.writables).not.toContain(true);
+        expectSameDraft(session);
       });
     });
 

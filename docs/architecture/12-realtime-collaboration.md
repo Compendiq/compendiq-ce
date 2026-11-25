@@ -103,7 +103,7 @@ sequenceDiagram
     F->>F: verify JWT and flag and page row and userCanAccessPage
     alt missing or expired JWT
         F-->>B: close 4401
-        B->>B: outside a manual Rejoin attempt, refreshAccessTokenOnce then reconnect
+        B->>B: refreshAccessTokenOnce then reconnect; in a manual Rejoin attempt the same, once per attempt and only for the document's own account (a second 4401, no session or another account ends it in the read-only draft)
     else flag off or upgrade rate limited
         F-->>B: close 4403 flag_off or rate_limited
         B->>B: no reconnect, show the reason, Retry after the upgrade window for rate_limited, after the first sync the draft stays read-only and Rejoin follows the same window
@@ -357,9 +357,14 @@ limit stops and nothing the closed connection proved counts), the token is
 refreshed through the same `refreshAccessTokenOnce` as outside an attempt, and
 the same attempt resumes on a new connection with the new token, the same
 recorded target and a fresh 10 s limit, so the user does not press again. That
-is one refresh per attempt: a second 4401 of the attempt, or a refresh that
-leaves no session, ends it in the read-only draft (`unauthorized`), and a
-refresh whose outcome is unknown ends it unsuccessfully without reconnecting
+is one refresh per attempt, for the document's own account only (checked
+before the request and again before its result is used, with that session's
+token): a second 4401 of the attempt, a refresh that leaves no session or one
+that yields another account's session ends it in the read-only draft
+(`unauthorized`), and a refresh whose outcome is unknown, or that does not
+settle within `REJOIN_REFRESH_WAIT_MS` (30 s, apart from the proof limit; a
+late result is ignored and the shared cookie rotation is neither cancelled nor
+replayed), ends it unsuccessfully without reconnecting
 with the stale token. No other automatic reconnect exists. After a successful
 attempt the 4401 refresh, the reconnect after a transient close and the resync
 resume; after an unsuccessful one nothing reconnects until Rejoin is pressed again.
@@ -368,7 +373,12 @@ resume; after an unsuccessful one nothing reconnects until Rejoin is pressed aga
 sequenceDiagram
     participant B as Browser hook
     participant G as Gateway room
-    B->>G: connect the same provider and Y.Doc with lifecycle revision, pinned epoch and token
+    B->>G: connect the same provider and Y.Doc with lifecycle revision, pinned epoch and token (10 s proof limit starts)
+    opt close 4401, first one of this attempt, same account
+        G-->>B: close 4401
+        B->>B: pause the attempt (limit stops, proof state cleared), refreshAccessTokenOnce, wait at most REJOIN_REFRESH_WAIT_MS
+        B->>G: reconnect the same attempt with the refreshed token of that account (a fresh 10 s limit starts)
+    end
     G-->>B: writable_admission for the joined revision
     G-->>B: server SyncStep1
     B->>G: SyncStep2 reply with the draft changes
@@ -376,6 +386,7 @@ sequenceDiagram
     G-->>B: SyncStep2 with the whole room state
     B->>B: decode into a temporary Y.Doc and require the clocks and deletions recorded at connect
     Note over B: only now readOnlyReason clears and the editor is writable
+    Note over B,G: a transient close, no proof within 10 s of the current connection, or a refresh that fails or stalls ends it unconfirmed; a terminal refusal or a second 4401 ends it in the read-only draft
 ```
 
 Success needs all four conditions; the sticky first-sync flag proves none of
@@ -393,15 +404,23 @@ the relation the Save route uses (`assertCommitSnapshotIncludes`: every clock
 and every deletion, so a deletion-only offline change is covered). One probe
 is in flight (the hook's periodic resync stands still meanwhile, so no other
 SyncStep2 can pass for the answer); an answer that does not cover the draft is asked again one
-second later. No proof within `REJOIN_COVERAGE_TIMEOUT_MS` (10 s), or any close
-meanwhile (`1009` for an over-size replay, `1001` for a refused frame, a lost
-transport), ends the attempt unsuccessfully: provider disconnected, draft
-kept with `rate_limited`, Rejoin available at once and a status message that
-the server could not be confirmed to hold the draft. A refusal ends it in the
-read-only draft with its own reason (`writable_refused`, `permission_loss`,
-`doc_reset`, `tombstone`, `commit_unknown`, a second 4401 or a refresh without
-a session, 4403, 4404); a second
-`rate_limited` restarts the window. Against a pod without #1928 no SyncStep1
+second later. The limit `REJOIN_COVERAGE_TIMEOUT_MS` (10 s) applies per
+connection: it starts when the attempt connects and again when the one
+4401 refresh has reconnected it, and stands still while the attempt waits for
+that refresh, which has its own bound `REJOIN_REFRESH_WAIT_MS` (30 s, the
+shared cookie rotation is neither cancelled nor replayed; a result that
+arrives after the bound is ignored). Two kinds of ending follow.
+**Unsuccessful** (transient): no proof within the limit, any transient
+close meanwhile (`1009` for an over-size replay, `1001` for a refused frame,
+a lost transport), a refresh that fails with an unknown outcome or does not
+settle in time. The provider is disconnected, the draft kept with
+`rate_limited`, Rejoin available at once and a status message that the server
+could not be confirmed to hold the draft. **Refusal** (terminal): the attempt
+ends in the read-only draft with its own reason (`writable_refused`,
+`permission_loss`, `doc_reset`, `tombstone`, `commit_unknown`, a second 4401,
+a refresh that leaves no session or yields another account's session, 4403,
+4404; the 4401 reasons show the generic "The page or your access changed"
+banner); a second `rate_limited` restarts the window. Against a pod without #1928 no SyncStep1
 arrives and the attempt ends unsuccessfully after the timeout.
 
 The open document merges what the room holds before the proof (the first

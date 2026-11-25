@@ -582,8 +582,13 @@ flowchart TB
   the draft and that Rejoin can be pressed again. A 4401 during an attempt
   is refreshed once by the hook (`refreshAccessTokenOnce`, as outside an
   attempt) and the same attempt continues on a new connection, so the banner keeps
-  reading `Rejoining…`; a second 4401 or a refresh without a session ends it in the
-  read-only draft with reason `unauthorized`. The editor becomes writable only
+  reading `Rejoining…`, but only while the signed-in account is still the
+  document's (checked before the request and before its result is used); a second
+  4401, a refresh without a session or another account's session ends it in the
+  read-only draft with reason `unauthorized` (the generic "The page or your
+  access changed" banner), and a refresh that fails or does not settle within
+  `REJOIN_REFRESH_WAIT_MS` (30 s) ends it unconfirmed with Rejoin available
+  again. The editor becomes writable only
   when the attempt proves the server
   holds the draft (`docs/architecture/12-realtime-collaboration.md`). No other
   reason is offered a rejoin. An unknown collaborative save (#2035) replaces the

@@ -25,6 +25,10 @@ const MESSAGE_CONTROL = 4;
 // Retry-safe busy refresh failures rejoin with backoff, as in use-presence.
 const REJOIN_BACKOFF_START_MS = 1_000;
 const REJOIN_BACKOFF_CAP_MS = 30_000;
+// A manual Rejoin attempt waits this long for its one token refresh, apart
+// from the proof limit: the refresh is the shared cookie rotation and may
+// stall on the cross-tab lock or the network.
+export const REJOIN_REFRESH_WAIT_MS = 30_000;
 const MESSAGE_SYNC = 0;
 // y-websocket's own periodic resync interval. The hook keeps that timer so it
 // can stand still while a Rejoin attempt runs (collab-rejoin-attempt.ts).
@@ -188,9 +192,13 @@ function postSyncReadOnlyReason(code: number, reason: string, hasSynced: boolean
  *   ends it in the read-only draft, and no y-websocket timer starts a second
  *   one). A 4401 refreshes the token once, through the same
  *   `refreshAccessTokenOnce` as outside an attempt, and continues the same
- *   attempt on a new connection with a fresh proof limit; a second 4401 of the
- *   attempt, or a refresh that leaves no session, ends it in the read-only
- *   `unauthorized` draft, and a refresh that cannot tell ends it unconfirmed.
+ *   attempt on a new connection with a fresh proof limit, only while the
+ *   current account is still the document's (checked before the request and
+ *   again before its result is used, with that session's token); a second 4401
+ *   of the attempt, a refresh that leaves no session or another account ends it
+ *   in the read-only `unauthorized` draft, and a refresh that cannot tell, or
+ *   that does not settle within `REJOIN_REFRESH_WAIT_MS`, ends it unconfirmed
+ *   (a late result is ignored; the shared rotation is neither cancelled nor replayed).
  *   It succeeds only with all of: a
  *   `writable_admission` for the joined revision, a `sync` of this connection,
  *   the server's own SyncStep1 (#1928) and a proof that the server's full
@@ -274,6 +282,7 @@ export function useCollabProvider({
     let generation = 0;
     // One token refresh per Rejoin attempt; the second 4401 ends it.
     let attemptRefreshed = false;
+    let refreshWaitTimer: ReturnType<typeof setTimeout> | undefined;
     // The `doc_epoch` control of the current connection, until the first sync
     // pins it. The document is empty before that sync, so the epoch named by
     // the connection that fills it is the lineage the document belongs to.
@@ -413,33 +422,49 @@ export function useCollabProvider({
       setWritable(true);
     };
     // A terminal close of the attempt's connection: it ends in the read-only
-    // draft with its own reason. A 4401 is refreshed once per attempt.
+    // draft with its own reason. A 4401 is refreshed once per attempt, and only
+    // for the account that owns this document.
+    const endAttemptUnauthorized = () => {
+      setError('unauthorized');
+      preserveReadOnly('unauthorized');
+    };
     const settleAttemptClose = (event: { code: number; reason: string }) => {
       if (event.code === 4401) {
-        if (attemptRefreshed) {
-          setError('unauthorized');
-          preserveReadOnly('unauthorized');
+        if (attemptRefreshed || useAuthStore.getState().user?.id !== selfUserId) {
+          endAttemptUnauthorized();
           return;
         }
         attemptRefreshed = true;
         rejoin.pause();
         const queued = generation;
         const continueAttempt = () => queued === generation && !cancelled && rejoin.running;
+        // The refresh is the shared cookie rotation: it is never cancelled or
+        // replayed here. If it does not settle in time the attempt ends
+        // unconfirmed and a late result is ignored (the generation moves on).
+        clearTimeout(refreshWaitTimer);
+        refreshWaitTimer = setTimeout(() => {
+          if (continueAttempt()) rejoin.fail();
+        }, REJOIN_REFRESH_WAIT_MS);
         refreshAccessTokenOnce().then(
           (fresh) => {
             if (!continueAttempt()) return;
-            if (!fresh) {
-              setError('unauthorized');
-              preserveReadOnly('unauthorized');
+            clearTimeout(refreshWaitTimer);
+            // Only the verified session of this document's account may reopen
+            // the old provider, with its own token.
+            const state = useAuthStore.getState();
+            if (!fresh || !state.accessToken || state.user?.id !== selfUserId) {
+              endAttemptUnauthorized();
               return;
             }
-            ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
+            ws.protocols = [COLLAB_WS_PROTOCOL, state.accessToken];
             rejoin.resume();
           },
           () => {
             // Whether the rotation happened is unknown: no session is proven
             // lost, and no reconnect is made with the stale token.
-            if (continueAttempt()) rejoin.fail();
+            if (!continueAttempt()) return;
+            clearTimeout(refreshWaitTimer);
+            rejoin.fail();
           },
         );
         return;
@@ -460,6 +485,7 @@ export function useCollabProvider({
       // Whatever a refresh or backoff queued before this attempt must not act on it.
       generation += 1;
       attemptRefreshed = false;
+      clearTimeout(refreshWaitTimer);
       clearTimeout(rejoinTimer);
       pausedToken = undefined;
       setCanRetry(false);
@@ -617,6 +643,7 @@ export function useCollabProvider({
       cancelled = true;
       unsubscribeAuth();
       clearTimeout(rejoinTimer);
+      clearTimeout(refreshWaitTimer);
       clearTimeout(retryTimer);
       rejoin.cancel();
       clearInterval(resyncTimer);

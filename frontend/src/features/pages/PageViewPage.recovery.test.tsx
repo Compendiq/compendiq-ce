@@ -1481,10 +1481,15 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     await waitFor(() => {
       expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
     });
+    // The merge removed the offline text; the user is offered nothing about an earlier copy.
+    expect(document.querySelector('.ProseMirror')).not.toHaveTextContent('Typed offline');
+    expect(screen.queryByText(/merged with the page|earlier copy/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /earlier copy|dismiss/i })).not.toBeInTheDocument();
     await pasteBodyText('Typed afterwards');
 
     act(() => { attempt.close(4403, 'forbidden'); });
     expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /earlier copy|dismiss/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
     const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
     expect(saved.bodyHtml).toContain('Typed afterwards');
