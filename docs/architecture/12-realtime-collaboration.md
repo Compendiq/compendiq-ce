@@ -176,11 +176,16 @@ which document it holds:
   the gateway sends `{ type: 'doc_epoch', epoch }` before the lifecycle and
   admission controls. A provisional room sends none.
 - **Pin.** `use-collab-provider.ts` remembers the control of the current
-  connection and pins it at the first sync of its `Y.Doc` (the document was
-  empty before, so it is that lineage). A connection that closes before the
-  first sync is forgotten. The pin never changes afterwards; later controls are
-  ignored. A document whose first sync came without the control (older pod,
-  provisional room) stays unpinned for its lifetime.
+  connection and pins it at the first sync of its `Y.Doc`: the pin is the
+  candidate of the first connection that completes a sync. A connection that
+  closes before the first sync is forgotten. The pin never changes afterwards;
+  later controls are ignored. A document whose first sync came without the
+  control (pre-epoch pod, provisional room) stays unpinned for its lifetime.
+  The pin does not prove that the document held nothing before that sync: an
+  earlier connection that dropped before its own first sync can have left
+  applied or parked updates in it, and they are pinned to the later
+  connection's epoch with everything else. Until then such a document declares
+  nothing (below), so its joins stay unverified.
 - **Declaration.** Two optional join parameters, decided for each connect
   (y-websocket 3.1 builds the URL on every connect; the hook's provider
   subclass decides there). They exclude each other:
@@ -193,9 +198,11 @@ which document it holds:
     and no update parked for a missing dependency. That is a tab's first join,
     and each retry of it that still has nothing.
   - Neither: an unpinned document that holds content, for example a
-    connection that applied updates and dropped before its first sync, or a
-    first sync that came without the control. Browser bundles that predate a
-    parameter also send neither.
+    connection that applied or parked updates and dropped before its first
+    sync, or a first sync that came without the control. Older browser bundles
+    differ: one that predates the epoch sends neither on every join; an
+    epoch-aware one that predates the marker sends neither on its first join
+    and its pinned epoch on later ones.
 
   The gateway reads the pair with `CollabJoinDeclarationSchema` as `absent`
   (neither), `declared` (exactly one UUID), `empty` (exactly the marker) or
@@ -271,11 +278,16 @@ fenced transaction that also writes `writable_admission` (design D-2034,
 "final step of `attachSocket`") arrives with #2035. Until then a publication
 that commits after the join's last fenced transaction and before the positive
 control is written still lets that control be sent for a document whose
-lineage has just ended. No byte crosses in that window: the socket's first
-frame fails the current-epoch assertion, nothing is applied, and the room is
-retired with `doc_reset`. What the join decision guarantees here is that a
-declared join is never writable in a room that holds another epoch than the
-one it declared.
+lineage has just ended. What holds in that window: no mutation of the ended
+lineage is accepted or persisted. A client SyncStep2 or Update, a persist, a
+merge and a peer exchange each assert the current epoch first and apply
+nothing, and the first of those boundaries the room reaches retires it with
+`doc_reset`. An ordinary client SyncStep1 is not such a boundary: it is
+answered from the room's document without a fenced transaction, so until the
+room is retired that socket can still be sent the superseded document's bytes.
+The fenced answer arrives with #1928. What the join decision guarantees here
+is that a declared join is never writable in a room that holds another epoch
+than the one it declared.
 
 `CollabSocket.lineageVerified` is true only for a writable socket whose join
 went through those points and either declared the room's epoch or declared an
@@ -502,16 +514,23 @@ processes follows the rolling-upgrade gate in the
 switch collaborative editing off, verify `GET /api/collab/config` on each old
 process directly, replace the processes, confirm the drain only after every
 old process has stopped and its database sessions have ended, then switch it
-on again. During an ungated mix no guarantee is given; this is what to expect:
+on again. During an ungated mix no guarantee is given. Two kinds of older
+peer exist. *Pre-epoch* is a version without #2034: no `doc_epoch`, neither
+join parameter. *Epoch-aware without the marker* is a build of #2034 from
+before `expectedDocEmpty`: it has the column, the `doc_epoch` control and
+`expectedDocEpoch`, and does not know the marker. This is what to expect:
 
 | Situation | Behaviour |
 |---|---|
-| Old pod serves a join | Ignores `expectedDocEpoch` and `expectedDocEmpty` and sends no `doc_epoch`: today's behaviour on that socket |
-| Old pod writes the collab row | A new row gets a fresh epoch from the column default. Its unguarded upsert can still overwrite a row, and its in-place reset keeps the epoch (the reason for the gate) |
-| Old pod's bus messages | Carry no `docEpoch`; handled as before |
-| Tab that synced on a new pod, later merged replacement content on an old pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. An old pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned and holds content is unverified |
-| Old bundle on a new pod | Declares nothing and ignores `doc_epoch`: admitted as before, never verified, a first join included |
-| New bundle on an old pod | Never receives `doc_epoch`, so it never pins; it sends the marker while its document is empty, which the old pod ignores, and nothing afterwards |
+| Pre-epoch pod serves a join | Ignores `expectedDocEpoch` and `expectedDocEmpty` and sends no `doc_epoch`: today's behaviour on that socket |
+| Pre-epoch pod writes the collab row | A new row gets a fresh epoch from the column default. Its unguarded upsert can still overwrite a row, and its in-place reset keeps the epoch (the reason for the gate) |
+| Pre-epoch pod's bus messages | Carry no `docEpoch`; handled as before |
+| Tab that synced on a new pod, later merged replacement content on a pre-epoch pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. A pre-epoch pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned and holds content is unverified |
+| Pre-epoch bundle on a new pod | Declares nothing and ignores `doc_epoch` on every join: admitted as before, never verified, a first join included |
+| New bundle on a pre-epoch pod | Never receives `doc_epoch`, so it never pins; it sends the marker while its document is empty, which the pod ignores, and nothing afterwards |
+| Epoch-aware pod without the marker serves a join | Ignores `expectedDocEmpty`, so a first join is admitted unverified there. It still sends `doc_epoch` and reads `expectedDocEpoch`: the tab pins at its first sync, and its later joins are decided by the epoch like on a new pod |
+| Epoch-aware bundle without the marker on a new pod | Its first join declares nothing: admitted as before, unverified. After its first sync it is pinned and declares the epoch: a rejoin is verified on a match and gets `doc_reset` on a mismatch |
+| New bundle on an epoch-aware pod without the marker | Its marker is ignored on the first join (unverified); it pins from that pod's `doc_epoch` and declares the epoch afterwards |
 
 **While the page's own collaborative Save is pending (#1763).** A Confluence
 commit compares its provider read with `pages.remote_version`, including
