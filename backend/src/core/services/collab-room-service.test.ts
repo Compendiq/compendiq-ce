@@ -3104,13 +3104,16 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
     expect(info.mock.calls.filter((call) => call[1] === 'collab.readonly_drop')).toEqual([]);
   });
 
-  it('sends a demoted writer no later SyncStep1 and answers its SyncStep1 as a reader', async () => {
+  it('sends a demoted writer no later SyncStep1, clears its verification and answers its SyncStep1 as a reader', async () => {
     const pageId = nextPageId();
     const { epoch, revision } = await seededRoom(pageId);
     const tab = await joinVerified(pageId, 'demoted-writer', epoch, revision);
     expect(serverSyncStep1s(tab.sent)).toHaveLength(1);
 
     await runtimeA!.demoteSocket(pageId, 'demoted-writer');
+    // A read-only socket is never lineage-verified.
+    expect(runtimeA!.getRoom(pageId)!.sockets.get('demoted-writer'))
+      .toMatchObject({ writable: false, lineageVerified: false });
     const before = tab.sent.length;
     expect(await runtimeA!.handleInboundFrame(pageId, 'demoted-writer', encodeSyncStep1(new Y.Doc()))).toBe('ok');
 
@@ -3150,7 +3153,7 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
       await vi.waitFor(() => expect(runtimeA!.getRoom(pageId)).toBeUndefined());
     });
 
-    it('sends no answer once the own commit is marked unknown before its cue arrives, and demotes the writer', async () => {
+    it('sends no answer once the own commit is marked unknown before its cue arrives, and demotes the writer and clears its verification', async () => {
       const pageId = nextPageId();
       const { writer, reader } = await afterValidReplay(pageId);
       await ownCommit(pageId, 'unknown');
@@ -3165,6 +3168,8 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
 
       expect(kinds(writer.sent.slice(writerBefore))).toEqual(['control:commit_unknown', 'control:permission_loss']);
       expect(writer.closes).toEqual([[1001, 'commit_unknown']]);
+      expect(runtimeA!.getRoom(pageId)!.sockets.get('replayed-writer'))
+        .toMatchObject({ writable: false, lineageVerified: false, commitUnknownGated: true });
     });
 
     it('refuses neither the replay nor the answer while the page\'s own Save is in flight', async () => {

@@ -471,7 +471,7 @@ shows the editor and recovery contract.
 flowchart TB
     page["PageViewPage"]
     cfg["GET /api/collab/config"]
-    hook["useCollabProvider<br/>joined lifecycle is immutable<br/>explicit writable_admission<br/>disableBc"]
+    hook["useCollabProvider<br/>joined lifecycle is immutable<br/>explicit writable_admission<br/>clean Y.Doc after a pre-sync drop<br/>disableBc"]
     ed["Editor<br/>Collaboration + CollaborationCaret<br/>StarterKit undoRedo false"]
     save["Save start<br/>Y.snapshot clocks + delete-set<br/>base64 field ≤ 1,048,576 chars"]
     api["POST /api/pages/:id/collab/commit<br/>expected lifecycle + document state"]

@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { renderHook, act, cleanup } from '@testing-library/react';
 import { COLLAB_UPGRADE_WINDOW_SEC, COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
 import * as Y from 'yjs';
-import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
+import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { useAuthStore } from '../../stores/auth-store';
 import { REJOIN_COVERAGE_TIMEOUT_MS } from './collab-rejoin-attempt';
@@ -839,26 +839,42 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         server.destroy();
       };
 
-      it('is decided for each connect: sent while the unpinned document is empty, dropped once it holds content, replaced by the epoch once pinned', async () => {
+      /** The document of a fresh `Y.Doc`: no struct, no deletion, nothing parked. */
+      const emptyState = () => {
+        const doc = new Y.Doc();
+        const state = Y.encodeStateAsUpdate(doc);
+        doc.destroy();
+        return state;
+      };
+
+      it('is decided for each connect: sent while the unpinned document is empty, sent again from a clean document after a connection left bytes before its first sync, replaced by the epoch once pinned', async () => {
         const { result } = mount();
         const first = Socket.instances[0]!;
         expect(marker(first)).toBe('1');
         expect(declared(first)).toBeNull();
         expect(new URL(first.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
 
-        // The connection drops before it delivered anything: still empty.
+        // The connection drops before it delivered anything: still empty, same document.
+        const initial = result.current.ydoc!;
         act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); });
         const second = await reconnect(first);
         expect(marker(second)).toBe('1');
         expect(declared(second)).toBeNull();
+        expect(result.current.ydoc).toBe(initial);
 
-        // A peer's edit arrives before the first sync, then the connection drops.
+        // A peer's edit arrives before the first sync, then the connection drops:
+        // the retry starts from a clean document and still declares the marker.
         act(() => { second.open(); update(second, twoEdits()[0]); });
         expect(result.current.synced).toBe(false);
-        expect(result.current.ydoc!.getText('draft').toString()).toBe('first');
+        expect(initial.getText('draft').toString()).toBe('first');
         const third = await reconnect(second);
-        expect(marker(third)).toBeNull();
+        expect(result.current.reconnecting).toBe(true);
+        expect(marker(third)).toBe('1');
         expect(declared(third)).toBeNull();
+        expect(new URL(third.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+        const clean = result.current.ydoc!;
+        expect(clean).not.toBe(initial);
+        expect(Y.encodeStateAsUpdate(clean)).toEqual(emptyState());
 
         // The first sync pins: from here the epoch is declared and never the marker.
         act(() => {
@@ -867,9 +883,98 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
           hydrate(third);
         });
         expect(result.current.docEpochPinned).toBe(true);
+        expect(result.current.reconnecting).toBe(false);
+        expect(clean.getText('draft').toString()).toBe('Published text');
         const fourth = await reconnect(third);
         expect(declared(fourth)).toBe(EPOCH);
         expect(marker(fourth)).toBeNull();
+        // Same-epoch recovery keeps the pinned document.
+        expect(result.current.ydoc).toBe(clean);
+      });
+
+      it('never lets bytes received before the first sync reach a later replay: a partial sync of lineage A, then lineage B, then a pinned rejoin answers the server\'s SyncStep1 without A', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        // Lineage A: a peer's edit reaches the tab before its first sync, then the connection drops.
+        const lineageA = new Y.Doc();
+        lineageA.getText('draft').insert(0, 'LINEAGE_A');
+        const aClient = lineageA.clientID;
+        const aUpdate = Y.encodeStateAsUpdate(lineageA);
+        lineageA.destroy();
+        act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); update(first, aUpdate); });
+        expect(result.current.ydoc!.getText('draft').toString()).toBe('LINEAGE_A');
+
+        // A ended meanwhile; the next connection joins lineage B with a clean document.
+        const second = await reconnect(first);
+        expect(marker(second)).toBe('1');
+        const lineageB = new Y.Doc();
+        lineageB.getText('draft').insert(0, 'LINEAGE_B');
+        onTestFinished(() => lineageB.destroy());
+        act(() => {
+          second.open();
+          control(second, { type: 'doc_epoch', epoch: EPOCH });
+          const encoder = encoding.createEncoder();
+          encoding.writeVarUint(encoder, 0);
+          syncProtocol.writeSyncStep2(encoder, lineageB);
+          second.receive(encoding.toUint8Array(encoder));
+          control(second, { type: 'writable_admission', lifecycleRevision: '1' });
+        });
+        expect(result.current.docEpochPinned).toBe(true);
+        expect(result.current.ydoc!.getText('draft').toString()).toBe('LINEAGE_B');
+
+        // A later rejoin declares B; the server asks with B's state vector.
+        const third = await reconnect(second);
+        expect(declared(third)).toBe(EPOCH);
+        const sentBefore = third.sent.length;
+        act(() => {
+          third.open();
+          const encoder = encoding.createEncoder();
+          encoding.writeVarUint(encoder, 0);
+          syncProtocol.writeSyncStep1(encoder, lineageB);
+          third.receive(encoding.toUint8Array(encoder));
+        });
+        const replies = third.sent.slice(sentBefore).filter((frame) => frame[0] === 0 && frame[1] === 1);
+        expect(replies).toHaveLength(1);
+        const decoder = decoding.createDecoder(replies[0]!);
+        decoding.readVarUint(decoder);
+        decoding.readVarUint(decoder);
+        const reply = decoding.readVarUint8Array(decoder);
+        // What B's room would apply holds no byte of A.
+        const room = new Y.Doc();
+        onTestFinished(() => room.destroy());
+        Y.applyUpdate(room, Y.encodeStateAsUpdate(lineageB));
+        Y.applyUpdate(room, reply);
+        expect(Y.decodeUpdate(reply).structs.map((struct) => struct.id.client)).not.toContain(aClient);
+        expect(Y.decodeStateVector(Y.encodeStateVector(room)).has(aClient)).toBe(false);
+        expect(room.store.pendingStructs).toBeNull();
+        expect(room.getText('draft').toString()).toBe('LINEAGE_B');
+      });
+
+      it.each([
+        ['an expired token', (socket: Socket) => socket.close(4401, 'unauthorized')],
+        ['an interrupted join and Retry', (socket: Socket) => socket.close(4403, 'readonly')],
+      ])('starts an explicit connect after %s from a clean document when a connection left bytes before its first sync', async (name, end) => {
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+          accessToken: 'jwt-fresh', user,
+        }), { status: 200, headers: { 'content-type': 'application/json' } }));
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        act(() => { first.open(); update(first, twoEdits()[0]); });
+        const dirty = result.current.ydoc!;
+        expect(dirty.getText('draft').toString()).toBe('first');
+
+        await act(async () => { end(first); });
+        if (result.current.canRetry) act(() => { result.current.retry(); });
+
+        expect(Socket.instances).toHaveLength(2);
+        const rejoin = Socket.instances[1]!;
+        expect(marker(rejoin)).toBe('1');
+        expect(declared(rejoin)).toBeNull();
+        expect(new URL(rejoin.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+        expect(rejoin.protocols[1]).toBe(name === 'an expired token' ? 'jwt-fresh' : 'jwt-old');
+        expect(result.current.ydoc).not.toBe(dirty);
+        expect(Y.encodeStateAsUpdate(result.current.ydoc!)).toEqual(emptyState());
+        expect(result.current.error).toBeNull();
       });
 
       it('is never sent for a pinned document, even one that is still empty', async () => {
@@ -916,7 +1021,7 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         expect(new URL(second.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
       });
 
-      it('is not sent while the document holds an update parked for a missing dependency', async () => {
+      it('is sent from a clean document after a connection left an update parked for a missing dependency', async () => {
         const { result } = mount();
         const first = Socket.instances[0]!;
         expect(marker(first)).toBe('1');
@@ -926,13 +1031,16 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         const doc = result.current.ydoc!;
         expect(doc.getText('draft').toString()).toBe('');
         expect(Y.decodeStateVector(Y.encodeStateVector(doc)).size).toBe(0);
+        expect(doc.store.pendingStructs).not.toBeNull();
 
         const second = await reconnect(first);
-        expect(marker(second)).toBeNull();
+        expect(marker(second)).toBe('1');
         expect(declared(second)).toBeNull();
+        expect(result.current.ydoc).not.toBe(doc);
+        expect(Y.encodeStateAsUpdate(result.current.ydoc!)).toEqual(emptyState());
       });
 
-      it('is not sent while the document holds only a parked deletion it cannot apply yet', async () => {
+      it('is sent from a clean document after a connection left only a parked deletion it cannot apply yet', async () => {
         // An edit and its deletion: the second update is a delete set without a struct.
         const server = new Y.Doc();
         const updates: Uint8Array[] = [];
@@ -947,23 +1055,26 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         const { result } = mount();
         const first = Socket.instances[0]!;
         expect(marker(first)).toBe('1');
-        // A retry that still holds nothing sends the marker again.
+        // A retry that still holds nothing sends the marker again, on the same document.
+        const initial = result.current.ydoc!;
         act(() => { first.open(); });
         const second = await reconnect(first);
         expect(marker(second)).toBe('1');
+        expect(result.current.ydoc).toBe(initial);
 
         // The deletion arrives without the edit it deletes. No clock and no
         // deletion is integrated and no struct is parked, but Yjs keeps the
         // delete set and sends it along with the document's state.
         act(() => { second.open(); update(second, deletion); });
-        const doc = result.current.ydoc!;
-        expect(Y.equalSnapshots(Y.snapshot(doc), Y.emptySnapshot)).toBe(true);
-        expect(doc.store.pendingStructs).toBeNull();
-        expect(Y.decodeUpdate(Y.encodeStateAsUpdate(doc)).ds.clients.size).toBe(1);
+        expect(Y.equalSnapshots(Y.snapshot(initial), Y.emptySnapshot)).toBe(true);
+        expect(initial.store.pendingStructs).toBeNull();
+        expect(Y.decodeUpdate(Y.encodeStateAsUpdate(initial)).ds.clients.size).toBe(1);
 
         const third = await reconnect(second);
-        expect(marker(third)).toBeNull();
+        expect(marker(third)).toBe('1');
         expect(declared(third)).toBeNull();
+        expect(result.current.ydoc).not.toBe(initial);
+        expect(Y.encodeStateAsUpdate(result.current.ydoc!)).toEqual(emptyState());
       });
 
       it('is the only parameter of a join without a lifecycle revision', () => {
@@ -1168,6 +1279,107 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         expect(Socket.instances).toHaveLength(2);
         expect(declared(Socket.instances[1]!)).toEqual({ epoch: null, marker: '1' });
         expect(result.current).toMatchObject({ rejoinOffered: false, rejoinAttempt: 'idle' });
+      });
+    });
+
+    describe('the clean-document session reset (#1928) and the Rejoin', () => {
+      const refreshOk = () => vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
+        JSON.stringify({ accessToken: 'jwt-fresh', user }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ));
+
+      it('never replaces a pinned document that holds the user\'s offline text: not for the attempt, its token refresh or a later press', async () => {
+        refreshOk();
+        const session = limited();
+        const { result, draft, provider, gateway } = session;
+        const first = await rejoin(session);
+        expect(result.current.ydoc).toBe(draft);
+        await act(async () => { first.close(4401, 'unauthorized'); });
+        expect(Socket.instances).toHaveLength(3);
+        // The refreshed connection continues on the very same provider and document.
+        expect(result.current.ydoc).toBe(draft);
+        expect(result.current.provider).toBe(provider);
+        expect(draft.getText('draft').toString()).toBe('Published text + offline');
+        await join(Socket.instances[2]!, gateway);
+        expect(result.current).toMatchObject({ writable: true, readOnlyReason: null });
+        expect(gateway.text()).toBe('Published text + offline');
+        expectSameDraft(session);
+      });
+
+      /** A first connection that left bytes before its first sync; the clean session that replaced it. */
+      async function replacedSession() {
+        const gateway = new Gateway('Published text');
+        const view = renderHook(() => useCollabProvider({ pageId: '42', enabled: true, expectedLifecycleRevision: '1' }));
+        const first = Socket.instances[0]!;
+        const initial = view.result.current.ydoc!;
+        const peer = new Y.Doc();
+        peer.getText('draft').insert(0, 'partial');
+        const peerUpdate = Y.encodeStateAsUpdate(peer);
+        peer.destroy();
+        act(() => {
+          first.open();
+          const encoder = encoding.createEncoder();
+          encoding.writeVarUint(encoder, 0);
+          syncProtocol.writeUpdate(encoder, peerUpdate);
+          first.receive(encoding.toUint8Array(encoder));
+        });
+        expect(initial.getText('draft').toString()).toBe('partial');
+        act(() => { first.close(1006, 'offline'); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+        const second = Socket.instances[1]!;
+        const clean = view.result.current.ydoc!;
+        expect(clean).not.toBe(initial);
+        act(() => {
+          second.open();
+          control(second, { type: 'doc_epoch', epoch: EPOCH });
+          gateway.hydrate(second);
+          admission(second);
+        });
+        expect(view.result.current).toMatchObject({ writable: true, docEpochPinned: true, synced: true });
+        return { view, gateway, first, second, initial, clean, session: { result: view.result } as unknown as Limited };
+      }
+
+      it('rebuilds the attempt controller and the resync timer with the replaced session: Rejoin works on the clean document, and one resync tick sends one SyncStep1', async () => {
+        const { view, gateway, first, second, initial, clean, session } = await replacedSession();
+        const firstFrames = first.sent.length;
+        act(() => { second.close(4403, 'rate_limited'); });
+        act(() => { clean.getText('draft').insert(14, ' + offline'); });
+        expect(view.result.current).toMatchObject({ readOnlyReason: 'rate_limited', rejoinOffered: true });
+
+        const attempt = await rejoin(session);
+        expect(new URL(attempt.url).searchParams.get('expectedDocEpoch')).toBe(EPOCH);
+        expect(new URL(attempt.url).searchParams.has('expectedDocEmpty')).toBe(false);
+        await join(attempt, gateway);
+        expect(view.result.current).toMatchObject({ writable: true, readOnlyReason: null, rejoinAttempt: 'idle' });
+        expect(view.result.current.ydoc).toBe(clean);
+        expect(gateway.text()).toBe('Published text + offline');
+        expect(initial.getText('draft').toString()).toBe('partial');
+
+        // After the attempt only the new session's timer runs the periodic resync, once per tick.
+        const before = step1Frames(attempt);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(step1Frames(attempt) - before).toBe(1);
+        expect(first.sent).toHaveLength(firstFrames);
+      });
+
+      it('keeps the unknown-save precedence over the Rejoin state of the replaced session, and ignores the replaced document', async () => {
+        const { view, second, initial, clean } = await replacedSession();
+        act(() => { second.close(4403, 'rate_limited'); });
+        expect(view.result.current).toMatchObject({ readOnlyReason: 'rate_limited', rejoinOffered: true });
+
+        // The Save answer for the document this session replaced changes nothing.
+        act(() => { view.result.current.declareCommitUnknown(initial); });
+        expect(view.result.current).toMatchObject({ readOnlyReason: 'rate_limited', rejoinOffered: true });
+
+        act(() => { view.result.current.declareCommitUnknown(clean); });
+        expect(view.result.current).toMatchObject({
+          readOnlyReason: 'commit_unknown', rejoinOffered: false, canRetry: false, rejoinAttempt: 'idle', writable: false,
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(3 * WINDOW_MS); });
+        expect(view.result.current.canRetry).toBe(false);
+        act(() => { view.result.current.retry(); });
+        expect(Socket.instances).toHaveLength(2);
+        expect(view.result.current.ydoc).toBe(clean);
       });
     });
 

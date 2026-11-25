@@ -3983,14 +3983,16 @@ describe('#1739 collaborative PK-only identifier boundary', () => {
  * repeat what `use-collab-provider.ts` does with the `doc_epoch` control and
  * the join declaration: pin the epoch at the first sync, declare it on every
  * later join, send the empty-document marker while the unpinned document holds
- * nothing, never reconnect a reset document. `marker: false` is a bundle that
- * predates the marker: its first join declares nothing.
+ * nothing, never reconnect a reset document, and connect a document that
+ * holds bytes before its first sync only as a clean one (`connect`). `marker:
+ * false` is a bundle that predates the marker: its first join declares nothing.
  */
 const SYNC_STEP1 = 0;
 
 interface HookTab {
-  provider: WebsocketProvider;
-  doc: Y.Doc;
+  /** The current session's provider and document; `connect` can replace both. */
+  readonly provider: WebsocketProvider;
+  readonly doc: Y.Doc;
   controls: TestControl[];
   closes: Array<{ code: number; reason: string }>;
   /** Server SyncStep1 frames this tab received, over all its connections. */
@@ -3999,65 +4001,102 @@ interface HookTab {
   controlListeners: Array<(control: TestControl) => void>;
   /** The tab's replies to those SyncStep1 frames, in order. */
   replies: Uint8Array[];
+  /**
+   * The hook's explicit connect: a document that holds bytes before its first
+   * sync is replaced by a clean session first (#1928).
+   */
+  connect: () => void;
+  /** Fault injection: the server's SyncStep2 frames are lost, so the tab never completes a sync. */
+  loseSyncStep2: boolean;
+}
+
+function holdsNothing(doc: Y.Doc): boolean {
+  return doc.store.pendingStructs === null
+    && doc.store.pendingDs === null
+    && Y.equalSnapshots(Y.snapshot(doc), Y.emptySnapshot);
 }
 
 /** The hook's per-connect declaration: the pinned epoch from `params`, else the marker while the document holds nothing. */
 class MarkerProvider extends WebsocketProvider {
   override get url(): string {
     const url = super.url;
-    const holdsNothing = this.doc.store.pendingStructs === null
-      && this.doc.store.pendingDs === null
-      && Y.equalSnapshots(Y.snapshot(this.doc), Y.emptySnapshot);
-    if (this.params.expectedDocEpoch !== undefined || !holdsNothing) return url;
+    if (this.params.expectedDocEpoch !== undefined || !holdsNothing(this.doc)) return url;
     return `${url}${url.includes('?') ? '&' : '?'}expectedDocEmpty=${COLLAB_DOC_EMPTY_MARKER}`;
   }
 }
 
 function openHookTab(pageId: number, token: string, revision: string, { marker = true } = {}): HookTab {
-  const doc = new Y.Doc();
   const controls: TestControl[] = [];
   const closes: Array<{ code: number; reason: string }> = [];
   const replies: Uint8Array[] = [];
-  let candidate: string | null = null;
-  let hasSynced = false;
   let serverSyncStep1s = 0;
   const controlListeners: Array<(control: TestControl) => void> = [];
-  const Provider = marker ? MarkerProvider : WebsocketProvider;
-  const provider = new Provider(`${baseWs}/api/collab`, String(pageId), doc, {
-    protocols: [COLLAB_WS_PROTOCOL, token],
-    params: { expectedLifecycleRevision: revision },
-    disableBc: true,
-  });
-  const answerSync = provider.messageHandlers[MESSAGE_SYNC]!;
-  provider.messageHandlers[MESSAGE_SYNC] = (encoder, decoder, origin, emitSynced, messageType) => {
-    const isSyncStep1 = decoding.peekVarUint(decoder) === SYNC_STEP1;
-    if (isSyncStep1) serverSyncStep1s += 1;
-    answerSync(encoder, decoder, origin, emitSynced, messageType);
-    if (isSyncStep1) replies.push(encoding.toUint8Array(encoder));
+  let session!: { provider: WebsocketProvider; doc: Y.Doc; hasSynced: () => boolean };
+  const tab: HookTab = {
+    get provider() { return session.provider; },
+    get doc() { return session.doc; },
+    controls,
+    closes,
+    serverSyncStep1s: () => serverSyncStep1s,
+    controlListeners,
+    replies,
+    connect: () => {
+      if (marker && !session.hasSynced() && !holdsNothing(session.doc)) {
+        session.provider.destroy();
+        session.doc.destroy();
+        session = openSession();
+        return;
+      }
+      session.provider.connect();
+    },
+    loseSyncStep2: false,
   };
-  provider.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
-    const control = JSON.parse(decoding.readVarString(decoder)) as TestControl;
-    controls.push(control);
-    for (const listener of controlListeners) listener(control);
-    const epoch = CollabDocEpochControlSchema.safeParse(control);
-    if (epoch.success && !hasSynced) candidate = epoch.data.epoch;
-  };
-  provider.on('sync', (isSynced: boolean) => {
-    if (!isSynced || hasSynced) return;
-    hasSynced = true;
-    if (candidate !== null) provider.params = { ...provider.params, expectedDocEpoch: candidate };
-  });
-  provider.on('connection-close', (event: CloseEvent | null) => {
-    if (!hasSynced) candidate = null;
-    if (!event) return;
-    closes.push({ code: event.code, reason: event.reason });
-    if (event.code === 1001 && event.reason === 'doc_reset') provider.shouldConnect = false;
-  });
-  onTestFinished(() => {
-    provider.destroy();
-    doc.destroy();
-  });
-  return { provider, doc, controls, closes, serverSyncStep1s: () => serverSyncStep1s, controlListeners, replies };
+
+  function openSession(): typeof session {
+    const doc = new Y.Doc();
+    let candidate: string | null = null;
+    let hasSynced = false;
+    const Provider = marker ? MarkerProvider : WebsocketProvider;
+    const provider = new Provider(`${baseWs}/api/collab`, String(pageId), doc, {
+      protocols: [COLLAB_WS_PROTOCOL, token],
+      params: { expectedLifecycleRevision: revision },
+      disableBc: true,
+    });
+    const answerSync = provider.messageHandlers[MESSAGE_SYNC]!;
+    provider.messageHandlers[MESSAGE_SYNC] = (encoder, decoder, origin, emitSynced, messageType) => {
+      const subtype = decoding.peekVarUint(decoder);
+      if (subtype === SYNC_STEP2 && tab.loseSyncStep2) return;
+      if (subtype === SYNC_STEP1) serverSyncStep1s += 1;
+      answerSync(encoder, decoder, origin, emitSynced, messageType);
+      if (subtype === SYNC_STEP1) replies.push(encoding.toUint8Array(encoder));
+    };
+    provider.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
+      const control = JSON.parse(decoding.readVarString(decoder)) as TestControl;
+      controls.push(control);
+      for (const listener of tab.controlListeners) listener(control);
+      const epoch = CollabDocEpochControlSchema.safeParse(control);
+      if (epoch.success && !hasSynced) candidate = epoch.data.epoch;
+    };
+    provider.on('sync', (isSynced: boolean) => {
+      if (!isSynced || hasSynced) return;
+      hasSynced = true;
+      if (candidate !== null) provider.params = { ...provider.params, expectedDocEpoch: candidate };
+    });
+    provider.on('connection-close', (event: CloseEvent | null) => {
+      if (!hasSynced) candidate = null;
+      if (!event) return;
+      closes.push({ code: event.code, reason: event.reason });
+      if (event.code === 1001 && event.reason === 'doc_reset') provider.shouldConnect = false;
+    });
+    onTestFinished(() => {
+      provider.destroy();
+      doc.destroy();
+    });
+    return { provider, doc, hasSynced: () => hasSynced };
+  }
+
+  session = openSession();
+  return tab;
 }
 
 /** Synced and writable on the current connection, whose controls start after `since`. */
@@ -4167,28 +4206,129 @@ describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#19
     expect(tab.serverSyncStep1s()).toBe(1);
   }, 30_000);
 
-  it('a join that declares nothing is not asked: a bundle without the marker gets no SyncStep1 on its first join, and one on its pinned rejoin', async () => {
+  it('in one live room, a marked empty tab is asked and a join that declares nothing is not; the latter is asked once its rejoin declares the pinned epoch', async () => {
     const { token, userId } = await createUser('collab_syncstep1_undeclared');
     const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>undeclared-seed</p>' });
     await enableCollabFlag();
     const revision = await pageLifecycleRevision(pageId);
-    const tab = openHookTab(pageId, token, revision, { marker: false });
-    expect(new URL(tab.provider.url).searchParams.has('expectedDocEmpty')).toBe(false);
-
-    await hookTabWritable(tab);
+    // A bundle without the marker joins first and seeds the room.
+    const undeclared = openHookTab(pageId, token, revision, { marker: false });
+    expect(new URL(undeclared.provider.url).searchParams.has('expectedDocEmpty')).toBe(false);
+    await hookTabWritable(undeclared);
+    // An empty tab of the current bundle joins the same room with the marker.
+    const marked = openHookTab(pageId, token, revision);
+    expect(new URL(marked.provider.url).searchParams.get('expectedDocEmpty')).toBe('1');
+    await hookTabWritable(marked);
 
     const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
-    expect([...room.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: false }]);
-    expect(tab.serverSyncStep1s()).toBe(0);
+    expect([...room.sockets.values()]).toMatchObject([
+      { writable: true, lineageVerified: false },
+      { writable: true, lineageVerified: true },
+    ]);
+    expect(undeclared.serverSyncStep1s()).toBe(0);
+    expect(marked.serverSyncStep1s()).toBe(1);
 
-    // Pinned at the first sync, its rejoin declares the epoch and is asked.
-    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(room.docEpoch);
-    const since = tab.controls.length;
+    // Pinned at the first sync, the undeclared tab's rejoin declares the epoch and is asked.
+    expect(new URL(undeclared.provider.url).searchParams.get('expectedDocEpoch')).toBe(room.docEpoch);
+    const since = undeclared.controls.length;
+    undeclared.provider.disconnect();
+    undeclared.provider.connect();
+    await hookTabWritable(undeclared, since);
+    expect(undeclared.serverSyncStep1s()).toBe(1);
+    expect(marked.serverSyncStep1s()).toBe(1);
+  }, 30_000);
+
+  it('a tab that received an edit of lineage A before its first sync and dropped joins lineage B from a clean document; its pinned rejoin is asked and nothing of A reaches B or the database', async () => {
+    const { token, userId } = await createUser('collab_syncstep1_partial_sync');
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>lineage-a-seed</p>' });
+    await enableCollabFlag();
+    const revision = await pageLifecycleRevision(pageId);
+    const runtime = getDefaultCollabRuntime()!;
+    const handleFrame = runtime.handleInboundFrame;
+    const handledReplies: string[] = [];
+    const frameSpy = vi.spyOn(runtime, 'handleInboundFrame').mockImplementation(async (framePageId, id, buf) => {
+      const result = await handleFrame(framePageId, id, buf);
+      if (framePageId === pageId && frameKind(buf) === 'sync_step2') handledReplies.push(result);
+      return result;
+    });
+    onTestFinished(() => frameSpy.mockRestore());
+
+    // Lineage A: a writer, and a tab whose first sync never completes (its SyncStep2 is lost).
+    const writer = openHookTab(pageId, token, revision);
+    await hookTabWritable(writer);
+    const epochA = runtime.getRoom(pageId)!.docEpoch;
+    const tab = openHookTab(pageId, token, revision);
+    tab.loseSyncStep2 = true;
+    await vi.waitFor(() => {
+      expect(tab.controls.map((control) => control.type)).toContain('writable_admission');
+    }, { timeout: 10_000 });
+    expect(tab.provider.synced).toBe(false);
+    // The writer's edit of A is fanned out to the tab before its first sync.
+    typeInto(writer.doc, 'LINEAGE_A_EDIT');
+    await vi.waitFor(() => expect(holdsNothing(tab.doc)).toBe(false), { timeout: 10_000 });
+    await vi.waitFor(() => expect(liveRoomHtml(pageId)).toContain('LINEAGE_A_EDIT'), { timeout: 10_000 });
+    const lineageA = new Set([
+      ...Y.decodeStateVector(Y.encodeStateVector(runtime.getRoom(pageId)!.doc)).keys(),
+      writer.doc.clientID,
+    ]);
+    const stale = tab.doc;
+
+    // Both leave; lineage A ends with a non-collab body write.
+    tab.provider.disconnect();
+    writer.provider.disconnect();
+    await vi.waitFor(() => expect(runtime.getRoom(pageId)?.sockets.size ?? 0).toBe(0));
+    await runtime.dropRoom(pageId);
+    const current = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Collab page', bodyHtml: '<p>LINEAGE_B_BODY</p>', version: current.rows[0]!.version },
+    });
+    expect(put.statusCode, put.body).toBe(200);
+
+    // The tab reconnects from a clean document: the marker join seeds lineage B and is verified.
+    tab.loseSyncStep2 = false;
+    let since = tab.controls.length;
+    tab.connect();
+    expect(tab.doc).not.toBe(stale);
+    await hookTabWritable(tab, since);
+    const roomB = runtime.getRoom(pageId)!;
+    expect(roomB.docEpoch).not.toBe(epochA);
+    expect([...roomB.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(roomB.docEpoch);
+
+    // A later rejoin declares B and is asked; its reply is handled on the fenced path.
+    const asked = tab.serverSyncStep1s();
+    const handledBefore = handledReplies.length;
+    since = tab.controls.length;
     tab.provider.disconnect();
     tab.provider.connect();
     await hookTabWritable(tab, since);
-    expect(tab.serverSyncStep1s()).toBe(1);
-  }, 30_000);
+    expect(tab.serverSyncStep1s()).toBe(asked + 1);
+    await vi.waitFor(() => expect(handledReplies.slice(handledBefore)).toContain('ok'), { timeout: 10_000 });
+
+    const fromA = (update: Uint8Array) => Y.decodeUpdate(update).structs
+      .map((struct) => struct.id.client)
+      .filter((client) => lineageA.has(client));
+    expect(fromA(replyUpdate(tab.replies.at(-1)!))).toEqual([]);
+    const room = runtime.getRoom(pageId)!;
+    expect(room.docEpoch).toBe(roomB.docEpoch);
+    expect(room.doc.store.pendingStructs).toBeNull();
+    expect(fromA(Y.encodeStateAsUpdate(room.doc))).toEqual([]);
+    await persist.flushCollabPersist(room);
+    const stored = await query<{ doc_state: Buffer; body_html: string }>(
+      `SELECT d.doc_state, p.body_html FROM page_collaborative_docs d JOIN pages p ON p.id = d.page_id
+        WHERE d.page_id = $1`,
+      [pageId],
+    );
+    expect(fromA(new Uint8Array(stored.rows[0]!.doc_state))).toEqual([]);
+    for (const html of [yDocToHtml(room.doc), yDocToHtml(tab.doc), stored.rows[0]!.body_html]) {
+      expect(html.split('LINEAGE_B_BODY')).toHaveLength(2);
+      expect(html).not.toContain('LINEAGE_A_EDIT');
+      expect(html).not.toContain('lineage-a-seed');
+    }
+  }, 40_000);
 
   it('a frame refused with 1001 collab_validation_unavailable reaches the room after the reconnect, and the Save returns 200', async () => {
     const { tab, pageId, token, revision } = await pinnedTab('collab_syncstep1_refused');
