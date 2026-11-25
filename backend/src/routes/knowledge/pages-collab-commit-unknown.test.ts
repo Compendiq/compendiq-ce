@@ -51,6 +51,7 @@ import {
   _resetCollabRoomsForTest,
   createCollabRuntime,
   getDefaultCollabRuntime,
+  type CollabDocEpochDeclaration,
   type CollabRuntime,
   type CollabSocket,
 } from '../../core/services/collab-room-service.js';
@@ -350,7 +351,7 @@ async function attachFake(
   runtime: CollabRuntime,
   seed: Seed,
   id: string,
-  options: { userId?: string; writable?: boolean } = {},
+  options: { userId?: string; writable?: boolean; declaration?: CollabDocEpochDeclaration } = {},
 ): Promise<{ socket: FakeSocket; attached: CollabSocket }> {
   const socket = fakeSocket(id);
   const attached = await runtime.attachSocket(seed.pageId, {
@@ -359,6 +360,7 @@ async function attachFake(
     userId: options.userId ?? seed.coEditor.userId,
     writable: options.writable ?? true,
     expectedLifecycleRevision: await lifecycleRevision(seed.pageId),
+    ...(options.declaration ? { expectedDocEpoch: options.declaration } : {}),
   });
   return { socket, attached };
 }
@@ -1318,7 +1320,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
      * another pod paused before its final step. The bus loses the cue, so the
      * pod learns of the Save only from what each test does next.
      */
-    async function joinPausedWhileSaving(podId: string, socketId: string) {
+    async function joinPausedWhileSaving(podId: string, socketId: string, declaration?: CollabDocEpochDeclaration) {
       const seed = await seedPage();
       await joinWritable(seed.pageId, seed.saver.token);
       const pod = await otherRuntime(podId);
@@ -1329,7 +1331,7 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       const saving = save(seed);
       await put.arrived;
       const paused = pauseJoinAtBookkeeping(podId, socketId);
-      const joining = attachFake(pod, seed, socketId);
+      const joining = attachFake(pod, seed, socketId, declaration ? { declaration } : {});
       await paused.reached;
 
       // The Save fails and its marker commits while the join waits before its final step.
@@ -1363,6 +1365,56 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       // The join's own controls come first, then the unknown commit and its compatibility cue.
       expect(socket.controls().slice(-4)).toEqual(['doc_epoch', 'page_lifecycle', 'commit_unknown', 'permission_loss']);
       await expectGatedJoin(seed, pod, 'unknown-final-step', socket);
+    }, 30_000);
+
+    it('gates a join that declares an empty document like any other, and never verifies it', async () => {
+      const { seed, pod, paused, joining } = await joinPausedWhileSaving(
+        'unknown-marker-gated',
+        'marker-gated-join',
+        { kind: 'empty' },
+      );
+      paused.resume();
+      const { socket, attached } = await joining;
+
+      // The marker has no epoch to compare; the commit-state check still decides.
+      expect(attached).toMatchObject({ writable: false, lineageVerified: false });
+      expect(socket.controls().slice(-4)).toEqual(['doc_epoch', 'page_lifecycle', 'commit_unknown', 'permission_loss']);
+      expect(socket.controls()).not.toContain('doc_reset');
+      await expectGatedJoin(seed, pod, 'unknown-marker-gated', socket);
+
+      // A marker join that arrives once the state is unknown is gated the same way.
+      const late = await attachFake(pod, seed, 'marker-gated-late', { declaration: { kind: 'empty' } });
+      expect(late.attached).toMatchObject({ writable: false, lineageVerified: false });
+      expect(late.socket.controls()).toContain('commit_unknown');
+      expect(late.socket.controls()).not.toContain('writable_admission');
+      expect(late.socket.controls()).not.toContain('doc_reset');
+    }, 30_000);
+
+    it('verifies a join that declares an empty document, and only at its final step', async () => {
+      const seed = await seedPage();
+      const pod = await otherRuntime('unknown-marker-join');
+      // The marker's own join seeds the page's document. An undeclared join beside it stays unverified.
+      const seeding = await attachFake(pod, seed, 'marker-seeding', { declaration: { kind: 'empty' } });
+      expect(seeding.attached).toMatchObject({ writable: true, lineageVerified: true });
+      expect(pod.getRoom(seed.pageId)!.docEpoch).not.toBeNull();
+      const undeclared = await attachFake(pod, seed, 'marker-undeclared');
+      expect(undeclared.attached).toMatchObject({ writable: true, lineageVerified: false });
+
+      const paused = pauseJoinAtBookkeeping('unknown-marker-join', 'marker-join');
+      const joining = attachFake(pod, seed, 'marker-join', { declaration: { kind: 'empty' } });
+      await paused.reached;
+      // Registered, without write authority and unverified until the fenced step grants both.
+      expect(pod.getRoom(seed.pageId)!.sockets.get('marker-join'))
+        .toMatchObject({ writable: false, lineageVerified: false });
+      paused.resume();
+      const { socket, attached } = await joining;
+
+      expect(attached).toMatchObject({ writable: true, lineageVerified: true });
+      expect(socket.controls().slice(-3)).toEqual(['doc_epoch', 'page_lifecycle', 'writable_admission']);
+      expect(socket.closed()).toBeNull();
+      expect(await pod.handleInboundFrame(seed.pageId, socket.id, typedFrame(new Y.Doc(), 'MARKER_JOIN')))
+        .toBe('ok');
+      expect(roomHtml(pod, seed.pageId)).toContain('MARKER_JOIN');
     }, 30_000);
 
     it('tells a join once when the cue is checked before its final step, and still gates it', async () => {
@@ -1405,22 +1457,29 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
     }, 30_000);
 
     it.each([
-      ['an undeclared join fails, so its client reconnects into a fresh room', false],
-      ['a declared join is answered doc_reset', true],
-    ] as const)('admits no join once its room lost its lineage before the final step: %s', async (_name, declared) => {
+      ['an undeclared join fails, so its client reconnects into a fresh room', 'absent'],
+      ['a declared join is answered doc_reset', 'declared'],
+      ['a join that declares an empty document fails like an undeclared one', 'empty'],
+    ] as const)('admits no join once its room lost its lineage before the final step: %s', async (_name, kind) => {
       const seed = await seedPage();
       const pod = await otherRuntime('unknown-final-epoch');
       const first = (await attachFake(pod, seed, 'final-epoch-first')).socket;
       const epoch = pod.getRoom(seed.pageId)!.docEpoch!;
       const paused = pauseJoinAtBookkeeping('unknown-final-epoch', 'final-epoch-join');
       const socket = fakeSocket('final-epoch-join');
+      const declarations: Record<typeof kind, CollabDocEpochDeclaration | undefined> = {
+        absent: undefined,
+        declared: { kind: 'declared', epoch },
+        empty: { kind: 'empty' },
+      };
+      const declaration = declarations[kind];
       const joining = pod.attachSocket(seed.pageId, {
         id: socket.id,
         ws: socket.ws,
         userId: seed.coEditor.userId,
         writable: true,
         expectedLifecycleRevision: seed.revision,
-        ...(declared ? { expectedDocEpoch: { kind: 'declared' as const, epoch } } : {}),
+        ...(declaration ? { expectedDocEpoch: declaration } : {}),
       });
       joining.catch(() => undefined);
       await paused.reached;
@@ -1430,11 +1489,12 @@ describe.skipIf(!canRun)('collaborative Save that fails after dispatch (#2035)',
       await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [seed.pageId]);
       paused.resume();
 
-      if (declared) {
+      if (kind === 'declared') {
         expect((await joining).joinRefused).toBe('doc_reset');
         expect(socket.controls()).toContain('doc_reset');
         expect(socket.closed()).toEqual({ code: 1001, reason: 'doc_reset' });
       } else {
+        // Named no epoch, so nothing to answer `doc_reset` to: the join fails.
         await expect(joining).rejects.toMatchObject({ reason: 'collab_lineage_changed' });
         expect(socket.controls()).not.toContain('doc_reset');
         expect(socket.closed()?.code).toBe(1001);

@@ -2992,7 +2992,7 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
   it('sends a verified writer exactly one SyncStep1 with the room state vector, right after writable_admission, and applies its reply through the fenced path', async () => {
     const pageId = nextPageId();
     const { room, epoch, revision, seed } = await seededRoom(pageId);
-    // A fresh first join declares nothing: it is not lineage-verified and is not asked.
+    // The seeding first join declared nothing: it is not lineage-verified and is not asked.
     expect(serverSyncStep1s(seed.sent)).toEqual([]);
 
     const tab = await joinVerified(pageId, 'verified-writer', epoch, revision);
@@ -3009,6 +3009,55 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
     expect(await runtimeA!.handleInboundFrame(pageId, 'verified-writer', reply)).toBe('ok');
     expect(yDocToHtml(room.doc)).toContain('UNSENT_BEFORE_REJOIN');
     // None at any later time on that socket.
+    expect(serverSyncStep1s(tab.sent)).toHaveLength(1);
+  });
+
+  it('sends a first join that declares an empty document exactly one SyncStep1 right after writable_admission; its empty reply changes nothing, and its own SyncStep1 is answered under the fence', async () => {
+    const pageId = nextPageId();
+    const state = await query<{ lifecycle_revision: string }>(
+      'SELECT lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+    );
+    const tab = recorder();
+    const joined = await runtimeA!.attachSocket(pageId, {
+      id: 'empty-first-join',
+      ws: tab.ws,
+      userId: USER_A,
+      writable: true,
+      expectedLifecycleRevision: state.rows[0]!.lifecycle_revision,
+      expectedDocEpoch: { kind: 'empty' },
+    });
+
+    // The join seeded the room's persisted document and is verified against it.
+    expect(joined.writable).toBe(true);
+    expect(joined.lineageVerified).toBe(true);
+    const room = runtimeA!.getRoom(pageId)!;
+    expect(room.docEpoch).not.toBeNull();
+    const sequence = kinds(tab.sent);
+    expect(sequence.filter((kind) => kind === 'sync_step1')).toHaveLength(1);
+    expect(sequence.slice(-2)).toEqual(['control:writable_admission', 'sync_step1']);
+    const [solicitation] = serverSyncStep1s(tab.sent);
+    expect(stateVectorOf(solicitation!)).toEqual(Y.encodeStateVector(room.doc));
+
+    // The tab holds nothing: its reply is applied on the fenced path and changes nothing.
+    const before = Y.encodeStateAsUpdate(room.doc);
+    const empty = new Y.Doc();
+    onTestFinished(() => empty.destroy());
+    const reply = replyTo(solicitation!, empty);
+    expect(kindOf(reply)).toBe('sync_step2');
+    expect(await runtimeA!.handleInboundFrame(pageId, 'empty-first-join', reply)).toBe('ok');
+    expect(Y.encodeStateAsUpdate(room.doc)).toEqual(before);
+
+    // Its own SyncStep1 is answered like any verified writer's: inside the
+    // fence, so a committed invalidation of the row leaves it unanswered.
+    let sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'empty-first-join', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+    expect(kinds(tab.sent.slice(sent))).toEqual(['sync_step2']);
+    await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'empty-first-join', encodeSyncStep1(new Y.Doc())))
+      .toBe('dropped');
+    await vi.waitFor(() => expect(tab.closes).toEqual([[1001, 'doc_reset']]));
+    expect(kinds(tab.sent.slice(sent))).toEqual(['control:doc_reset']);
     expect(serverSyncStep1s(tab.sent)).toHaveLength(1);
   });
 

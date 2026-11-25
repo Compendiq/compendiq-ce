@@ -94,9 +94,10 @@ Save, and every other pending intent keep `page_write_busy` (#1763).
 That transience is for a Save in flight only (#2035). When the commit route's
 own remote phase ends without a terminal result, the outcome is unknown and
 the room fails closed: the route adds the intent to the process-local set
-before its first await, records `page_write_intents.remote_effect_failed_at`
-(migration 160; exact-match update, proof read, lock order runtime row, page
-lifecycle, intent row), and publishes a cue only after its request-admission
+before its first await, records the failure marker
+(`page_write_intents.remote_effect_failed_at`, migration 160; exact-match
+update, proof read, lock order runtime row, page lifecycle, intent row), and
+publishes a cue only after its request-admission
 release was attempted: background retries record and latch but stay silent
 until the route opens the declaration's gate (`announce()`). The Redis latch
 is a set of intent ids, so a late write cannot replace another Save's member;
@@ -104,20 +105,21 @@ send its commands and the cue through `withRedisCommandDeadline`, which
 removes a still-queued command at the deadline, never through a bare
 `Promise.race`. Members are reclaimed only when durable state proves them
 obsolete (intent settled or absent), in a bounded sample after an owner's
-marker work ends; never give the key a TTL or delete a pending intent's
-member. The route's 409 `confluence_modified` carries `saveOutcome`
+failure marker work ends; never give the key a TTL or delete a pending
+intent's member. The route's 409 `confluence_modified` carries `saveOutcome`
 (`not_dispatched` or `unknown`); on `unknown` the saving tab enters the
 `commit_unknown` read-only draft from the answer alone
 (`declareCommitUnknown`). Frames, the room-admission `precondition` and the
 final step of `attachSocket` assert the effective state (durable state plus
 the process, room and Redis latches for the same intent) on their
 lifecycle-locked client; `writable_admission` is written only inside that
-final fenced transaction. The marker, the latches and the cue never settle,
-cancel or release anything, and reconciliation does not read the marker. A
-proven marker retires only a finished upload phase whose next phase cannot
-run; never touch a `running` effect. Peer replication and room loads keep
-`'proceed'`. Without the marker a Save reads `in_flight`: a process that died
-mid-Save is unknown only once its runtime is fenced or quiesced.
+final fenced transaction. The failure marker, the latches and the cue never
+settle, cancel or release anything, and reconciliation does not read the
+failure marker. A proven failure marker retires only a finished upload phase
+whose next phase cannot run; never touch a `running` effect. Peer replication
+and room loads keep `'proceed'`. Without the failure marker a Save reads
+`in_flight`: a process that died mid-Save is unknown only once its runtime is
+fenced or quiesced.
 Recovery requires server-observed fencing evidence, never a caller's assertion,
 a missing heartbeat or a force-clear. A read-only HTTP fetch needs no durable
 mutation intent: capture current authority and revisions, then check the same
@@ -307,17 +309,26 @@ That re-read also reads the `pages` row: a hard delete cascades the
 collaborative row, and a page proven absent gets the committed-delete teardown
 (`closeRoomSockets(room, 4404, 'committed_delete')`, the tombstone's own call),
 never `doc_reset`.
-A join that would be writable and declares a malformed or different
-`expectedDocEpoch` is refused (`doc_reset`, `1001 doc_reset`, not attached, no
-admission kept): first without locks, again as the `precondition` of
-`admitPageRuntime`, and once more after a provisional room loaded, seeded or
-adopted its document, because that happens in a later transaction. A declared
-join is writable only in a room whose `docEpoch` equals the declaration. A
-stale heap the join finds is retired first and the join restarts once; a frozen
-page gets no epoch decision. An undeclared join is admitted and never
-`lineageVerified`. The fenced final step of `attachSocket` repeats the
-current-epoch assertion and the declaration comparison in the transaction
-that writes `writable_admission` (#2035). Do not
+A join that would be writable and makes a malformed declaration, or declares
+another `expectedDocEpoch` than the row's, is refused (`doc_reset`, `1001
+doc_reset`, not attached, no admission kept): first without locks, again as
+the `precondition` of `admitPageRuntime`, and once more after a provisional
+room loaded, seeded or adopted its document, because that happens in a later
+transaction. A declared join is writable only in a room whose `docEpoch`
+equals the declaration. A stale heap the join finds is retired first and the
+join restarts once; a frozen page gets no epoch decision. The empty-document
+marker `expectedDocEmpty=1` (an unpinned client whose `Y.Doc` holds nothing; a
+first join) names no epoch: it is never a mismatch, goes through the same
+points, and its writable join is `lineageVerified` like a declared one. The
+marker together with `expectedDocEpoch`, or any other marker value, is
+malformed. The server cannot check the claim; it grants nothing a writer does
+not already have, and exists so that joins that send neither parameter (old
+bundles, partially synced tabs) stay unverified. An undeclared join is admitted
+and never `lineageVerified`. The fenced final step of `attachSocket` repeats
+the current-epoch assertion and, for a declared epoch, the comparison in the
+transaction that writes `writable_admission` (#2035); the empty-document
+marker (`expectedDocEmpty`) has no epoch to compare there, and
+`lineageVerified` is set only in that step. Do not
 reintroduce an in-place replacement of the row, a process-wide reset flag or a
 pre-commit freeze. Details: `docs/architecture/12-realtime-collaboration.md`.
 
