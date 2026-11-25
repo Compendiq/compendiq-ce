@@ -2,9 +2,12 @@
  * The manual Rejoin of a read-only collaborative draft (#2036, D-2036), apart
  * from React so the hook and the live-gateway tests run the same code.
  *
- * One attempt owns one connection of an existing provider and `Y.Doc`. It
- * succeeds only when all four hold: a `writable_admission` for the joined
- * revision (`admit()`), a `sync` event of this connection, the server's own
+ * One attempt owns one connection of an existing provider and `Y.Doc`, or two
+ * when the first is refused with 4401: the hook then `pause()`s the attempt for
+ * one token refresh and `resume()`s it on a new connection (the same attempt and
+ * recorded target, a fresh deadline). It succeeds only when all four hold: a
+ * `writable_admission` for the joined revision (`admit()`), a `sync` event of
+ * this connection, the server's own
  * SyncStep1 (#1928), and a coverage proof. The proof asks the server for its
  * whole state with an empty state vector once the provider has sent its
  * SyncStep2 reply to that SyncStep1, decodes the answer into a document of its
@@ -60,11 +63,20 @@ export interface RejoinController {
   fail: () => void;
   /** The attempt ended in a refusal or teardown: stops its timers, reports nothing. */
   cancel: () => void;
+  /**
+   * The connection ended with 4401 and the attempt waits for a token: stops the
+   * deadline and forgets what the connection proved. Still `running`.
+   */
+  pause: () => void;
+  /** Continue a paused attempt on a new connection with a fresh deadline. */
+  resume: () => void;
 }
 
 interface Attempt {
   /** Clocks and deletions of the local document when the attempt started. */
   target: Y.Snapshot;
+  /** Waiting for a refreshed token; nothing of a connection counts meanwhile. */
+  paused: boolean;
   admitted: boolean;
   synced: boolean;
   serverStep1: boolean;
@@ -86,6 +98,11 @@ export function createRejoinController(ws: WebsocketProvider, callbacks: RejoinC
     clearTimeout(attempt.deadlineTimer);
     attempt = null;
   };
+  const armDeadline = (current: Attempt) => {
+    current.deadlineTimer = setTimeout(() => {
+      if (attempt === current) fail();
+    }, REJOIN_COVERAGE_TIMEOUT_MS);
+  };
   const fail = () => {
     if (!attempt) return;
     stop();
@@ -98,7 +115,7 @@ export function createRejoinController(ws: WebsocketProvider, callbacks: RejoinC
     callbacks.onSucceeded();
   };
   const sendProbe = (current: Attempt) => {
-    if (attempt !== current || current.proof !== 'idle' || !ws.wsconnected || ws.ws === null) return;
+    if (attempt !== current || current.paused || current.proof !== 'idle' || !ws.wsconnected || ws.ws === null) return;
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_SYNC);
     encoding.writeVarUint(encoder, syncProtocol.messageYjsSyncStep1);
@@ -133,7 +150,7 @@ export function createRejoinController(ws: WebsocketProvider, callbacks: RejoinC
   };
 
   ws.on('sync', (isSynced: boolean) => {
-    if (!isSynced || !attempt) return;
+    if (!isSynced || !attempt || attempt.paused) return;
     // The sync of this attempt's connection, not the sticky first one.
     attempt.synced = true;
     maybeSucceed();
@@ -145,7 +162,7 @@ export function createRejoinController(ws: WebsocketProvider, callbacks: RejoinC
   const stockSyncHandler = ws.messageHandlers[MESSAGE_SYNC];
   ws.messageHandlers[MESSAGE_SYNC] = (encoder, decoder, wsProvider, emitSynced, messageType) => {
     const current = attempt;
-    if (!current || !stockSyncHandler) {
+    if (!current || current.paused || !stockSyncHandler) {
       stockSyncHandler?.(encoder, decoder, wsProvider, emitSynced, messageType);
       return;
     }
@@ -177,20 +194,36 @@ export function createRejoinController(ws: WebsocketProvider, callbacks: RejoinC
     start(doc) {
       stop();
       const current: Attempt = {
-        target: Y.snapshot(doc), admitted: false, synced: false, serverStep1: false, proof: 'idle',
+        target: Y.snapshot(doc), paused: false, admitted: false, synced: false, serverStep1: false, proof: 'idle',
       };
       attempt = current;
-      current.deadlineTimer = setTimeout(() => {
-        if (attempt === current) fail();
-      }, REJOIN_COVERAGE_TIMEOUT_MS);
+      armDeadline(current);
       ws.connect();
     },
     admit() {
-      if (!attempt) return;
+      if (!attempt || attempt.paused) return;
       attempt.admitted = true;
       maybeSucceed();
     },
     fail,
     cancel: stop,
+    pause() {
+      const current = attempt;
+      if (!current) return;
+      clearTimeout(current.reprobeTimer);
+      clearTimeout(current.deadlineTimer);
+      current.paused = true;
+      current.admitted = false;
+      current.synced = false;
+      current.serverStep1 = false;
+      current.proof = 'idle';
+    },
+    resume() {
+      const current = attempt;
+      if (!current || !current.paused) return;
+      current.paused = false;
+      armDeadline(current);
+      ws.connect();
+    },
   };
 }

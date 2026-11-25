@@ -91,13 +91,6 @@ export interface UseCollabProviderResult {
    */
   rejoinAttempt: CollabRejoinAttempt;
   /**
-   * Counts the Rejoin attempts of this session that succeeded (#2036). It is an
-   * explicit signal, not something to infer from `writable` or
-   * `readOnlyReason`: a close can land in the same render as the proof. It
-   * starts again at 0 with each new session (document).
-   */
-  rejoinSucceeded: number;
-  /**
    * The Save route answered that the collaborative save of `document` has an
    * unknown result (#2035). Enters the state the `commit_unknown` control
    * does, at once: that control may be late or never arrive. A document that
@@ -192,13 +185,19 @@ function postSyncReadOnlyReason(code: number, reason: string, hasSynced: boolean
  *   one of a document with a pinned epoch also offers a manual Rejoin (#2036,
  *   A4) once `COLLAB_UPGRADE_WINDOW_SEC` has passed. `retry()` then reconnects
  *   the same provider and Y.Doc; the attempt owns every close (a terminal close
- *   ends it in the read-only draft, 4401 does not refresh, and no y-websocket
- *   timer starts a second one). It succeeds only with all of: a
+ *   ends it in the read-only draft, and no y-websocket timer starts a second
+ *   one). A 4401 refreshes the token once, through the same
+ *   `refreshAccessTokenOnce` as outside an attempt, and continues the same
+ *   attempt on a new connection with a fresh proof limit; a second 4401 of the
+ *   attempt, or a refresh that leaves no session, ends it in the read-only
+ *   `unauthorized` draft, and a refresh that cannot tell ends it unconfirmed.
+ *   It succeeds only with all of: a
  *   `writable_admission` for the joined revision, a `sync` of this connection,
  *   the server's own SyncStep1 (#1928) and a proof that the server's full
  *   state, asked for with an empty state vector after the replay and decoded
- *   into a separate document, includes this draft. Any close or no proof within
- *   `REJOIN_COVERAGE_TIMEOUT_MS` keeps `rate_limited` with Rejoin available at once.
+ *   into a separate document, includes this draft. Any other close or no proof
+ *   within `REJOIN_COVERAGE_TIMEOUT_MS` keeps `rate_limited` with Rejoin
+ *   available at once.
  * - A transient close before the first sync sets `reconnecting`; y-websocket retries.
  * - `disableBc: true` so two tabs go through Redis, not BroadcastChannel.
  */
@@ -224,7 +223,6 @@ export function useCollabProvider({
   const [docEpochPinned, setDocEpochPinned] = useState(false);
   const [rejoinOffered, setRejoinOffered] = useState(false);
   const [rejoinAttempt, setRejoinAttempt] = useState<CollabRejoinAttempt>('idle');
-  const [rejoinSucceeded, setRejoinSucceeded] = useState(0);
   // Refetches must not upgrade the epoch of an already-open document.
   const latestRevision = useRef(expectedLifecycleRevision);
   latestRevision.current = expectedLifecycleRevision;
@@ -243,7 +241,6 @@ export function useCollabProvider({
     setDocEpochPinned(false);
     setRejoinOffered(false);
     setRejoinAttempt('idle');
-    setRejoinSucceeded(0);
     if (!enabled || !pageId) {
       setYdoc(null);
       setProvider(null);
@@ -275,6 +272,8 @@ export function useCollabProvider({
     let rejoinReady = false;
     let windowGeneration = 0;
     let generation = 0;
+    // One token refresh per Rejoin attempt; the second 4401 ends it.
+    let attemptRefreshed = false;
     // The `doc_epoch` control of the current connection, until the first sync
     // pins it. The document is empty before that sync, so the epoch named by
     // the connection that fills it is the lineage the document belongs to.
@@ -410,16 +409,39 @@ export function useCollabProvider({
       setReadOnlyReason(null);
       setRejoinOffered(false);
       setRejoinAttempt('idle');
-      setRejoinSucceeded((count) => count + 1);
       setConnected(true);
       setWritable(true);
     };
     // A terminal close of the attempt's connection: it ends in the read-only
-    // draft with its own reason; 4401 does not refresh a token here.
+    // draft with its own reason. A 4401 is refreshed once per attempt.
     const settleAttemptClose = (event: { code: number; reason: string }) => {
       if (event.code === 4401) {
-        setError('unauthorized');
-        preserveReadOnly('unauthorized');
+        if (attemptRefreshed) {
+          setError('unauthorized');
+          preserveReadOnly('unauthorized');
+          return;
+        }
+        attemptRefreshed = true;
+        rejoin.pause();
+        const queued = generation;
+        const continueAttempt = () => queued === generation && !cancelled && rejoin.running;
+        refreshAccessTokenOnce().then(
+          (fresh) => {
+            if (!continueAttempt()) return;
+            if (!fresh) {
+              setError('unauthorized');
+              preserveReadOnly('unauthorized');
+              return;
+            }
+            ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
+            rejoin.resume();
+          },
+          () => {
+            // Whether the rotation happened is unknown: no session is proven
+            // lost, and no reconnect is made with the stale token.
+            if (continueAttempt()) rejoin.fail();
+          },
+        );
         return;
       }
       const joinError = terminalJoinError(event.code, event.reason, true);
@@ -437,6 +459,7 @@ export function useCollabProvider({
       rejoinReady = false;
       // Whatever a refresh or backoff queued before this attempt must not act on it.
       generation += 1;
+      attemptRefreshed = false;
       clearTimeout(rejoinTimer);
       pausedToken = undefined;
       setCanRetry(false);
@@ -612,13 +635,12 @@ export function useCollabProvider({
       setDocEpochPinned(false);
       setRejoinOffered(false);
       setRejoinAttempt('idle');
-      setRejoinSucceeded(0);
     };
   }, [enabled, pageId]);
 
   return {
     ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error,
-    reconnecting, canRetry, retry, docEpochPinned, rejoinOffered, rejoinAttempt, rejoinSucceeded,
+    reconnecting, canRetry, retry, docEpochPinned, rejoinOffered, rejoinAttempt,
     declareCommitUnknown,
   };
 }

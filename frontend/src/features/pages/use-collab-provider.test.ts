@@ -1121,7 +1121,6 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       ['tombstone', (s: Socket) => control(s, { type: 'tombstone' }), 'not_found'],
       ['commit_unknown', (s: Socket) => control(s, { type: 'commit_unknown' }), 'commit_unknown'],
       ['the commit_unknown close', (s: Socket) => s.close(1001, 'commit_unknown'), 'commit_unknown'],
-      ['4401, without a token refresh', (s: Socket) => s.close(4401, 'unauthorized'), 'unauthorized'],
       ['4403 forbidden', (s: Socket) => s.close(4403, 'forbidden'), 'permission_loss'],
       ['4403 flag_off', (s: Socket) => s.close(4403, 'flag_off'), 'flag_off'],
       ['4403 readonly', (s: Socket) => s.close(4403, 'readonly'), 'readonly'],
@@ -1205,6 +1204,159 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
       expect(Socket.instances).toHaveLength(2);
       expect(attempt.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-old']);
       expect(session.result.current.rejoinAttempt).toBe('attempting');
+    });
+
+    describe('a 4401 during the attempt', () => {
+      const freshResponse = () => new Response(JSON.stringify({ accessToken: 'jwt-fresh', user }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+      const refreshWith = (answer: () => Promise<Response>) => vi.spyOn(globalThis, 'fetch').mockImplementation(answer);
+      /** The upgrade of the attempt's connection is refused with 4401. */
+      const refuse = (socket: Socket) => act(async () => { socket.close(4401, 'unauthorized'); });
+
+      it('refreshes the token once and continues the same attempt, which then succeeds with its proof', async () => {
+        const refresh = refreshWith(async () => freshResponse());
+        const session = limited();
+        const { result, gateway } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+
+        expect(refresh).toHaveBeenCalledTimes(1);
+        expect(String(refresh.mock.calls[0]![0])).toContain('/auth/refresh');
+        expect(Socket.instances).toHaveLength(3);
+        const second = Socket.instances[2]!;
+        expect(second.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
+        expect(new URL(second.url).searchParams.get('expectedDocEpoch')).toBe(EPOCH);
+        expect(new URL(second.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+        expect(result.current).toMatchObject({ rejoinAttempt: 'attempting', canRetry: false, writable: false });
+
+        await join(second, gateway);
+        expect(result.current).toMatchObject({
+          writable: true, readOnlyReason: null, error: null, rejoinOffered: false, rejoinAttempt: 'idle',
+        });
+        expect(gateway.text()).toBe('Published text + offline');
+        expect(session.writables.slice(0, -1)).not.toContain(true);
+        expect(refresh).toHaveBeenCalledTimes(1);
+        expectSameDraft(session);
+      });
+
+      it('counts the proof limit from the connection that follows the refresh, not from the press', async () => {
+        refreshWith(async () => freshResponse());
+        const session = limited();
+        const { result, gateway } = session;
+        const first = await rejoin(session);
+        await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS - 1_000); });
+        await refuse(first);
+        const second = Socket.instances[2]!;
+        act(() => { second.open(); gateway.pump(second); admission(second); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS - 1); });
+        expect(result.current.rejoinAttempt).toBe('attempting');
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(result.current).toMatchObject({ rejoinAttempt: 'unconfirmed', canRetry: true, writable: false });
+      });
+
+      it('does not let a slow refresh use up the proof limit', async () => {
+        const held = Promise.withResolvers<Response>();
+        refreshWith(() => held.promise);
+        const session = limited();
+        const { result, gateway } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+        await act(async () => { await vi.advanceTimersByTimeAsync(3 * REJOIN_COVERAGE_TIMEOUT_MS); });
+        expect(result.current).toMatchObject({ rejoinAttempt: 'attempting', canRetry: false, writable: false });
+        expect(Socket.instances).toHaveLength(2);
+        await act(async () => { held.resolve(freshResponse()); await Promise.resolve(); });
+        expect(Socket.instances).toHaveLength(3);
+        await join(Socket.instances[2]!, gateway);
+        expect(result.current).toMatchObject({ writable: true, readOnlyReason: null });
+      });
+
+      it('ends in the read-only draft with the session-expired reason on a second 4401 of the same attempt, with one refresh', async () => {
+        const refresh = refreshWith(async () => freshResponse());
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+        const second = Socket.instances[2]!;
+        await refuse(second);
+
+        expect(result.current).toMatchObject({
+          error: 'unauthorized', readOnlyReason: 'unauthorized', writable: false, connected: false,
+          rejoinOffered: false, rejoinAttempt: 'idle', canRetry: false,
+        });
+        expect(refresh).toHaveBeenCalledTimes(1);
+        // No reconnect loop: nothing opens another connection, by timer or by press.
+        await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+        act(() => { result.current.retry(); });
+        expect(Socket.instances).toHaveLength(3);
+        expect(refresh).toHaveBeenCalledTimes(1);
+        expect(session.writables).not.toContain(true);
+        expectSameDraft(session);
+      });
+
+      it('ends in the read-only draft with the session-expired reason when no session is left to refresh', async () => {
+        const refresh = refreshWith(async () => new Response(null, { status: 401 }));
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+
+        expect(result.current).toMatchObject({
+          error: 'unauthorized', readOnlyReason: 'unauthorized', writable: false, connected: false,
+          rejoinOffered: false, rejoinAttempt: 'idle', canRetry: false,
+        });
+        expect(refresh).toHaveBeenCalledTimes(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+        expect(Socket.instances).toHaveLength(2);
+        expectSameDraft(session);
+      });
+
+      it('ends unconfirmed, without a reconnect, when the refresh cannot tell whether the session is gone', async () => {
+        const refresh = refreshWith(async () => new Response('{', { status: 200 }));
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+
+        expect(result.current).toMatchObject({
+          readOnlyReason: 'rate_limited', writable: false, rejoinOffered: true, rejoinAttempt: 'unconfirmed', canRetry: true,
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(10 * WINDOW_MS); });
+        expect(Socket.instances).toHaveLength(2);
+        expect(refresh).toHaveBeenCalledTimes(1);
+        expectSameDraft(session);
+      });
+
+      it('adds no other automatic reconnect: a transient close after the refresh ends the attempt unconfirmed', async () => {
+        const refresh = refreshWith(async () => freshResponse());
+        const session = limited();
+        const { result, gateway } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+        const second = Socket.instances[2]!;
+        act(() => { second.open(); gateway.pump(second); second.close(1006, 'offline'); });
+
+        expect(result.current).toMatchObject({ rejoinAttempt: 'unconfirmed', canRetry: true, writable: false });
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        expect(Socket.instances).toHaveLength(3);
+        expect(refresh).toHaveBeenCalledTimes(1);
+      });
+
+      it('lets a refresh that settles after the attempt ended in another refusal open nothing', async () => {
+        const held = Promise.withResolvers<Response>();
+        const refresh = refreshWith(() => held.promise);
+        const session = limited();
+        const { result } = session;
+        const first = await rejoin(session);
+        await refuse(first);
+        // The attempt's connection is gone, so the Save route's answer ends the session.
+        act(() => { result.current.declareCommitUnknown(session.draft); });
+        expect(result.current.readOnlyReason).toBe('commit_unknown');
+        await act(async () => { held.resolve(freshResponse()); await vi.advanceTimersByTimeAsync(60_000); });
+        expect(Socket.instances).toHaveLength(2);
+        expect(refresh).toHaveBeenCalledTimes(1);
+        expect(result.current).toMatchObject({ readOnlyReason: 'commit_unknown', writable: false, rejoinAttempt: 'idle' });
+      });
     });
 
     it('refuses to rejoin for another account', async () => {

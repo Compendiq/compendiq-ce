@@ -209,34 +209,9 @@ function rejoinStatusMessage(attempt: CollabRejoinAttempt, available: boolean): 
     return 'Rejoining. Editing resumes once the server is confirmed to hold your draft.';
   }
   if (attempt === 'unconfirmed') {
-    return 'We could not confirm that the server has your draft, so editing stays paused. Download draft saves it as it was before you first pressed Rejoin. You can press Rejoin again.';
+    return 'We could not confirm that the server has your draft, so editing stays paused. You can press Rejoin again.';
   }
   return available ? 'You can rejoin now.' : 'Rejoin becomes available after a minute.';
-}
-
-/** The file Download draft writes. An earlier copy is one of these, frozen when taken. */
-interface DraftFile {
-  pageId: string | undefined;
-  title: string;
-  bodyHtml: string;
-  labels: string[];
-  lifecycleRevision: string | null;
-}
-
-/** A draft exported at the first Rejoin press of a sequence, before any merge. */
-interface DraftExport {
-  takenAt: Date;
-  file: DraftFile;
-  /** The session (document) it was taken in: an export never crosses sessions. */
-  document: Y.Doc | null;
-}
-
-/** An export the merge made unrecoverable from the editor; it stays until used or dismissed. */
-interface EarlierCopy {
-  /** Stable ordinal within the editing session: 1, 2, 3 in the order they were kept. */
-  id: number;
-  takenAt: Date;
-  file: DraftFile;
 }
 
 export function PageViewPage() {
@@ -461,15 +436,11 @@ export function PageViewPage() {
   }, [joinRetryInFlight, collabPreSync, collab.error, collab.readOnlyReason]);
   // Rejoin of the read-only draft (#2036) follows the join Retry pattern: the
   // control stays mounted and focusable as `aria-disabled` while the attempt
-  // runs. An attempt merges what the room holds into the open document, so the
-  // draft is exported once, as it was when the first attempt started, and
-  // Download draft serves that export until editing is restored.
+  // runs. Download draft exports what the editor shows, in every state.
   const { rejoinOffered, rejoinAttempt } = collab;
   const rejoinInFlight = rejoinAttempt === 'attempting';
   const rejoinButtonRef = useRef<HTMLButtonElement | null>(null);
   const rejoinHadFocusRef = useRef(false);
-  const rejoinDraftExportRef = useRef<DraftExport | null>(null);
-  const earlierCopyIdRef = useRef(0);
   // Focus is read when the control leaves the document (React detaches the ref
   // before removing the node), not when it was pressed: the user may only reach
   // it by keyboard after the attempt started.
@@ -480,69 +451,10 @@ export function PageViewPage() {
     }
     rejoinButtonRef.current = node;
   }, []);
-  const currentDraftFile = useCallback((): DraftFile => ({
-    pageId: id,
-    title: editTitle,
-    bodyHtml: editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml,
-    labels: [...draftLabels],
-    lifecycleRevision: sessionLifecycleRevision ?? null,
-  }), [draftLabels, editHtml, editTitle, editorInstance, id, sessionLifecycleRevision]);
   const handleRejoin = useCallback(() => {
     if (rejoinInFlight || !collabCanRetry) return;
-    // One immutable export per sequence of presses, taken at the first one.
-    if (rejoinDraftExportRef.current === null) {
-      rejoinDraftExportRef.current = { takenAt: new Date(), file: currentDraftFile(), document: collab.ydoc };
-    }
     retryCollabJoin();
-  }, [collab.ydoc, collabCanRetry, currentDraftFile, rejoinInFlight, retryCollabJoin]);
-  // Earlier copies (#2036). Coverage proves the room holds the draft's clocks
-  // and deletions, not that the user's text survived the merge (a peer's
-  // deletion can win), so a successful attempt whose merged document differs
-  // from its own export appends that export, unchanged, to an ordered list.
-  // The handoff follows the hook's explicit success counter, never the
-  // socket's writability: a close can land in the same render as the proof.
-  // A copy leaves only when it is downloaded or dismissed, or the editing
-  // session ends: never because of a later refusal, merge, or edit.
-  const [earlierCopies, setEarlierCopies] = useState<EarlierCopy[]>([]);
-  const handledRejoinSuccessRef = useRef(0);
-  useEffect(() => {
-    const successes = collab.rejoinSucceeded;
-    if (successes === 0) {
-      handledRejoinSuccessRef.current = 0;
-      return;
-    }
-    if (successes === handledRejoinSuccessRef.current) return;
-    handledRejoinSuccessRef.current = successes;
-    const exported = rejoinDraftExportRef.current;
-    rejoinDraftExportRef.current = null;
-    if (exported === null || exported.document !== collab.ydoc) return;
-    const current = editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml;
-    if (current === exported.file.bodyHtml) return;
-    earlierCopyIdRef.current += 1;
-    const copy: EarlierCopy = { id: earlierCopyIdRef.current, takenAt: exported.takenAt, file: exported.file };
-    setEarlierCopies((list) => [...list, copy]);
-  }, [collab.rejoinSucceeded, collab.ydoc, editHtml, editorInstance]);
-  useEffect(() => {
-    if (editing && collabLive) return;
-    // The editing session ended: a pending export and every kept copy go with it.
-    rejoinDraftExportRef.current = null;
-    earlierCopyIdRef.current = 0;
-    setEarlierCopies((list) => (list.length > 0 ? [] : list));
-  }, [collabLive, editing]);
-  // The control hands focus on only if it owned it, and before it is removed,
-  // so nothing is deferred past a session change or an unmount.
-  const settleEarlierCopy = useCallback((copy: EarlierCopy, control: HTMLElement, download: boolean) => {
-    if (download) {
-      // A distinct name per copy: ordinal and the moment it was taken.
-      const stamp = copy.takenAt.toISOString().replace(/[-:]/g, '').slice(0, 15);
-      triggerDownload(
-        new Blob([JSON.stringify(copy.file, null, 2)], { type: 'application/json' }),
-        `page-${copy.file.pageId}-draft-copy-${copy.id}-${stamp}.json`,
-      );
-    }
-    if (document.activeElement === control) editorColumnRef.current?.focus();
-    setEarlierCopies((list) => list.filter((item) => item.id !== copy.id));
-  }, []);
+  }, [collabCanRetry, rejoinInFlight, retryCollabJoin]);
   // A Rejoin that vanished with focus on it hands focus to the named editor
   // column, unless something else took it (a surviving control keeps it) or the
   // page changed first.
@@ -886,9 +798,15 @@ export function PageViewPage() {
   }, [discardAndExit]);
 
   const downloadOpenDraft = useCallback(() => {
-    const file = rejoinDraftExportRef.current?.file ?? currentDraftFile();
-    triggerDownload(new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }), `page-${id}-draft.json`);
-  }, [currentDraftFile, id]);
+    const bodyHtml = editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml;
+    triggerDownload(new Blob([JSON.stringify({
+      pageId: id,
+      title: editTitle,
+      bodyHtml,
+      labels: draftLabels,
+      lifecycleRevision: sessionLifecycleRevision ?? null,
+    }, null, 2)], { type: 'application/json' }), `page-${id}-draft.json`);
+  }, [draftLabels, editHtml, editTitle, editorInstance, id, sessionLifecycleRevision]);
 
   const openCurrentVersion = useCallback(async () => {
     if (openingCurrent) return;
@@ -1712,45 +1630,6 @@ export function PageViewPage() {
                   </div>
                 </div>
               )}
-              {earlierCopies.map((copy) => {
-                const several = earlierCopies.length > 1;
-                // Ordinal plus date and time: stable and unambiguous across days.
-                const when = copy.takenAt.toLocaleString([], {
-                  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
-                });
-                const label = `${copy.id} from ${when}`;
-                return (
-                  <div
-                    key={copy.id}
-                    className="my-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm"
-                    data-testid="collab-merged-copy"
-                  >
-                    <p className="font-medium text-foreground">Your draft was merged with the page</p>
-                    <p className="mt-1 leading-6 text-muted-foreground">
-                      The page changed while you were away, so some of what you typed may no longer appear in it.
-                      {' '}A copy of your draft from before you first pressed Rejoin{several ? ` (copy ${label})` : ''} is still available.
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        className="nm-button-ghost h-8"
-                        aria-label={several ? `Download earlier copy ${label}` : undefined}
-                        onClick={(event) => settleEarlierCopy(copy, event.currentTarget, true)}
-                      >
-                        Download earlier copy
-                      </button>
-                      <button
-                        type="button"
-                        className="nm-button-ghost h-8"
-                        aria-label={several ? `Dismiss copy ${label}` : undefined}
-                        onClick={(event) => settleEarlierCopy(copy, event.currentTarget, false)}
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
             </div>
             <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">
                 <PageTitleIcon

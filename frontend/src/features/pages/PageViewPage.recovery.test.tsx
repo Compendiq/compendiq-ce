@@ -81,6 +81,9 @@ function lifecycle(revision: string, frozen = false) {
   };
 }
 
+// The refresh response is parsed with `AuthResponseSchema`: a UUID user id.
+const SELF_ID = '00000000-0000-4000-8000-000000000001';
+
 const initialPage = {
   id: '42',
   confluenceId: null,
@@ -118,7 +121,7 @@ const initialPage = {
   summaryError: null,
   source: 'standalone',
   visibility: 'private',
-  createdByUserId: 'self',
+  createdByUserId: SELF_ID,
   lifecycleRevision: '1',
   isFrozen: false,
   canMutateContent: true,
@@ -216,6 +219,7 @@ let commitMode: 'success' | 'confluence_modified' | 'confluence_modified_after_d
 let deferredCommit: Promise<void> | null = null;
 let pageUpdateMode: 'success' | 'failure' = 'success';
 let deferredPageUpdate: Promise<void> | null = null;
+let refreshAnswer: 'fresh' | 'gone' = 'fresh';
 
 beforeEach(() => {
   Socket.instances = [];
@@ -228,11 +232,12 @@ beforeEach(() => {
   deferredCommit = null;
   pageUpdateMode = 'success';
   deferredPageUpdate = null;
+  refreshAnswer = 'fresh';
   vi.stubGlobal('WebSocket', Socket);
   Element.prototype.scrollTo = vi.fn();
   localStorage.clear();
   useAuthStore.getState().setAuth('jwt-test', {
-    id: 'self',
+    id: SELF_ID,
     username: 'me',
     role: 'user',
   });
@@ -271,6 +276,10 @@ beforeEach(() => {
         title: currentPage.title,
         version: currentPage.version,
       });
+    }
+    if (url === '/api/auth/refresh') {
+      if (refreshAnswer === 'gone') return new Response(null, { status: 401 });
+      return json({ accessToken: 'jwt-fresh', user: { id: SELF_ID, username: 'me', role: 'user' } });
     }
     if (url === '/api/collab/config') {
       if (deferredCollabConfig) return json(await deferredCollabConfig);
@@ -1173,7 +1182,7 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
   const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
   const WINDOW_MS = COLLAB_UPGRADE_WINDOW_SEC * 1000;
   const BANNER = 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.';
-  const UNCONFIRMED = 'We could not confirm that the server has your draft, so editing stays paused. Download draft saves it as it was before you first pressed Rejoin. You can press Rejoin again.';
+  const UNCONFIRMED = 'We could not confirm that the server has your draft, so editing stays paused. You can press Rejoin again.';
   let room: Y.Doc;
   let roomDropsUpdates: boolean;
   let handled: WeakMap<Socket, number>;
@@ -1324,8 +1333,6 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     });
     expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
-    // The merge changed nothing: no notice about an earlier copy.
-    expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument();
     expect(document.querySelector('.ProseMirror')).toHaveTextContent('Typed before the limit');
     // The focus the control held is handed to the named editor column, not dropped to <body>.
     await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
@@ -1444,7 +1451,7 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     await screen.findByText('This editing session is now read-only');
   }
 
-  it('keeps the offline text recoverable through Download draft when the room is ahead and the proof fails', async () => {
+  it('exports what the editor shows after an unconfirmed attempt, even when the merge took offline text out of it', async () => {
     await limitedWithRoomAhead();
 
     roomDropsUpdates = true;
@@ -1459,174 +1466,85 @@ describe('Rejoin of the read-only draft after a post-sync rate_limited (#2036)',
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
     expect(screen.getByTestId('collab-rejoin-status')).toHaveTextContent(UNCONFIRMED);
-    expect(screen.getByTestId('collab-rejoin-status')).not.toHaveTextContent('unchanged');
-    for (let press = 0; press < 2; press += 1) {
-      fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
-      const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
-      expect(saved.bodyHtml).toContain('Typed offline');
-      if (press === 1) break;
-      // Across a further press the export stays the one taken before the first attempt.
-      const again = await pressRejoin();
-      await act(async () => { await vi.advanceTimersByTimeAsync(REJOIN_COVERAGE_TIMEOUT_MS); });
-      expect(again.attempt.readyState).toBe(Socket.CLOSED);
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
+    const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
+    expect(saved.bodyHtml).not.toContain('Typed offline');
+    expect(downloadNames).toEqual(['page-42-draft.json']);
   });
 
-  describe('a successful attempt whose merge removed offline text', () => {
-    async function succeedAgainstRoomAhead() {
-      await limitedWithRoomAhead();
-      const { attempt } = await pressRejoin();
-      completeAttempt(attempt);
+  it('exports what the editor shows after a successful attempt and a later refusal', async () => {
+    await limitedWithRoomAhead();
+    const { attempt } = await pressRejoin();
+    completeAttempt(attempt);
+    await act(async () => { await Promise.resolve(); });
+    act(() => serve(attempt));
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+    await pasteBodyText('Typed afterwards');
+
+    act(() => { attempt.close(4403, 'forbidden'); });
+    expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
+    const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
+    expect(saved.bodyHtml).toContain('Typed afterwards');
+    expect(saved.bodyHtml).not.toContain('Typed offline');
+    expect(downloadNames).toEqual(['page-42-draft.json']);
+  });
+
+  describe('a 4401 during the attempt', () => {
+    const refreshCalls = () => fetchMock.mock.calls.filter(([url]) => url === '/api/auth/refresh');
+
+    it('refreshes the token and continues the same attempt without another press', async () => {
+      await limitedSession();
+      const { rejoin, attempt } = await pressRejoin();
+      await act(async () => { attempt.close(4401, 'unauthorized'); });
+
+      await waitFor(() => expect(Socket.instances).toHaveLength(3));
+      expect(refreshCalls()).toHaveLength(1);
+      const refreshed = Socket.instances[2]!;
+      expect(refreshed.protocols).toContain('jwt-fresh');
+      expect(screen.getByRole('button', { name: 'Rejoining…' })).toBe(rejoin);
+      expect(screen.getByTestId('collab-rejoin-status')).toHaveTextContent('Rejoining.');
+
+      completeAttempt(refreshed);
       await act(async () => { await Promise.resolve(); });
-      act(() => serve(attempt));
-      // Coverage holds, so editing resumes, with the peer's deletion merged in.
+      act(() => serve(refreshed));
       await waitFor(() => {
         expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
       });
-      expect(document.querySelector('.ProseMirror')).not.toHaveTextContent('Typed offline');
-      return attempt;
-    }
-
-    const downloadedFile = async () => JSON.parse(await downloads[downloads.length - 1]!.text()) as {
-      pageId: string; title: string; bodyHtml: string; labels: string[]; lifecycleRevision: string | null;
-    };
-
-    it('keeps the earlier copy downloadable until it is downloaded', async () => {
-      await succeedAgainstRoomAhead();
-
-      const notice = await screen.findByTestId('collab-merged-copy');
-      expect(notice).toHaveTextContent('Your draft was merged with the page');
-      expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
-      const download = screen.getByRole('button', { name: 'Download earlier copy' });
-      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
-      download.focus();
-      fireEvent.click(download);
-
-      const saved = JSON.parse(await downloads[downloads.length - 1]!.text()) as { bodyHtml: string };
-      expect(saved.bodyHtml).toContain('Typed offline');
-      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
-      // Keyboard users keep a place: focus goes to the editor column, not <body>.
-      await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
-    });
-
-    it('keeps it until dismissed explicitly, and drops it without a download', async () => {
-      await succeedAgainstRoomAhead();
-
-      // Editing carries on; the notice stays.
-      await act(async () => { await vi.advanceTimersByTimeAsync(5 * WINDOW_MS); });
-      expect(screen.getByTestId('collab-merged-copy')).toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
-      expect(downloads).toHaveLength(0);
-    });
-
-    it('keeps the copy, with its actions, through a later terminal refusal', async () => {
-      const attempt = await succeedAgainstRoomAhead();
-
-      act(() => { attempt.close(4403, 'forbidden'); });
-      expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument();
-      // Download draft now writes the editor, which no longer has the text; the copy still does.
-      fireEvent.click(screen.getByRole('button', { name: 'Download draft' }));
-      expect((await downloadedFile()).bodyHtml).not.toContain('Typed offline');
-      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
-      expect((await downloadedFile()).bodyHtml).toContain('Typed offline');
-      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
+      expect(document.querySelector('.ProseMirror')).toHaveTextContent('Typed before the limit');
+      expect(Socket.instances).toHaveLength(3);
     });
 
-    it('keeps both copies when another merging Rejoin follows in the same session', async () => {
-      const attempt = await succeedAgainstRoomAhead();
-
-      // A second limit, then a peer adds a paragraph meanwhile: the next merge changes the draft again.
-      act(() => { attempt.close(4403, 'rate_limited'); });
-      await screen.findByText('This editing session is now read-only');
-      publish('Peer addition');
-      const second = await pressRejoin();
-      completeAttempt(second.attempt);
-      await act(async () => { await Promise.resolve(); });
-      act(() => serve(second.attempt));
-      await waitFor(() => {
-        expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
-      });
-
-      const downloads2 = await screen.findAllByRole('button', { name: /^Download earlier copy \d+ from / });
-      expect(downloads2).toHaveLength(2);
-      // A stable ordinal plus date and time in every accessible label.
-      expect(downloads2[0]).toHaveAccessibleName(/^Download earlier copy 1 from .+\d/);
-      expect(downloads2[1]).toHaveAccessibleName(/^Download earlier copy 2 from /);
-      expect(screen.getAllByRole('button', { name: /^Dismiss copy \d+ from / })).toHaveLength(2);
-      expect(screen.getAllByTestId('collab-merged-copy')[1]).toHaveTextContent('(copy 2 from ');
-      fireEvent.click(downloads2[0]!);
-      const first = await downloadedFile();
-      expect(first.bodyHtml).toContain('Typed offline');
-      // The other one is still there, and is the draft as it was before the second sequence.
-      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
-      // Each file gets its own name: the ordinal and the moment it was taken.
-      expect(downloadNames).toHaveLength(2);
-      expect(downloadNames[0]).toMatch(/^page-42-draft-copy-1-\d{8}T\d{6}\.json$/);
-      expect(downloadNames[1]).toMatch(/^page-42-draft-copy-2-\d{8}T\d{6}\.json$/);
-      const secondCopy = await downloadedFile();
-      expect(secondCopy.bodyHtml).not.toContain('Typed offline');
-      expect(secondCopy.bodyHtml).not.toContain('Peer addition');
-      await waitFor(() => expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument());
-    });
-
-    it('writes the stored copy unchanged after the title is edited', async () => {
-      await succeedAgainstRoomAhead();
-
-      fireEvent.change(screen.getByTestId('edit-title-input'), { target: { value: 'A title typed afterwards' } });
-      expect(screen.getByTestId('edit-title-input')).toHaveValue('A title typed afterwards');
-      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
-      expect(await downloadedFile()).toMatchObject({
-        pageId: '42', title: 'Recovery article', labels: [], lifecycleRevision: '1',
-      });
-      expect((await downloadedFile()).bodyHtml).toContain('Typed offline');
-    });
-
-    it('offers the copy when the covering answer and a transient close land in one render', async () => {
-      await limitedWithRoomAhead();
+    it('ends in the read-only draft when the refreshed connection is refused with 4401 again', async () => {
+      await limitedSession();
       const { attempt } = await pressRejoin();
+      await act(async () => { attempt.close(4401, 'unauthorized'); });
+      await waitFor(() => expect(Socket.instances).toHaveLength(3));
+      act(() => { Socket.instances[2]!.close(4401, 'unauthorized'); });
 
-      // The proof clears the read-only reason and a 1006 close clears writability,
-      // delivered in one batch: nothing may be inferred from the socket's state.
-      await act(async () => {
-        attempt.open();
-        serve(attempt);
-        sendControl(attempt, { type: 'writable_admission', lifecycleRevision: '1' });
-        requestReplay(attempt);
-        await Promise.resolve();
-        serve(attempt);
-        attempt.close(1006, 'offline');
-      });
-
-      expect(await screen.findByText('Working offline')).toBeInTheDocument();
-      expect(document.querySelector('.ProseMirror')).not.toHaveTextContent('Typed offline');
-      const notice = await screen.findByTestId('collab-merged-copy');
-      expect(notice).toHaveTextContent('Your draft was merged with the page');
-      fireEvent.click(screen.getByRole('button', { name: 'Download earlier copy' }));
-      expect((await downloadedFile()).bodyHtml).toContain('Typed offline');
+      await waitFor(() => expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument());
+      expect(screen.getByText('The page or your access changed. Your open draft remains below and is not reapplied automatically.'))
+        .toBeInTheDocument();
+      await expectDraftControls();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * WINDOW_MS); });
+      expect(Socket.instances).toHaveLength(3);
+      expect(refreshCalls()).toHaveLength(1);
     });
 
-    it('hands focus on only when the control owned it: keyboard Dismiss moves to the editor, focus elsewhere stays', async () => {
-      await succeedAgainstRoomAhead();
+    it('ends in the read-only draft when the refresh leaves no session', async () => {
+      refreshAnswer = 'gone';
+      await limitedSession();
+      const { attempt } = await pressRejoin();
+      await act(async () => { attempt.close(4401, 'unauthorized'); });
 
-      const title = screen.getByTestId('edit-title-input');
-      title.focus();
-      // A pointer click that never focused the control leaves focus where it was.
-      fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-      expect(screen.queryByTestId('collab-merged-copy')).not.toBeInTheDocument();
-      expect(title).toHaveFocus();
-      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-      expect(title).toHaveFocus();
-    });
-
-    it('moves focus to the editor column when a focused Dismiss is activated', async () => {
-      await succeedAgainstRoomAhead();
-
-      const dismiss = screen.getByRole('button', { name: 'Dismiss' });
-      dismiss.focus();
-      fireEvent.click(dismiss);
-      expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus();
+      await waitFor(() => expect(screen.queryByRole('button', { name: /Rejoin/ })).not.toBeInTheDocument());
+      await expectDraftControls();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * WINDOW_MS); });
+      expect(Socket.instances).toHaveLength(2);
+      expect(refreshCalls()).toHaveLength(1);
     });
   });
 

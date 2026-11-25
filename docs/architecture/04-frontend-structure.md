@@ -574,29 +574,17 @@ flowchart TB
   surviving control or another page never loses focus to it. The banner and
   both draft controls stay mounted before, during and after an attempt, and
   Save stays blocked. An attempt merges the room's state into the only open
-  document, which can remove text typed offline. The page therefore takes one
-  immutable export at the first Rejoin press of a sequence (exactly the file
-  **Download draft** writes: body, title, labels, page and lifecycle identity)
-  and **Download draft** serves it until editing is restored; the status after
-  an unconfirmed attempt says so and does not call the draft unchanged. A
-  successful attempt can remove text too (coverage proves clocks and deletions,
-  not that typed text survived the merge). When the merged document differs from
-  that attempt's own export, editing resumes and the export is appended, unchanged,
-  to an ordered list of earlier copies, each shown as a notice in the same banner
-  style: "Your draft was merged with the page", the copy named as from before
-  you first pressed Rejoin (with its ordinal, date and time when there is more
-  than one), and **Download earlier copy** and **Dismiss** (native buttons). The
-  handoff follows the hook's explicit `rejoinSucceeded` counter (reset with each
-  session, compared with the document the export was taken in), never the socket's
-  writability: a transient close can land in the same render as the proof. A copy
-  leaves the list only when it is downloaded or dismissed or the editing session
-  ends; a later refusal or read-only state, a later merge (which appends its own
-  copy) and later title or label edits never hide, replace or rewrite one.
-  Download writes the stored file as it is, under its own name
-  (`page-<id>-draft-copy-<ordinal>-<timestamp>.json`). A notice action hands focus
-  to the "Page body" region only when the pressed control owned focus,
-  synchronously, before it is removed. Nothing is shown when the merge changed
-  nothing. The editor becomes writable only when the attempt proves the server
+  document, which can remove text typed offline; that is ordinary collaborative
+  behaviour, so **Download draft** always writes what the editor shows at that
+  moment (body, title, labels, page and lifecycle identity), in every state and
+  also after an attempt, and the page keeps no earlier copy. The status after an
+  unconfirmed attempt says only that the server could not be confirmed to hold
+  the draft and that Rejoin can be pressed again. A 4401 during an attempt
+  is refreshed once by the hook (`refreshAccessTokenOnce`, as outside an
+  attempt) and the same attempt continues on a new connection, so the banner keeps
+  reading `Rejoining…`; a second 4401 or a refresh without a session ends it in the
+  read-only draft with reason `unauthorized`. The editor becomes writable only
+  when the attempt proves the server
   holds the draft (`docs/architecture/12-realtime-collaboration.md`). No other
   reason is offered a rejoin. An unknown collaborative save (#2035) replaces the
   retryable `rate_limited` state, whether it arrives during the cooldown, after

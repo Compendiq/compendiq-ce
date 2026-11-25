@@ -139,7 +139,7 @@ sequenceDiagram
 
 | Code | Reason | When | Client before the first sync | Client after the first sync |
 |------|--------|------|------------------------------|-----------------------------|
-| **4401** | `unauthorized` | Missing / invalid / expired JWT, deactivated user or changed role (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) | Refresh and rejoin. No session left: "Your session expired" | Refresh and rejoin, **except during a manual Rejoin attempt (#2036)**, which never refreshes: it ends in the read-only draft (`unauthorized`). No session left: read-only draft |
+| **4401** | `unauthorized` | Missing / invalid / expired JWT, deactivated user or changed role (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) | Refresh and rejoin. No session left: "Your session expired" | Refresh and rejoin. During a manual Rejoin attempt (#2036) the same refresh runs once per attempt and the attempt continues on a new connection; a second 4401 of that attempt, or no session left, ends it in the read-only draft (`unauthorized`) |
 | **4403** | `forbidden` | Page access revoked mid-session (60 s permission refresh) | "You cannot join this collaborative session." Fail closed, no Retry | Read-only draft (`permission_loss`) |
 | **4403** | `rate_limited` | More than 20 upgrades by the user in the fixed `COLLAB_UPGRADE_WINDOW_SEC` (60 s) window | "Too many connection attempts". Retry becomes available one full window after the refusal | Read-only draft (`rate_limited`): "Too many connection attempts from your account." **Rejoin** one full window after the refusal, only for a document with a pinned epoch (#2036, amendment A4); no rejoin otherwise |
 | **4403** | `flag_off` | Flag off at join, or mid-session (every pod tombstones its rooms) | "Collaborative editing has been turned off". The client refetches `GET /api/collab/config`, no Retry | Read-only draft (`flag_off`): "Collaborative editing was turned off." The client also refetches `GET /api/collab/config` |
@@ -347,12 +347,20 @@ lifecycle revision, the pinned epoch and the current access token. The attempt
 logic is `collab-rejoin-attempt.ts`, free of React, so the live-gateway tests
 run the same code as the hook. The attempt owns every close, which changes the
 automatic behaviour described in the close table for as long as it runs: a
-terminal `closed` (4401, 4403, 4404) is settled once after `connection-close`,
-4401 does not refresh the token, a transient close reconnects nothing (the
-provider's reconnect timer is switched off at the first close so it cannot
-start a second attempt), and the hook's periodic resync (the 30 s SyncStep1
-y-websocket would send) stands still, because its differential SyncStep2
-could not be told from the answer to the probe below. After a successful
+terminal `closed` (4403, 4404) is settled once after `connection-close`, a
+transient close reconnects nothing (the provider's reconnect timer is switched
+off at the first close so it cannot start a second attempt), and the hook's
+periodic resync (the 30 s SyncStep1 y-websocket would send) stands still,
+because its differential SyncStep2 could not be told from the answer to the
+probe below. The one exception is a 4401: the attempt is paused (its 10 s
+limit stops and nothing the closed connection proved counts), the token is
+refreshed through the same `refreshAccessTokenOnce` as outside an attempt, and
+the same attempt resumes on a new connection with the new token, the same
+recorded target and a fresh 10 s limit, so the user does not press again. That
+is one refresh per attempt: a second 4401 of the attempt, or a refresh that
+leaves no session, ends it in the read-only draft (`unauthorized`), and a
+refresh whose outcome is unknown ends it unsuccessfully without reconnecting
+with the stale token. No other automatic reconnect exists. After a successful
 attempt the 4401 refresh, the reconnect after a transient close and the resync
 resume; after an unsuccessful one nothing reconnects until Rejoin is pressed again.
 
@@ -391,20 +399,16 @@ transport), ends the attempt unsuccessfully: provider disconnected, draft
 kept with `rate_limited`, Rejoin available at once and a status message that
 the server could not be confirmed to hold the draft. A refusal ends it in the
 read-only draft with its own reason (`writable_refused`, `permission_loss`,
-`doc_reset`, `tombstone`, `commit_unknown`, 4401, 4403, 4404); a second
+`doc_reset`, `tombstone`, `commit_unknown`, a second 4401 or a refresh without
+a session, 4403, 4404); a second
 `rate_limited` restarts the window. Against a pod without #1928 no SyncStep1
 arrives and the attempt ends unsuccessfully after the timeout.
 
 The open document merges what the room holds before the proof (the first
-SyncStep2 may carry a peer's deletion that removes text typed offline), so the
-page takes one immutable export of the draft (the whole Download draft file) at
-the first Rejoin press of a sequence, and **Download draft** serves it until
-editing is restored, also after an unsuccessful attempt or a refusal and across
-further presses. The proof predicate is unchanged and does not say the typed
-text survived: after a successful attempt whose merged document differs from
-that attempt's own export, editing resumes and the export joins an ordered list
-of earlier copies (**Download earlier copy**, **Dismiss**) that only a download,
-a dismissal or the end of the editing session removes. The live-room tests of
+SyncStep2 may carry a peer's deletion that removes text typed offline). That
+is ordinary collaborative behaviour: **Download draft** always exports what the
+editor shows at that moment, in every state, and the page keeps no earlier copy.
+The proof predicate does not say the typed text survived. The live-room tests of
 this section run `collab-rejoin-attempt.ts`
 itself from `pages-collab.test.ts`, a cross-workspace import that needs the full
 monorepo checkout (see `docs/claude/testing-and-retrieval-eval.md`).
