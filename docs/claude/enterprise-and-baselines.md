@@ -328,7 +328,11 @@ and never `lineageVerified`. The fenced final step of `attachSocket` repeats
 the current-epoch assertion and, for a declared epoch, the comparison in the
 transaction that writes `writable_admission` (#2035); the empty-document
 marker (`expectedDocEmpty`) has no epoch to compare there, and
-`lineageVerified` is set only in that step. Do not
+`lineageVerified` is set only in that step. That step sends the server
+SyncStep1 (#1928) only to a verified writer whose join declared
+`docReplaySafe=1`, the client capability of a bundle that never pins or
+replays bytes from before a first sync; it is not a permission, and any other
+value is malformed like the declaration. Do not
 reintroduce an in-place replacement of the row, a process-wide reset flag or a
 pre-commit freeze. Details: `docs/architecture/12-realtime-collaboration.md`.
 

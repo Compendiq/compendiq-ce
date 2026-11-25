@@ -177,6 +177,13 @@ export interface CollabSocket {
    * are dropped without counting as read-only violations.
    */
   commitUnknownGated?: boolean;
+  /**
+   * The join declared the `docReplaySafe` capability (#1928): its client
+   * never pins or replays bytes it received before a first sync. A
+   * lineage-verified writer is sent the server SyncStep1 only with it. Not a
+   * permission, and not consulted for anything else.
+   */
+  docReplaySafe?: boolean;
 }
 
 /**
@@ -190,7 +197,7 @@ export type CollabDocEpochDeclaration =
   | { kind: 'malformed' }
   | { kind: 'declared'; epoch: string };
 
-export type CollabSocketJoin = Pick<CollabSocket, 'id' | 'ws' | 'userId' | 'writable' | 'identity'> & {
+export type CollabSocketJoin = Pick<CollabSocket, 'id' | 'ws' | 'userId' | 'writable' | 'identity' | 'docReplaySafe'> & {
   expectedLifecycleRevision?: string | null;
   /** Omitted means `absent`. */
   expectedDocEpoch?: CollabDocEpochDeclaration;
@@ -2200,6 +2207,7 @@ export async function createCollabRuntime(
       lineageVerified: false,
       ...(socket.identity ? { identity: socket.identity } : {}),
       ...(refusalReason ? { writableRefusalReason: refusalReason } : {}),
+      ...(socket.docReplaySafe ? { docReplaySafe: true } : {}),
     };
     if (full.ws.readyState !== 1) {
       await releaseAdmissionIfNoWriters(room);
@@ -2318,7 +2326,7 @@ export async function createCollabRuntime(
    * transport's live path (`goLive`), marks the socket writable, decides
    * whether it is lineage-verified and writes `writable_admission`, followed
    * by one server SyncStep1 when the join is lineage-verified (a declared
-   * epoch or the empty-document marker). The unknown-outcome marker, every
+   * epoch or the empty-document marker) and declared `docReplaySafe`. The unknown-outcome marker, every
    * settlement and every invalidation, seed and reset take the same
    * lifecycle lock: either the marker commits first and this join sees it,
    * or the socket is a registered writer before the marker commits and the
@@ -2367,11 +2375,14 @@ export async function createCollabRuntime(
         }));
         // Ask the tab once for what the room lacks: frames refused or lost
         // before this connection and edits made offline. Only a tab whose
-        // document is of this room's lineage, or that declared it holds none
-        // (a first join: its reply is empty), may answer; an undeclared join
-        // could merge another generation (#2034). Its SyncStep2 takes the
-        // fenced `syncMutation` path like any other write.
-        if (socket.lineageVerified) sendBin(socket.ws, encodeSyncStep1Frame(room.doc));
+        // document is of this room's lineage, or that declared it held none
+        // when it connected, may answer; an undeclared join could merge
+        // another generation (#2034). Its client must also be replay-safe
+        // (`docReplaySafe`): an older bundle can pin bytes it received before
+        // a first sync, from a lineage that ended since, and its matching
+        // epoch looks the same. Whatever the reply holds takes the fenced
+        // `syncMutation` path like any other write.
+        if (socket.lineageVerified && socket.docReplaySafe) sendBin(socket.ws, encodeSyncStep1Frame(room.doc));
         return true;
       }, { admission, ownCollabCommit: 'proceed' }), commitLatches);
   }

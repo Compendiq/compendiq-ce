@@ -2938,7 +2938,10 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
     return { room, epoch: room.docEpoch!, revision, seed };
   }
 
-  async function joinVerified(pageId: number, id: string, epoch: string, revision: string): Promise<Recorder> {
+  /** A writer whose join declared `epoch`; a replay-safe client unless `docReplaySafe` is false. */
+  async function joinVerified(
+    pageId: number, id: string, epoch: string, revision: string, docReplaySafe = true,
+  ): Promise<Recorder> {
     const socket = recorder();
     const joined = await runtimeA!.attachSocket(pageId, {
       id,
@@ -2947,6 +2950,7 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
       writable: true,
       expectedLifecycleRevision: revision,
       expectedDocEpoch: { kind: 'declared', epoch },
+      docReplaySafe,
     });
     expect(joined.writable).toBe(true);
     expect(joined.lineageVerified).toBe(true);
@@ -3025,6 +3029,7 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
       writable: true,
       expectedLifecycleRevision: state.rows[0]!.lifecycle_revision,
       expectedDocEpoch: { kind: 'empty' },
+      docReplaySafe: true,
     });
 
     // The join seeded the room's persisted document and is verified against it.
@@ -3062,6 +3067,48 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
   });
 
   it.each([
+    ['a pinned rejoin with the matching epoch', 'declared'],
+    ['a first join with the empty-document marker', 'empty'],
+  ] as const)('verifies %s from a client without the replay-safe capability but sends it no SyncStep1; its own SyncStep1 is still answered under the fence', async (_name, kind) => {
+    const pageId = nextPageId();
+    const state = await query<{ lifecycle_revision: string }>(
+      'SELECT lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+    );
+    const revision = state.rows[0]!.lifecycle_revision;
+    let tab: Recorder;
+    if (kind === 'declared') {
+      const { epoch } = await seededRoom(pageId);
+      tab = await joinVerified(pageId, 'older-bundle', epoch, revision, false);
+    } else {
+      tab = recorder();
+      const joined = await runtimeA!.attachSocket(pageId, {
+        id: 'older-bundle',
+        ws: tab.ws,
+        userId: USER_A,
+        writable: true,
+        expectedLifecycleRevision: revision,
+        expectedDocEpoch: { kind: 'empty' },
+      });
+      expect(joined).toMatchObject({ writable: true, lineageVerified: true });
+    }
+
+    expect(kinds(tab.sent).at(-1)).toBe('control:writable_admission');
+    expect(serverSyncStep1s(tab.sent)).toEqual([]);
+    // The fence on its own SyncStep1 does not depend on the capability: once
+    // the row is invalidated it is not answered, and the room retires.
+    let sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'older-bundle', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+    expect(kinds(tab.sent.slice(sent))).toEqual(['sync_step2']);
+    await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'older-bundle', encodeSyncStep1(new Y.Doc())))
+      .toBe('dropped');
+    await vi.waitFor(() => expect(tab.closes).toEqual([[1001, 'doc_reset']]));
+    expect(kinds(tab.sent.slice(sent))).toEqual(['control:doc_reset']);
+    expect(serverSyncStep1s(tab.sent)).toEqual([]);
+  });
+
+  it.each([
     'an undeclared rejoin',
     'a read-only join',
     'a stale lifecycle revision (writable_refused)',
@@ -3084,6 +3131,8 @@ describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable joi
         ? String(BigInt(revision) + 1n)
         : join === 'a missing lifecycle revision (writable_refused)' ? null : revision,
       ...(join === 'an undeclared rejoin' ? {} : { expectedDocEpoch: { kind: 'declared' as const, epoch } }),
+      // A replay-safe client: only the join's outcome keeps it from being asked.
+      docReplaySafe: true,
     });
 
     expect(joined.lineageVerified).toBe(false);

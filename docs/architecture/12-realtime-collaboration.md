@@ -120,7 +120,7 @@ sequenceDiagram
             alt writable join reaches the fenced final step
                 G->>F: goLive inside the final transaction, buffered frames move to the frame chain behind a gate
                 G-->>B: writable_admission
-                opt lineage-verified writable join, a matching expectedDocEpoch or expectedDocEmpty
+                opt lineage-verified writable join, a matching expectedDocEpoch or expectedDocEmpty, that declared docReplaySafe
                     G-->>B: server SyncStep1 with the room state vector
                     B->>F: SyncStep2 with what the room lacks, normally empty on a fresh first join, queued behind the gate, no 1 MiB budget, 10 MiB maxPayload
                 end
@@ -147,7 +147,7 @@ sequenceDiagram
 | **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden`: read-only draft (`permission_loss`), also for an empty reason |
 | **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
 | **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
-| **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable made a malformed declaration (a malformed `expectedDocEpoch` or `expectedDocEmpty`, or both together) or declared another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
+| **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable made a malformed declaration (a malformed `expectedDocEpoch`, `expectedDocEmpty` or `docReplaySafe`, or both document parameters together) or declared another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
 | **1001** | `commit_unknown` | The page's own collaborative Save failed after dispatch and its result is unknown (#2035). Sent to every socket that was writable, after the `commit_unknown` control and the `permission_loss` compatibility cue. Not a new close code | "A collaborative save of this page did not finish, and its result is unknown. Editing is paused until that save is resolved." | Read-only draft (`commit_unknown`) with **Download draft** and **Open current version**, no reconnect |
 | **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect |
 | HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
@@ -239,9 +239,9 @@ which document it holds:
   synced it, or after it. A pinned document keeps its `Y.Doc` across
   reconnects as before (same-epoch recovery), and so does a document whose
   first sync came without the control.
-- **Declaration.** Two optional join parameters, decided for each connect
+- **Declaration.** Optional join parameters, decided for each connect
   (y-websocket 3.1 builds the URL on every connect; the hook's provider
-  subclass decides there). They exclude each other:
+  subclass decides there). The first two exclude each other:
   - `expectedDocEpoch=<uuid>`: "I hold the document of this epoch". Sent by a
     pinned document on every later join (the pin is written to the provider's
     `params`), and never together with the marker.
@@ -258,15 +258,24 @@ which document it holds:
     its first join and its pinned epoch on later ones. Both, and a bundle with
     the marker but without #1928, also reconnect a document that kept bytes
     from before its first sync (see *Mixed versions*).
+  - Beside either or neither, the replay-safe capability
+    `docReplaySafe=1` (#1928, a flag whose only value is `1`): "this bundle
+    never pins or replays bytes it received before a first sync". The current
+    bundle sends it on every connect, Retry and token refresh included,
+    because it follows the clean-document rule above. No older bundle sends
+    it.
 
-  The gateway reads the pair with `CollabJoinDeclarationSchema` as `absent`
-  (neither), `declared` (exactly one UUID), `empty` (exactly the marker) or
-  `malformed` (an empty value, a repeated parameter, any other text, or both
-  parameters together).
+  The gateway reads the three with `CollabJoinDeclarationSchema` as `absent`
+  (neither document parameter), `declared` (exactly one UUID), `empty`
+  (exactly the marker) or `malformed` (an empty value, a repeated parameter,
+  any other text, both document parameters together, or a capability of any
+  value but `1`), and separately whether the capability is present.
 
-Neither parameter is a credential. Authentication, page access, edit
+No parameter is a credential. Authentication, page access, edit
 permission and the lifecycle checks run first and are unchanged; a declaration
-can only end that join or decide whether the socket is lineage-verified.
+can only end that join or decide whether the socket is lineage-verified, and
+the capability only decides whether a verified writer is sent the server
+SyncStep1.
 
 **Trust in the empty-document marker.** The server cannot check the claim. A
 client that sets the marker while it holds content is in the same position as
@@ -276,6 +285,17 @@ so that the joins that never set it, old bundles and partially synced tabs,
 stay unverified and are not asked to send their contents (#1928 sends its
 SyncStep1 to verified sockets only).
 
+**The replay-safe capability is not a permission either (#1928).** It cannot
+be checked, and it grants nothing: a socket that declares it is admitted,
+verified, fenced and demoted exactly as one that does not. It only lets the
+server ask a verified writer for what the room lacks. Its purpose is the
+reverse of a grant: a bundle from #2034 or #2035 can pin a document that kept
+bytes from before its first sync, and its matching `expectedDocEpoch` looks
+the same as a repaired client's, so the server asks no client that has not
+said it follows the clean-document rule. A client that sends the capability
+falsely can answer with arbitrary content, which any writer can already send
+unprompted, through the same fenced path.
+
 **Join outcome precedence** (first match wins):
 
 1. The route closes as before: 4404, 4401, 4403 `flag_off`, 4403
@@ -283,8 +303,8 @@ SyncStep1 to verified sockets only).
 2. The join would not be writable (no edit permission, a frozen page, a
    missing or stale `expectedLifecycleRevision`): today's outcome, attached
    read-only, **no epoch decision and no unknown-commit decision**.
-3. The declaration is malformed (`expectedDocEpoch` or `expectedDocEmpty`
-   malformed, or both present), or it declares an epoch different from the
+3. The declaration is malformed (`expectedDocEpoch`, `expectedDocEmpty` or
+   `docReplaySafe` malformed, or both document parameters present), or it declares an epoch different from the
    page's `doc_epoch` (or the page has no row): `doc_reset` control, close
    `1001 doc_reset`, the socket is not attached and no admission is kept. Only
    the joining socket is affected: the room's other sockets stay, and a refused
@@ -295,7 +315,8 @@ SyncStep1 to verified sockets only).
    is attached read-only and sent `commit_unknown`, then `permission_loss`. It
    never receives `writable_admission` and takes no admission.
 5. Otherwise the join is writable: `writable_admission`, then one server
-   SyncStep1 when the join is lineage-verified (#1928, below).
+   SyncStep1 when the join is lineage-verified and declared `docReplaySafe`
+   (#1928, below).
 
 A frozen page is step 2 whatever the join declares: the refused admission
 gives it today's read-only outcome and the declaration is not looked at.
@@ -343,7 +364,7 @@ decision applies to it unchanged. The last of them also decides step 4:
   else, it makes the last socket, room and transport checks, calls the
   gateway's `goLive` (#1928), marks the socket writable, sets
   `lineageVerified` (below) and writes `writable_admission`, followed by the
-  server SyncStep1 of a lineage-verified join. A lineage that ended meanwhile
+  server SyncStep1 of a lineage-verified, replay-safe join. A lineage that ended meanwhile
   retires the room (a join that named an epoch is answered `doc_reset`; one
   that named none, undeclared or with the empty-document marker, is closed
   `1001` and reconnects into a fresh room); a declared epoch that no longer
@@ -379,10 +400,14 @@ socket is open and never queues it, so a frame refused with `1001
 collab_validation_unavailable` or lost to a close, and an edit made while the
 tab was disconnected after its first sync, would stay only in the tab: a later
 collaborative Save then answers `409 collab_snapshot_not_received`. A
-writable, lineage-verified join is therefore sent exactly one SyncStep1
+writable, lineage-verified join whose client declared `docReplaySafe` is
+therefore sent exactly one SyncStep1
 carrying `room.doc`'s state vector, directly after `writable_admission` in the
 fenced final step, and never again on that socket. That includes a tab's first
-join, verified through the empty-document marker. In the normal case, a fresh
+join, verified through the empty-document marker. A verified join without the
+capability (a bundle from #2034 or #2035, first join or pinned rejoin) is
+admitted and verified as before but not asked: it may have pinned bytes of an
+ended lineage. In the normal case, a fresh
 tab whose document is still empty when the SyncStep1 arrives, its SyncStep2
 carries nothing and changes nothing in the room. That is not a wire
 guarantee: the marker describes the document at connect, and in a live room
@@ -403,7 +428,7 @@ reconnects, so a fenced draft is not replayed.
 **Fenced answer to a verified writer (#1928).** A client SyncStep1 that
 arrives on a socket the server holds as writable and lineage-verified (server
 state, never a client claim: a declared epoch or the empty-document marker,
-decided in the final step) is answered inside an admission-fenced transaction
+decided in the final step; with or without `docReplaySafe`) is answered inside an admission-fenced transaction
 with `ownCollabCommit: 'proceed'`, like the replay, so a healthy Save in flight
 does not refuse it. That includes the SyncStep1 y-websocket sends on open,
 buffered before live and handled after the final step. That transaction
@@ -636,22 +661,23 @@ before `expectedDocEmpty`: it has the column, the `doc_epoch` control and
 `expectedDocEpoch`, and does not know the marker. *Marker-aware without
 #1928* is a build of #2034 or #2035 with `expectedDocEmpty`: it verifies a
 marker join or a matching epoch, but sends no server SyncStep1, answers every
-client SyncStep1 without the fence, and its bundle does not replace a document
-that kept bytes from before its first sync. This is what to expect:
+client SyncStep1 without the fence, and its bundle sends no `docReplaySafe`
+and does not replace a document that kept bytes from before its first sync.
+This is what to expect:
 
 | Situation | Behaviour |
 |---|---|
-| Pre-epoch pod serves a join | Ignores `expectedDocEpoch` and `expectedDocEmpty`, sends no `doc_epoch` and no server SyncStep1 (#1928): today's behaviour on that socket |
+| Pre-epoch pod serves a join | Ignores `expectedDocEpoch`, `expectedDocEmpty` and `docReplaySafe`, sends no `doc_epoch` and no server SyncStep1 (#1928): today's behaviour on that socket |
 | Pre-epoch pod writes the collab row | A new row gets a fresh epoch from the column default. Its unguarded upsert can still overwrite a row, and its in-place reset keeps the epoch (the reason for the gate) |
 | Pre-epoch pod's bus messages | Carry no `docEpoch`; handled as before |
 | Tab that synced on a new pod, later merged replacement content on a pre-epoch pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. A pre-epoch pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned and holds content is unverified and is sent no server SyncStep1 |
 | Pre-epoch bundle on a new pod | Declares nothing and ignores `doc_epoch` on every join: admitted as before, never verified and never sent a server SyncStep1, a first join included |
 | New bundle on a pre-epoch pod | Never receives `doc_epoch`, so it never pins; it sends the marker while its document is empty, which the pod ignores, and nothing afterwards |
 | Epoch-aware pod without the marker serves a join | Ignores `expectedDocEmpty`, so a first join is admitted unverified there. It still sends `doc_epoch` and reads `expectedDocEpoch`: the tab pins at its first sync, and its later joins are decided by the epoch like on a new pod |
-| Epoch-aware bundle without the marker on a new pod | Its first join declares nothing: admitted as before, unverified, no server SyncStep1. After its first sync it is pinned and declares the epoch: a rejoin is verified (and sent the server SyncStep1) on a match and gets `doc_reset` on a mismatch. Like a marker-aware bundle without #1928 (below), it keeps bytes received before its first sync |
+| Epoch-aware bundle without the marker on a new pod | Its first join declares nothing: admitted as before, unverified, no server SyncStep1. After its first sync it is pinned and declares the epoch: a rejoin is verified on a match and gets `doc_reset` on a mismatch. It sends no `docReplaySafe`, so it is never asked: bytes it kept from before its first sync are not collected |
 | New bundle on an epoch-aware pod without the marker | Its marker is ignored on the first join (unverified); it pins from that pod's `doc_epoch` and declares the epoch afterwards |
-| Marker-aware pod without #1928 serves a join | Reads the marker and the epoch and sets `lineageVerified` as a new pod does, but sends no server SyncStep1 and answers every client SyncStep1 from the room's document without the fence. An edit refused or made offline is not collected on that pod (the #1928 gap stays there) |
-| Marker-aware bundle without #1928 on a new pod | Verified as a new bundle is, and sent the server SyncStep1. It keeps a document that received bytes before its first sync and pins the epoch of a later connection: if the earlier room's lineage ended meanwhile, its later verified rejoin answers the SyncStep1 with those bytes, and they reach the new room. Reload such tabs after the upgrade |
+| Marker-aware pod without #1928 serves a join | Reads the marker and the epoch and sets `lineageVerified` as a new pod does; ignores `docReplaySafe`. It sends no server SyncStep1 and answers every client SyncStep1 from the room's document without the fence. An edit refused or made offline is not collected on that pod (the #1928 gap stays there) |
+| Marker-aware bundle without #1928 on a new pod | Verified as a new bundle is, but it sends no `docReplaySafe`, so it is not asked. It keeps a document that received bytes before its first sync and can pin a later connection's epoch; those bytes stay in the tab and are not collected. Its refused or offline edits are not collected either, as before #1928 |
 | A pod without #2035 runs a Save that fails after dispatch | It records no failure marker (`remote_effect_failed_at`) and sends no cue. Every pod reads the intent as `in_flight` and keeps accepting edits, as before this change, until that pod's runtime is fenced or quiesced; from then on the state is `unknown` on every pod with #2035 |
 | A pod without #2035 hosts sockets of a page whose Save failed on a pod with #2035 | It does not know `commit_unknown` or the failure marker (`remote_effect_failed_at`): its sockets stay writable and their edits stay unpersisted, as before. A pod with #2035 cannot add the barrier to the sockets of a pod without it |
 | A bundle without #2035 on a pod with #2035, `commit_unknown` | Ignores the control and acts on the `permission_loss` that follows it: read-only draft with **Download draft**, no reconnect. Its banner keeps the generic sentence |
@@ -678,8 +704,8 @@ next edit or the last-writer flush, and a deferred release retries from 1 s,
 doubling to 30 s. Any other pending page write, a stale lifecycle or admission,
 and a fenced runtime still close a writable socket with
 `1001 collab_validation_unavailable`. The tab reconnects, and when that join
-is lineage-verified the server SyncStep1 asks it again for the refused frame
-(#1928).
+is lineage-verified and replay-safe the server SyncStep1 asks it again for the
+refused frame (#1928).
 
 **When that Save fails after dispatch (#2035).** The transience above holds
 for a Save in flight only. A Save whose remote phase ends without a terminal

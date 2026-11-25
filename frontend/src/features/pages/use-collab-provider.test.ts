@@ -1075,9 +1075,61 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
         expect(Y.encodeStateAsUpdate(result.current.ydoc!)).toEqual(emptyState());
       });
 
-      it('is the only parameter of a join without a lifecycle revision', () => {
+      it('is, with the replay-safe capability, the only parameter of a join without a lifecycle revision', () => {
         renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
-        expect(new URL(Socket.instances[0]!.url).search).toBe('?expectedDocEmpty=1');
+        expect(new URL(Socket.instances[0]!.url).search).toBe('?docReplaySafe=1&expectedDocEmpty=1');
+      });
+    });
+
+    describe('replay-safe capability (#1928)', () => {
+      const capability = (socket: Socket) => new URL(socket.url).searchParams.getAll('docReplaySafe');
+
+      it('is declared once on every connect: the first join, a retry, a pinned rejoin and a 4401 refresh', async () => {
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+          accessToken: 'jwt-fresh', user,
+        }), { status: 200, headers: { 'content-type': 'application/json' } }));
+        mount();
+        const first = Socket.instances[0]!;
+        expect(capability(first)).toEqual(['1']);
+        act(() => { first.open(); });
+        const retry = await reconnect(first);
+        expect(capability(retry)).toEqual(['1']);
+        act(() => {
+          retry.open();
+          control(retry, { type: 'doc_epoch', epoch: EPOCH });
+          hydrate(retry);
+        });
+        const pinned = await reconnect(retry);
+        expect(declared(pinned)).toBe(EPOCH);
+        expect(capability(pinned)).toEqual(['1']);
+        act(() => { pinned.open(); });
+        await act(async () => { pinned.close(4401, 'unauthorized'); });
+        const refreshed = Socket.instances.at(-1)!;
+        expect(refreshed).not.toBe(pinned);
+        expect(refreshed.protocols[1]).toBe('jwt-fresh');
+        expect(declared(refreshed)).toBe(EPOCH);
+        expect(capability(refreshed)).toEqual(['1']);
+      });
+
+      it('is declared on Retry, and on the clean session that replaces a document holding bytes from before its first sync', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        act(() => { first.open(); first.close(4403, 'readonly'); });
+        expect(result.current.canRetry).toBe(true);
+        act(() => { result.current.retry(); });
+        const retried = Socket.instances[1]!;
+        expect(capability(retried)).toEqual(['1']);
+
+        const peer = new Y.Doc();
+        peer.getText('draft').insert(0, 'before the first sync');
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(peer));
+        peer.destroy();
+        act(() => { retried.open(); retried.receive(encoding.toUint8Array(encoder)); });
+        const clean = await reconnect(retried);
+        expect(result.current.ydoc!.getText('draft').toString()).toBe('');
+        expect(capability(clean)).toEqual(['1']);
       });
     });
   });
