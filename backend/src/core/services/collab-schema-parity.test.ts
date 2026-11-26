@@ -10,9 +10,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { generateHTML, generateJSON } from '@tiptap/html';
-import { getSchema, type JSONContent } from '@tiptap/core';
-import { TableCell, TableHeader } from '@tiptap/extension-table';
-import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
+import { type JSONContent } from '@tiptap/core';
+import { yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
 import * as Y from 'yjs';
 import { collabExtensions, getCollabSchema, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 
@@ -406,35 +405,43 @@ describe('table cell alignment definition (#1956)', () => {
     }
   });
 
-  it('loads a room written with the stock cells unchanged (no migration, same bytes, same JSON)', () => {
-    const stockExtensions = collabExtensions().map((ext) =>
-      ext.name === 'tableCell' ? TableCell : ext.name === 'tableHeader' ? TableHeader : ext);
-    const cell = (type: string, text: string, align: string | null): JSONContent => ({
+  // Review T6 / epic invariant 3: an update the pre-change schema actually wrote (captured at bff6d4ec, provenance in
+  // the fixture), loaded without running any old encoder.
+  it('loads a room update written by the pre-change schema unchanged: historical attrs, new rendering, same bytes', () => {
+    const fixture: { update: string } = JSON.parse(
+      readFileSync(join(here, '__fixtures__/collab-table-align-bff6d4ec.json'), 'utf8'),
+    );
+    const bytes = new Uint8Array(Buffer.from(fixture.update, 'base64'));
+    const room = new Y.Doc();
+    Y.applyUpdate(room, bytes);
+
+    // What the stock cells stored: `align` under the stock key, omitted when unset.
+    const cell = (type: string, text: string, align?: string): JSONContent => ({
       type,
-      attrs: { colspan: 1, rowspan: 1, colwidth: null, align },
+      attrs: { colspan: 1, rowspan: 1, ...(align ? { align } : {}) },
       content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
     });
-    const json: JSONContent = {
+    expect(yDocToProsemirrorJSON(room, 'default')).toEqual({
       type: 'doc',
       content: [{
         type: 'table',
         attrs: { 'data-layout': 'default' },
         content: [
-          { type: 'tableRow', content: [cell('tableHeader', 'a', 'center'), cell('tableHeader', 'b', null)] },
-          { type: 'tableRow', content: [cell('tableCell', '1', 'right'), cell('tableCell', '2', null)] },
+          { type: 'tableRow', content: [cell('tableHeader', 'a', 'center'), cell('tableHeader', 'b')] },
+          { type: 'tableRow', content: [cell('tableCell', '1', 'right'), cell('tableCell', '2')] },
         ],
       }],
-    };
-    const stored = prosemirrorJSONToYDoc(getSchema(stockExtensions), json, 'default');
-    const bytes = Y.encodeStateAsUpdate(stored);
-    const reloaded = new Y.Doc();
-    Y.applyUpdate(reloaded, bytes);
-    expect(yDocToProsemirrorJSON(reloaded, 'default')).toEqual(yDocToProsemirrorJSON(stored, 'default'));
-    const html = yDocToHtml(reloaded);
-    expect(html).toContain('align="center"');
-    expect(html).toContain('align="right"');
+    });
+
+    // Rendered by today's schema: align="…" where the old one wrote a text-align style.
+    const html = yDocToHtml(room);
     expect(cellAligns(html)).toEqual(['center', null, 'right', null]);
-    expect(Y.encodeStateAsUpdate(reloaded)).toEqual(bytes);
+    expect(html).toContain('<th colspan="1" rowspan="1" align="center"><p>a</p></th>');
+    expect(html).toContain('<td colspan="1" rowspan="1" align="right"><p>1</p></td>');
+    expect(html).not.toMatch(/<t[dh][^>]*style=/);
+
+    // Nothing was written into the room.
+    expect(Y.encodeStateAsUpdate(room)).toEqual(bytes);
   });
 });
 
