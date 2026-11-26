@@ -17,6 +17,7 @@ import {
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   assertStorageDerivationFeatures,
+  derivationHas,
   type StorageDerivationFeatures,
 } from './storage-derivation.js';
 
@@ -96,6 +97,79 @@ function expandSelfClosingXhtmlTags(xhtml: string): string {
 // elements (ac:structured-macro, ri:page, etc). getElementsByTagName works.
 function byTag(root: Document | Element, tag: string): Element[] {
   return [...root.getElementsByTagName(tag)];
+}
+
+// <table-cell-align:begin>
+// Table cell alignment (#1956). This block is byte-identical in backend collab-schema.ts, frontend
+// article-extensions.ts and backend content-converter.ts; collab-schema-parity.test.ts compares the text.
+// An inline style that mentions text-align decides; unless it is exactly one plain, lower-case
+// declaration the cell has no alignment. Without such a style the align attribute decides.
+const TABLE_CELL_ALIGNMENTS = ['left', 'center', 'right'] as const;
+type TableCellAlign = (typeof TABLE_CELL_ALIGNMENTS)[number];
+const TABLE_CELL_STYLE_MAX = 1024;
+function normalizeTableCellAlign(value: unknown): TableCellAlign | null {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return (TABLE_CELL_ALIGNMENTS as readonly string[]).includes(v) ? (v as TableCellAlign) : null;
+}
+/** null: the style does not mention text-align. 'other': it does, but not as one plain declaration. */
+function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlign | 'other' | null {
+  if (style.length > TABLE_CELL_STYLE_MAX) return 'other';
+  const mentions = style.match(/text-align/gi);
+  if (!mentions) return null;
+  // A browser reads property names case-insensitively and the Node hosts disagree: only the exact
+  // lower-case spelling is read, any other spelling is declined before the CSSOM is asked.
+  if (mentions.length !== 1 || mentions[0] !== 'text-align' || /["'\\]|\/\*|--|url\(/i.test(style)) return 'other';
+  return normalizeTableCellAlign(cssTextAlign) ?? 'other';
+}
+function resolveTableCellAlign(style: string, cssTextAlign: string, alignAttr: string | null): TableCellAlign | null {
+  const fromStyle = tableCellStyleAlign(style, cssTextAlign);
+  return fromStyle === null ? normalizeTableCellAlign(alignAttr) : fromStyle === 'other' ? null : fromStyle;
+}
+// <table-cell-align:end>
+
+/** The alignment an element's inline style states (the shared block over its style and the host CSSOM). */
+function cellStyleAlign(cell: Element): TableCellAlign | 'other' | null {
+  return tableCellStyleAlign(cell.getAttribute('style') ?? '', (cell as HTMLElement).style.textAlign);
+}
+
+/**
+ * #1956, read direction: a stored `th`/`td` whose inline style is one plain
+ * `text-align: left|center|right` gains `align="…"`, appended last. The style
+ * is never touched, so the write-back returns the stored bytes.
+ */
+function addCellAlignFromStyle(doc: Document): void {
+  for (const cell of doc.querySelectorAll('th[style], td[style]')) {
+    if (cell.hasAttribute('align')) continue;
+    const align = cellStyleAlign(cell);
+    if (align !== null && align !== 'other') cell.setAttribute('align', align);
+  }
+}
+
+/**
+ * #1956, write direction (feature `cell-align`): `align` is not a storage
+ * attribute, so it is removed from every `th`/`td` and, when it holds one of
+ * the three values, written as `style="text-align: X;"`. An inline style that
+ * mentions text-align decides and is kept byte for byte (also when ambiguous);
+ * a style without it gets the declaration appended, kept only if the result
+ * reads back as exactly that alignment. Nothing is ever removed or rewritten.
+ */
+function cellAlignToStyle(doc: Document): void {
+  for (const cell of doc.querySelectorAll('th[align], td[align]')) {
+    const align = normalizeTableCellAlign(cell.getAttribute('align'));
+    cell.removeAttribute('align');
+    if (align === null) continue;
+    const style = cell.getAttribute('style') ?? '';
+    if (style.trim() === '') {
+      cell.setAttribute('style', `text-align: ${align};`);
+      continue;
+    }
+    if (cellStyleAlign(cell) !== null) continue;
+    const trimmed = style.trimEnd();
+    const candidate = `${trimmed}${trimmed.endsWith(';') ? ' ' : '; '}text-align: ${align};`;
+    const probe = doc.createElement('td');
+    probe.setAttribute('style', candidate);
+    if (cellStyleAlign(probe) === align) cell.setAttribute('style', candidate);
+  }
 }
 
 function getMacroName(el: Element): string {
@@ -592,15 +666,15 @@ function taskItemContent(li: Element): Element {
 }
 
 /**
- * Run one static-snapshot conversion pass. No step of it is gated on a
- * storage-derivation feature yet; one that is reads `derivationHas` on this
- * pass's set (#1953).
+ * Run one static-snapshot conversion pass. The steps gated on a
+ * storage-derivation feature read `derivationHas` on this pass's set (#1953):
+ * `cell-align` (#1956).
  */
 function confluenceToHtmlPass(
   storageXhtml: string,
   pageId: string | undefined,
   spaceKey: string | undefined,
-  _features: StorageDerivationFeatures,
+  features: StorageDerivationFeatures,
 ): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
@@ -1117,6 +1191,8 @@ function confluenceToHtmlPass(
   for (const el of byTag(doc, 'ac:emoticon')) {
     el.replaceWith(emoticonPlaceholder(el), ...el.childNodes);
   }
+
+  if (derivationHas(features, 'cell-align')) addCellAlignFromStyle(doc);
 
   const html = doc.body.innerHTML;
   const macrosAfter = countRawStructuredMacros(doc.body);
@@ -1716,6 +1792,9 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   for (const span of doc.querySelectorAll('span.confluence-emoticon')) {
     span.replaceWith(emoticonWriteBack(span));
   }
+
+  // `allocateTaskIds` above already validated `options.derivationFeatures`.
+  if (derivationHas(options.derivationFeatures, 'cell-align')) cellAlignToStyle(doc);
 
   let result = doc.body.innerHTML;
   // #1748: escape `<`, `>`, tab, LF and CR in ac:link / ri:* attribute values,
@@ -2416,6 +2495,139 @@ export interface HtmlToMarkdownOptions {
   layoutTokens?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// #1956: tables on the AI Improve conversion.
+//
+// Only `{ layoutTokens: true }` registers the rule below. A table whose whole
+// structure GFM can state becomes a GFM table with its column alignment (an
+// editor-serialised table included: generated colgroup, one paragraph per
+// cell); every other table is written as its raw HTML, never through the
+// stock turndown-plugin-gfm rules, which drop spans, widths and cell
+// semantics. Every other htmlToMarkdown caller is unchanged.
+// ---------------------------------------------------------------------------
+
+const GFM_TABLE_MAX_CELLS = 5000;
+/** The style TipTap generates for an unresized table or column: nothing authored. */
+const GENERATED_MIN_WIDTH_STYLE = /^\s*min-width:\s*\d+px\s*;?\s*$/;
+/** A cell style that is nothing but its alignment. */
+const CELL_ALIGN_ONLY_STYLE = /^\s*text-align\s*:\s*(?:left|center|right)\s*;?\s*$/;
+/** Classes Confluence puts on its own tables and cells as decoration; any other class may carry meaning. */
+const TABLE_DECORATION_CLASSES: Readonly<Record<string, true>> = { wrapped: true, confluenceTable: true };
+const CELL_DECORATION_CLASSES: Readonly<Record<string, true>> = { confluenceTh: true, confluenceTd: true };
+const GFM_CELL_BLOCK_TAGS: Readonly<Record<string, true>> = Object.fromEntries([
+  'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BR', 'CAPTION', 'DD', 'DETAILS', 'DIV', 'DL', 'DT', 'FIELDSET',
+  'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN',
+  'NAV', 'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'UL',
+].map((tag) => [tag, true] as const));
+
+interface GfmTable {
+  header: string[];
+  aligns: Array<TableCellAlign | null>;
+  rows: string[][];
+}
+
+function attributesAllowed(el: Element, allowed: (name: string, value: string) => boolean): boolean {
+  return Array.from(el.attributes).every((attr) => allowed(attr.name, attr.value));
+}
+
+function decorationOnly(value: string, known: Readonly<Record<string, true>>): boolean {
+  const tokens = value.split(/\s+/).filter(Boolean);
+  return tokens.length > 0 && tokens.every((token) => Object.hasOwn(known, token));
+}
+
+/** The HTML of a cell's single inline run: inline content, or exactly one attribute-less `p` of it; null when the cell holds anything else. */
+function gfmCellInlineHtml(cell: Element): string | null {
+  const children = Array.from(cell.children);
+  let run: Element = cell;
+  if (children.length === 1 && children[0]!.nodeName === 'P') {
+    const only = children[0]!;
+    const loose = Array.from(cell.childNodes).some((n) => n !== only && n.nodeType === 3 && (n.textContent ?? '').trim() !== '');
+    if (loose || only.attributes.length > 0) return null;
+    run = only;
+  }
+  if (Array.from(run.querySelectorAll('*')).some((el) => Object.hasOwn(GFM_CELL_BLOCK_TAGS, el.nodeName))) return null;
+  if (run === cell && children.some((el) => Object.hasOwn(GFM_CELL_BLOCK_TAGS, el.nodeName))) return null;
+  return run.innerHTML;
+}
+
+/**
+ * The GFM form of a table, or null when GFM cannot state all of it. Accepted:
+ * a rectangular table whose first row is all `th` and whose other rows are
+ * all `td`, with no span, authored width, caption, footer, nested table,
+ * attribute of meaning, multi-block cell, or cell alignment that differs from
+ * its column's header; every cell converts to one line. The generated
+ * colgroup and min-width style an editor table carries are not meaning.
+ */
+function gfmTableOf(table: Element, convertCell: (html: string) => string): GfmTable | null {
+  if (!attributesAllowed(table, (name, value) =>
+    (name === 'class' && decorationOnly(value, TABLE_DECORATION_CLASSES))
+    || (name === 'style' && GENERATED_MIN_WIDTH_STYLE.test(value)))) return null;
+  const cellCount = table.querySelectorAll('td, th').length;
+  if (cellCount === 0 || cellCount > GFM_TABLE_MAX_CELLS || table.querySelector('table')) return null;
+
+  const children = Array.from(table.children);
+  const groups = children.filter((el) => el.nodeName === 'COLGROUP');
+  if (groups.length > 1 || (groups.length === 1 && children[0] !== groups[0])) return null;
+  const group = groups[0];
+  if (group && (group.attributes.length > 0 || Array.from(group.children).some((col) => col.nodeName !== 'COL'
+    || !attributesAllowed(col, (name, value) => name === 'style' && GENERATED_MIN_WIDTH_STYLE.test(value))))) return null;
+
+  const sections = children.filter((el) => el.nodeName !== 'COLGROUP');
+  const theads = sections.filter((el) => el.nodeName === 'THEAD');
+  const tbodies = sections.filter((el) => el.nodeName === 'TBODY');
+  const direct = sections.filter((el) => el.nodeName === 'TR');
+  if (theads.length + tbodies.length + direct.length !== sections.length
+    || theads.length > 1 || tbodies.length > 1 || (direct.length > 0 && theads.length + tbodies.length > 0)
+    || sections.some((el) => el.nodeName !== 'TR' && el.attributes.length > 0)) return null;
+  const head = theads[0];
+  if (head && (head.children.length !== 1 || sections[0] !== head)) return null;
+  const rowElements = [...(head ? Array.from(head.children) : []), ...Array.from((tbodies[0] ?? table).children)
+    .filter((el) => tbodies[0] !== undefined || el.nodeName === 'TR')];
+  if (rowElements.length === 0 || rowElements.some((tr) => tr.nodeName !== 'TR' || tr.attributes.length > 0)) return null;
+
+  const cellRows = rowElements.map((tr) => Array.from(tr.children));
+  const width = cellRows[0]!.length;
+  if (width === 0 || cellRows.some((row) => row.length !== width)) return null;
+  const rows: string[][] = [];
+  const aligns: Array<TableCellAlign | null> = [];
+  for (let r = 0; r < cellRows.length; r += 1) {
+    const texts: string[] = [];
+    for (let c = 0; c < width; c += 1) {
+      const cell = cellRows[r]![c]!;
+      if (cell.nodeName !== (r === 0 ? 'TH' : 'TD')) return null;
+      if (!attributesAllowed(cell, (name, value) => {
+        if (name === 'colspan' || name === 'rowspan') return value === '1';
+        if (name === 'align') return normalizeTableCellAlign(value) !== null;
+        if (name === 'style') return CELL_ALIGN_ONLY_STYLE.test(value);
+        return name === 'class' && decorationOnly(value, CELL_DECORATION_CLASSES);
+      })) return null;
+      const align = resolveTableCellAlign(
+        cell.getAttribute('style') ?? '', (cell as HTMLElement).style.textAlign, cell.getAttribute('align'),
+      );
+      if (r === 0) aligns.push(align);
+      else if (align !== aligns[c]) return null;
+      const inline = gfmCellInlineHtml(cell);
+      if (inline === null) return null;
+      const text = convertCell(inline).trim();
+      if (text.includes('\n')) return null;
+      // A pipe ends a cell: escape it, keeping the parity of any backslashes before it.
+      texts.push(text.replace(/(\\*)\|/g, (m, slashes: string) => (slashes.length % 2 === 0 ? `${slashes}\\|` : m)));
+    }
+    rows.push(texts);
+  }
+  return { header: rows[0]!, aligns, rows: rows.slice(1) };
+}
+
+function gfmTableMarkdown(table: GfmTable): string {
+  const marker = { left: ':--', center: ':-:', right: '--:' } as const;
+  const line = (cells: readonly string[]): string => `| ${cells.join(' | ')} |`;
+  return `\n\n${[
+    line(table.header),
+    line(table.aligns.map((align) => (align ? marker[align] : '---'))),
+    ...table.rows.map(line),
+  ].join('\n')}\n\n`;
+}
+
 /**
  * Converts HTML to Markdown (for LLM consumption).
  */
@@ -2447,6 +2659,15 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
   });
 
   if (layoutTokens) {
+    // #1956: on this conversion a table is GFM or raw HTML, nothing in between.
+    turndownService.addRule('improveTable', {
+      filter: 'table',
+      replacement: (_content, node) => {
+        const table = gfmTableOf(node as HTMLElement, (html) => turndownService.turndown(html));
+        return table ? gfmTableMarkdown(table) : `\n\n${(node as HTMLElement).outerHTML}\n\n`;
+      },
+    });
+
     // #765: layout containers — emit boundary tokens as standalone lines so the
     // wrapper structure survives the markdown round-trip while the prose inside
     // stays editable by the LLM. markdownToHtml() rebuilds the divs from the
