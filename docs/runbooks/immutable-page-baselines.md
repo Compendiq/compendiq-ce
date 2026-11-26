@@ -140,6 +140,87 @@ offers **Download draft** and **Open current version**. The latter requires a
 successful fresh page read before discarding the open draft and asks for
 explicit confirmation; a failed read leaves the draft in place.
 
+### Collaborative document epoch and rolling upgrades (#2034)
+
+`page_collaborative_docs.doc_epoch` identifies a document lineage. A tab that
+was away while a non-collaborative body write or an inbound Confluence
+publication replaced the page declares the epoch it synced with when it
+reconnects; the gateway answers `doc_reset` and closes `1001 doc_reset`
+instead of admitting it, and the tab shows the same read-only draft with
+**Download draft** and **Open current version**. Its document is never merged
+into the rebuilt one, so the page body is not duplicated. The same happens to
+every editor of a room whose row was replaced under it: the room is retired
+and its admission is released without a flush (the published version stays as
+it is); the log line is `collab.lineage_retired`, and a refused join logs
+`collab.join_doc_reset`. A room write that finds its row gone answers
+`collab_lineage_changed` (409) and changes nothing; this is not a writer to
+recover, and no admission is retained by it.
+
+An inbound publication (scheduled sync or bulk Re-sync replacing the body of an
+existing page) now ends the collaborative lineage in the same transaction,
+also while editors are connected. They keep their open documents as drafts;
+nothing they typed after the last persist is written over the published
+version. The conflict policy that decides whether the incoming version wins is
+unchanged.
+
+**Migration 159.** `ADD COLUMN doc_epoch UUID NOT NULL DEFAULT
+gen_random_uuid()` uses a volatile default, which PostgreSQL cannot add as
+metadata only: the statement rewrites `page_collaborative_docs` once under an
+`ACCESS EXCLUSIVE` lock. The table holds one row per page that was edited
+collaboratively, each with the full Yjs state, so the rewrite needs about the
+table's size in free disk space and blocks collaborative loads and persists
+for its duration. It runs at backend startup, before the process serves
+requests. Check the size beforehand on a large installation:
+
+```sql
+SELECT pg_size_pretty(pg_total_relation_size('page_collaborative_docs'));
+```
+
+**Upgrade note.** Let connected editors save before the upgrade. A user whose
+tab is offline or blocked downloads the draft before opening the current
+version. Do not tell anyone to reload a tab that holds unsaved edits: a reload
+discards them.
+
+**Rolling-upgrade gate (several backend processes).** The epoch guarantees
+hold when every collaboration-serving backend process runs this version. The
+default deployment has one backend process, which restarts as a whole, and
+needs no gate. A process older than #2034 ignores the declaration, can still
+overwrite a collaborative row with an unguarded upsert, and resets a document
+in place without changing its epoch, so a deployment with several backend
+processes upgrades in this order:
+
+1. Switch collaborative editing off in Settings.
+2. The switch is cached per process and reaches other processes through the
+   settings event. Call `GET /api/collab/config` on **each** old process
+   directly, not through the load balancer, and require `enabled: false`. Stop
+   a process that cannot be verified.
+3. Replace the processes. New-version processes start with the switch off and
+   accept no join.
+4. Only after **every old-version process has been stopped** and its database
+   sessions have ended (no session of that process left in
+   `pg_stat_activity`, or its runtime fenced through the recovery procedure
+   below), confirm the drain from complete evidence, not from the capped
+   recovery view:
+
+   ```sql
+   SELECT count(*) FROM page_runtime_admissions
+    WHERE released_at IS NULL AND purpose = 'collab_room';
+   ```
+
+   must return 0, and no `collab:active:*` key may have members. A stopped
+   process cannot finish a join that had already passed its flag check; a
+   config answer or an empty count taken while it still runs does not prove
+   that. An admission left by a stopped process is handled by the existing
+   recovery procedure (fence that runtime) and is never force-cleared. If that
+   procedure answers `runtime_termination_unverified`, the gate stays closed
+   and collaboration stays off.
+5. Verify `GET /api/collab/config` on each new process and switch
+   collaborative editing on.
+
+During an ungated mix no guarantee is given; the mixed-version table in
+[`12-realtime-collaboration.md`](../architecture/12-realtime-collaboration.md)
+describes what to expect.
+
 ## Trust and retention boundary
 
 A published CE baseline is an immutable application record. It binds exact
@@ -760,13 +841,19 @@ until it is reconciled. After reconciliation, rooms of the page on other
 runtimes persist on their next edit, last-writer flush or release retry. The
 runtime that ran the Save cannot get there while it hosts a room of that page.
 Reconciliation needs that runtime fenced, and the room admission it holds
-behind the pending intent keeps it from draining, so quiescence never answers
-(#1934). Terminate that process and fence it with independently verified local
-termination (below); where that cannot be verified, the fence fails closed and
-the intent stays pending. Edits that reached only its room since the failed Save
-then survive only in the editors' open tabs; a tab that reconnects does not
-send them again (#1928). Any other flush failure keeps the admission as before
-and schedules no retry.
+behind the pending intent keeps it from draining. When that is all that is
+left on that runtime (no local operation or effect continuation running, and
+every room admission it holds is on a page with its own such Save), quiescence
+there answers a definite `409 runtime_quiesce_blocked_by_collab_commit`
+naming the blocking intent once its wait bound has passed (#1934, see
+*Quiescence blocked by its own collaborative Save* below); any other remaining
+blocker keeps the wait. It never releases the admission and never
+acknowledges. Terminate that process and fence it
+with independently verified local termination (below); where that cannot be
+verified, the fence fails closed and the intent stays pending. Edits that
+reached only its room since the failed Save then survive only in the editors'
+open tabs; a tab that reconnects does not send them again (#1928). Any other
+flush failure keeps the admission as before and schedules no retry.
 
 ## Runtime retirement and fencing
 
@@ -857,6 +944,73 @@ Authorization: Bearer <system-admin-token>
 The result is `{ "unresolvedIntents": <non-negative integer> }`. Remove or
 restart the quiesced process before returning it to service; its writer gate is
 intentionally irreversible for that process lifetime.
+
+### Quiescence blocked by its own collaborative Save (#1934)
+
+Quiescence waits up to 30 s for a full drain. Until then only a drain ends the
+wait. From that bound on, the process classifies what still blocks it: at the
+bound, on every change of its local work (an operation starts or finishes, an
+admission is taken or released, an effect changes state) and at least every
+5 s, re-reading the database each time. One classification has a 10 s
+deadline covering the connection checkout, the administrator check, the read
+and cleanup. A drain always wins: if the process is drained when a timer or a
+classification completes, the request goes on to the normal acknowledgment.
+
+The request answers `409` when nothing else runs (no local operation, no
+running or successful effect continuation) and every remaining room admission
+of this process is on a page whose own collaborative Save
+(`collab.commit.confluence` or `.media`) of this process is still pending with
+a dispatched remote call and no terminal result. Such an intent is enough to
+keep the room's flush, and therefore its admission, from finishing. The body
+names ids and kinds only:
+
+```json
+{
+  "error": "PageWriteError",
+  "reason": "runtime_quiesce_blocked_by_collab_commit",
+  "code": "runtime_quiesce_blocked_by_collab_commit",
+  "message": "…",
+  "blockingIntents": [
+    { "intentId": "<intent UUID>", "kind": "collab.commit.confluence", "pageIds": [42] }
+  ],
+  "runbook": "docs/runbooks/immutable-page-baselines.md"
+}
+```
+
+With a responsive database it arrives at the bound; for a blocker set that
+stays the same it arrives no later than 40 s (bound plus one classification).
+No time is promised while the blockers keep changing, or while any other
+blocker remains (a running operation, a foreign pending intent, an ordinary
+flush failure on a page without such a Save): those keep the unbounded wait
+described above. A running operation is waited for first; the `409` follows
+its drain.
+
+Two other refusals end the request without ids:
+
+- `403 recovery_admin_required`: the administrator was demoted or deactivated
+  after the request was accepted. The administrator is checked again before
+  any id is disclosed.
+- `503 runtime_quiesce_classification_unavailable`: the classification missed
+  its deadline, its database read failed or its connection was lost (the
+  broken connection is discarded). A result that arrives after the deadline is
+  discarded, and a connection that arrives after the deadline runs no SQL.
+
+In every refusal the writer gate stays closed (this process refuses every new
+admission and effect with `409 runtime_quiescing`; an already admitted
+continuation may still finish), no acknowledgment is written, and
+the room admission and the intent stay exactly as they were: nothing is
+released, fenced or force-cleared. Sending the request again re-audits it and
+runs the same wait.
+
+The way out of the `409`: terminate the process, fence it with
+`verified_local_termination` (*Independently verified local termination*
+below), then reconcile each named intent. For
+`collab.commit.confluence.media` that does not unblock the page: the kind is
+`remote_terminal_only`, so after a dispatched upload without a terminal result
+reconciliation still answers `intent_outcome_unrecoverable` and the page stays
+write-blocked. A Save that failed between an image upload and the page update
+leaves a successful upload continuation, which keeps quiescence waiting as
+before; that case is not answered by this `409`.
 
 ### Crashed process with no started effects
 
@@ -1062,10 +1216,17 @@ can destroy the observation the verifier needs.
 
 Local standalone, integration-off synced, and bulk hard-delete intents have
 registered recovery. Exact deletion tombstones prove which rows committed;
-cleanup retries attachments/icons, collaboration tombstones and durable cache
-publication without repeating the delete. Partial or conflicting evidence stays
-pending. Once deletion is committed, an active recovery administrator may finish
-cleanup even if the original writer is no longer active.
+cleanup retries attachments/icons and durable cache publication without
+repeating the delete. Once the settlement commits, the deleted pages'
+collaboration rooms are closed (4404 `committed_delete`), the page ids
+independently and concurrently; a settlement that rolls back closes nothing, and
+retrying the reconcile closes them. Not retried: a crash between the COMMIT and
+that close, or a COMMIT whose acknowledgment is lost (the reconcile fails but
+the intent is already settled, so a later reconcile does not close the rooms).
+In both, open sockets close on disconnect and a fresh join answers 4404.
+Partial or conflicting evidence stays pending. Once deletion is committed, an
+active recovery administrator may finish cleanup even if the original writer is
+no longer active.
 
 ### `remote_conditional`
 

@@ -119,7 +119,11 @@ Recovery administration is checked on the mutation client at fencing, claim,
 verification, repair and settlement. Quiescence authorizes and audits before
 closing the gate, then rechecks after draining; revocation leaves the gate
 closed but cannot produce an acknowledgment. Original-writer authority remains
-a separate check.
+a separate check. When every remaining blocker is a room admission held by its
+page's own unknown-outcome collaborative Save of this runtime, quiescence
+answers `409 runtime_quiesce_blocked_by_collab_commit` with the intent ids after
+its 30 s bound (#1934); it never releases, fences or acknowledges, and any
+other blocker keeps the unbounded wait.
 Every accepted recovery attempt, including a same-runtime retry by a different
 admin, records that actor and reason before callbacks. Quiescence cancellation
 records the acting admin in `settled_by`, not the original writer.
@@ -191,12 +195,21 @@ effect was dispatched, quiesced and marked otherwise), and started unknown
 intents still need a termination-verified fence.
 
 Local delete recovery uses exact tombstones and retries committed cleanup
-without repeating deletion.
+without repeating deletion. It closes the deleted pages' collaborative rooms
+(4404 `committed_delete`, every pod) from `afterCommit` too. The page ids run
+independently and concurrently (`Promise.allSettled`, each rejection logged),
+never inside the settlement transaction: that holds the page lifecycle lock a
+writable room's final flush takes.
 Remote delete recovery completes the normal delete's room closure: its
 reconciler destroys the row inside the settlement transaction and closes
 collaborative rooms (4404 `committed_delete`, every pod) from `afterCommit`,
-after COMMIT. `afterCommit` never runs on rollback; its failure is logged, never
-a failed recovery of a settled intent.
+after COMMIT. `afterCommit` never runs on rollback (no 4404 is sent and
+`collab:active` is kept; the retry closes the room); its failure is logged, never
+a failed recovery of a settled intent. Accepted residual for both: a crash
+between COMMIT and the close, or a COMMIT whose acknowledgment is lost (the
+reconcile rejects without running `afterCommit`, the intent is already settled),
+is not retried and a later reconcile does not close the room (a durable outbox is
+out of scope): sockets close on disconnect and a fresh join answers 4404.
 A writable room admission is released only after a successful flush, a
 server-proven fence, `doc_reset`/lifecycle retirement, the one-time upgrade
 retirement, or (#1922) a flush that
@@ -268,6 +281,44 @@ in the live room (an in-place Yjs transaction on the owning pod) and in
 It marks the task ids it wrote the same way (`markWrittenTaskIds`, bus kind
 `task_ids`), and that transaction also sets `confluenceTaskIds` in the document's
 `compendiq.meta` Y.Map (#1751).
+
+`page_collaborative_docs.doc_epoch` is the only authority on a collaborative
+document's lineage (#2034): database-generated at the seed insert, constant
+for the life of the row, ended by deleting the row. Nothing in the `Y.Doc`
+carries it. A room never inserts or upserts the row: persist, merge and
+post-Save marks name the epoch they hold and answer `collab_lineage_changed`
+before touching `pages.body_html`; client frames, peer updates, state dumps
+and dump answers assert the row's current epoch on their lifecycle-fenced
+client first, because two rooms can agree on a superseded epoch. A room is
+retired only on that authoritative mismatch, through
+`closeRoomSockets(room, 1001, 'doc_reset')` after the failing transaction
+ended; never await the persist chain or take room ownership from inside it,
+the bus queue or a frame handler (schedule it). Bus messages of another
+generation and the retire hint are prompts to re-read the row, never reasons.
+That re-read also reads the `pages` row: a hard delete cascades the
+collaborative row, and a page proven absent gets the committed-delete teardown
+(`closeRoomSockets(room, 4404, 'committed_delete')`, the tombstone's own call),
+never `doc_reset`.
+A join that would be writable and makes a malformed declaration, or declares
+another `expectedDocEpoch` than the row's, is refused (`doc_reset`, `1001
+doc_reset`, not attached, no admission kept): first without locks, again as
+the `precondition` of `admitPageRuntime`, and once more after a provisional
+room loaded, seeded or adopted its document, because that happens in a later
+transaction. A declared join is writable only in a room whose `docEpoch`
+equals the declaration. A stale heap the join finds is retired first and the
+join restarts once; a frozen page gets no epoch decision. The empty-document
+marker `expectedDocEmpty=1` (an unpinned client whose `Y.Doc` holds nothing; a
+first join) names no epoch: it is never a mismatch, goes through the same
+points, and its writable join is `lineageVerified` like a declared one. The
+marker together with `expectedDocEpoch`, or any other marker value, is
+malformed. The server cannot check the claim; it grants nothing a writer does
+not already have, and exists so that joins that send neither parameter (old
+bundles, partially synced tabs) stay unverified. An undeclared join is admitted
+and never `lineageVerified`. The fenced final step that asserts the current
+epoch in the transaction that writes `writable_admission` is #2035, not this
+change. Do not reintroduce an in-place replacement of the row, a process-wide
+reset flag or a
+pre-commit freeze. Details: `docs/architecture/12-realtime-collaboration.md`.
 
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or

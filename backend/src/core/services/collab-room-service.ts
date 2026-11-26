@@ -16,6 +16,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import {
   PageLifecycleEventSchema,
+  type CollabDocEpochControl,
   type CollabWritableAdmissionControl,
   type PageLifecycleEvent,
 } from '@compendiq/contracts';
@@ -32,6 +33,7 @@ import {
   PageWriteError,
   releasePageRuntime,
   releasePageRuntimeForDeletedPage,
+  withPageLifecycleRead,
   withPageWriteTransaction,
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
@@ -90,6 +92,7 @@ export type CollabControl =
   | { type: 'tombstone' }
   | PageLifecycleEvent
   | CollabWritableAdmissionControl
+  | CollabDocEpochControl
   | { type: 'permission_loss'; reason: 'edit_permission_revoked' }
   | {
       type: 'writable_refused';
@@ -121,6 +124,10 @@ export type CollabBusMessage = {
   requestedAdmissions?: string[];
   markers?: AttachmentImageMarker[];
   taskIds?: TaskIdMarker[];
+  /** The sender's document epoch (#2034). A pod older than that change sends none. */
+  docEpoch?: string;
+  /** On a `doc_reset` tombstone: a retire hint, a prompt to re-read the row, not a reset. */
+  hint?: boolean;
 };
 
 export interface CollabIdentity {
@@ -138,7 +145,46 @@ export interface CollabSocket {
   identity?: CollabIdentity;
   awarenessClientIds: Set<number>;
   writableRefusalReason?: 'lifecycle_revision_required' | 'lifecycle_revision_stale';
+  /**
+   * The join's declaration fits the room's persisted document (#2034): it
+   * named that document's epoch, or it said the client holds no document at
+   * all (a claim the server cannot check; such a client has nothing of
+   * another lineage to bring). Kept by the server for this socket; false for
+   * every read-only socket and for a join that declared nothing.
+   */
+  lineageVerified: boolean;
+  /** The join was refused for its document lineage: `doc_reset` was sent, the socket closed and never attached. */
+  joinRefused?: 'doc_reset';
 }
+
+/**
+ * The gateway's reading of the join's lineage declaration (#2034), the
+ * `expectedDocEpoch` and `expectedDocEmpty` parameters: nothing, "I hold no
+ * document", "I hold the document of this epoch", or anything else.
+ */
+export type CollabDocEpochDeclaration =
+  | { kind: 'absent' }
+  | { kind: 'empty' }
+  | { kind: 'malformed' }
+  | { kind: 'declared'; epoch: string };
+
+export type CollabSocketJoin = Pick<CollabSocket, 'id' | 'ws' | 'userId' | 'writable' | 'identity'> & {
+  expectedLifecycleRevision?: string | null;
+  /** Omitted means `absent`. */
+  expectedDocEpoch?: CollabDocEpochDeclaration;
+};
+
+export type CollabCommitSnapshot = {
+  admission: PageRuntimeAdmission;
+  html: string;
+  documentState: Y.Snapshot;
+  /** The snapshot's task items, in the order of `html` (#1751). */
+  taskItems: CollabTaskItem[];
+  /** Whether the room's tasks carry Confluence task ids (#1751; collabCarriesTaskIds). */
+  taskIdsCarried: boolean;
+  /** Lineage of the snapshotted document; the Save's post-commit marks carry it (#2034). */
+  docEpoch: string;
+};
 
 export interface CollabRoom {
   pageId: number;
@@ -168,6 +214,17 @@ export interface CollabRoom {
   baselineId: string | null;
   demotionReason: 'page_frozen' | 'lifecycle_changed' | null;
   hasPersistedDoc: boolean;
+  /**
+   * `page_collaborative_docs.doc_epoch` of the row this document was loaded
+   * from, seeded as or adopted from (#2034). Null exactly while the room has no
+   * persisted document (`hasPersistedDoc` false).
+   */
+  docEpoch: string | null;
+  /** A proven lineage retirement is queued; frames are dropped until it runs. */
+  lineageRetiring: boolean;
+  /** An older pod announced its in-place reset (untagged `freeze`): no persist and no state dump until its tombstone. */
+  resetFrozen: boolean;
+  onLineageChanged: (docEpoch: string) => void;
 }
 
 export type CollabInboundResult = 'ok' | 'dropped' | 'close_4403';
@@ -176,12 +233,7 @@ export interface CollabRuntime {
   podId: string;
   getOrCreateRoom: (pageId: number) => Promise<CollabRoom>;
   getRoom: (pageId: number) => CollabRoom | undefined;
-  attachSocket: (
-    pageId: number,
-    socket: Omit<CollabSocket, 'readonlyDrops' | 'awarenessClientIds' | 'writableRefusalReason'> & {
-      expectedLifecycleRevision?: string | null;
-    },
-  ) => Promise<CollabSocket>;
+  attachSocket: (pageId: number, socket: CollabSocketJoin) => Promise<CollabSocket>;
   detachSocket: (pageId: number, connId: string) => Promise<void>;
   demoteSocket: (pageId: number, connId: string) => Promise<void>;
   handleInboundFrame: (pageId: number, connId: string, buf: Uint8Array) => Promise<CollabInboundResult>;
@@ -194,30 +246,30 @@ export interface CollabRuntime {
     pageId: number,
     admission: PageRuntimeAdmission,
     markers: readonly AttachmentImageMarker[],
+    docEpoch: string,
   ) => Promise<void>;
   /** After a settled Confluence commit, store the task ids it wrote in the owning room and the persisted document (#1751). */
   markWrittenTaskIds: (
     pageId: number,
     admission: PageRuntimeAdmission,
     markers: readonly TaskIdMarker[],
+    docEpoch: string,
   ) => Promise<void>;
   prepareCommitSnapshot: (
     pageId: number,
     userId: string,
     expectedLifecycleRevision: string,
-  ) => Promise<{
-    admission: PageRuntimeAdmission;
-    html: string;
-    documentState: Y.Snapshot;
-    /** The snapshot's task items, in the order of `html` (#1751). */
-    taskItems: CollabTaskItem[];
-    /** Whether the room's tasks carry Confluence task ids (#1751; collabCarriesTaskIds). */
-    taskIdsCarried: boolean;
-  }>;
+  ) => Promise<CollabCommitSnapshot>;
   handleLifecycleEvent: (event: PageLifecycleEvent) => Promise<void>;
   refreshLifecycleRooms: () => Promise<void>;
   dropRoom: (pageId: number) => Promise<void>;
-  resetFromHtml: (pageId: number, html: string) => Promise<void>;
+  /**
+   * After an inbound publication deleted the page's collaborative row in its
+   * own transaction: prompt the local room and, over Redis, every other pod's
+   * room to re-read the row. A room retires only when its own row is gone or
+   * replaced (#2034).
+   */
+  hintDocRetired: (pageId: number) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -370,6 +422,87 @@ function logMarksSkipped(
   logger.warn({ err: error, pageId, step }, `collab.${kind}_failed`);
 }
 
+/** How a room's document lineage ended, as the rows prove it (#2034). */
+type LineageEnd = 'superseded' | 'page_deleted';
+
+/** How a join's epoch decision ends that join attempt without an admission (#2034). */
+class JoinLineageRefusal extends Error {
+  constructor(readonly outcome: 'refuse_socket' | 'stale_heap') {
+    super(`collab join lineage: ${outcome}`);
+    this.name = 'JoinLineageRefusal';
+  }
+}
+
+function epochTag(room: CollabRoom): { docEpoch?: string } {
+  return room.docEpoch === null ? {} : { docEpoch: room.docEpoch };
+}
+
+/** Both lists come from `roomOwners`, ordered by admission id. */
+function sameOwners(a: readonly PageRuntimeAdmission[], b: readonly PageRuntimeAdmission[]): boolean {
+  return a.length === b.length && a.every((owner, index) => owner.id === b[index]!.id);
+}
+
+/** A peer's epoch tag; a pod older than #2034 sends none, and anything else is treated as none. */
+function busDocEpoch(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Whether a join with this declaration may be writable in a room that holds
+ * the document `docEpoch` (#2034). A declaration names the lineage of the
+ * client's `Y.Doc`; only the room of that lineage may admit it. `absent`
+ * claims nothing and is admitted as before; `empty` names no epoch, so it
+ * cannot differ from any.
+ */
+function declarationAdmits(declaration: CollabDocEpochDeclaration, docEpoch: string | null): boolean {
+  return declaration.kind === 'absent'
+    || declaration.kind === 'empty'
+    || (declaration.kind === 'declared' && declaration.epoch === docEpoch);
+}
+
+/**
+ * Whether a writable join with this declaration is lineage-verified in a room
+ * that holds the document `docEpoch`: the client's document is that lineage,
+ * or the client holds none. Only called after every check of the join passed.
+ */
+function declarationVerifies(declaration: CollabDocEpochDeclaration, docEpoch: string | null): boolean {
+  if (docEpoch === null) return false;
+  return declaration.kind === 'empty'
+    || (declaration.kind === 'declared' && declaration.epoch === docEpoch);
+}
+
+/**
+ * Admission precondition of a join (#2034): inside the admission transaction,
+ * under the page lifecycle lock that every invalidation, seed and inbound
+ * publication also takes. A throw leaves no admission behind.
+ */
+async function assertJoinLineage(
+  client: PoolClient,
+  room: CollabRoom,
+  expectedLifecycleRevision: string | undefined,
+  declaration: CollabDocEpochDeclaration,
+): Promise<void> {
+  const state = await client.query<{ lifecycle_revision: string; doc_epoch: string | null }>(
+    `SELECT p.lifecycle_revision::text, d.doc_epoch::text
+       FROM pages p
+  LEFT JOIN page_collaborative_docs d ON d.page_id = p.id
+      WHERE p.id = $1`,
+    [room.pageId],
+  );
+  const row = state.rows[0];
+  if (!row) return;
+  // A lifecycle the join did not expect keeps its existing outcome (the
+  // admission is released again); it gets no epoch decision.
+  if (expectedLifecycleRevision !== undefined && row.lifecycle_revision !== expectedLifecycleRevision) return;
+  // A stale heap first: it is retired and the join decided again on a fresh room.
+  if (room.docEpoch !== null && row.doc_epoch !== room.docEpoch) {
+    throw new JoinLineageRefusal('stale_heap');
+  }
+  if (!declarationAdmits(declaration, row.doc_epoch)) {
+    throw new JoinLineageRefusal('refuse_socket');
+  }
+}
+
 export async function createCollabRuntime(
   main: RedisClientType,
   podId: string = randomUUID(),
@@ -383,6 +516,8 @@ export async function createCollabRuntime(
     remaining: Set<string>;
     finish: (ok: boolean) => void;
   }>();
+  /** Lineage revalidations in flight, one per room. */
+  const lineageChecks = new Map<CollabRoom, { again: boolean; done: Promise<void> }>();
   let transportGeneration = 0;
   let nextEpoch = 1;
   let subscriber: RedisClientType | null = null;
@@ -441,18 +576,34 @@ export async function createCollabRuntime(
     }));
   }
 
-  async function mergePersistedRoom(client: PoolClient, room: CollabRoom): Promise<void> {
-    if (rooms.get(room.pageId) !== room) throw unavailableSnapshot();
-    const canonical = room.hasPersistedDoc ? room.doc : new Y.Doc();
+  function adoptPersistedBytes(room: CollabRoom, persisted: { docState: Uint8Array; docEpoch: string }): void {
+    const canonical = new Y.Doc();
     try {
-      if (!(await persist.mergePersistedCollabDoc(client, room.pageId, canonical))) {
-        throw unavailableSnapshot();
-      }
-      if (canonical !== room.doc) adoptPersistedDocument(room, canonical);
+      Y.applyUpdate(canonical, persisted.docState, persist.COLLAB_LOAD_ORIGIN);
+      adoptPersistedDocument(room, canonical, persisted.docEpoch);
     } catch (error) {
-      if (canonical !== room.doc) canonical.destroy();
+      canonical.destroy();
       throw error;
     }
+  }
+
+  /**
+   * Bring the persisted document into the room under the caller's lifecycle
+   * lock. A room that holds a persisted document merges only the row of its
+   * own epoch; a missing or replaced row answers `collab_lineage_changed`
+   * before any byte is applied. A provisional room never merges persisted
+   * bytes into its HTML seed: it adopts the persisted generation as a new
+   * document and takes that row's epoch.
+   */
+  async function mergePersistedRoom(client: PoolClient, room: CollabRoom): Promise<void> {
+    if (rooms.get(room.pageId) !== room) throw unavailableSnapshot();
+    if (room.docEpoch !== null) {
+      await persist.mergePersistedCollabDoc(client, room.pageId, room.doc, room.docEpoch);
+      return;
+    }
+    const persisted = await persist.readPersistedCollabDoc(client, room.pageId);
+    if (!persisted || rooms.get(room.pageId) !== room) throw unavailableSnapshot();
+    adoptPersistedBytes(room, persisted);
   }
 
   /**
@@ -514,16 +665,34 @@ export async function createCollabRuntime(
         void main.publish(docChannel(room.pageId), JSON.stringify({
           origin: podId, kind: 'state_dump_request', requestId,
           requestedAdmissions: [...remaining], lifecycleRevision: room.lifecycleRevision,
+          ...epochTag(room),
         } satisfies CollabBusMessage)).catch(() => {
           const round = dumpRounds.get(room.pageId);
           if (round?.id === requestId) round.finish(false);
         });
-        if (!(await received)) throw unavailableSnapshot();
+        if (!(await received)) {
+          // A silent owner may have been retired for its lineage and have
+          // released its admission: the request above is its revalidation
+          // prompt (#2034). Only a changed owner set permits another round, and
+          // that round is completely new (its own request id, a fresh owner
+          // set), so a late answer to this expired one cannot satisfy it. An
+          // unchanged set fails closed: a current or unresolved owner that
+          // stays silent is never dropped from the quorum.
+          assertCurrent();
+          const ownersNow = await withPageWriteTransaction(
+            [room.pageId],
+            (client) => roomOwners(client, room),
+            { admission, ownCollabCommit: 'proceed' },
+          );
+          if (sameOwners(ownersNow, owners) || attempt >= OWNER_CORRELATION_ATTEMPTS) {
+            throw unavailableSnapshot();
+          }
+          continue;
+        }
       }
       const settled = await withPageWriteTransaction([room.pageId], async (client) => {
         const currentOwners = await roomOwners(client, room);
-        if (currentOwners.length !== owners.length
-          || currentOwners.some((owner, index) => owner.id !== owners[index]!.id)) return null;
+        if (!sameOwners(currentOwners, owners)) return null;
         await mergePersistedRoom(client, room);
         assertCurrent();
         return { value: snapshot() };
@@ -600,13 +769,147 @@ export async function createCollabRuntime(
     for (const socket of room.sockets.values()) sendBin(socket.ws, frame);
   }
 
+  /**
+   * Only a pod older than #2034 announces an in-place reset (`freeze`, then an
+   * untagged `doc_reset` tombstone). This room stops persisting and ignores
+   * state dumps until that tombstone closes it.
+   */
   function freezeTransientRoom(room: CollabRoom): void {
     room.persistable = false;
-    persist.beginCollabReset(room.pageId);
+    room.resetFrozen = true;
     if (room.persistTimer) {
       clearTimeout(room.persistTimer);
       room.persistTimer = null;
     }
+  }
+
+  /**
+   * The proof that a room's lineage ended, read in its own transaction under
+   * the page lifecycle lock (#2034): `superseded` when the page exists and its
+   * collaborative row is gone or carries another epoch, `page_deleted` when
+   * the page row itself is gone. A hard delete cascades the collaborative row,
+   * so that row's absence alone cannot tell the two apart. Null when the row
+   * still carries `docEpoch`.
+   */
+  async function proveLineageEnded(room: CollabRoom, docEpoch: string): Promise<LineageEnd | null> {
+    const row = await withPageLifecycleRead(
+      room.pageId,
+      (client) => persist.readCollabLineageRow(client, room.pageId),
+    );
+    if (row === 'page_absent') return 'page_deleted';
+    return row.docEpoch === docEpoch ? null : 'superseded';
+  }
+
+  /**
+   * Retire a room whose lineage ended (#2034). The caller holds the room's
+   * ownership and a check against the row, under the page lifecycle lock,
+   * proved `docEpoch` gone or replaced; that transaction has ended.
+   *
+   * `superseded`: `closeRoomSockets` with `doc_reset` sends the control, closes
+   * every socket and releases the admission without a flush (there is nothing
+   * left to write into); the editors keep their documents as read-only drafts.
+   *
+   * `page_deleted`: the page is gone, which is not a document reset. The room
+   * gets the committed-delete teardown, the same `closeRoomSockets` call the
+   * committed-delete tombstone makes (collab-tombstone.ts), with its release
+   * handling, so the sockets hear `4404 committed_delete` whether this proof
+   * or that tombstone reaches the room first.
+   */
+  async function retireRoomOwned(
+    room: CollabRoom,
+    docEpoch: string | null,
+    end: LineageEnd = 'superseded',
+  ): Promise<void> {
+    // The proof names one heap at one epoch. A room that left the heap or
+    // adopted another document meanwhile is not the one it was about.
+    if (rooms.get(room.pageId) !== room || room.docEpoch !== docEpoch) {
+      room.lineageRetiring = false;
+      return;
+    }
+    if (end === 'page_deleted') {
+      logger.info({ pageId: room.pageId, sockets: room.sockets.size }, 'collab.lineage_page_deleted');
+      await closeRoomSockets(room, 4404, 'committed_delete');
+    } else {
+      logger.info({ pageId: room.pageId, sockets: room.sockets.size }, 'collab.lineage_retired');
+      await closeRoomSockets(room, 1001, 'doc_reset');
+    }
+    if (rooms.get(room.pageId) === room) rooms.delete(room.pageId);
+  }
+
+  /**
+   * Arrange that retirement from a caller that must not wait for room
+   * ownership: the room's own persist chain, its inbound queue (a join can
+   * hold the ownership while it waits for a dump on that queue) or a frame
+   * handler. The returned promise never rejects.
+   */
+  function scheduleLineageRetirement(
+    room: CollabRoom,
+    docEpoch: string | null,
+    end: LineageEnd = 'superseded',
+  ): Promise<void> {
+    if (room.lineageRetiring || rooms.get(room.pageId) !== room) return Promise.resolve();
+    room.lineageRetiring = true;
+    return withRoomOwnership(room.pageId, () => retireRoomOwned(room, docEpoch, end)).catch((error: unknown) => {
+      room.lineageRetiring = false;
+      logger.warn({ err: error, pageId: room.pageId }, 'collab: lineage retirement failed');
+    });
+  }
+
+  async function checkRoomLineage(room: CollabRoom): Promise<void> {
+    const docEpoch = room.docEpoch;
+    if (docEpoch === null || room.lineageRetiring || rooms.get(room.pageId) !== room) return;
+    let end: LineageEnd | null;
+    try {
+      end = await proveLineageEnded(room, docEpoch);
+    } catch (error) {
+      // An unreadable row proves nothing; the room keeps its state.
+      logger.warn({ err: error, pageId: room.pageId }, 'collab: lineage revalidation unavailable');
+      return;
+    }
+    if (end) await scheduleLineageRetirement(room, docEpoch, end);
+  }
+
+  /**
+   * A retire hint or a peer message of another generation is only a prompt:
+   * re-read the row under the page lifecycle lock and retire this room when,
+   * and only when, that row is gone or carries another epoch. One read at a
+   * time per room, with one follow-up for prompts that arrive meanwhile. The
+   * inbound queue starts this and never awaits it.
+   */
+  function revalidateRoomLineage(room: CollabRoom): Promise<void> {
+    const running = lineageChecks.get(room);
+    if (running) {
+      running.again = true;
+      return running.done;
+    }
+    const check = { again: false, done: Promise.resolve() };
+    check.done = (async () => {
+      try {
+        do {
+          check.again = false;
+          await checkRoomLineage(room);
+        } while (check.again);
+      } finally {
+        lineageChecks.delete(room);
+      }
+    })();
+    lineageChecks.set(room, check);
+    return check.done;
+  }
+
+  /**
+   * A tagged peer message of another generation than this room's carries no
+   * bytes this room may consume and gets none in return. It is never itself
+   * the reason for a retirement, only the prompt to check this room's row.
+   */
+  function promptedByForeignGeneration(room: CollabRoom, message: CollabBusMessage): boolean {
+    if (
+      typeof message.docEpoch !== 'string'
+      || room.docEpoch === null
+      || message.docEpoch === room.docEpoch
+    ) return false;
+    void revalidateRoomLineage(room);
+    return true;
   }
 
   async function validateAndApplyPeerUpdate(
@@ -622,32 +925,33 @@ export async function createCollabRuntime(
       || message.admission.lifecycleRevision !== room.lifecycleRevision
       || !message.update
     ) return false;
+    if (promptedByForeignGeneration(room, message)) return false;
+    const docEpoch = room.docEpoch;
     try {
       const update = fromB64(message.update);
-      const accepted = await withPageWriteTransaction([room.pageId], async (client) => {
-        if (!room.hasPersistedDoc) {
-          const persisted = await client.query<{ doc_state: Buffer }>(
-            'SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1',
-            [room.pageId],
-          );
-          if (!persisted.rows[0] || rooms.get(room.pageId) !== room) return false;
-          const canonical = new Y.Doc();
-          try {
-            Y.applyUpdate(canonical, new Uint8Array(persisted.rows[0].doc_state), persist.COLLAB_LOAD_ORIGIN);
-            adoptPersistedDocument(room, canonical);
-          } catch (error) {
-            canonical.destroy();
-            throw error;
-          }
+      return await withPageWriteTransaction([room.pageId], async (client) => {
+        if (rooms.get(room.pageId) !== room) return false;
+        if (room.docEpoch === null) {
+          // A provisional room never merges peer bytes into its HTML seed: it
+          // adopts the persisted generation into a new document first.
+          const persisted = await persist.readPersistedCollabDoc(client, room.pageId);
+          if (!persisted || rooms.get(room.pageId) !== room) return false;
+          adoptPersistedBytes(room, persisted);
+        } else {
+          // Two rooms can agree on a superseded epoch; only the row decides.
+          await persist.assertCurrentCollabDocEpoch(client, room.pageId, room.docEpoch);
         }
+        if (typeof message.docEpoch === 'string' && message.docEpoch !== room.docEpoch) return false;
         if (rooms.get(room.pageId) !== room || room.isFrozen || room.demotionReason !== null) return false;
         Y.applyUpdate(room.doc, update, 'redis');
         forwardUpdate(room, update);
         return true;
       }, { admission: message.admission, ownCollabCommit: 'proceed' });
-      if (!accepted) return false;
-      return true;
     } catch (err) {
+      if (persist.isCollabLineageChanged(err)) {
+        void scheduleLineageRetirement(room, docEpoch);
+        return false;
+      }
       logger.info({ err, pageId: room.pageId, kind: message.kind }, 'collab.stale_peer_update');
       return false;
     }
@@ -659,18 +963,33 @@ export async function createCollabRuntime(
       if (message.kind === 'state_dump_request') {
         if (typeof message.requestId !== 'string' || !Array.isArray(message.requestedAdmissions)) return;
         await room.initializing;
+        // A request of another generation is answered with nothing. It lets a
+        // superseded owner whose retire hint was lost retire here, so the
+        // requesting join can converge without it (#2034).
+        if (promptedByForeignGeneration(room, message)) return;
         const admission = room.admission;
         if (!admission || message.lifecycleRevision !== room.lifecycleRevision
           || !message.requestedAdmissions.includes(admission.id)) return;
-        const dump = await withPageWriteTransaction([room.pageId], async (client) => {
-          await mergePersistedRoom(client, room);
-          if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return null;
-          return Y.encodeStateAsUpdate(room.doc);
-        }, { admission, ownCollabCommit: 'proceed' });
+        const docEpoch = room.docEpoch;
+        let dump: Uint8Array | null;
+        try {
+          dump = await withPageWriteTransaction([room.pageId], async (client) => {
+            // The merge refuses unless the row still carries this room's
+            // epoch, so a dump is only emitted for the current generation.
+            await mergePersistedRoom(client, room);
+            if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return null;
+            return Y.encodeStateAsUpdate(room.doc);
+          }, { admission, ownCollabCommit: 'proceed' });
+        } catch (error) {
+          if (!persist.isCollabLineageChanged(error)) throw error;
+          void scheduleLineageRetirement(room, docEpoch);
+          return;
+        }
         if (!dump || !transportAvailable()) return;
         await publish(room.pageId, {
           origin: podId, kind: 'state_dump', requestId: message.requestId,
           update: b64(dump), lifecycleRevision: room.lifecycleRevision, admission,
+          ...epochTag(room),
         });
         return;
       }
@@ -681,6 +1000,12 @@ export async function createCollabRuntime(
       if (message.kind === 'tombstone') {
         const code = typeof message.code === 'number' ? message.code : 4404;
         const reason = message.reason ?? 'tombstone';
+        if (reason === 'doc_reset' && message.hint === true) {
+          // Retire hint: an inbound publication ended the lineage in its own
+          // transaction. The row is the authority, never this message (#2034).
+          void revalidateRoomLineage(room);
+          return;
+        }
         if (reason === 'doc_reset') freezeTransientRoom(room);
         await withRoomOwnership(room.pageId, async () => {
           if (rooms.get(room.pageId) !== room) return;
@@ -694,7 +1019,7 @@ export async function createCollabRuntime(
         if (!round || message.requestId !== round.id
           || message.lifecycleRevision !== round.lifecycleRevision
           || !validAdmission(message.admission) || !round.remaining.has(message.admission.id)
-          || persist.isCollabResetting(room.pageId)) return;
+          || room.resetFrozen) return;
         if (await validateAndApplyPeerUpdate(room, message)) {
           round.remaining.delete(message.admission.id);
           if (round.remaining.size === 0) round.finish(true);
@@ -706,7 +1031,7 @@ export async function createCollabRuntime(
         if (!markers || typeof message.lifecycleRevision !== 'string') return;
         await room.initializing;
         try {
-          await markRoomImages(room, message.lifecycleRevision, markers);
+          await markRoomImages(room, message.lifecycleRevision, markers, busDocEpoch(message.docEpoch));
         } catch (error) {
           logMarksSkipped('image_markers', error, room.pageId, 'room');
         }
@@ -717,7 +1042,7 @@ export async function createCollabRuntime(
         if (!markers || typeof message.lifecycleRevision !== 'string') return;
         await room.initializing;
         try {
-          await markRoomTaskIds(room, message.lifecycleRevision, markers);
+          await markRoomTaskIds(room, message.lifecycleRevision, markers, busDocEpoch(message.docEpoch));
         } catch (error) {
           logMarksSkipped('task_ids', error, room.pageId, 'room');
         }
@@ -797,6 +1122,12 @@ export async function createCollabRuntime(
     try {
       await persist.flushCollabPersist(room);
     } catch (error) {
+      if (persist.isCollabLineageChanged(error)) {
+        // The room's row is gone or replaced, so nothing is left to flush
+        // into. Retire the room; its editors keep their documents as drafts.
+        await retireRoomOwned(room, room.docEpoch);
+        return;
+      }
       // The page's own pending collaborative Save fences this flush: a wait,
       // not a failure. Keep the admission and retry once it settles (#1763).
       // Every other failure propagates and keeps the admission (runbook).
@@ -924,6 +1255,7 @@ export async function createCollabRuntime(
         update: b64(update),
         lifecycleRevision: room.lifecycleRevision,
         admission,
+        ...epochTag(room),
       });
       forwardUpdate(room, update, except);
     });
@@ -949,11 +1281,16 @@ export async function createCollabRuntime(
     });
   }
 
-  /** HTML-only readers have provisional Yjs identities, never a writable seed. */
-  function adoptPersistedDocument(room: CollabRoom, canonical: Y.Doc): void {
-    if (room.hasPersistedDoc) {
+  /**
+   * HTML-only readers have provisional Yjs identities, never a writable seed.
+   * `docEpoch` is the epoch of the row `canonical` was read from or seeded as.
+   */
+  function adoptPersistedDocument(room: CollabRoom, canonical: Y.Doc, docEpoch: string): void {
+    if (room.docEpoch !== null) {
       // A peer may have adopted the same canonical seed while initialization
-      // awaited its SQL commit. Merge that seed without losing newer updates.
+      // awaited its SQL commit. Merge that seed without losing newer updates,
+      // but only within one lineage: another epoch is another document.
+      if (room.docEpoch !== docEpoch) throw persist.collabLineageChanged();
       Y.applyUpdate(room.doc, Y.encodeStateAsUpdate(canonical), persist.COLLAB_LOAD_ORIGIN);
       canonical.destroy();
       return;
@@ -970,6 +1307,7 @@ export async function createCollabRuntime(
     room.awareness = new awarenessProtocol.Awareness(canonical);
     room.awareness.setLocalState(null);
     room.hasPersistedDoc = true;
+    room.docEpoch = docEpoch;
     wireDoc(room);
   }
 
@@ -1005,6 +1343,10 @@ export async function createCollabRuntime(
       baselineId: null,
       demotionReason: null,
       hasPersistedDoc: false,
+      docEpoch: null,
+      lineageRetiring: false,
+      resetFrozen: false,
+      onLineageChanged: (docEpoch) => { void scheduleLineageRetirement(room, docEpoch); },
     };
     wireDoc(room);
     rooms.set(pageId, room);
@@ -1020,6 +1362,7 @@ export async function createCollabRuntime(
       room.isFrozen = loaded.isFrozen;
       room.baselineId = loaded.baselineId;
       room.hasPersistedDoc = loaded.hasPersistedDoc;
+      room.docEpoch = loaded.docEpoch;
 
       room.attached = true;
       void flush(room);
@@ -1052,7 +1395,6 @@ export async function createCollabRuntime(
         clearTimeout(existing.emptyGrace ?? undefined);
         existing.emptyGrace = null;
         rooms.delete(pageId);
-        persist.endCollabReset(pageId);
         existing.doc.destroy();
       } else {
         return existing;
@@ -1066,7 +1408,8 @@ export async function createCollabRuntime(
   async function ensureWritableAdmission(
     room: CollabRoom,
     userId: string,
-    expectedLifecycleRevision?: string,
+    expectedLifecycleRevision: string | undefined,
+    declaration: CollabDocEpochDeclaration,
   ): Promise<boolean> {
     if (room.admission) {
       // An unreadable admission is not an absent one. Keep ownership and
@@ -1075,13 +1418,24 @@ export async function createCollabRuntime(
         admission: room.admission,
         ownCollabCommit: 'proceed',
       });
-      return expectedLifecycleRevision === undefined
-        || room.admission.lifecycleRevision === expectedLifecycleRevision;
+      if (
+        expectedLifecycleRevision !== undefined
+        && room.admission.lifecycleRevision !== expectedLifecycleRevision
+      ) return false;
+      // The room already owns an admission, so only its own generation may
+      // join it. A declaration is not evidence against the room; its row is.
+      if (!declarationAdmits(declaration, room.docEpoch)) {
+        void revalidateRoomLineage(room);
+        throw new JoinLineageRefusal('refuse_socket');
+      }
+      return true;
     }
     const initializing = (async () => {
       let acquired: PageRuntimeAdmission | null = null;
       try {
-        acquired = await admitPageRuntime(room.pageId, userId, 'collab_room');
+        acquired = await admitPageRuntime(room.pageId, userId, 'collab_room', undefined, {
+          precondition: (client) => assertJoinLineage(client, room, expectedLifecycleRevision, declaration),
+        });
         if (
           expectedLifecycleRevision !== undefined
           && acquired.lifecycleRevision !== expectedLifecycleRevision
@@ -1097,22 +1451,30 @@ export async function createCollabRuntime(
           const canonical = new Y.Doc();
           try {
             const loaded = await persist.loadOrInitCollabDoc(room.pageId, canonical, acquired);
-            if (loaded === 'missing') {
+            if (loaded === 'missing' || loaded.docEpoch === null) {
               throw new PageWriteError(409, 'collab_state_unavailable', 'The collaborative page is no longer available');
             }
-            adoptPersistedDocument(room, canonical);
+            adoptPersistedDocument(room, canonical, loaded.docEpoch);
             room.pagesVersion = loaded.pagesVersion;
           } catch (error) {
             canonical.destroy();
             throw error;
           }
         }
+        // The precondition compared the declaration with the row inside the
+        // admission transaction. A provisional room loads, seeds or adopts its
+        // document in a later transaction, and the row can be deleted or
+        // reseeded in between: the declaration must name the document this
+        // room ended up with. The catch below releases the admission.
+        if (!declarationAdmits(declaration, room.docEpoch)) {
+          throw new JoinLineageRefusal('refuse_socket');
+        }
         room.admission = acquired;
         room.lifecycleRevision = acquired.lifecycleRevision;
         room.isFrozen = false;
         room.baselineId = null;
         room.demotionReason = null;
-        room.persistable = true;
+        room.persistable = !room.resetFrozen;
         room.lastWriterUserId = userId;
         await saddActive(room.pageId, 'room');
         room.heldActiveSuffixes.add('room');
@@ -1160,13 +1522,7 @@ export async function createCollabRuntime(
     pageId: number,
     userId: string,
     expectedLifecycleRevision: string,
-  ): Promise<{
-    admission: PageRuntimeAdmission;
-    html: string;
-    documentState: Y.Snapshot;
-    taskItems: CollabTaskItem[];
-    taskIdsCarried: boolean;
-  }> {
+  ): Promise<CollabCommitSnapshot> {
     const room = await getOrCreateRoom(pageId);
     let admission: PageRuntimeAdmission | undefined;
     try {
@@ -1177,12 +1533,18 @@ export async function createCollabRuntime(
           'The page lifecycle changed after the collaborative editing session began',
         );
       }
-      const snapshot = await withFreshRoomState(room, admission, () => ({
-        html: yDocToHtml(room.doc),
-        documentState: Y.snapshot(room.doc),
-        taskItems: collabTaskItems(room.doc),
-        taskIdsCarried: collabCarriesTaskIds(room.doc),
-      }));
+      const snapshot = await withFreshRoomState(room, admission, () => {
+        // The merge just before this proved the row carries the room's epoch.
+        const docEpoch = room.docEpoch;
+        if (docEpoch === null) throw unavailableSnapshot();
+        return {
+          html: yDocToHtml(room.doc),
+          documentState: Y.snapshot(room.doc),
+          taskItems: collabTaskItems(room.doc),
+          taskIdsCarried: collabCarriesTaskIds(room.doc),
+          docEpoch,
+        };
+      });
       return { admission, ...snapshot };
     } catch (error) {
       if (admission) {
@@ -1193,6 +1555,8 @@ export async function createCollabRuntime(
           logger.warn({ err: releaseError, pageId }, 'collab: snapshot request cleanup deferred');
         }
       }
+      // A snapshot merge found this room's row gone or replaced: retire it.
+      if (persist.isCollabLineageChanged(error)) await retireRoomOwned(room, room.docEpoch);
       throw error;
     } finally {
       if (room.sockets.size === 0 && !room.admission) {
@@ -1214,8 +1578,9 @@ export async function createCollabRuntime(
     room: CollabRoom,
     lifecycleRevision: string,
     markers: readonly AttachmentImageMarker[],
+    docEpoch: string | undefined,
   ): Promise<boolean> {
-    return markRoomDoc(room, lifecycleRevision, (doc) => {
+    return markRoomDoc(room, lifecycleRevision, docEpoch, (doc) => {
       markAttachmentImages(doc, markers, COLLAB_IMAGE_MARKER_ORIGIN);
     });
   }
@@ -1225,16 +1590,23 @@ export async function createCollabRuntime(
     room: CollabRoom,
     lifecycleRevision: string,
     markers: readonly TaskIdMarker[],
+    docEpoch: string | undefined,
   ): Promise<boolean> {
-    return markRoomDoc(room, lifecycleRevision, (doc) => {
+    return markRoomDoc(room, lifecycleRevision, docEpoch, (doc) => {
       markTaskIds(doc, markers, COLLAB_TASK_ID_ORIGIN);
     });
   }
 
-  /** Apply `mark` to an owned room's document under its admission; false when this pod owns no such room. */
+  /**
+   * Apply `mark` to an owned room's document under its admission; false when
+   * this pod owns no such room. `docEpoch` is the lineage of the Save's
+   * snapshot: a room of another lineage is not marked (#2034). A pod older
+   * than that change sends none, and its marks are applied as before.
+   */
   async function markRoomDoc(
     room: CollabRoom,
     lifecycleRevision: string,
+    docEpoch: string | undefined,
     mark: (doc: Y.Doc) => void,
   ): Promise<boolean> {
     const admission = room.admission;
@@ -1244,15 +1616,23 @@ export async function createCollabRuntime(
     if (!admission || rooms.get(room.pageId) !== room || room.lifecycleRevision !== lifecycleRevision) {
       return false;
     }
+    const roomEpoch = room.docEpoch;
+    if (docEpoch !== undefined && docEpoch !== roomEpoch) return false;
     let owned = false;
-    await withPageWriteTransaction([room.pageId], async () => {
-      // A disconnect, demotion or retirement can win the lifecycle lock first.
-      // Like a client frame, this in-memory step writes no protected row, so the
-      // page's own pending collaborative Save does not fence it (#1763).
-      if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return;
-      owned = true;
-      mark(room.doc);
-    }, { admission, ownCollabCommit: 'proceed' });
+    try {
+      await withPageWriteTransaction([room.pageId], async (client) => {
+        await persist.assertCurrentCollabDocEpoch(client, room.pageId, roomEpoch);
+        // A disconnect, demotion or retirement can win the lifecycle lock first.
+        // Like a client frame, this in-memory step writes no protected row, so the
+        // page's own pending collaborative Save does not fence it (#1763).
+        if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return;
+        owned = true;
+        mark(room.doc);
+      }, { admission, ownCollabCommit: 'proceed' });
+    } catch (error) {
+      if (persist.isCollabLineageChanged(error)) void scheduleLineageRetirement(room, roomEpoch);
+      throw error;
+    }
     return owned;
   }
 
@@ -1267,12 +1647,13 @@ export async function createCollabRuntime(
     pageId: number,
     admission: PageRuntimeAdmission,
     markers: readonly AttachmentImageMarker[],
+    docEpoch: string,
   ): Promise<void> {
     if (markers.length === 0) return;
     let inRoom = false;
     try {
       const room = rooms.get(pageId);
-      inRoom = room ? await markRoomImages(room, admission.lifecycleRevision, markers) : false;
+      inRoom = room ? await markRoomImages(room, admission.lifecycleRevision, markers, docEpoch) : false;
       // An owning pod applies the same transaction; its fan-out reaches every other pod.
       if (!inRoom) {
         await publish(pageId, {
@@ -1280,13 +1661,14 @@ export async function createCollabRuntime(
           kind: 'image_markers',
           lifecycleRevision: admission.lifecycleRevision,
           markers: [...markers],
+          docEpoch,
         });
       }
     } catch (error) {
       logMarksSkipped('image_markers', error, pageId, 'room');
     }
     try {
-      const persisted = await persist.markPersistedAttachmentImages(pageId, admission, markers);
+      const persisted = await persist.markPersistedAttachmentImages(pageId, admission, markers, docEpoch);
       logger.info({ pageId, images: markers.length, inRoom, persisted }, 'collab.image_markers');
     } catch (error) {
       logMarksSkipped('image_markers', error, pageId, 'persisted');
@@ -1306,24 +1688,26 @@ export async function createCollabRuntime(
     pageId: number,
     admission: PageRuntimeAdmission,
     markers: readonly TaskIdMarker[],
+    docEpoch: string,
   ): Promise<void> {
     let inRoom = false;
     try {
       const room = rooms.get(pageId);
-      inRoom = room ? await markRoomTaskIds(room, admission.lifecycleRevision, markers) : false;
+      inRoom = room ? await markRoomTaskIds(room, admission.lifecycleRevision, markers, docEpoch) : false;
       if (!inRoom) {
         await publish(pageId, {
           origin: podId,
           kind: 'task_ids',
           lifecycleRevision: admission.lifecycleRevision,
           taskIds: [...markers],
+          docEpoch,
         });
       }
     } catch (error) {
       logMarksSkipped('task_ids', error, pageId, 'room');
     }
     try {
-      const persisted = await persist.markPersistedTaskIds(pageId, admission, markers);
+      const persisted = await persist.markPersistedTaskIds(pageId, admission, markers, docEpoch);
       logger.info({ pageId, tasks: markers.length, inRoom, persisted }, 'collab.task_ids');
     } catch (error) {
       logMarksSkipped('task_ids', error, pageId, 'persisted');
@@ -1344,6 +1728,8 @@ export async function createCollabRuntime(
     const room = rooms.get(pageId);
     const socket = room?.sockets.get(connId);
     if (!room || !socket) return 'dropped';
+    // A retirement is queued: every socket of this room is about to get `doc_reset`.
+    if (room.lineageRetiring) return 'dropped';
     void refreshActiveTtl(pageId);
     const header = parseSyncSubtype(buf);
     if (!header) return 'dropped';
@@ -1379,6 +1765,7 @@ export async function createCollabRuntime(
             socket.writable = false;
             return recordReadonlyViolation(room, socket);
           }
+          const docEpoch = room.docEpoch;
           try {
             let applied = false;
             // The page's own pending collaborative Save does not fence an
@@ -1386,7 +1773,10 @@ export async function createCollabRuntime(
             // reserving, and this room's persist waits for it (#1763). A foreign
             // pending write, a stale lifecycle or admission, a fenced runtime or
             // an unreadable fence still closes below.
-            await withPageWriteTransaction([pageId], async () => {
+            await withPageWriteTransaction([pageId], async (client) => {
+              // The frame is applied on behalf of the current generation only:
+              // the row must still carry this room's epoch (#2034).
+              await persist.assertCurrentCollabDocEpoch(client, pageId, docEpoch);
               // Disconnect/demotion can win while this frame waits for the
               // lifecycle lock. It must not write behind their final flush.
               if (rooms.get(pageId) !== room || room.sockets.get(connId) !== socket
@@ -1396,6 +1786,13 @@ export async function createCollabRuntime(
             }, { admission, ownCollabCommit: 'proceed' });
             if (!applied) return 'dropped';
           } catch (err) {
+            if (persist.isCollabLineageChanged(err)) {
+              // Nothing was applied. The retirement resets every socket of the
+              // room, this one included; it is not awaited by the frame chain.
+              logger.info({ pageId, connId }, 'collab.packet_lineage_changed');
+              void scheduleLineageRetirement(room, docEpoch);
+              return 'dropped';
+            }
             // A failed read is not a released token. Keep ownership until
             // the disconnect flush or an authoritative retirement confirms it.
             socket.writable = false;
@@ -1426,14 +1823,95 @@ export async function createCollabRuntime(
     return 'dropped';
   }
 
-  async function attachSocket(
-    pageId: number,
-    socket: Omit<CollabSocket, 'readonlyDrops' | 'awarenessClientIds' | 'writableRefusalReason'> & {
-      expectedLifecycleRevision?: string | null;
-    },
-  ): Promise<CollabSocket> {
+  /**
+   * Step 3 of the join outcome precedence (#2034), before the admission: this
+   * heap and the declaration against the row. The unlocked read only finds a
+   * heap that may be stale; the proof is the read under the page lifecycle
+   * lock, which also tells a deleted page from a replaced document. A stale
+   * heap is decided first: it is retired and the join restarts against a
+   * fresh room, which then answers the declaration.
+   */
+  async function decideJoinLineage(
+    room: CollabRoom,
+    declaration: CollabDocEpochDeclaration,
+  ): Promise<'proceed' | 'refuse' | LineageEnd> {
+    // Malformed is a mismatch, never absent, and needs no read.
+    if (declaration.kind === 'malformed') return 'refuse';
+    let rowEpoch = await persist.readCollabDocEpoch(room.pageId);
+    if (room.docEpoch !== null && room.docEpoch !== rowEpoch) {
+      const end = await proveLineageEnded(room, room.docEpoch);
+      if (end) return end;
+      rowEpoch = room.docEpoch;
+    }
+    return declarationAdmits(declaration, rowEpoch) ? 'proceed' : 'refuse';
+  }
+
+  /**
+   * Refuse this join only: the socket is told its document changed and is
+   * never attached. The room's other sockets and a running grace timer are
+   * left alone; a room this join found or created empty, without an admission
+   * and without that timer, is evicted now.
+   */
+  async function refuseJoinForLineage(room: CollabRoom, socket: CollabSocketJoin): Promise<CollabSocket> {
+    if (rooms.get(room.pageId) === room && room.sockets.size === 0 && !room.admission && !room.emptyGrace) {
+      await dropRoomOwned(room.pageId, room);
+    }
+    sendBin(socket.ws, encodeControlFrame({ type: 'doc_reset' }));
+    try { socket.ws.close(1001, 'doc_reset'); } catch { /* already closing */ }
+    logger.info({ pageId: room.pageId, userId: socket.userId, connId: socket.id }, 'collab.join_doc_reset');
+    return {
+      id: socket.id,
+      ws: socket.ws,
+      userId: socket.userId,
+      writable: false,
+      readonlyDrops: 0,
+      awarenessClientIds: new Set(),
+      lineageVerified: false,
+      joinRefused: 'doc_reset',
+      ...(socket.identity ? { identity: socket.identity } : {}),
+    };
+  }
+
+  /** What a lineage failure during a join means for that join; null when `error` is not one it settles. */
+  async function joinLineageOutcome(
+    room: CollabRoom,
+    socket: CollabSocketJoin,
+    declaration: CollabDocEpochDeclaration,
+    error: unknown,
+  ): Promise<CollabSocket | 'restart' | null> {
+    if (error instanceof JoinLineageRefusal) {
+      if (error.outcome === 'refuse_socket') return refuseJoinForLineage(room, socket);
+      await retireRoomOwned(room, room.docEpoch);
+      return 'restart';
+    }
+    if (!persist.isCollabLineageChanged(error)) return null;
+    // A seed, adoption or merge under the lifecycle lock found this room's row
+    // gone or replaced. A join that named an epoch is answered `doc_reset`; one
+    // that named none (undeclared, or an empty document) fails and its client
+    // reconnects into a fresh room.
+    await retireRoomOwned(room, room.docEpoch);
+    return declaration.kind === 'declared' ? refuseJoinForLineage(room, socket) : null;
+  }
+
+  async function attachSocket(pageId: number, socket: CollabSocketJoin): Promise<CollabSocket> {
+    for (let restarted = false; ; restarted = true) {
+      const attached = await attachSocketOnce(pageId, socket);
+      if (attached !== 'restart') return attached;
+      // A stale heap was retired. The join restarts against a fresh room once;
+      // a second stale heap in a row fails this join closed.
+      if (restarted) throw persist.collabLineageChanged();
+    }
+  }
+
+  async function attachSocketOnce(pageId: number, socket: CollabSocketJoin): Promise<CollabSocket | 'restart'> {
     let room = await getOrCreateRoom(pageId);
+    if (room.lineageRetiring) {
+      // A proven retirement is queued behind this join; finish it first.
+      await retireRoomOwned(room, room.docEpoch);
+      room = await getOrCreateRoom(pageId);
+    }
     const expectedLifecycleRevision = socket.expectedLifecycleRevision;
+    const declaration: CollabDocEpochDeclaration = socket.expectedDocEpoch ?? { kind: 'absent' };
     // Bind every join to authoritative PostgreSQL lifecycle state. A client
     // revision is never evidence that an in-memory room is stale (otherwise a
     // forged future revision could demote active editors).
@@ -1442,10 +1920,6 @@ export async function createCollabRuntime(
     if (room.demotionReason && room.sockets.size === 0) {
       await dropRoomOwned(pageId, room);
       room = await getOrCreateRoom(pageId);
-    }
-    if (room.emptyGrace) {
-      clearTimeout(room.emptyGrace);
-      room.emptyGrace = null;
     }
     let refusalReason: CollabSocket['writableRefusalReason'];
     if (socket.writable && expectedLifecycleRevision === null) {
@@ -1457,25 +1931,56 @@ export async function createCollabRuntime(
     ) {
       refusalReason = 'lifecycle_revision_stale';
     }
-    const writable = socket.writable
-      && refusalReason === undefined
-      && room.demotionReason === null
-      && await ensureWritableAdmission(
-        room,
-        socket.userId,
-        expectedLifecycleRevision ?? undefined,
-      );
-    if (writable && room.admission) {
+    let writable = false;
+    // Only a join that would be writable gets an epoch decision (#2034); a
+    // join that stays read-only for permission or lifecycle keeps its outcome.
+    if (socket.writable && refusalReason === undefined && room.demotionReason === null) {
+      // A frozen page is never writable: it keeps the outcome the refused
+      // admission below gives it. Should the page have thawed since this room
+      // read it, the admission precondition decides the declaration.
+      const decision = room.isFrozen ? 'proceed' : await decideJoinLineage(room, declaration);
+      if (decision === 'refuse') return refuseJoinForLineage(room, socket);
+      if (decision !== 'proceed') {
+        // A stale heap. For a deleted page the restart finds no page to load,
+        // and the join fails as any join to a missing page does.
+        await retireRoomOwned(room, room.docEpoch, decision);
+        return 'restart';
+      }
       try {
-        await withFreshRoomState(room, room.admission, () => undefined);
+        writable = await ensureWritableAdmission(
+          room,
+          socket.userId,
+          expectedLifecycleRevision ?? undefined,
+          declaration,
+        );
       } catch (error) {
-        await releaseAdmissionIfNoWriters(room).catch((cleanupError) => {
-          logger.warn({ err: cleanupError, pageId }, 'collab: failed join retained its admission');
-        });
+        const outcome = await joinLineageOutcome(room, socket, declaration, error);
+        if (outcome) return outcome;
         throw error;
       }
+      if (writable && room.admission) {
+        try {
+          await withFreshRoomState(room, room.admission, () => undefined);
+        } catch (error) {
+          const outcome = await joinLineageOutcome(room, socket, declaration, error);
+          if (outcome) return outcome;
+          await releaseAdmissionIfNoWriters(room).catch((cleanupError) => {
+            logger.warn({ err: cleanupError, pageId }, 'collab: failed join retained its admission');
+          });
+          throw error;
+        }
+      }
     }
-    if (!socket.writable) await refreshReaderRoom(room);
+    if (!socket.writable) {
+      try {
+        await refreshReaderRoom(room);
+      } catch (error) {
+        if (!persist.isCollabLineageChanged(error)) throw error;
+        // This heap holds a document whose row is gone or replaced.
+        await retireRoomOwned(room, room.docEpoch);
+        return 'restart';
+      }
+    }
     if (
       socket.writable
       && !writable
@@ -1492,13 +1997,21 @@ export async function createCollabRuntime(
       writable,
       readonlyDrops: 0,
       awarenessClientIds: new Set(),
+      lineageVerified: writable && declarationVerifies(declaration, room.docEpoch),
       ...(socket.identity ? { identity: socket.identity } : {}),
       ...(refusalReason ? { writableRefusalReason: refusalReason } : {}),
     };
     if (full.ws.readyState !== 1) {
       full.writable = false;
+      full.lineageVerified = false;
       await releaseAdmissionIfNoWriters(room);
       return full;
+    }
+    // Only a socket that is attached cancels the room's eviction; a refused
+    // join leaves a running grace timer alone.
+    if (room.emptyGrace) {
+      clearTimeout(room.emptyGrace);
+      room.emptyGrace = null;
     }
     room.sockets.set(full.id, full);
     if (writable) {
@@ -1508,11 +2021,17 @@ export async function createCollabRuntime(
     // A close or permission loss may have arrived during Redis bookkeeping.
     if (rooms.get(pageId) !== room || room.sockets.get(full.id) !== full || full.ws.readyState !== 1) {
       full.writable = false;
+      full.lineageVerified = false;
       room.sockets.delete(full.id);
       await releaseAdmissionIfNoWriters(room);
       return full;
     }
     sendAwarenessSnapshot(room, full.ws);
+    // Before the lifecycle and admission controls: the client pins this epoch
+    // at its first sync. A provisional room has no persisted document to name.
+    if (room.docEpoch !== null) {
+      sendBin(full.ws, encodeControlFrame({ type: 'doc_epoch', epoch: room.docEpoch }));
+    }
     sendBin(full.ws, encodeControlFrame(lifecycleControl(room)));
     if (full.writable) {
       sendBin(full.ws, encodeControlFrame({
@@ -1532,7 +2051,9 @@ export async function createCollabRuntime(
         reason: 'edit_permission_revoked',
       }));
     }
-    logger.info({ pageId, userId: full.userId, writable: full.writable, connId: full.id }, 'collab.join');
+    logger.info({
+      pageId, userId: full.userId, writable: full.writable, lineageVerified: full.lineageVerified, connId: full.id,
+    }, 'collab.join');
     return full;
   }
 
@@ -1618,7 +2139,6 @@ export async function createCollabRuntime(
     cancelDeferredRelease(room);
     await sremSuffixes(room.pageId, room.heldActiveSuffixes);
     room.heldActiveSuffixes.clear();
-    persist.endCollabReset(room.pageId);
     room.doc.destroy();
   }
 
@@ -1633,7 +2153,6 @@ export async function createCollabRuntime(
     }
     cancelDeferredRelease(room);
     await sremSuffixes(pageId, room.heldActiveSuffixes);
-    persist.endCollabReset(pageId);
     room.doc.destroy();
   }
 
@@ -1705,23 +2224,12 @@ export async function createCollabRuntime(
       withRoomOwnership(room.pageId, () => applyAuthoritativeLifecycle(room))));
   }
 
-  async function resetFromHtml(pageId: number, html: string): Promise<void> {
-    persist.beginCollabReset(pageId);
+  async function hintDocRetired(pageId: number): Promise<void> {
+    // No `collab:active` cleanup here: each room that retires removes its own
+    // members, and a room of a newer generation keeps its liveness.
+    await publish(pageId, { origin: podId, kind: 'tombstone', code: 1001, reason: 'doc_reset', hint: true });
     const room = rooms.get(pageId);
-    if (room) freezeTransientRoom(room);
-    await publish(pageId, {
-      origin: podId,
-      kind: 'freeze',
-      reason: 'doc_reset',
-      lifecycleRevision: room?.lifecycleRevision,
-    });
-    try {
-      if (room) await room.persistChain.catch(() => undefined);
-      await persist.replaceCollabDocFromHtml(pageId, html);
-      await tombstone(pageId, 1001, 'doc_reset');
-    } finally {
-      persist.endCollabReset(pageId);
-    }
+    if (room) await revalidateRoomLineage(room);
   }
 
   async function tombstone(pageId: number, code: number, reason = 'tombstone'): Promise<void> {
@@ -1812,8 +2320,17 @@ export async function createCollabRuntime(
     podId,
     getOrCreateRoom: (pageId) => withRoomOwnership(pageId, async () => {
       const room = await getOrCreateRoom(pageId);
-      await refreshReaderRoom(room);
-      return room;
+      try {
+        await refreshReaderRoom(room);
+        return room;
+      } catch (error) {
+        if (!persist.isCollabLineageChanged(error)) throw error;
+        // This heap holds a document whose row is gone or replaced.
+        await retireRoomOwned(room, room.docEpoch);
+        const fresh = await getOrCreateRoom(pageId);
+        await refreshReaderRoom(fresh);
+        return fresh;
+      }
     }),
     getRoom: (pageId) => rooms.get(pageId),
     attachSocket: (pageId, socket) => withRoomOwnership(pageId, () => attachSocket(pageId, socket)),
@@ -1832,7 +2349,7 @@ export async function createCollabRuntime(
       withRoomOwnership(event.pageId, () => handleLifecycleEvent(event)),
     refreshLifecycleRooms,
     dropRoom,
-    resetFromHtml: (pageId, html) => withRoomOwnership(pageId, () => resetFromHtml(pageId, html)),
+    hintDocRetired,
     close,
   };
 }
@@ -1876,10 +2393,18 @@ export function getDefaultCollabRuntime(): CollabRuntime | null {
   return defaultRuntime;
 }
 
-export async function resetCollabRoomFromHtml(pageId: number, html: string): Promise<void> {
-  const runtime = getDefaultCollabRuntime();
-  if (runtime) await runtime.resetFromHtml(pageId, html);
-  else await persist.replaceCollabDocFromHtml(pageId, html);
+/**
+ * After an inbound publication committed, having deleted the page's
+ * collaborative row in its own transaction: prompt every room of the page to
+ * check its row (#2034). Best effort. A lost hint only delays a superseded
+ * room's retirement to its next boundary, where the missing row fences it.
+ */
+export async function hintCollabDocRetired(pageId: number): Promise<void> {
+  try {
+    await defaultRuntime?.hintDocRetired(pageId);
+  } catch (err) {
+    logger.warn({ err, pageId }, 'collab: retire hint failed');
+  }
 }
 
 export async function tombstoneCollabRoom(pageId: number, code: number, reason?: string): Promise<void> {

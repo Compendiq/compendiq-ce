@@ -8,8 +8,7 @@ import * as Y from 'yjs';
 import type { WebSocket } from 'ws';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { getPool, query } from '../db/postgres.js';
-import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
+import { query } from '../db/postgres.js';
 import { setRedisClient } from './redis-cache.js';
 import {
   createCollabRuntime,
@@ -19,11 +18,19 @@ import {
 import {
   COLLAB_PERSIST_DEBOUNCE_MS,
   loadOrInitCollabDoc,
+  markPersistedTaskIds,
+  mergePersistedCollabDoc,
   persistAndSnapshot,
-  isCollabResetting,
+  persistCollabDocState,
+  readCollabDocEpoch,
 } from './collab-persistence.js';
 import { yDocToHtml } from './collab-schema.js';
-import { admitPageRuntime, releasePageRuntime, withPageWriteTransaction } from './page-write-admission.js';
+import {
+  admitPageRuntime,
+  releasePageRuntime,
+  withPageWriteTransaction,
+  type PageRuntimeAdmission,
+} from './page-write-admission.js';
 
 const dbAvailable = await isDbAvailable();
 const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
@@ -229,14 +236,15 @@ describe.skipIf(!canRun)('collab BYTEA persist + snapshot (#1445)', () => {
     const docB = new Y.Doc();
     const restored = new Y.Doc();
     try {
-      await loadOrInitCollabDoc(pageId, docA, admissionA);
+      const seeded = await loadOrInitCollabDoc(pageId, docA, admissionA);
+      if (seeded === 'missing' || seeded.docEpoch === null) throw new Error('seed did not create the document');
       Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
       appendText(docA, ' FIRST_ROOM');
       appendText(docB, ' SECOND_ROOM');
       const admissionB = await admitPageRuntime(pageId, owner, 'collab_room');
       try {
-        await persistAndSnapshot(pageId, docA, admissionA);
-        await persistAndSnapshot(pageId, docB, admissionB);
+        await persistAndSnapshot(pageId, docA, admissionA, seeded.docEpoch);
+        await persistAndSnapshot(pageId, docB, admissionB, seeded.docEpoch);
       } finally {
         await releasePageRuntime(admissionB);
       }
@@ -369,63 +377,164 @@ describe.skipIf(!canRun)('empty-room BYTEA invalidation (#1445)', () => {
   }, 20_000);
 });
 
-describe.skipIf(!canRun)('resetFromHtml vs in-flight persist (#1474)', () => {
-  it('in-flight persistAndSnapshot on B does not write the typed paragraph over a reset', async () => {
-    const owner = await insertUser('reset_inflight');
-    const pageId = await insertPage({ ownerId: owner, html: '<p>SEED</p>' });
-    const runtimeB = await createCollabRuntime(main!, 'persist-pod-b');
+// The #1474 case (an in-flight room persist must not write over an inbound
+// reset) is exercised on the real publication path since #2034:
+// routes/knowledge/collab-inbound-publication.integration.test.ts.
+describe.skipIf(!canRun)('document epoch at the persistence boundary (#2034)', () => {
+  async function seed(pageId: number, owner: string): Promise<{
+    doc: Y.Doc;
+    admission: PageRuntimeAdmission;
+    docEpoch: string;
+  }> {
+    const admission = await admitPageRuntime(pageId, owner, 'collab_room');
+    const doc = new Y.Doc();
+    const loaded = await loadOrInitCollabDoc(pageId, doc, admission);
+    if (loaded === 'missing' || loaded.docEpoch === null) throw new Error('seed did not create the document');
+    return { doc, admission, docEpoch: loaded.docEpoch };
+  }
+
+  async function storedRow(pageId: number) {
+    return query<{ doc_epoch: string; doc_state: Buffer; version: number }>(
+      'SELECT doc_epoch::text, doc_state, version FROM page_collaborative_docs WHERE page_id = $1', [pageId],
+    );
+  }
+
+  it('a read-only load names no epoch; the seed takes the database value and every later load reads the same', async () => {
+    const owner = await insertUser('epoch_seed');
+    const pageId = await insertPage({ ownerId: owner, html: `<p>${UNIQUE}</p>` });
+    const reader = new Y.Doc();
+    const again = new Y.Doc();
+    const second = new Y.Doc();
+    const admissions: PageRuntimeAdmission[] = [];
     try {
-      await runtime!.attachSocket(pageId, {
-        id: 'a1', ws: stubWs(), userId: owner, writable: true,
-      });
-      await runtimeB.attachSocket(pageId, {
-        id: 'b1', ws: stubWs(), userId: owner, writable: true,
-      });
-      const roomB = runtimeB.getRoom(pageId)!;
-      roomB.persistable = true;
-      appendText(roomB.doc, ' COLLAB_TYPED_PARAGRAPH');
+      expect(await loadOrInitCollabDoc(pageId, reader)).toMatchObject({ hasPersistedDoc: false, docEpoch: null });
+      expect(await readCollabDocEpoch(pageId)).toBeNull();
 
-      const holder = await getPool().connect();
-      try {
-        await holder.query('BEGIN');
-        await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
-        const persistP = persistAndSnapshot(pageId, roomB.doc, roomB.admission!);
-        // Observe the ordering this case is about instead of sleeping for it: the
-        // persist must be queued on the init lock (already holding the page
-        // lifecycle lock) before the reset begins, and the reset marker must be
-        // set before the holder lets the persist through. A fixed 50 ms sleep let
-        // a slow shard start the persist after the reset had committed. pg_locks
-        // is cluster-wide and sibling workers' databases reuse page ids, so the
-        // count is scoped to this database.
-        await vi.waitFor(async () => {
-          const waiting = await query<{ count: string }>(
-            `SELECT COUNT(*)::text AS count FROM pg_locks
-              WHERE locktype = 'advisory' AND classid = $1 AND objid = $2
-                AND objsubid = 2 AND NOT granted
-                AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
-            [COLLAB_INIT_LOCK_KEY, pageId],
-          );
-          expect(Number(waiting.rows[0]!.count)).toBe(1);
-        }, { timeout: 10_000 });
-        const resetP = runtime!.resetFromHtml(pageId, '<p>REMOTE_WINS</p>');
-        await vi.waitFor(() => expect(isCollabResetting(pageId)).toBe(true), { timeout: 10_000 });
-        await holder.query('ROLLBACK');
-        await resetP;
-        await persistP;
-      } finally {
-        holder.release();
-      }
-
-      const stored = await collabRow(pageId);
+      const seeded = await seed(pageId, owner);
+      admissions.push(seeded.admission);
+      const stored = await storedRow(pageId);
       expect(stored.rows).toHaveLength(1);
-      const loaded = new Y.Doc();
-      Y.applyUpdate(loaded, new Uint8Array(stored.rows[0]!.doc_state));
-      expect(fragmentText(loaded)).toContain('REMOTE_WINS');
-      expect(fragmentText(loaded)).not.toContain('COLLAB_TYPED_PARAGRAPH');
-      const page = await pageRow(pageId);
-      expect(page.rows[0]!.body_html).not.toContain('COLLAB_TYPED_PARAGRAPH');
+      expect(seeded.docEpoch).toBe(stored.rows[0]!.doc_epoch);
+      expect(await readCollabDocEpoch(pageId)).toBe(seeded.docEpoch);
+
+      // A reload, with or without an admission, continues that lineage: no second seed.
+      expect(await loadOrInitCollabDoc(pageId, again)).toMatchObject({
+        hasPersistedDoc: true, docEpoch: seeded.docEpoch,
+      });
+      const secondAdmission = await admitPageRuntime(pageId, owner, 'collab_room');
+      admissions.push(secondAdmission);
+      expect(await loadOrInitCollabDoc(pageId, second, secondAdmission)).toMatchObject({
+        hasPersistedDoc: true, docEpoch: seeded.docEpoch,
+      });
+      expect((await storedRow(pageId)).rows).toEqual(stored.rows);
+
+      // The room's own persist keeps the epoch.
+      appendText(seeded.doc, ' OWN_PERSIST');
+      await persistAndSnapshot(pageId, seeded.doc, seeded.admission, seeded.docEpoch);
+      expect((await storedRow(pageId)).rows[0]).toMatchObject({ doc_epoch: seeded.docEpoch, version: 2 });
+      seeded.doc.destroy();
     } finally {
-      await runtimeB.close();
+      for (const admission of admissions) await releasePageRuntime(admission);
+      reader.destroy();
+      again.destroy();
+      second.destroy();
     }
-  }, 20_000);
+  });
+
+  it.each(['deleted', 'replaced'] as const)(
+    'a persist whose row was %s answers collab_lineage_changed and leaves body_html untouched',
+    async (fate) => {
+      const owner = await insertUser(`epoch_persist_${fate}`);
+      const pageId = await insertPage({ ownerId: owner, html: '<p>SEED</p>' });
+      const { doc, admission, docEpoch } = await seed(pageId, owner);
+      try {
+        appendText(doc, ' STALE_ROOM_EDIT');
+        // What an inbound publication or a non-collab body write commits.
+        await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+        await query(`UPDATE pages SET body_html = '<p>PUBLISHED</p>', body_text = 'PUBLISHED' WHERE id = $1`, [pageId]);
+        if (fate === 'replaced') {
+          await query(
+            `INSERT INTO page_collaborative_docs (page_id, doc_state) VALUES ($1, '\\x0000'::bytea)`, [pageId],
+          );
+        }
+        const before = await storedRow(pageId);
+
+        await expect(persistAndSnapshot(pageId, doc, admission, docEpoch))
+          .rejects.toMatchObject({ reason: 'collab_lineage_changed', statusCode: 409 });
+        await expect(persistCollabDocState(pageId, doc, admission, docEpoch))
+          .rejects.toMatchObject({ reason: 'collab_lineage_changed' });
+
+        expect((await pageRow(pageId)).rows[0]).toMatchObject({
+          body_html: '<p>PUBLISHED</p>', body_text: 'PUBLISHED',
+        });
+        // A room never inserts, and never writes into the row of another lineage.
+        const after = await storedRow(pageId);
+        expect(after.rows).toEqual(before.rows);
+        expect(after.rows).toHaveLength(fate === 'deleted' ? 0 : 1);
+      } finally {
+        await releasePageRuntime(admission);
+        doc.destroy();
+      }
+    },
+  );
+
+  it('merges only the persisted bytes of its own epoch, refusing before any byte is applied', async () => {
+    const owner = await insertUser('epoch_merge');
+    const pageId = await insertPage({ ownerId: owner, html: '<p>SEED</p>' });
+    const { doc, admission, docEpoch } = await seed(pageId, owner);
+    const foreign = new Y.Doc();
+    try {
+      foreign.getText('foreign').insert(0, 'FOREIGN_LINEAGE');
+      await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+      await query(
+        'INSERT INTO page_collaborative_docs (page_id, doc_state) VALUES ($1, $2)',
+        [pageId, Buffer.from(Y.encodeStateAsUpdate(foreign))],
+      );
+      const before = Buffer.from(Y.encodeStateAsUpdate(doc));
+      await expect(withPageWriteTransaction(
+        [pageId],
+        (client) => mergePersistedCollabDoc(client, pageId, doc, docEpoch),
+        { admission, ownCollabCommit: 'proceed' },
+      )).rejects.toMatchObject({ reason: 'collab_lineage_changed' });
+      expect(Buffer.from(Y.encodeStateAsUpdate(doc)).equals(before)).toBe(true);
+      expect(doc.getText('foreign').toString()).toBe('');
+
+      // The row's own epoch still merges.
+      const current = await readCollabDocEpoch(pageId);
+      if (current === null) throw new Error('the replacement row is missing');
+      await withPageWriteTransaction(
+        [pageId],
+        (client) => mergePersistedCollabDoc(client, pageId, doc, current),
+        { admission, ownCollabCommit: 'proceed' },
+      );
+      expect(doc.getText('foreign').toString()).toBe('FOREIGN_LINEAGE');
+    } finally {
+      await releasePageRuntime(admission);
+      doc.destroy();
+      foreign.destroy();
+    }
+  });
+
+  it('a post-Save mark that carries another epoch is skipped; the row of its own epoch is marked', async () => {
+    const owner = await insertUser('epoch_marks');
+    const pageId = await insertPage({ ownerId: owner, html: '<p>SEED</p>' });
+    const { doc, admission, docEpoch } = await seed(pageId, owner);
+    doc.destroy();
+    await releasePageRuntime(admission);
+    const request = await admitPageRuntime(pageId, owner, 'collab_request');
+    try {
+      const seeded = await storedRow(pageId);
+      // The Save's snapshot belonged to a lineage that has since been replaced.
+      await markPersistedTaskIds(pageId, request, [], '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f');
+      expect((await storedRow(pageId)).rows).toEqual(seeded.rows);
+
+      // An empty marker list still records that the tasks carry ids (#1751).
+      await markPersistedTaskIds(pageId, request, [], docEpoch);
+      const marked = await storedRow(pageId);
+      expect(marked.rows[0]).toMatchObject({ doc_epoch: docEpoch, version: seeded.rows[0]!.version + 1 });
+      expect(marked.rows[0]!.doc_state.equals(seeded.rows[0]!.doc_state)).toBe(false);
+    } finally {
+      await releasePageRuntime(request);
+    }
+  });
 });

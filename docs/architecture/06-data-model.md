@@ -149,6 +149,7 @@ erDiagram
         bytea doc_state "Y.encodeStateAsUpdate persist form"
         bytea state_vector "nullable until first persist"
         int version "persistence generation NOT pages.version"
+        uuid doc_epoch "migration 159: lineage identity, DB-generated, NOT NULL (#2034)"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -1474,7 +1475,14 @@ together, which matters most for #1114's query-side prefix.
   against the client's bounded Snapshot (state-vector clocks **and** delete-set).
   `collab_request` admissions fence the Save but are not room owners. Lifecycle
   changes retire room ownership and prevent a stale document from being
-  replayed into the next generation. The feature flag
+  replayed into the next generation. `doc_epoch` (migration 159, `UUID NOT
+  NULL DEFAULT gen_random_uuid()`, #2034) identifies the document lineage: the
+  database sets it when the seed inserts the row, also for a row written by a
+  process older than the column, and it never changes for the life of the row;
+  a lineage ends when the row is deleted. Rooms only `UPDATE … WHERE page_id =
+  $1 AND doc_epoch = $2`, and a join that declares another epoch is refused
+  with `doc_reset`. The three inbound Confluence publication paths delete the
+  row in the transaction that publishes the body. The feature flag
   `admin_settings.collab_editing_enabled` defaults to `'0'`. Topology:
   [`12-realtime-collaboration.md`](./12-realtime-collaboration.md).
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.

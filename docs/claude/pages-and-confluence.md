@@ -318,8 +318,18 @@ Recovery follows the same rule. A recovered Confluence delete
 the settlement transaction, so its 4404 `committed_delete` tombstone is the
 reconciler's `afterCommit` side effect: `reconcilePageWriteIntent` awaits it
 only after that COMMIT, never on rollback, and logs a failure instead of failing
-the settled recovery. An undispatched delete (`remoteEffectStartedAt === null`)
-restores `deleted_at` and leaves the rooms open.
+the settled recovery. A recovered local delete (`pages.delete.standalone`,
+`pages.delete.local`, `pages.bulk.delete.local`) does the same, never inside the
+settlement transaction (a writable room's final flush waits for the lifecycle
+lock it holds), and tombstones the deleted ids independently and concurrently
+with `Promise.allSettled`, logging each rejection, so one failing id cannot skip
+the rest. A rolled-back settlement sends no 4404 and keeps `collab:active`; the
+retry closes the room. A crash between COMMIT and the close, or a COMMIT whose
+acknowledgment is lost (the reconcile rejects without running `afterCommit`; the
+intent is already settled), is not retried and a later reconcile does not close
+the room: sockets close on disconnect and a fresh join answers 4404. An
+undispatched delete (`remoteEffectStartedAt === null`) restores `deleted_at` and
+leaves the rooms open.
 
 The frontend delete hook does not remove anything before the DELETE succeeds.
 After success it adjusts only paginated Library caches that actually contain
@@ -437,6 +447,18 @@ Bulk Re-sync and scheduled version jumps save overwritten edits in Local
 history under the same transaction and page row lock. Advance the live
 revision past a stored snapshot even when the provider version is lower.
 Scheduled version-unchanged sync retains its existing overwrite behavior.
+
+The three inbound publications that replace the body of an existing page
+(scheduled version-jump upsert, scheduled conflict-policy update, bulk Re-sync
+`apply_incoming`) delete the page's `page_collaborative_docs` row in that same
+transaction, under the lifecycle lock it already holds, whether or not a room
+is live (#2034, amendment A8). Key the delete on the accepted publication
+decision and the exact row the statement updated, never on the presence of
+`SET body_html`: an unchanged bulk refresh, a fresh create and the
+creator-journal branch keep or have no lineage. After the COMMIT send
+`hintCollabDocRetired(pageId)`; it only prompts rooms to re-read their row and
+never fails the sync. There is no reset of a live room from HTML any more, and
+a failed delete rolls the publication back.
 
 Version History identifies rows by `(source, versionNumber)` (#1918). A synced
 live row is Confluence history only when both counters agree and there is no

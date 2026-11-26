@@ -74,6 +74,15 @@ type PutBody = { title: string; bodyHtml: string; version?: number };
 let serverPage: ServerPage;
 let puts: PutBody[];
 let nextPutOverride: (() => Response) | null;
+// #1931: 'refuse' is the pre-existing reserved-label refusal (#283); 'apply'
+// is a server that merges the request's adds and removes into the row it
+// holds now, like applyLabelChanges, and answers the committed labels.
+type LabelPut = { addLabels?: string[]; removeLabels?: string[] };
+let labelMode: 'refuse' | 'apply' | 'apply-unacknowledged' | 'apply-malformed';
+let labelPuts: LabelPut[];
+// Runs when a label write reaches the server, before it is applied: a peer
+// write that lands first.
+let beforeLabelApply: (() => void) | null;
 let fetchMock: Mock;
 
 function json(value: unknown, status = 200): Response {
@@ -177,6 +186,9 @@ beforeEach(() => {
   serverPage = v1Page;
   puts = [];
   nextPutOverride = null;
+  labelMode = 'refuse';
+  labelPuts = [];
+  beforeLabelApply = null;
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     const method = init?.method ?? 'GET';
@@ -206,7 +218,20 @@ beforeEach(() => {
       };
       return json({ id: 42, title: serverPage.title, version: serverPage.version, source: 'standalone' });
     }
+    if (url === '/api/pages/42/labels' && method === 'PUT' && labelMode !== 'refuse') {
+      const body = JSON.parse(String(init?.body)) as LabelPut;
+      labelPuts.push(body);
+      beforeLabelApply?.();
+      const removed = body.removeLabels ?? [];
+      const labels = serverPage.labels.filter((l) => !removed.includes(l));
+      for (const l of body.addLabels ?? []) if (!labels.includes(l)) labels.push(l);
+      serverPage = { ...serverPage, labels };
+      // A 2xx that does not carry the committed set.
+      if (labelMode === 'apply-malformed') return json({ labels: [123] });
+      return labelMode === 'apply-unacknowledged' ? json({}) : json({ labels });
+    }
     if (url === '/api/pages/42/labels' && method === 'PUT') {
+      labelPuts.push(JSON.parse(String(init?.body)) as LabelPut);
       return json({
         error: 'ai_policy_enforcement_unavailable',
         pageIds: [42],
@@ -480,5 +505,204 @@ describe("PageViewPage ordinary Save keeps the editing session's base version (#
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
     expect(serverPage.version).toBe(3);
     expect(serverPage.bodyHtml).toContain('LOCAL OLD EDIT');
+  });
+});
+
+/** Another client, an admin rename or a sync moves the tags; the version does not change. */
+function remoteLabels(labels: string[]) {
+  serverPage = { ...serverPage, labels };
+}
+
+/** The tab becomes visible again and the refetch delivers the foreign tag set. */
+async function refreshLabels(client: QueryClient, expected: string[]) {
+  await act(async () => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(client.getQueryData<{ labels: string[] }>(['pages', '42'])?.labels).toEqual(expected));
+}
+
+describe("PageViewPage Save sends only the session's own tag delta (#1931)", { timeout: 20_000 }, () => {
+  beforeEach(() => { labelMode = 'apply'; });
+
+  it('keeps a tag another client added during the session (ordinary Save, Edit)', async () => {
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    remoteLabels(['team-x']);
+    await refreshLabels(client, ['team-x']);
+
+    await clickSave();
+    await waitForPuts(1);
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+    expect(labelPuts).toEqual([]);
+    expect(serverPage.labels).toEqual(['team-x']);
+  });
+
+  it('does not put back a tag another client removed during the session', async () => {
+    serverPage = { ...serverPage, labels: ['legacy'] };
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    remoteLabels([]);
+    await refreshLabels(client, []);
+
+    await clickSave();
+    await waitForPuts(1);
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+    expect(labelPuts).toEqual([]);
+    expect(serverPage.labels).toEqual([]);
+  });
+
+  it('keeps both sides when each changed a different tag, and sends only its own', async () => {
+    serverPage = { ...serverPage, labels: ['a', 'b'] };
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    await addTag('mine');
+    fireEvent.click(screen.getByTestId('remove-tag-a'));
+    remoteLabels(['a', 'b', 'peer']);
+    await refreshLabels(client, ['a', 'b', 'peer']);
+
+    await clickSave();
+    await waitFor(() => expect(labelPuts).toHaveLength(1));
+    expect(labelPuts[0]).toEqual({ addLabels: ['mine'], removeLabels: ['a'] });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+    expect([...serverPage.labels].sort()).toEqual(['b', 'mine', 'peer']);
+  });
+
+  it('lets the later writer win when both sides touched the same tag', async () => {
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    await addTag('shared');
+    // A peer adds the session's own new tag and this tab sees it before Save.
+    remoteLabels(['shared']);
+    await refreshLabels(client, ['shared']);
+    // Then the peer removes it again just before the label write is applied.
+    beforeLabelApply = () => remoteLabels([]);
+
+    await clickSave();
+    await waitFor(() => expect(labelPuts).toHaveLength(1));
+    // The session still sends its own add (a live-cache diff would send none)...
+    expect(labelPuts[0]).toEqual({ addLabels: ['shared'], removeLabels: [] });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+    // ...and, applied last, it wins.
+    expect(serverPage.labels).toEqual(['shared']);
+  });
+
+  it('keeps the session open and the draft intact when a successful label write carries no committed set', async () => {
+    labelMode = 'apply-unacknowledged';
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    await addTag('mine');
+    remoteLabels(['peer']);
+    await refreshLabels(client, ['peer']);
+
+    await clickSave();
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
+      'Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.',
+    ));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(await editableBody()).toHaveTextContent('MY EDIT');
+    expect(screen.getByTestId('remove-tag-mine')).toBeInTheDocument();
+    expect(screen.queryByTestId('remove-tag-peer')).toBeNull();
+
+    // The baseline did not move: the retry sends the same delta.
+    await clickSave();
+    await waitFor(() => expect(labelPuts).toHaveLength(2));
+    expect(labelPuts[1]).toEqual({ addLabels: ['mine'], removeLabels: [] });
+  });
+
+  it('never lets a malformed label reply reach the page cache or the open draft, even while the refetch is pending', async () => {
+    labelMode = 'apply-malformed';
+    const { client } = renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    await addTag('mine');
+    remoteLabels(['peer']);
+    await refreshLabels(client, ['peer']);
+    // The refetch the label write triggers never settles in this test.
+    const realFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pages/42' && (init?.method ?? 'GET') === 'GET') return new Promise<Response>(() => {});
+      return realFetch(input, init);
+    });
+
+    await clickSave();
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
+      'Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.',
+    ));
+    // Last valid cached labels, not [123].
+    expect(client.getQueryData<{ labels: unknown[] }>(['pages', '42'])?.labels).toEqual(['peer']);
+    expect(screen.getByTestId('remove-tag-mine')).toBeInTheDocument();
+    expect(await editableBody()).toHaveTextContent('MY EDIT');
+  });
+
+  it('does not mark an untouched session dirty after a foreign tag change, and Cancel opens no discard dialog', async () => {
+    const { client } = renderPage();
+    await startEditing();
+    await editableBody();
+    remoteLabels(['team-x']);
+    await refreshLabels(client, ['team-x']);
+
+    fireEvent.click(screen.getByTestId('cancel-edit-btn'));
+    await waitFor(() => expect(document.querySelector('.ProseMirror[contenteditable="true"]')).toBeNull());
+    expect(screen.queryByTestId('confirm-dialog-confirm')).toBeNull();
+  });
+
+  it('sends no label write when the session changed no tag', async () => {
+    serverPage = { ...serverPage, labels: ['a'] };
+    renderPage();
+    await startEditing();
+    await typeText('MY EDIT');
+    await clickSave();
+    await waitForPuts(1);
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+    expect(labelPuts).toEqual([]);
+  });
+
+  it.each(['Restore draft', 'Edit published version'])(
+    'takes the baseline at the moment %s is chosen, not at the Edit click',
+    async (choice) => {
+      seedDraft('<p>STORED DRAFT</p>');
+      const { client } = renderPage();
+      await startEditing();
+      expect(await screen.findByText('Restore draft?')).toBeInTheDocument();
+      remoteLabels(['p1']);
+      await refreshLabels(client, ['p1']);
+      fireEvent.click(screen.getByRole('button', { name: choice }));
+      await editableBody();
+      await addTag('mine');
+      remoteLabels(['p1', 'p2']);
+      await refreshLabels(client, ['p1', 'p2']);
+
+      await clickSave();
+      await waitFor(() => expect(labelPuts).toHaveLength(1));
+      // A baseline taken at the Edit click ([]) would also send p1.
+      expect(labelPuts[0]).toEqual({ addLabels: ['mine'], removeLabels: [] });
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+      expect([...serverPage.labels].sort()).toEqual(['mine', 'p1', 'p2']);
+    },
+  );
+
+  it('keeps the baseline and the draft when the server refuses the reserved-label write', async () => {
+    labelMode = 'refuse';
+    const { client } = renderPage();
+    await startEditing();
+    await addTag('ops');
+    await clickSave();
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
+      'Content saved; the label change was not applied. See the tag control for the reason.',
+    ));
+    remoteLabels(['peer']);
+    await refreshLabels(client, ['peer']);
+    expect(screen.getByTestId('remove-tag-ops')).toBeInTheDocument();
+
+    await clickSave();
+    await waitFor(() => expect(labelPuts).toHaveLength(2));
+    // Same delta again: neither the baseline nor the draft moved, and the
+    // peer's tag is not part of it.
+    expect(labelPuts[1]).toEqual(labelPuts[0]);
+    expect(labelPuts[1]).toEqual({ addLabels: ['ops'], removeLabels: [] });
   });
 });

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
@@ -58,6 +58,7 @@ let recoveryAdminId: string;
 let attachmentsDir: string;
 let originalAttachmentsDir: string | undefined;
 let remoteVersion = 8;
+let attachmentUploadUrls: string[] = [];
 let strictProviderVersion: number | null = null;
 let confluenceRequests: ConfluenceRequest[] = [];
 let compactPutReply = false;
@@ -203,6 +204,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
         response.end(JSON.stringify(readbackStatus === 200 ? providerPage : { message: 'Readback denied' }));
         return;
       }
+      if (request.method === 'POST' && request.url?.endsWith('/child/attachment')) {
+        attachmentUploadUrls.push(request.url);
+      }
       if (request.method !== 'PUT' || !request.url?.startsWith('/rest/api/content/')) {
         response.writeHead(404).end();
         return;
@@ -265,6 +269,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     await truncateAllTables();
     await redis.flushDb();
     confluenceRequests = [];
+    attachmentUploadUrls = [];
     remoteVersion = 8;
     strictProviderVersion = null;
     compactPutReply = false;
@@ -635,6 +640,27 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
         + '<li data-type="taskItem" data-checked="false" data-task-id="12">Write docs</li></ul>';
       expect(await sentTaskIds(carriedBody, editorTasks('Alpha', 'Beta'))).toEqual(['794465', '794466']);
     });
+  });
+
+  it('does not upload the cached draw.io preview of a diagram on a Confluence page (#1935)', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    await mkdir(join(attachmentsDir, 'page-1'), { recursive: true });
+    await writeFile(join(attachmentsDir, 'page-1', 'Arch.png'), Buffer.from('cached drawio preview'));
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: {
+        title: 'With diagram',
+        bodyHtml: '<p>text</p><div class="confluence-drawio" data-diagram-name="Arch">'
+          + '<img src="/api/attachments/page-1/Arch.png" alt="Arch"></div>',
+        version: 7,
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(attachmentUploadUrls).toEqual([]);
+    expect(confluenceRequests).toHaveLength(1);
   });
 
   it('recovers a compact acknowledged PUT after readback fails without replaying the mutation', async () => {

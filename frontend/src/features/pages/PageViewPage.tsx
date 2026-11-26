@@ -11,6 +11,7 @@ import {
   usePage,
   useUpdatePage,
   useUpdatePageLabels,
+  parseCommittedLabels,
   usePageFilterOptions,
   usePinnedPages,
   usePinPage,
@@ -76,10 +77,15 @@ import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../shared/lib/
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
-import { useCollabProvider, type UseCollabProviderResult } from './use-collab-provider';
+import { useCollabProvider, type CollabReadOnlyReason, type UseCollabProviderResult } from './use-collab-provider';
 import { mergePresence } from './merge-presence';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
+
+/** Tag sets compare as sets: order and duplicates carry no meaning. */
+function sameLabelSet(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((l) => b.includes(l));
+}
 
 function scrollArticleToTop() {
   const container = (
@@ -153,12 +159,34 @@ function collabPreSyncMessage(
       return 'This page is no longer available for collaborative editing.';
     case 'unauthorized':
       return 'Your session expired. Sign in again to keep editing together.';
+    // Set only after the first sync, where the banner owns the copy (#1927).
+    case 'flag_off':
+    case 'rate_limited':
+    case 'readonly':
     case null:
       break;
   }
   return collab.reconnecting
     ? 'Could not connect to the collaborative session. Retrying…'
     : 'Connecting to the collaborative session…';
+}
+
+/**
+ * Body of the read-only draft banner (#1927). After the first sync a 4403 names
+ * its reason; every other cause, and any reason not listed, keeps the original
+ * sentence (fail closed).
+ */
+function readOnlyDraftMessage(reason: CollabReadOnlyReason | null): string {
+  switch (reason) {
+    case 'flag_off':
+      return 'Collaborative editing was turned off. Your open draft remains below and is not reapplied automatically.';
+    case 'rate_limited':
+      return 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.';
+    case 'readonly':
+      return 'The server stopped accepting changes from this tab. Your open draft remains below and is not reapplied automatically.';
+    default:
+      return 'The page or your access changed. Your open draft remains below and is not reapplied automatically.';
+  }
 }
 
 export function PageViewPage() {
@@ -216,7 +244,28 @@ export function PageViewPage() {
   // the live HTML is read from `editorInstance.getHTML()` on save (#954).
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
+  // The draft tags the editor shows and sends. Mirrored in a ref so Save and
+  // the tag handlers read the latest set across awaits (#1931).
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
+  const draftLabelsRef = useRef<string[]>([]);
+  // #1931: the tag set this editing session started from (or last rebased
+  // onto). Save sends only the session's own delta against it; the dirty
+  // checks compare against it, never the live cache, which a peer, admin
+  // rename or sync can move mid-session. State for render-time dirty checks,
+  // ref for the Save closure.
+  const [labelBaseline, setLabelBaselineState] = useState<string[]>([]);
+  const labelBaselineRef = useRef<string[]>([]);
+  const seedLabelSession = useCallback((labels: readonly string[]) => {
+    const baseline = [...labels];
+    labelBaselineRef.current = baseline;
+    setLabelBaselineState(baseline);
+    draftLabelsRef.current = [...labels];
+    setDraftLabels([...labels]);
+  }, []);
+  const updateDraftLabels = useCallback((next: string[]) => {
+    draftLabelsRef.current = next;
+    setDraftLabels(next);
+  }, []);
   // #283: the server's reserved-label verdict on the last refused label
   // write, shown inside the tag control; null once a write commits.
   const [labelPolicyNotice, setLabelPolicyNotice] = useState<string | null>(null);
@@ -345,6 +394,13 @@ export function PageViewPage() {
   // The refusal copy says to close and reopen the editor; make that reopen use
   // the current config and page instead of the cached ones.
   useEffect(() => {
+    // Post-sync `flag_off` (#1927): the server just said the feature is off, so
+    // record that at once; a pending or failed refresh must not leave the refused
+    // `enabled: true` able to start a new join. The refetch re-enables on fresh evidence.
+    if (collab.readOnlyReason === 'flag_off') {
+      queryClient.setQueryData<CollabConfig>(['collab-config'], { enabled: false });
+      void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
+    }
     if (!collabPreSync) return;
     if (collab.error === 'flag_off') void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
     if (collab.readOnlyReason === 'lifecycle_changed' || collab.readOnlyReason === 'document_changed' ||
@@ -438,7 +494,7 @@ export function PageViewPage() {
       setOpeningCurrent(false);
       setEditHtml('');
       setEditTitle('');
-      setDraftLabels([]);
+      seedLabelSession([]);
       setIsDirty(false);
       setPendingDraft(null);
       setEditorInstance(null);
@@ -450,7 +506,7 @@ export function PageViewPage() {
       setCollabSession(false);
       setCollabHasSynced(false);
     }
-  }, [id, setStoreHeadings]);
+  }, [id, seedLabelSession, setStoreHeadings]);
   const editingScrollOffsetRef = useRef<number>(0);
 
   const captureScrollOffset = useCallback(() => {
@@ -585,7 +641,7 @@ export function PageViewPage() {
     setSessionLifecycleRevision(page.lifecycleRevision);
     captureScrollOffset();
     setEditTitle(page.title);
-    setDraftLabels(page.labels ?? []);
+    seedLabelSession(page.labels ?? []);
     const startCollab = collabConfig?.enabled === true;
     setCollabSession(startCollab);
     if (startCollab) {
@@ -606,7 +662,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabConfig?.enabled, draftKey, captureScrollOffset, contentWriteRefusal, rejectStartEditingDuringSave]);
+  }, [id, page, collabConfig?.enabled, draftKey, captureScrollOffset, contentWriteRefusal, rejectStartEditingDuringSave, seedLabelSession]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -619,13 +675,13 @@ export function PageViewPage() {
       setEditTitle(page.title);
     }
     setEditHtml(pendingDraft);
-    if (page?.labels) setDraftLabels(page.labels);
+    if (page) seedLabelSession(page.labels ?? []);
     // A restored draft diverges from the published page, so the editor is
     // dirty from the outset — Cancel must guard it and Save must persist it.
     setIsDirty(true);
     setPendingDraft(null);
     setEditing(true);
-  }, [pendingDraft, page, captureScrollOffset]);
+  }, [pendingDraft, page, captureScrollOffset, seedLabelSession]);
 
   const handleDeclineDraft = useCallback(() => {
     setPendingDraft(null);
@@ -634,21 +690,17 @@ export function PageViewPage() {
     editBaseVersionRef.current = page.version;
     setEditTitle(page.title);
     setEditHtml(page.bodyHtml);
-    setDraftLabels(page.labels ?? []);
+    seedLabelSession(page.labels ?? []);
     setIsDirty(false);
     setEditing(true);
-  }, [page, captureScrollOffset]);
+  }, [page, captureScrollOffset, seedLabelSession]);
 
   // The editor is dirty when the title diverges from the persisted page, the
   // body was touched, or draft tag changes exist.
   const isEditorDirty = useCallback(() => {
     if (!page) return false;
-    const currentLabels = page.labels ?? [];
-    const labelsDiverged =
-      draftLabels.length !== currentLabels.length ||
-      draftLabels.some((l) => !currentLabels.includes(l));
-    return editTitle !== page.title || isDirty || labelsDiverged;
-  }, [page, editTitle, isDirty, draftLabels]);
+    return editTitle !== page.title || isDirty || !sameLabelSet(draftLabels, labelBaseline);
+  }, [page, editTitle, isDirty, draftLabels, labelBaseline]);
 
   const discardAndExit = useCallback(() => {
     editSessionRef.current += 1;
@@ -657,18 +709,14 @@ export function PageViewPage() {
     setCollabSession(false);
     setCollabHasSynced(false);
     setIsDirty(false);
-    setDraftLabels([]);
+    seedLabelSession([]);
     setEditing(false);
-  }, [captureScrollOffset, draftKey]);
+  }, [captureScrollOffset, draftKey, seedLabelSession]);
 
   const titleOrLabelsDiverged = useCallback(() => {
     if (!page) return false;
-    const currentLabels = page.labels ?? [];
-    const labelsDiverged =
-      draftLabels.length !== currentLabels.length ||
-      draftLabels.some((l) => !currentLabels.includes(l));
-    return editTitle !== page.title || labelsDiverged;
-  }, [page, editTitle, draftLabels]);
+    return editTitle !== page.title || !sameLabelSet(draftLabels, labelBaseline);
+  }, [page, editTitle, draftLabels, labelBaseline]);
 
   // Cancel guards against silently throwing away unsaved work: when dirty it
   // opens the discard confirmation, otherwise it exits immediately. Backs the
@@ -876,6 +924,10 @@ export function PageViewPage() {
     setSaveInFlight(true);
     const session = editSessionRef.current;
     const metadataRevision = metadataRevisionRef.current;
+    // #1931: the draft tags at submit and the baseline they are measured
+    // against. Edits typed while the Save is in flight are not part of it.
+    const submittedLabels = [...draftLabelsRef.current];
+    const baselineLabels = labelBaselineRef.current;
     const document = collab.ydoc;
     let submittedState: Y.Snapshot | undefined;
     let pushedToConfluence = false;
@@ -926,22 +978,38 @@ export function PageViewPage() {
         if (editSessionRef.current === session) editBaseVersionRef.current = saved.version;
       }
       if (editSessionRef.current !== session) return;
+      let committedLabels: string[] | null = null;
       if (editing) {
-        const currentLabels = page.labels ?? [];
-        const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
-        const removeLabels = currentLabels.filter((l) => !draftLabels.includes(l));
+        // The session's own delta: the draft at submit against the baseline
+        // the session started from, applied by the server to whatever it
+        // holds now (#1931).
+        const baseline = baselineLabels;
+        const addLabels = submittedLabels.filter((l) => !baseline.includes(l));
+        const removeLabels = baseline.filter((l) => !submittedLabels.includes(l));
         if (addLabels.length > 0 || removeLabels.length > 0) {
           try {
-            await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+            const written = await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+            // Only the labels the server committed (it normalizes, and peers
+            // may have changed tags) can become the baseline: never derive
+            // them locally. A success without a valid label set leaves the
+            // session open with baseline and draft untouched.
+            const confirmedLabels = parseCommittedLabels(written);
+            if (!confirmedLabels) {
+              if (editSessionRef.current !== session) return;
+              toast.warning('Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.');
+              return;
+            }
+            committedLabels = confirmedLabels;
             setLabelPolicyNotice(null);
           } catch (labelError) {
             // #283: a reserved-label verdict from the server (contradictory
             // policy labels, a relaxation without policy authority,
             // enforcement not activated) is not a save failure — the content
-            // save above already committed. Keep the edit session and the
-            // draft labels so the user can resolve the conflict, and say
-            // exactly what the server refused and why, inside the tag
-            // control. Anything else is an ordinary label-write error.
+            // save above already committed. Keep the edit session, the
+            // baseline and the draft labels so the user can resolve the
+            // conflict, and say exactly what the server refused and why,
+            // inside the tag control. Anything else is an ordinary
+            // label-write error.
             const refusal = describeAiPolicyRefusal(labelError);
             if (!refusal || editSessionRef.current !== session) throw labelError;
             setLabelPolicyNotice(labelRefusalMessage(refusal));
@@ -956,6 +1024,20 @@ export function PageViewPage() {
         !document || document.isDestroyed || !submittedState ||
         !Y.equalSnapshots(submittedState, Y.snapshot(document))
       )) {
+        if (committedLabels) {
+          // The session stays open: rebase onto what the server committed
+          // (it normalizes, and peers may have changed tags), keeping only
+          // the edits made since the submitted snapshot. Advancing the
+          // baseline alone would undo a peer's change on the next Save.
+          const current = draftLabelsRef.current;
+          const addedSince = current.filter((l) => !submittedLabels.includes(l));
+          const removedSince = submittedLabels.filter((l) => !current.includes(l));
+          const rebased = committedLabels.filter((l) => !removedSince.includes(l));
+          for (const l of addedSince) if (!rebased.includes(l)) rebased.push(l);
+          labelBaselineRef.current = [...committedLabels];
+          setLabelBaselineState([...committedLabels]);
+          updateDraftLabels(rebased);
+        }
         toast.info('Saved the captured version. The document changed while saving; it remains open.');
         return;
       }
@@ -963,7 +1045,7 @@ export function PageViewPage() {
       setCollabSession(false);
       setCollabHasSynced(false);
       setIsDirty(false);
-      setDraftLabels([]);
+      seedLabelSession([]);
       setEditing(false);
       const isConfluence = collabLive
         ? pushedToConfluence
@@ -1005,7 +1087,7 @@ export function PageViewPage() {
       saveInFlightRef.current = false;
       setSaveInFlight(false);
     }
-  }, [collab.ydoc, collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
+  }, [collab.ydoc, collabLive, draftKey, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, seedLabelSession, sessionLifecycleRevision, updateDraftLabels, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -1097,9 +1179,9 @@ export function PageViewPage() {
   const handleAddTag = useCallback((tag: string) => {
     if (!id) return;
     if (editing) {
-      if (!draftLabels.includes(tag)) {
+      if (!draftLabelsRef.current.includes(tag)) {
         metadataRevisionRef.current += 1;
-        setDraftLabels((prev) => [...prev, tag]);
+        updateDraftLabels([...draftLabelsRef.current, tag]);
         setIsDirty(true);
       }
       return;
@@ -1116,13 +1198,13 @@ export function PageViewPage() {
         },
       },
     );
-  }, [editing, draftLabels, id, labelsMutation]);
+  }, [editing, id, labelsMutation, updateDraftLabels]);
 
   const handleRemoveTag = useCallback((tag: string) => {
     if (!id) return;
     if (editing) {
       metadataRevisionRef.current += 1;
-      setDraftLabels((prev) => prev.filter((t) => t !== tag));
+      updateDraftLabels(draftLabelsRef.current.filter((t) => t !== tag));
       setIsDirty(true);
       return;
     }
@@ -1137,7 +1219,7 @@ export function PageViewPage() {
         },
       },
     );
-  }, [editing, id, labelsMutation]);
+  }, [editing, id, labelsMutation, updateDraftLabels]);
 
   const handlePinToggle = useCallback(() => {
     if (!id || !page) return;
@@ -1494,7 +1576,7 @@ export function PageViewPage() {
                   </p>
                   <p className="mt-1 leading-6 text-muted-foreground">
                     {writeLocked
-                      ? 'The page or your access changed. Your open draft remains below and is not reapplied automatically.'
+                      ? readOnlyDraftMessage(collab.readOnlyReason)
                       : 'Changes stay in this tab while the connection is unavailable. Reconnect before saving.'}
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
