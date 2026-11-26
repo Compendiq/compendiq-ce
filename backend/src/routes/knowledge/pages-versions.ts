@@ -15,12 +15,13 @@ import { isConfluenceEnabled } from '../../core/services/confluence-integration.
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
 import { CONFLUENCE_DISABLED_MESSAGE } from '../../domains/confluence/services/standalone-mode.js';
-import { hasOnlyUncarriedTasks, htmlToConfluence } from '../../core/services/content-converter.js';
 import {
+  deriveVersionRestoreStorage,
   describeConfluencePagePut,
   publishConfluencePagePut,
   registerConfluencePagePutIntentReconcilers,
 } from '../../domains/confluence/services/page-put-intent-reconciler.js';
+import { ALL_STORAGE_DERIVATION_FEATURES } from '../../core/services/storage-derivation.js';
 import {
   confirmPagePublication,
   pagePublicationReceipt,
@@ -552,14 +553,18 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       }
       // #1751: tasks keep the ids Confluence has, as publication re-derives
       // the digest from this same stored page (publishConfluencePagePut).
+      // #1953: the intent records the storage-derivation features in force
+      // here, and publication derives with that record.
       const current = await query<{ body_storage: string | null; body_html: string | null }>(
         'SELECT body_storage, body_html FROM pages WHERE id = $1',
         [ctx.id],
       );
-      const storageBody = htmlToConfluence(intendedHistorical.bodyHtml, {
-        previousStorage: current.rows[0]?.body_storage,
-        legacyTasks: hasOnlyUncarriedTasks(current.rows[0]?.body_html),
-      });
+      const derivationFeatures = ALL_STORAGE_DERIVATION_FEATURES;
+      const storageBody = deriveVersionRestoreStorage(
+        intendedHistorical.bodyHtml,
+        current.rows[0] ?? { body_storage: null, body_html: null },
+        derivationFeatures,
+      );
       // The live title comes from the same read as the revision pinned by
       // the intent. Placeholder restores keep that title through publication.
       const restoredTitle = isVersionPlaceholderTitle(intendedHistorical.title, targetVersion)
@@ -576,6 +581,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         expectedLocalVersion: ctx.version,
         targetVersion,
         targetSource,
+        derivationFeatures,
       });
       const intent = await reservePageWriteIntent({
         pageIds: [ctx.id],

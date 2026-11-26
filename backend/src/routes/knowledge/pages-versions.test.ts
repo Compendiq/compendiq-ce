@@ -11,8 +11,16 @@ import {
   reconcilePageWriteIntent,
 } from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  ALL_STORAGE_DERIVATION_FEATURES,
+  encodeStorageDerivationFeatures,
+} from '../../core/services/storage-derivation.js';
+import { STORAGE_DERIVATION_BASE_CORPUS } from '../../core/services/__fixtures__/storage-derivation-base-corpus.js';
 import { encryptPat } from '../../core/utils/crypto.js';
-import { confluencePagePutDigest } from '../../domains/confluence/services/page-put-intent-reconciler.js';
+import {
+  confluencePagePutDigest,
+  deriveVersionRestoreStorage,
+} from '../../domains/confluence/services/page-put-intent-reconciler.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import {
   isDbAvailable,
@@ -1218,6 +1226,84 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       body_text: 'Live compact body',
     }]);
     expect(confluenceRequests.filter((entry) => entry.method === 'PUT')).toHaveLength(1);
+  });
+
+  it('records the storage-derivation features of a restore and recovers it with them, without a second PUT (#1953)', async () => {
+    // The route derives the storage it sends; publication derives it again
+    // from the intent's record, here after the request died on its readback.
+    const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'combined-restore-target')!;
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-derivation',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Live derivation title',
+      bodyHtml: entry.storedBodyHtml!,
+      bodyText: 'Live derivation body',
+    });
+    await query('UPDATE pages SET body_storage = $2, remote_version = 3 WHERE id = $1', [pageId, entry.previousStorage]);
+    await seedVersion(pageId, 1, 'Derivation historical', entry.targetHtml, 'Derivation restored body');
+    compactPutReply = true;
+    readbackStatus = 403;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+    expect(response.statusCode, response.body).toBe(403);
+
+    const derived = deriveVersionRestoreStorage(
+      entry.targetHtml,
+      { body_storage: entry.previousStorage, body_html: entry.storedBodyHtml },
+      ALL_STORAGE_DERIVATION_FEATURES,
+    );
+    const puts = confluenceRequests.filter((request) => request.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(puts[0]?.body?.body.storage.value).toBe(derived);
+    const pending = await query<{ id: string; effect: Record<string, unknown> }>(
+      `SELECT id, effect FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[] AND status = 'pending'`,
+      [pageId],
+    );
+    // No key while no feature is registered: the effect a release before the
+    // first feature wrote, and the one a rolled-back release still reads.
+    const recorded = encodeStorageDerivationFeatures(ALL_STORAGE_DERIVATION_FEATURES);
+    expect(pending.rows[0]!.effect.derivationFeatures).toEqual(recorded);
+    expect(Object.keys(pending.rows[0]!.effect).sort()).toEqual([
+      'confluenceId', 'effectClass', 'expectedLocalVersion', 'expectedRemoteVersion', 'intendedStateDigest',
+      'pageId', 'targetSource', 'targetVersion', ...(recorded ? ['derivationFeatures'] : []),
+    ].sort());
+
+    const retiredRuntime = `retired-restore-derivation-${Date.now()}`;
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+       VALUES ($1, '{"fixture":"retired restore writer"}', NOW(), $2,
+               'Fixture confirms the acknowledged restore writer stopped',
+               '{"kind":"verified_local_termination"}')`,
+      [retiredRuntime, recoveryAdminId],
+    );
+    await query('UPDATE page_write_intents SET runtime_id = $2 WHERE id = $1', [pending.rows[0]!.id, retiredRuntime]);
+    readbackStatus = 200;
+    await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
+      actorId: recoveryAdminId,
+      reason: 'Recover the acknowledged restore with the derivation its intent recorded',
+    })).resolves.toEqual({ intentId: pending.rows[0]!.id, status: 'reconciled_applied' });
+    expect((await query(
+      'SELECT title, body_storage, version, remote_version FROM pages WHERE id = $1',
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Derivation historical',
+      body_storage: derived,
+      version: 4,
+      remote_version: 4,
+    }]);
+    expect(confluenceRequests.filter((request) => request.method === 'PUT')).toHaveLength(1);
   });
 
   it('cancels a restore when its original actor is deactivated during the admission wait', async () => {
