@@ -6,7 +6,7 @@ import { DOMSerializer } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, ExtendedTable, BlockShortcutsExtension } from './article-extensions';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, ExtendedTable, ConfluenceTableCell, ConfluenceTableHeader, BlockShortcutsExtension } from './article-extensions';
 import { CompendiqTableView } from './table-layout-view';
 
 // Helper to extract parseHTML rules from a TipTap extension config
@@ -1301,4 +1301,79 @@ describe('ExtendedTable options', () => {
   });
 });
 
+/**
+ * Table cell alignment (#1956), in the frontend (jsdom) host. The vector table is the one in the backend
+ * collab-schema-parity.test.ts (browser/happy-dom reading) and content-converter.table-align.test.ts
+ * (jsdom/domino reading); the three must stay identical.
+ */
+const CELL_ALIGN_VECTORS: Array<[string, string, string | null]> = [
+  ['align attribute', 'align="center"', 'center'],
+  ['attribute case and whitespace', 'ALIGN=" Right "', 'right'],
+  ['plain style', 'style="text-align:left"', 'left'],
+  ['style with !important', 'style="text-align: center !important"', 'center'],
+  ['style among other declarations', 'style="color: red; text-align: right; background-color: rgb(1, 2, 3)"', 'right'],
+  ['unrelated style keeps the attribute', 'style="color: red" align="left"', 'left'],
+  ['style decides over the attribute', 'style="text-align: right" align="left"', 'right'],
+  ['non-canonical style declines the attribute', 'style="text-align: justify" align="center"', null],
+  ['invalid value', 'align="justify"', null],
+  ['url-like value', 'align="javascript:x"', null],
+  ['empty value', 'align=""', null],
+  ['duplicate declarations', 'style="text-align: left; text-align: right"', null],
+  ['duplicate declarations, differing priority', 'style="text-align: left !important; text-align: right"', null],
+  ['custom property mentioning text-align', 'style="--x: text-align: center"', null],
+  ['quoted value containing a semicolon', 'style="content: \'a;text-align:center\'"', null],
+  ['quoted value', 'style="text-align: \'center\'"', null],
+  ['comment', 'style="text-align: center /* x */"', null],
+  ['upper-case property', 'style="TEXT-ALIGN: RIGHT"', null],
+  ['mixed-case property, attribute ignored', 'style="Text-Align:center" align="left"', null],
+  ['text-align-last', 'style="text-align-last: center"', null],
+  ['over-long style', `style="text-align: center; ${'color: red; '.repeat(100)}"`, null],
+];
+
+describe('table cell alignment (#1956)', () => {
+  const extensions = [StarterKit, ExtendedTable, TableRow, ConfluenceTableCell, ConfluenceTableHeader];
+
+  function cellAligns(html: string): { aligns: Array<string | null>; html: string } {
+    const editor = new Editor({ extensions, content: html });
+    const aligns: Array<string | null> = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === 'tableCell' || node.type.name === 'tableHeader') aligns.push((node.attrs.align as string | null) ?? null);
+    });
+    const saved = editor.getHTML();
+    editor.destroy();
+    return { aligns, html: saved };
+  }
+
+  it.each(CELL_ALIGN_VECTORS)('reads %s', (_label, attrs, expected) => {
+    expect(cellAligns(`<table><tbody><tr><th ${attrs}>h</th></tr><tr><td ${attrs}>c</td></tr></tbody></table>`).aligns)
+      .toEqual([expected, expected]);
+  });
+
+  it('renders align="…" on the cell and never a text-align style', () => {
+    const { html } = cellAligns(
+      '<table><tbody><tr><th align="center">h</th><th>i</th></tr><tr><td style="text-align: right;">c</td><td>d</td></tr></tbody></table>',
+    );
+    expect(html).toMatch(/<th colspan="1" rowspan="1" align="center">/);
+    expect(html).toMatch(/<td colspan="1" rowspan="1" align="right">/);
+    expect(html).not.toMatch(/<t[dh][^>]*style=/);
+    expect(html.match(/align=/g)).toHaveLength(2);
+  });
+
+  it('renders nothing for an alignment value the model does not allow', () => {
+    const editor = new Editor({ extensions, content: '<table><tbody><tr><td>c</td></tr></tbody></table>' });
+    editor.commands.command(({ tr, state }) => {
+      state.doc.descendants((node, pos) => {
+        if (node.type.name === 'tableCell') tr.setNodeMarkup(pos, undefined, { ...node.attrs, align: 'x" onmouseover="y' });
+      });
+      return true;
+    });
+    expect(editor.getHTML()).not.toMatch(/align=|onmouseover/);
+    editor.destroy();
+  });
+
+  it('keeps the extension names the collaborative schema and the parity test rely on', () => {
+    expect(ConfluenceTableCell.name).toBe('tableCell');
+    expect(ConfluenceTableHeader.name).toBe('tableHeader');
+  });
+});
 

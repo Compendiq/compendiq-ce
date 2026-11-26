@@ -1086,3 +1086,17 @@ describe('ArticleViewer: Confluence emoticons (#1750)', () => {
       ]);
   });
 });
+
+describe('ArticleViewer: table cell alignment (#1956)', () => {
+  it('keeps the alignment of header and body cells from the attribute and from a stored style', async () => {
+    const html = '<table><tbody><tr><th align="center">a</th><th>b</th></tr>'
+      + '<tr><td style="text-align: right;">1</td><td align="left">2</td></tr></tbody></table>';
+    const { container } = render(<ArticleViewer content={html} />);
+    await waitFor(() => {
+      expect(container.querySelector('th[align="center"]')).not.toBeNull();
+    });
+    expect([...container.querySelectorAll('th')].map((cell) => cell.getAttribute('align'))).toEqual(['center', null]);
+    expect([...container.querySelectorAll('td')].map((cell) => cell.getAttribute('align'))).toEqual(['right', 'left']);
+    expect(container.querySelectorAll('th[style], td[style]')).toHaveLength(0);
+  });
+});

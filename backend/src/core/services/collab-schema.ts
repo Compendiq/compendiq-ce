@@ -726,6 +726,63 @@ const ExtendedTable = Table.extend({
   },
 });
 
+// <table-cell-align:begin>
+// Table cell alignment (#1956). This block is byte-identical in backend collab-schema.ts, frontend
+// article-extensions.ts and backend content-converter.ts; collab-schema-parity.test.ts compares the text.
+// An inline style that mentions text-align decides; unless it is exactly one plain, lower-case
+// declaration the cell has no alignment. Without such a style the align attribute decides.
+const TABLE_CELL_ALIGNMENTS = ['left', 'center', 'right'] as const;
+type TableCellAlign = (typeof TABLE_CELL_ALIGNMENTS)[number];
+const TABLE_CELL_STYLE_MAX = 1024;
+function normalizeTableCellAlign(value: unknown): TableCellAlign | null {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return (TABLE_CELL_ALIGNMENTS as readonly string[]).includes(v) ? (v as TableCellAlign) : null;
+}
+/** null: the style does not mention text-align. 'other': it does, but not as one plain declaration. */
+function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlign | 'other' | null {
+  if (style.length > TABLE_CELL_STYLE_MAX) return 'other';
+  const mentions = style.match(/text-align/gi);
+  if (!mentions) return null;
+  // A browser reads property names case-insensitively and the Node hosts disagree: only the exact
+  // lower-case spelling is read, any other spelling is declined before the CSSOM is asked.
+  if (mentions.length !== 1 || mentions[0] !== 'text-align' || /["'\\]|\/\*|--|url\(/i.test(style)) return 'other';
+  return normalizeTableCellAlign(cssTextAlign) ?? 'other';
+}
+function resolveTableCellAlign(style: string, cssTextAlign: string, alignAttr: string | null): TableCellAlign | null {
+  const fromStyle = tableCellStyleAlign(style, cssTextAlign);
+  return fromStyle === null ? normalizeTableCellAlign(alignAttr) : fromStyle === 'other' ? null : fromStyle;
+}
+// <table-cell-align:end>
+
+// <table-cell-align-attribute:begin>
+const TABLE_CELL_ALIGN_ATTRIBUTE = {
+  default: null as TableCellAlign | null,
+  parseHTML: (element: HTMLElement) =>
+    resolveTableCellAlign(element.getAttribute('style') ?? '', element.style.textAlign, element.getAttribute('align')),
+  renderHTML: (attributes: { align?: unknown }) => {
+    const align = normalizeTableCellAlign(attributes.align);
+    return align ? { align } : {};
+  },
+};
+// <table-cell-align-attribute:end>
+
+/**
+ * TableCell / TableHeader with the alignment attribute #1956 decided: parsed from the inline
+ * style or the `align` attribute, rendered as `align="…"` (the attribute marked emits and
+ * turndown's GFM table rule reads). The Yjs attribute key `align` is the stock one.
+ */
+const ConfluenceTableCell = TableCell.extend({
+  addAttributes() {
+    return { ...this.parent?.(), align: TABLE_CELL_ALIGN_ATTRIBUTE };
+  },
+});
+
+const ConfluenceTableHeader = TableHeader.extend({
+  addAttributes() {
+    return { ...this.parent?.(), align: TABLE_CELL_ALIGN_ATTRIBUTE };
+  },
+});
+
 /**
  * TaskItem plus the task's Confluence identity (#1751): `ac:task-id` rides in
  * `data-task-id`, which the converter writes and reads back. ProseMirror keeps
@@ -985,8 +1042,8 @@ export function collabExtensions(): AnyExtension[] {
     SafeHighlight.configure({ multicolor: true }),
     ExtendedTable.configure({ resizable: false }),
     TableRow,
-    TableCell,
-    TableHeader,
+    ConfluenceTableCell,
+    ConfluenceTableHeader,
     TaskList,
     ConfluenceTaskItem.configure({ nested: true }),
     MermaidBlock,

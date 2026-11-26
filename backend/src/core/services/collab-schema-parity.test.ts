@@ -9,7 +9,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import { generateJSON } from '@tiptap/html';
+import { generateHTML, generateJSON } from '@tiptap/html';
+import { getSchema, type JSONContent } from '@tiptap/core';
+import { TableCell, TableHeader } from '@tiptap/extension-table';
+import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
+import * as Y from 'yjs';
 import { collabExtensions, getCollabSchema, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -148,7 +152,9 @@ function frontendDocumentSpecs(): Spec[] {
   const code = parseNamedExtend(titled, 'CodeBlockLowlight', 'codeBlock', 'node');
   const highlight = parseNamedExtend(article, 'Highlight', 'highlight', 'mark');
   const taskItem = parseNamedExtend(article, 'TaskItem', 'taskItem', 'node');
-  for (const extra of [image, table, code, highlight, taskItem]) {
+  const tableCell = parseNamedExtend(article, 'TableCell', 'tableCell', 'node');
+  const tableHeader = parseNamedExtend(article, 'TableHeader', 'tableHeader', 'node');
+  for (const extra of [image, table, code, highlight, taskItem, tableCell, tableHeader]) {
     if (extra) specs.push(extra);
   }
   return specs.filter((s) => !EDITOR_ONLY_EXTENSION_NAMES.has(s.name));
@@ -309,6 +315,145 @@ describe('collab schema parity (#1445)', () => {
         );
       }
     }
+  });
+});
+
+/**
+ * Table cell alignment (#1956). Block 1 (the style/attribute reading) is one text in three files, block 2
+ * (the attribute definition) one text in both schema files, so the two schemas and the converter cannot
+ * read a cell differently. The same vector table runs against the frontend extensions in
+ * article-extensions.test.ts; both tables must stay identical.
+ */
+function markedBlock(src: string, name: string): string | null {
+  const begin = `// <${name}:begin>`;
+  const end = `// <${name}:end>`;
+  const from = src.indexOf(begin);
+  const to = src.indexOf(end);
+  if (from < 0 || to < from || src.indexOf(begin, from + 1) >= 0 || src.indexOf(end, to + 1) >= 0) return null;
+  return src.slice(from, to + end.length);
+}
+
+/** `[label, cell attributes, expected align]` — every row must read the same in all hosts (browser, happy-dom, jsdom, domino). */
+const CELL_ALIGN_VECTORS: Array<[string, string, string | null]> = [
+  ['align attribute', 'align="center"', 'center'],
+  ['attribute case and whitespace', 'ALIGN=" Right "', 'right'],
+  ['plain style', 'style="text-align:left"', 'left'],
+  ['style with !important', 'style="text-align: center !important"', 'center'],
+  ['style among other declarations', 'style="color: red; text-align: right; background-color: rgb(1, 2, 3)"', 'right'],
+  ['unrelated style keeps the attribute', 'style="color: red" align="left"', 'left'],
+  ['style decides over the attribute', 'style="text-align: right" align="left"', 'right'],
+  ['non-canonical style declines the attribute', 'style="text-align: justify" align="center"', null],
+  ['invalid value', 'align="justify"', null],
+  ['url-like value', 'align="javascript:x"', null],
+  ['empty value', 'align=""', null],
+  ['duplicate declarations', 'style="text-align: left; text-align: right"', null],
+  ['duplicate declarations, differing priority', 'style="text-align: left !important; text-align: right"', null],
+  ['custom property mentioning text-align', 'style="--x: text-align: center"', null],
+  ['quoted value containing a semicolon', 'style="content: \'a;text-align:center\'"', null],
+  ['quoted value', 'style="text-align: \'center\'"', null],
+  ['comment', 'style="text-align: center /* x */"', null],
+  ['upper-case property', 'style="TEXT-ALIGN: RIGHT"', null],
+  ['mixed-case property, attribute ignored', 'style="Text-Align:center" align="left"', null],
+  ['text-align-last', 'style="text-align-last: center"', null],
+  ['over-long style', `style="text-align: center; ${'color: red; '.repeat(100)}"`, null],
+];
+
+describe('table cell alignment definition (#1956)', () => {
+  const article = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');
+  const collab = readFileSync(join(here, 'collab-schema.ts'), 'utf8');
+  const converter = readFileSync(join(here, 'content-converter.ts'), 'utf8');
+
+  it('keeps the style/attribute reading identical in both schemas and the converter', () => {
+    const [a, b, c] = [article, collab, converter].map((src) => markedBlock(src, 'table-cell-align'));
+    expect(a, 'article-extensions.ts block').not.toBeNull();
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+  });
+
+  it('keeps the attribute definition identical in both schemas', () => {
+    const a = markedBlock(article, 'table-cell-align-attribute');
+    expect(a, 'article-extensions.ts block').not.toBeNull();
+    expect(markedBlock(collab, 'table-cell-align-attribute')).toBe(a);
+  });
+
+  it('declares align on tableCell and tableHeader', () => {
+    const schema = getCollabSchema();
+    expect(Object.keys(schema.nodes.tableCell!.spec.attrs ?? {})).toContain('align');
+    expect(Object.keys(schema.nodes.tableHeader!.spec.attrs ?? {})).toContain('align');
+    const names = frontendDocumentSpecs().filter((s) => s.name === 'tableCell' || s.name === 'tableHeader');
+    expect(names.map((s) => s.name).sort()).toEqual(['tableCell', 'tableHeader']);
+    for (const spec of names) expect(spec.attrs).toContain('align');
+  });
+
+  function cellAligns(html: string): Array<string | null> {
+    const found: Array<string | null> = [];
+    const walk = (node: JSONContent): void => {
+      if (node.type === 'tableCell' || node.type === 'tableHeader') found.push((node.attrs?.align as string | null) ?? null);
+      for (const child of node.content ?? []) walk(child);
+    };
+    walk(generateJSON(html, collabExtensions()));
+    return found;
+  }
+
+  it.each(CELL_ALIGN_VECTORS)('reads %s', (_label, attrs, expected) => {
+    expect(cellAligns(`<table><tbody><tr><th ${attrs}>h</th></tr><tr><td ${attrs}>c</td></tr></tbody></table>`))
+      .toEqual([expected, expected]);
+  });
+
+  it('renders align="…" and no style, for an aligned cell and nothing for an unaligned one', () => {
+    const html = yDocToHtml(htmlToYDoc(
+      '<table><tbody><tr><th align="center">h</th><th>i</th></tr><tr><td style="text-align: right;">c</td><td>d</td></tr></tbody></table>',
+    ));
+    expect(html).toMatch(/<th colspan="1" rowspan="1" align="center">/);
+    expect(html).toMatch(/<td colspan="1" rowspan="1" align="right">/);
+    expect(html).not.toMatch(/<t[dh][^>]*style=/);
+    expect(html.match(/align=/g)).toHaveLength(2);
+  });
+
+  it('renders no attribute for a hostile Y.Doc alignment value', () => {
+    const cell = (align: unknown): JSONContent => ({
+      type: 'tableCell',
+      attrs: { colspan: 1, rowspan: 1, colwidth: null, align },
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'x' }] }],
+    });
+    for (const hostile of ['justify', 'x" onmouseover="y', '<b>', 5, { toString: 'x' }]) {
+      const html = generateHTML(
+        { type: 'doc', content: [{ type: 'table', content: [{ type: 'tableRow', content: [cell(hostile)] }] }] },
+        collabExtensions(),
+      );
+      expect(html).not.toMatch(/align=|onmouseover|<t[dh][^>]*style=/);
+    }
+  });
+
+  it('loads a room written with the stock cells unchanged (no migration, same bytes, same JSON)', () => {
+    const stockExtensions = collabExtensions().map((ext) =>
+      ext.name === 'tableCell' ? TableCell : ext.name === 'tableHeader' ? TableHeader : ext);
+    const cell = (type: string, text: string, align: string | null): JSONContent => ({
+      type,
+      attrs: { colspan: 1, rowspan: 1, colwidth: null, align },
+      content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+    });
+    const json: JSONContent = {
+      type: 'doc',
+      content: [{
+        type: 'table',
+        attrs: { 'data-layout': 'default' },
+        content: [
+          { type: 'tableRow', content: [cell('tableHeader', 'a', 'center'), cell('tableHeader', 'b', null)] },
+          { type: 'tableRow', content: [cell('tableCell', '1', 'right'), cell('tableCell', '2', null)] },
+        ],
+      }],
+    };
+    const stored = prosemirrorJSONToYDoc(getSchema(stockExtensions), json, 'default');
+    const bytes = Y.encodeStateAsUpdate(stored);
+    const reloaded = new Y.Doc();
+    Y.applyUpdate(reloaded, bytes);
+    expect(yDocToProsemirrorJSON(reloaded, 'default')).toEqual(yDocToProsemirrorJSON(stored, 'default'));
+    const html = yDocToHtml(reloaded);
+    expect(html).toContain('align="center"');
+    expect(html).toContain('align="right"');
+    expect(cellAligns(html)).toEqual(['center', null, 'right', null]);
+    expect(Y.encodeStateAsUpdate(reloaded)).toEqual(bytes);
   });
 });
 
