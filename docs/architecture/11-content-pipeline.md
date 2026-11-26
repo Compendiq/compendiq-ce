@@ -450,7 +450,11 @@ any change to the existing conflict policy.
   no entries). AI Improve apply never pairs. The same input always gets the
   same ids: publishing a version restore re-derives the storage, with the
   same stored page, and compares digests (`page-put-intent-reconciler.ts`),
-  which per-call random ids made fail. PUT, restore and Improve apply store a
+  which per-call random ids made fail. That derivation is also pinned across
+  releases (#1953): a change to what write-back derives from existing HTML is
+  a named feature in `storage-derivation.ts`, the restore intent records the
+  names in force, and recovery derives with that record, an intent without
+  it with none. PUT, restore and Improve apply store a
   body re-derived from the storage Confluence returns, so the ids come back
   with it. The two writers that keep their own HTML store the ids they wrote:
   draft publish stores `assignTaskIds`' HTML as the live body, and a

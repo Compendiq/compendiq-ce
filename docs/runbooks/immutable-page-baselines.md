@@ -1349,6 +1349,22 @@ New Version History restore intents also record the target snapshot's
 `source`. When inspecting history for an intent, match page ID, source, and
 version number. Legacy restore intents record only the target number.
 
+A restore intent also records the storage-derivation features its storage was
+derived with, as `derivationFeatures`: the registered names in ascending
+order, and no key while no feature is in force. Recovery derives the restored
+version's storage with exactly that record and compares it with
+`intendedStateDigest`; an intent without the key was reserved before the first
+feature and is derived with none. `intent_restore_derivation_unsupported`
+means the intent names a feature the reconciling runtime does not register
+(a restore reserved by a newer release, reconciled after a rollback or by a
+pod that has not been upgraded): nothing was read or written, and the intent
+is recovered by a runtime of the release that reserved it. A value that is not
+such a list is `intent_recovery_metadata_invalid`. The digest covers the
+derived storage and the effective title, so `intent_restore_target_changed`
+reports a historical row that now derives different storage or another title;
+the row's id, title and HTML are compared before the provider PUT, not during
+recovery.
+
 ### `remote_terminal_only`
 
 A fenced intent is not automatically an unknown remote outcome. The trusted
