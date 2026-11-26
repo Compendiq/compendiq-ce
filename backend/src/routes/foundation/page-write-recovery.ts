@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  PAGE_WRITER_QUIESCE_RUNBOOK,
   PageWriteIntentParamSchema,
   PageWriteReconcileResultSchema,
   PageWriteReconcileSchema,
@@ -7,6 +8,7 @@ import {
   PageWriteRecoveryStateSchema,
   PageWriterFenceResultSchema,
   PageWriterFenceSchema,
+  PageWriterQuiesceBlockedSchema,
   PageWriterQuiesceResultSchema,
   PageWriterQuiesceSchema,
   PageWriterRuntimeParamSchema,
@@ -19,6 +21,7 @@ import {
   PageWriteError,
   quiescePageWriterRuntime,
   reconcilePageWriteIntent,
+  RuntimeQuiesceBlockedError,
 } from '../../core/services/page-write-admission.js';
 
 /** Recovery is deployment administration, never authority inherited from a page. */
@@ -66,18 +69,32 @@ export async function pageWriteRecoveryRoutes(fastify: FastifyInstance) {
 
   // This retires the receiving process's write gate. It is NOT a remote proof
   // submission, a force-clear, or a substitute for removing the pod from service.
-  fastify.post('/admin/page-write-recovery/runtime/quiesce', async (request) => {
+  // A refusal leaves the gate closed. Only this admin route discloses the
+  // blocking intent ids (#1934); the generic error handler never does.
+  fastify.post('/admin/page-write-recovery/runtime/quiesce', async (request, reply) => {
     const { expectedRuntimeId, reason } = PageWriterQuiesceSchema.parse(request.body);
     const runtimeId = await getPageWriterRuntimeId();
     if (expectedRuntimeId !== runtimeId) {
       throw new PageWriteError(409, 'runtime_not_local', 'Target the backend process identified by this runtime before retiring it.');
     }
-    return PageWriterQuiesceResultSchema.parse(await quiescePageWriterRuntime({
-      actorId: request.userId,
-      reason,
-      ipAddress: request.ip,
-      userAgent: request.headers['user-agent'],
-    }));
+    try {
+      return PageWriterQuiesceResultSchema.parse(await quiescePageWriterRuntime({
+        actorId: request.userId,
+        reason,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      }));
+    } catch (error) {
+      if (!(error instanceof RuntimeQuiesceBlockedError)) throw error;
+      return reply.status(409).send(PageWriterQuiesceBlockedSchema.parse({
+        error: error.name,
+        reason: error.reason,
+        code: error.reason,
+        message: error.message,
+        blockingIntents: error.blockingIntents,
+        runbook: PAGE_WRITER_QUIESCE_RUNBOOK,
+      }));
+    }
   });
 
   fastify.post('/admin/page-write-recovery/runtimes/:runtimeId/fence', async (request) => {

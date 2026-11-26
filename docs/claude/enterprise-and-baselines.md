@@ -119,7 +119,11 @@ Recovery administration is checked on the mutation client at fencing, claim,
 verification, repair and settlement. Quiescence authorizes and audits before
 closing the gate, then rechecks after draining; revocation leaves the gate
 closed but cannot produce an acknowledgment. Original-writer authority remains
-a separate check.
+a separate check. When every remaining blocker is a room admission held by its
+page's own unknown-outcome collaborative Save of this runtime, quiescence
+answers `409 runtime_quiesce_blocked_by_collab_commit` with the intent ids after
+its 30 s bound (#1934); it never releases, fences or acknowledges, and any
+other blocker keeps the unbounded wait.
 Every accepted recovery attempt, including a same-runtime retry by a different
 admin, records that actor and reason before callbacks. Quiescence cancellation
 records the acting admin in `settled_by`, not the original writer.
