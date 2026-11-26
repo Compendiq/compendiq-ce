@@ -181,7 +181,9 @@ those two floods every keystroke as a full document.
 **Images a Confluence commit uploaded (#1764).** The commit publishes
 `body_html` with `data-confluence-filename` and
 `data-confluence-image-source="attachment"` on the pasted images it uploaded;
-those markers make the next commit's image plan skip them. After the intent
+those markers make the next commit's image plan skip them. The plan never includes an `img` inside a
+`.confluence-drawio` wrapper (the cached draw.io preview), so a page with only
+diagrams reserves `collab.commit.confluence`, not `.media` (#1935). After the intent
 settles, and before its `pages_version` control, the commit marks the same
 images in the room so the next persist keeps them. The pod that owns the room
 applies an in-place Yjs transaction under its room admission (the fence a

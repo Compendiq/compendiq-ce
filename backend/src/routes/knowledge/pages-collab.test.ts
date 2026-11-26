@@ -2254,6 +2254,119 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     }
   });
 
+  describe('draw.io previews on a collaborative Save (#1935)', () => {
+    const DRAWIO = '<div class="confluence-drawio" data-diagram-name="Arch">'
+      + '<img src="/api/attachments/local-src/Arch.png" alt="Arch"></div>';
+
+    async function commitWith(bodyHtml: string) {
+      const fixture = await createPastedImageRoot();
+      let upstream: ReturnType<typeof createServer> | null = null;
+      let ws: WebSocket | null = null;
+      try {
+        await fs.promises.writeFile(
+          path.join(fixture.root, 'local-src', 'Arch.png'),
+          Buffer.from('cached drawio preview bytes'),
+        );
+        const { token, userId, pageId, confluenceId } = await seedConfluencePage({ version: 4, bodyHtml });
+        const attachmentPosts: Array<{ filename: string | null; contentType: string }> = [];
+        const pagePuts: Array<{ storage: string }> = [];
+        upstream = createServer(async (request, response) => {
+          const urlPath = new URL(request.url ?? '/', 'http://fixture.test').pathname;
+          response.setHeader('content-type', 'application/json');
+          if (request.method === 'POST' && urlPath === `/rest/api/content/${confluenceId}/child/attachment`) {
+            let raw = '';
+            for await (const chunk of request) raw += String(chunk);
+            attachmentPosts.push({
+              filename: /filename="([^"]*)"/.exec(raw)?.[1] ?? null,
+              contentType: String(request.headers['content-type'] ?? ''),
+            });
+            response.end(JSON.stringify({ results: [{
+              id: 'attachment-1',
+              title: attachmentPosts.at(-1)!.filename,
+              mediaType: 'image/png',
+              version: { number: 1, when: '2026-09-20T00:00:01Z' },
+            }] }));
+            return;
+          }
+          if (urlPath !== `/rest/api/content/${confluenceId}`) {
+            response.writeHead(404).end();
+            return;
+          }
+          if (request.method === 'GET') {
+            response.end(JSON.stringify({
+              id: confluenceId, title: 'Conf page', type: 'page', status: 'current',
+              version: { number: 4, when: '2026-09-20T00:00:00Z' },
+              body: { storage: { value: '<p>commit-seed</p>' } },
+            }));
+            return;
+          }
+          if (request.method !== 'PUT') {
+            response.writeHead(405).end();
+            return;
+          }
+          let bytes = '';
+          for await (const chunk of request) bytes += String(chunk);
+          const sent = JSON.parse(bytes);
+          pagePuts.push({ storage: sent.body.storage.value });
+          response.end(JSON.stringify({
+            ...sent, id: confluenceId, status: 'current', version: { number: 5, when: '2026-09-20T00:00:02Z' },
+          }));
+        });
+        await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
+        const baseUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1', [userId, baseUrl]);
+
+        ws = await openAndSync(pageId, token);
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: commitPayload(ws, 'Drawio commit'),
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        const intents = await query<{ kind: string; status: string }>(
+          `SELECT kind, status FROM page_write_intents
+            WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+          [pageId],
+        );
+        return { attachmentPosts, pagePuts, intents: intents.rows };
+      } finally {
+        ws?.close();
+        if (upstream) {
+          upstream.closeAllConnections();
+          await new Promise<void>((resolve) => upstream!.close(() => resolve()));
+        }
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    }
+
+    it('reserves the non-media kind and uploads nothing for a page with only draw.io previews', async () => {
+      const { attachmentPosts, pagePuts, intents } = await commitWith(`<p>text</p>${DRAWIO}`);
+
+      expect(attachmentPosts).toEqual([]);
+      expect(pagePuts).toHaveLength(1);
+      expect(pagePuts[0]!.storage).toContain('ac:name="drawio"');
+      expect(pagePuts[0]!.storage).toContain('<ac:parameter ac:name="diagramName">Arch</ac:parameter>');
+      expect(intents).toEqual([{ kind: 'collab.commit.confluence', status: 'completed' }]);
+    });
+
+    it('reserves the media kind and uploads exactly the pasted image next to a draw.io preview', async () => {
+      const { attachmentPosts, pagePuts, intents } = await commitWith(
+        `<p>text</p>${DRAWIO}<img src="/api/attachments/local-src/pasted.png">`,
+      );
+
+      expect(attachmentPosts).toHaveLength(1);
+      expect(attachmentPosts[0]).toMatchObject({ filename: 'pasted.png' });
+      expect(attachmentPosts[0]!.contentType).toMatch(/^multipart\/form-data; boundary=/);
+      expect(pagePuts).toHaveLength(1);
+      expect(pagePuts[0]!.storage).toContain('ac:name="drawio"');
+      expect(pagePuts[0]!.storage).toContain('<ac:parameter ac:name="diagramName">Arch</ac:parameter>');
+      expect(pagePuts[0]!.storage).toContain('ri:filename="pasted.png"');
+      expect(intents).toEqual([{ kind: 'collab.commit.confluence.media', status: 'completed' }]);
+    });
+  });
+
+
   it('cancels before remote dispatch when planned pasted-image bytes change', async () => {
     const fixture = await createPastedImageRoot();
     const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({

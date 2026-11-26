@@ -193,10 +193,15 @@ as one inline token, never a div, so a task holding one stays a task (#1752). A
 page synced before #1750 shows emoticons only after its body is re-derived.
 
 A pasted image is uploaded once. `planLocalImagesForConfluence` uploads every
-`img[src^="/api/attachments/"]` that has neither `data-confluence-filename` nor
-`data-confluence-image-source`, and gives it both (`attachment`): the shape
-`confluenceToHtml` writes for a synced attachment and `htmlToConfluence` turns
-into `ri:attachment`. A collaborative Confluence Save copies those markers into
+`img[src^="/api/attachments/"]` outside a `.confluence-drawio` wrapper that has
+neither `data-confluence-filename` nor `data-confluence-image-source`, and gives
+it both (`attachment`): the shape `confluenceToHtml` writes for a synced
+attachment and `htmlToConfluence` turns into `ri:attachment`. It skips every
+`img` with a `.confluence-drawio` ancestor before any marker check or file read:
+`htmlToConfluence` replaces that wrapper with the draw.io macro and drops the
+preview, so such an `img` is never planned, marked or uploaded (it would
+overwrite the plugin's own `<diagramName>.png`), and a missing cached preview
+file cannot refuse a Save (#1935). A collaborative Confluence Save copies those markers into
 the room's live and persisted Yjs document after its intent settles (#1764);
 otherwise the room's next 2 s persist drops them and every later Save uploads
 the image again.
