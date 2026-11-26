@@ -16,6 +16,7 @@ import {
 } from './confluence-link.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
+  derivationHas,
   assertStorageDerivationFeatures,
   type StorageDerivationFeatures,
 } from './storage-derivation.js';
@@ -295,6 +296,8 @@ interface ConfluenceConversionPass {
   html: string;
   macrosBefore: number;
   macrosAfter: number;
+  /** The deepest task-list nesting the pass wrote (#1957). */
+  taskNestingDepth: number;
 }
 
 /**
@@ -306,9 +309,11 @@ interface ConfluenceConversionPass {
  * descendants, so the raw macro count must strictly decrease. Refuse to return
  * partial HTML if that invariant ever fails: the loop is bounded by the input
  * macro count and a malformed/unhandled shape is never silently discarded.
+ * Task lists nested deeper than {@link MAX_TASK_LIST_NESTING} are refused the
+ * same way ({@link ConfluenceTaskNestingError}, #1957).
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
-  return confluenceToHtmlWith(storageXhtml, pageId, spaceKey, ALL_STORAGE_DERIVATION_FEATURES);
+  return confluenceToHtmlWith(storageXhtml, pageId, spaceKey, ALL_STORAGE_DERIVATION_FEATURES, MAX_TASK_LIST_NESTING);
 }
 
 /**
@@ -316,18 +321,24 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
  * (#1953): every forward conversion says which set it derives with. A
  * write-back that converts stored storage itself ({@link storedTasks}) passes
  * its own set, so a restore recovered with the features it was reserved with
- * reads the stored tasks as it read them then.
+ * reads the stored tasks as it read them then. Only a conversion whose HTML is
+ * kept states `maxTaskNesting` (#1957): a write-back reads stored tasks at any
+ * depth, so a page that saved before stays saveable.
  */
 function confluenceToHtmlWith(
   storageXhtml: string,
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
+  maxTaskNesting?: number,
 ): string {
   assertStorageDerivationFeatures(features);
   let input = storageXhtml;
   while (true) {
     const pass = confluenceToHtmlPass(input, pageId, spaceKey, features);
+    if (maxTaskNesting !== undefined && pass.taskNestingDepth > maxTaskNesting) {
+      throw new ConfluenceTaskNestingError(pass.taskNestingDepth);
+    }
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
       throw new Error(
@@ -378,7 +389,10 @@ export function hasOnlyUncarriedTasks(html: string | null | undefined): boolean 
   return items.length > 0 && items.every((li) => !isConfluenceTaskId(li.getAttribute('data-task-id') ?? ''));
 }
 
-/** A task item's own text, without its subtasks' text, whitespace collapsed (#1751). */
+/**
+ * A task item's own text, without its subtasks' text, whitespace collapsed
+ * (#1751). The raw ac:task-list branch reads body_html synced before #1957.
+ */
 function taskText(li: Element): string {
   const content = taskItemContent(li).cloneNode(true) as Element;
   for (const nested of [...content.querySelectorAll('ul[data-type="taskList"]'), ...byTag(content, 'ac:task-list')]) {
@@ -457,10 +471,13 @@ interface TaskIdAllocation {
  * An item the snapshot did not hold (a clone a re-parse made) is minted when
  * it is written.
  */
-function allocateTaskIds(doc: Document, options: HtmlToConfluenceOptions): TaskIdAllocation {
+function allocateTaskIds(
+  doc: Document,
+  options: HtmlToConfluenceOptions,
+  features: StorageDerivationFeatures = writeBackFeatures(options),
+): TaskIdAllocation {
   const taken = new Set(byTag(doc, 'ac:task-id').map((el) => (el.textContent ?? '').trim()));
   const items = [...doc.querySelectorAll('ul[data-type="taskList"] li[data-type="taskItem"]')];
-  const features = writeBackFeatures(options);
   let storedCache: StoredTasks | undefined;
   const stored = (): StoredTasks => (storedCache ??= storedTasks(options.previousStorage, features));
   const texts = new Map<Element, string>();
@@ -592,15 +609,237 @@ function taskItemContent(li: Element): Element {
 }
 
 /**
- * Run one static-snapshot conversion pass. No step of it is gated on a
- * storage-derivation feature yet; one that is reads `derivationHas` on this
- * pass's set (#1953).
+ * The deepest task-list nesting a conversion writes (#1957): a subtask list
+ * inside a task body is one level below its parent's. The bound is the
+ * write-back reverse pass, which re-serialises once per level: with a status
+ * and a toc macro in every task it writes 32 levels in about 0.2 s, 64 in
+ * about 1.5 s and 100 in 5–10 s, while both TipTap schemas and the
+ * collaborative document stay under 0.2 s at 100. Before #1957 the forward
+ * pass took 1.5 s at 50 levels and ran out of memory by 150
+ * (docs/architecture/11-content-pipeline.md). Storage nested deeper is refused
+ * with {@link ConfluenceTaskNestingError}, never flattened: a flattened page
+ * would publish a different hierarchy on its next save.
+ */
+export const MAX_TASK_LIST_NESTING = 32;
+
+/**
+ * Task lists nest deeper than {@link MAX_TASK_LIST_NESTING} (#1957). Like the
+ * raw-macro fixed-point guard (#1438), the conversion returns nothing
+ * partial, so nothing partial is stored; write-back refuses such HTML before
+ * anything reaches Confluence (422 on a request).
+ */
+export class ConfluenceTaskNestingError extends Error {
+  readonly statusCode = 422;
+
+  constructor(readonly depth: number) {
+    super(`Confluence task lists nest ${depth} levels deep; at most ${MAX_TASK_LIST_NESTING} are converted`);
+    this.name = 'ConfluenceTaskNestingError';
+  }
+}
+
+/** How deep the editor's task lists (`ul[data-type="taskList"]`) of `doc` nest (#1957). */
+function taskListNestingDepth(doc: Document): number {
+  const depthOf = new Map<Element, number>();
+  let deepest = 0;
+  for (const ul of doc.querySelectorAll('ul[data-type="taskList"]')) {
+    const enclosing = ul.parentElement?.closest('ul[data-type="taskList"]');
+    const depth = (enclosing ? depthOf.get(enclosing) ?? 0 : 0) + 1;
+    depthOf.set(ul, depth);
+    if (depth > deepest) deepest = depth;
+  }
+  return deepest;
+}
+
+/** The work one {@link convertTaskLists} run did: elements indexed and nodes moved. */
+export interface TaskListConversionWork {
+  depth: number;
+  visited: number;
+  moved: number;
+}
+
+/** Where an element sits: its nearest enclosing task list, task and task body. */
+interface TaskScope {
+  list?: Element;
+  task?: Element;
+  body?: Element;
+}
+
+/**
+ * Convert every ac:task-list to ul[data-type="taskList"] (#1957) and return the
+ * deepest nesting written.
+ *
+ * One preorder pass indexes each element's nearest enclosing task list, task
+ * and task body. A list inside the body of a task of its enclosing list is a
+ * subtask list: it is kept, one level below. Every other list inside a list (a
+ * list placed directly in a list, in a wrapper element, or in a task but
+ * outside its body) is not Confluence's nesting: its tasks join the nearest
+ * kept list in source order, as they always have. Each task gets its li once,
+ * in the kept list it ends in; each body node and each li moves once. Nothing
+ * is re-serialised, so the work is linear in the page and no subtask is cloned
+ * beside its parent (the duplicate the outer-first loop wrote).
+ */
+function convertTaskLists(doc: Document, work?: TaskListConversionWork): number {
+  if (doc.getElementsByTagName('ac:task-list').length === 0) return 0;
+  // Work on the page detached from the document: JSDOM walks the whole subtree
+  // of a node moved within a connected tree, which made moving each body into
+  // its li quadratic in the nesting depth; detached, a move is constant. The
+  // page goes back in one append, in the same order.
+  const detached = doc.createDocumentFragment();
+  while (doc.body.firstChild) detached.appendChild(doc.body.firstChild);
+  const lists: Element[] = [];
+  const tasks: Element[] = [];
+  const scopeOf = new Map<Element, TaskScope>();
+  const bodyOf = new Map<Element, Element>();
+  const statusOf = new Map<Element, Element>();
+  const root: TaskScope = {};
+  // One snapshot, in document order: indexing a live collection re-walks the tree.
+  const elements = [...detached.querySelectorAll('*')];
+  for (const el of elements) {
+    const parent = el.parentElement;
+    const scope = (parent && scopeOf.get(parent)) ?? root;
+    let inner = scope;
+    switch (el.localName) {
+      case 'ac:task-list':
+        lists.push(el);
+        inner = { ...scope, list: el };
+        break;
+      case 'ac:task':
+        tasks.push(el);
+        inner = { ...scope, task: el };
+        break;
+      case 'ac:task-body':
+        if (scope.task && !bodyOf.has(scope.task)) bodyOf.set(scope.task, el);
+        inner = { ...scope, body: el };
+        break;
+      case 'ac:task-status':
+        if (scope.task && !statusOf.has(scope.task)) statusOf.set(scope.task, el);
+        break;
+      default:
+    }
+    scopeOf.set(el, inner);
+  }
+  if (work) work.visited += elements.length;
+
+  // The kept list each list's tasks join, and the depth of each kept list.
+  // Preorder: an enclosing list is decided before the lists inside it.
+  const keptListOf = new Map<Element, Element>();
+  const depthOf = new Map<Element, number>();
+  let deepest = 0;
+  for (const list of lists) {
+    const { list: enclosing, task, body } = scopeOf.get(list.parentElement!) ?? root;
+    if (!enclosing) {
+      keptListOf.set(list, list);
+      depthOf.set(list, 1);
+    } else if (
+      task !== undefined
+      && body !== undefined
+      && bodyOf.get(task) === body
+      && scopeOf.get(task.parentElement!)?.list === enclosing
+    ) {
+      keptListOf.set(list, list);
+      depthOf.set(list, depthOf.get(keptListOf.get(enclosing)!)! + 1);
+    } else {
+      keptListOf.set(list, keptListOf.get(enclosing)!);
+    }
+    deepest = Math.max(deepest, depthOf.get(keptListOf.get(list)!)!);
+  }
+
+  const tasksOf = new Map<Element, Element[]>();
+  for (const task of tasks) {
+    const list = scopeOf.get(task.parentElement!)?.list;
+    if (!list) continue;
+    const kept = keptListOf.get(list)!;
+    const own = tasksOf.get(kept);
+    if (own) own.push(task);
+    else tasksOf.set(kept, [task]);
+  }
+
+  // Innermost first: a subtask list becomes a ul where it stands, inside its
+  // parent's body, before that body moves into the parent's li.
+  for (let i = lists.length - 1; i >= 0; i -= 1) {
+    const list = lists[i]!;
+    if (keptListOf.get(list) !== list) continue;
+    const ul = doc.createElement('ul');
+    ul.setAttribute('data-type', 'taskList');
+    for (const task of tasksOf.get(list) ?? []) {
+      // A direct child only (the #1222 rule): a subtask's id is not this task's.
+      const taskId = [...task.children]
+        .find((child) => child.localName === 'ac:task-id')
+        ?.textContent?.trim() ?? '';
+      const li = doc.createElement('li');
+      li.setAttribute('data-type', 'taskItem');
+      li.setAttribute('data-checked', statusOf.get(task)?.textContent === 'complete' ? 'true' : 'false');
+      if (isConfluenceTaskId(taskId)) li.setAttribute('data-task-id', taskId);
+      const body = bodyOf.get(task);
+      while (body?.firstChild) {
+        li.appendChild(body.firstChild);
+        if (work) work.moved += 1;
+      }
+      ul.appendChild(li);
+      if (work) work.moved += 1;
+    }
+    list.replaceWith(ul);
+  }
+  doc.body.appendChild(detached);
+  if (work) work.depth = deepest;
+  return deepest;
+}
+
+/**
+ * The task-list step before #1957, verbatim: the conversion a restore reserved
+ * without the `nested-tasks` feature reads its stored tasks with (#1953). It
+ * converts outer lists first and takes every descendant task, so a subtask is
+ * cloned into its parent's body and also listed beside it.
+ */
+function convertTaskListsBeforeNesting(doc: Document): void {
+  for (const taskList of byTag(doc, 'ac:task-list')) {
+    const ul = doc.createElement('ul');
+    ul.setAttribute('data-type', 'taskList');
+
+    for (const task of byTag(taskList, 'ac:task')) {
+      const statusEl = byTag(task, 'ac:task-status')[0];
+      const bodyEl = byTag(task, 'ac:task-body')[0];
+      const checked = statusEl?.textContent === 'complete';
+      // A direct child only (the #1222 rule): a subtask's id is not this task's.
+      const taskId = [...task.children]
+        .find((child) => child.tagName.toLowerCase() === 'ac:task-id')
+        ?.textContent?.trim() ?? '';
+
+      const li = doc.createElement('li');
+      li.setAttribute('data-type', 'taskItem');
+      li.setAttribute('data-checked', checked ? 'true' : 'false');
+      if (isConfluenceTaskId(taskId)) li.setAttribute('data-task-id', taskId);
+      transferInnerHtml(li, bodyEl);
+      ul.appendChild(li);
+    }
+
+    taskList.replaceWith(ul);
+  }
+}
+
+/**
+ * Test seam (#1957): the work the task-list step does on `storageXhtml`, which
+ * grows linearly with the page however deep its tasks nest.
+ */
+export function measureTaskListConversion(storageXhtml: string): TaskListConversionWork {
+  const doc = new JSDOM(`<body>${expandSelfClosingXhtmlTags(stripCdata(storageXhtml))}</body>`, {
+    contentType: 'text/html',
+  }).window.document;
+  const work: TaskListConversionWork = { depth: 0, visited: 0, moved: 0 };
+  convertTaskLists(doc, work);
+  return work;
+}
+
+/**
+ * Run one static-snapshot conversion pass. Its task-list step is gated on the
+ * `nested-tasks` storage-derivation feature (#1957); every other step derives
+ * the same for every set (#1953).
  */
 function confluenceToHtmlPass(
   storageXhtml: string,
   pageId: string | undefined,
   spaceKey: string | undefined,
-  _features: StorageDerivationFeatures,
+  features: StorageDerivationFeatures,
 ): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
@@ -645,28 +884,13 @@ function confluenceToHtmlPass(
   // Process task lists: ac:task-list -> <ul data-type="taskList">. The task's
   // own ac:task-id rides in data-task-id (#1751), so write-back keeps it; a
   // value that is not a Confluence task id is not carried and the task is new.
-  for (const taskList of byTag(doc, 'ac:task-list')) {
-    const ul = doc.createElement('ul');
-    ul.setAttribute('data-type', 'taskList');
-
-    for (const task of byTag(taskList, 'ac:task')) {
-      const statusEl = byTag(task, 'ac:task-status')[0];
-      const bodyEl = byTag(task, 'ac:task-body')[0];
-      const checked = statusEl?.textContent === 'complete';
-      // A direct child only (the #1222 rule): a subtask's id is not this task's.
-      const taskId = [...task.children]
-        .find((child) => child.tagName.toLowerCase() === 'ac:task-id')
-        ?.textContent?.trim() ?? '';
-
-      const li = doc.createElement('li');
-      li.setAttribute('data-type', 'taskItem');
-      li.setAttribute('data-checked', checked ? 'true' : 'false');
-      if (isConfluenceTaskId(taskId)) li.setAttribute('data-task-id', taskId);
-      transferInnerHtml(li, bodyEl);
-      ul.appendChild(li);
-    }
-
-    taskList.replaceWith(ul);
+  // A subtask nests inside its parent's li (#1957); without the `nested-tasks`
+  // feature (a restore reserved before it) the pre-#1957 loop runs verbatim.
+  let taskNestingDepth = 0;
+  if (derivationHas(features, 'nested-tasks')) {
+    taskNestingDepth = convertTaskLists(doc);
+  } else {
+    convertTaskListsBeforeNesting(doc);
   }
 
   // Process panels: native `panel` uses the existing info panel node for
@@ -1120,7 +1344,7 @@ function confluenceToHtmlPass(
 
   const html = doc.body.innerHTML;
   const macrosAfter = countRawStructuredMacros(doc.body);
-  return { html, macrosBefore, macrosAfter };
+  return { html, macrosBefore, macrosAfter, taskNestingDepth };
 }
 
 /**
@@ -1130,6 +1354,16 @@ function confluenceToHtmlPass(
 export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions = {}): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
+
+  const features = writeBackFeatures(options);
+
+  // #1957: never write task nesting the forward pass refuses to read back, so
+  // every page Confluence accepts from here can be mirrored and synced again.
+  // A restore reserved before nested-tasks derives as it did.
+  if (derivationHas(features, 'nested-tasks')) {
+    const depth = taskListNestingDepth(doc);
+    if (depth > MAX_TASK_LIST_NESTING) throw new ConfluenceTaskNestingError(depth);
+  }
 
   // Strip auto-generated index blocks before export to Confluence (#13)
   for (const div of doc.querySelectorAll('div.figure-index, div.table-index')) {
@@ -1190,18 +1424,16 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // sibling ac:task elements — the subtask shipped twice, once as a literal
   // <ul> inside the outer task body and once as a sibling. Innermost-first the
   // nested <ul> is already an ac:task-list by the time the outer runs, so the
-  // query no longer finds its items. The producer is the EDITOR, not the sync:
-  // TipTap's TaskItem runs `nested: true` (Editor.tsx, ArticleViewer.tsx), so
-  // Tab on a task creates exactly this HTML — which is what makes it the most
-  // reachable shape of the set. A subtask coming *from* Confluence never
-  // arrives here in this shape: the forward pass has the mirror-image
-  // stale-snapshot bug and hands over an already-duplicated list (pre-existing,
-  // unchanged by #1220, out of its scope).
+  // query no longer finds its items. The editor writes this shape (TipTap's
+  // TaskItem runs `nested: true` in Editor.tsx and ArticleViewer.tsx, so Tab on
+  // a task creates it), and since #1957 so does the forward pass for a subtask
+  // from Confluence (convertTaskLists): the outer-first forward loop used to
+  // hand over a duplicated list instead.
   //
   // #1751: each task keeps its carried id, takes a stored one or gets the next
   // free one (allocateTaskIds, decided in document order before this loop), and
   // its body is the task's content without the editor's checkbox (taskItemContent).
-  const { idFor: taskIdFor } = allocateTaskIds(doc, options);
+  const { idFor: taskIdFor } = allocateTaskIds(doc, options, features);
   for (const ul of [...doc.querySelectorAll('ul[data-type="taskList"]')].reverse()) {
     const taskList = doc.createElement('ac:task-list');
 

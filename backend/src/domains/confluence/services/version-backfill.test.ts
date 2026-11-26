@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vites
 import { setupTestDb, teardownTestDb, truncateAllTables, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import { upsertVersionMetadata } from '../../../core/services/version-snapshot.js';
+import { ConfluenceTaskNestingError, MAX_TASK_LIST_NESTING } from '../../../core/services/content-converter.js';
 import { backfillVersionHistory, getHistoricalBody } from './version-backfill.js';
 
 const dbAvailable = await isDbAvailable();
@@ -54,5 +55,22 @@ describe.skipIf(!dbAvailable)('version-backfill (#722)', () => {
       [pageId],
     );
     expect(r.rows[0]!.body_html).toContain('old');
+  });
+
+  it('stores no body when the conversion refuses a version whose task lists nest too deep (#1957)', async () => {
+    const pageId = await seedConfluencePage('c-3');
+    await upsertVersionMetadata(pageId, 1, 'T', { editedAt: null, author: null, message: null });
+    let storage = '';
+    for (let level = MAX_TASK_LIST_NESTING + 1; level >= 1; level -= 1) {
+      storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+        + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+    }
+    const client = { getHistoricalPageBody: vi.fn().mockResolvedValue(storage) };
+    await expect(getHistoricalBody(pageId, 'c-3', 1, client as never)).rejects.toBeInstanceOf(ConfluenceTaskNestingError);
+    const r = await query(
+      `SELECT body_html FROM page_versions WHERE page_id=$1 AND version_number=1`,
+      [pageId],
+    );
+    expect(r.rows[0]!.body_html).toBeNull();
   });
 });

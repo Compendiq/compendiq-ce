@@ -70,6 +70,12 @@ import {
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
+import { MAX_TASK_LIST_NESTING, confluenceToHtml, htmlToConfluence } from '../../core/services/content-converter.js';
+import {
+  NESTED_TASK_LIST_EDITOR_HTML,
+  NESTED_TASK_LIST_HTML,
+  NESTED_TASK_LIST_PAGE,
+} from '../../core/services/__fixtures__/confluence-xhtml.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { __internal as sync } from '../../domains/confluence/services/sync-service.js';
@@ -3123,6 +3129,104 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
       expect(second.statusCode, second.body).toBe(200);
       expect(storageTaskIds(provider.storages[1]!)).toEqual(['44', '42', '43']);
+      editor.ws.close();
+    });
+
+    /** Type into the page's opening paragraph, as a co-editor would; no task is touched. */
+    function editIntro(editor: TaskEditor, suffix: string): void {
+      editor.doc.transact(() => {
+        const intro = editor.doc.getXmlFragment('default').get(0) as Y.XmlElement;
+        const text = intro.get(0) as Y.XmlText;
+        text.insert(text.length, suffix);
+      });
+      editor.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(editor.doc)));
+    }
+
+    it('writes nested tasks with a subtask macro back once at their depth on a collaborative Save, and mints nothing on the next (#1957)', async () => {
+      const { token, pageId, confluenceId } = await seedTaskPage(NESTED_TASK_LIST_HTML, NESTED_TASK_LIST_PAGE);
+      const editor = await joinTaskEditor(pageId, token);
+      const provider = mockTaskProvider(confluenceId);
+      const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+
+      editIntro(editor, ' (edited)');
+      await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('Release checklist (edited)'));
+      const first = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+      expect(first.statusCode, first.body).toBe(200);
+      // The editor's copy of the page, written back: every id, status, body
+      // and macro once, the toc and status macros inside task 12 at depth 2.
+      const expected = htmlToConfluence(
+        NESTED_TASK_LIST_EDITOR_HTML.replace('Release checklist', 'Release checklist (edited)'),
+      );
+      expect(provider.storages[0]).toBe(expected);
+      expect(expected).toContain(
+        '<ac:task><ac:task-id>12</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body><p>Write notes '
+        + '<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter>'
+        + '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro></p>'
+        + '<ac:structured-macro ac:name="toc"><ac:parameter ac:name="maxLevel">2</ac:parameter></ac:structured-macro></ac:task-body></ac:task>',
+      );
+      expect(storageTaskIds(provider.storages[0]!)).toEqual(['11', '12', '13', '14', '15']);
+      await vi.waitFor(() => expect(editor.controls).toContain('pages_version'));
+
+      editIntro(editor, '!');
+      await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('(edited)!'));
+      const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
+      expect(second.statusCode, second.body).toBe(200);
+      expect(storageTaskIds(provider.storages[1]!)).toEqual(['11', '12', '13', '14', '15']);
+      editor.ws.close();
+    });
+
+    it(`writes tasks nested ${MAX_TASK_LIST_NESTING} levels deep back with every id at its depth on a collaborative Save (#1957)`, async () => {
+      let storage = '';
+      for (let level = MAX_TASK_LIST_NESTING; level >= 1; level -= 1) {
+        storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+          + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+      }
+      storage = `<p>Tasks</p>${storage}`;
+      const { token, pageId, confluenceId } = await seedTaskPage(confluenceToHtml(storage), storage);
+      const editor = await joinTaskEditor(pageId, token);
+      const provider = mockTaskProvider(confluenceId);
+      const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+
+      editIntro(editor, ' (edited)');
+      await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('Tasks (edited)'));
+      const saved = await save(pageId, token, commitPayload(editor.ws, 'Save', Y.snapshot(editor.doc)));
+      expect(saved.statusCode, saved.body).toBe(200);
+      const written = provider.storages[0]!;
+      expect(storageTaskIds(written)).toEqual(Array.from({ length: MAX_TASK_LIST_NESTING }, (_, index) => String(index + 1)));
+      // Each task's list closes after the deeper ones: exactly one list per level, all nested.
+      expect(written).toContain(`${'</ac:task-body></ac:task></ac:task-list>'.repeat(MAX_TASK_LIST_NESTING)}`);
+      expect(written.match(/<ac:task-list>/g)).toHaveLength(MAX_TASK_LIST_NESTING);
+      editor.ws.close();
+    });
+
+    it(`refuses a collaborative Save that nests tasks deeper than ${MAX_TASK_LIST_NESTING} levels before Confluence is written (#1957)`, async () => {
+      let storage = '';
+      for (let level = MAX_TASK_LIST_NESTING; level >= 1; level -= 1) {
+        storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+          + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+      }
+      storage = `<p>Tasks</p>${storage}`;
+      const { token, pageId, confluenceId } = await seedTaskPage(confluenceToHtml(storage), storage);
+      const editor = await joinTaskEditor(pageId, token);
+      const provider = mockTaskProvider(confluenceId);
+      const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+
+      // Tab once more on the deepest task: a subtask list in its content.
+      editor.doc.transact(() => {
+        const deepest = [...editor.doc.getXmlFragment('default').createTreeWalker(
+          (type) => type instanceof Y.XmlElement && type.nodeName === 'taskItem',
+        )].at(-1) as Y.XmlElement;
+        const list = new Y.XmlElement('taskList');
+        list.insert(0, [newTask('deeper')]);
+        deepest.push([list]);
+      });
+      editor.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(editor.doc)));
+      await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('<p>deeper</p>'));
+      const saved = await save(pageId, token, commitPayload(editor.ws, 'Save', Y.snapshot(editor.doc)));
+      expect(saved.statusCode, saved.body).toBe(422);
+      expect(saved.body).toContain(`nest ${MAX_TASK_LIST_NESTING + 1} levels deep`);
+      expect(provider.storages).toEqual([]);
+      expect(await activePurposes(pageId)).not.toContain('collab.commit.confluence');
       editor.ws.close();
     });
 
