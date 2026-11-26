@@ -226,6 +226,39 @@ content `div`, never its checkbox `<label>`. AI Improve carries no ids (turndown
 writes `- [ ]`) and never pairs: only tasks with unchanged text get theirs back
 on apply.
 
+**A subtask nests inside its parent task (#1957).** An `ac:task-list` inside an
+`ac:task-body` becomes a `ul[data-type="taskList"]` inside the parent's `li`,
+once, with every `data-task-id` and status at its depth, and `htmlToConfluence`
+writes it back byte for byte. `convertTaskLists` indexes the page in one
+preorder pass and moves each body node and each `li` once (no re-parse, no
+clone beside the parent). A task list that is not in a task body (placed
+directly in a list, in a wrapper, or in a task but outside its body) is not
+Confluence's nesting and stays flat in source order, exactly as before. At most
+`MAX_TASK_LIST_NESTING` (32) levels are converted: deeper storage is refused
+with `ConfluenceTaskNestingError`, like the raw-macro guard below, never
+flattened (a flattened page would publish another hierarchy on its next save).
+Sync then skips the page and keeps its row, the lazy history view shows no
+body, the attachment repair of an incremental run skips the row, and
+write-back refuses HTML nested deeper with 422 before anything reaches
+Confluence. Write-back's own read of the stored tasks (`storedTasks`) takes any
+depth, so a page that saved before still saves. The bound is the reverse pass,
+which re-serialises once per level (about 0.2 s at 32 levels, 1.5 s at 64,
+5–10 s at 100 with a macro in every task); both schemas stay fast far beyond.
+Both TipTap schemas parse a task item's content from TipTap's
+`label` + `div` only when the `li` has exactly that shape (write-back's
+`taskItemContent` rule; the `task-item-content` blocks of `collab-schema.ts`
+and `article-extensions.ts` are identical, pinned by
+`collab-schema-parity.test.ts`), else from the `li` itself: TaskItem's stock
+rule took the first `div` at any depth, so a block macro in a task (or in a
+subtask) became the whole task. A body that opens with a block gets the empty
+first paragraph TaskItem requires. Pages synced before #1957 keep their
+duplicated `body_html` until the next sync re-derives it (no migration); a save
+before then writes that shape back, and storage an earlier save already
+polluted keeps its duplicate task. The restore derivation registers
+`nested-tasks`: without it `storedTasks` converts with the pre-#1957 loop,
+verbatim. AI Improve still flattens nested tasks (pre-existing; only unchanged
+tasks keep their ids).
+
 **What write-back derives from a stored `body_html` is versioned by named
 features (#1953).** A version restore records only a digest of the storage it
 derived and derives it again when it publishes, possibly in a recovery on a
