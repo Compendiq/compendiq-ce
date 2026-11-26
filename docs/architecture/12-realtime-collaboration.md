@@ -128,10 +128,10 @@ sequenceDiagram
 |------|--------|------|------------------------------|-----------------------------|
 | **4401** | `unauthorized` | Missing / invalid / expired JWT, deactivated user or changed role (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) | Refresh and rejoin. No session left: "Your session expired" | Refresh and rejoin. No session left: read-only draft |
 | **4403** | `forbidden` | Page access revoked mid-session (60 s permission refresh) | "You cannot join this collaborative session." Fail closed, no Retry | Read-only draft (`permission_loss`) |
-| **4403** | `rate_limited` | More than 20 upgrades by the user in the fixed `COLLAB_UPGRADE_WINDOW_SEC` (60 s) window | "Too many connection attempts". Retry becomes available one full window after the refusal | Read-only draft (`permission_loss`), see #1927 |
-| **4403** | `flag_off` | Flag off at join, or mid-session (every pod tombstones its rooms) | "Collaborative editing has been turned off". The client refetches `GET /api/collab/config`, no Retry | Read-only draft (`permission_loss`), see #1927 |
-| **4403** | `readonly` | 8 refused write frames from a read-only socket after the join (`COLLAB_READONLY_DROP_LIMIT`). Never sent for pre-live buffering | "The collaborative session closed before it finished loading." with Retry | Read-only draft (`permission_loss`), see #1927 |
-| **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden` |
+| **4403** | `rate_limited` | More than 20 upgrades by the user in the fixed `COLLAB_UPGRADE_WINDOW_SEC` (60 s) window | "Too many connection attempts". Retry becomes available one full window after the refusal | Read-only draft (`rate_limited`): "Too many connection attempts from your account." No rejoin |
+| **4403** | `flag_off` | Flag off at join, or mid-session (every pod tombstones its rooms) | "Collaborative editing has been turned off". The client refetches `GET /api/collab/config`, no Retry | Read-only draft (`flag_off`): "Collaborative editing was turned off." The client also refetches `GET /api/collab/config` |
+| **4403** | `readonly` | 8 refused write frames from a read-only socket after the join (`COLLAB_READONLY_DROP_LIMIT`). Never sent for pre-live buffering | "The collaborative session closed before it finished loading." with Retry | Read-only draft (`readonly`): "The server stopped accepting changes from this tab." |
+| **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden`: read-only draft (`permission_loss`), also for an empty reason |
 | **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
 | **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
 | **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable made a malformed declaration (a malformed `expectedDocEpoch` or `expectedDocEmpty`, or both together) or declared another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
@@ -351,7 +351,9 @@ those two floods every keystroke as a full document.
 **Images a Confluence commit uploaded (#1764).** The commit publishes
 `body_html` with `data-confluence-filename` and
 `data-confluence-image-source="attachment"` on the pasted images it uploaded;
-those markers make the next commit's image plan skip them. After the intent
+those markers make the next commit's image plan skip them. The plan never includes an `img` inside a
+`.confluence-drawio` wrapper (the cached draw.io preview), so a page with only
+diagrams reserves `collab.commit.confluence`, not `.media` (#1935). After the intent
 settles, and before its `pages_version` control, the commit marks the same
 images in the room so the next persist keeps them. The pod that owns the room
 applies an in-place Yjs transaction under its room admission (the fence a
@@ -553,7 +555,15 @@ cancelled Save, or one settled by recovery) a waiting persist runs again on the
 next edit or the last-writer flush, and a deferred release retries from 1 s,
 doubling to 30 s. A Save whose Confluence write failed after dispatch stays
 pending as an unknown outcome until it is reconciled, and the room's edits stay
-unpersisted until then (see the immutable-page baselines runbook and #1934).
+unpersisted until then (see the immutable-page baselines runbook). Known limit:
+the runtime that ran such a Save cannot drain while it hosts a room of the
+page. When that is all that is left (no local operation or effect continuation
+running, and every room admission it holds is on a page with its own such
+Save), its quiescence answers `409 runtime_quiesce_blocked_by_collab_commit`
+naming the intent after a 30 s bound instead of acknowledging (#1934); any
+other remaining blocker keeps the wait. The admission is not released, and the
+way out is terminating that process and fencing it with
+`verified_local_termination`.
 Any other pending page write, a stale lifecycle or admission, and a fenced
 runtime still close a writable socket with `1001 collab_validation_unavailable`,
 and that refused frame is not requested again (#1928). No close code or control
@@ -641,10 +651,21 @@ Save is pending*).
 A committed hide/delete closes the page's rooms with **4404**
 `committed_delete` on every pod (`collab-tombstone.ts`: local close, then a
 Redis `tombstone` message). Intent recovery converges on the same close: a
-recovered Confluence delete tombstones after its settlement COMMIT, never inside
+recovered delete, remote (`pages.delete.confluence`, `pages.bulk.delete.remote`)
+or local (`pages.delete.standalone`, `pages.delete.local`,
+`pages.bulk.delete.local`), tombstones after its settlement COMMIT, never inside
 it (a writable room's final flush takes the page lifecycle lock that
-transaction holds); an undispatched one restores `deleted_at` and closes
-nothing.
+transaction holds). The deleted page ids are closed independently and
+concurrently (`Promise.allSettled`), so one failing close does not skip the
+others. A rolled-back settlement sends no 4404 and keeps `collab:active`; the
+administrator's retry closes the room. Two committed-but-unclosed cases are
+accepted and not retried (a durable outbox is out of scope): the process dies
+between the COMMIT and the close, or PostgreSQL commits but the COMMIT
+acknowledgment is lost, so `inTransaction` rejects, the reconcile fails without
+reaching `afterCommit` and the intent is already durably settled. Unlike a
+rollback, a later reconcile does not close the room. In both, sockets close on
+disconnect and a fresh join answers 4404. An undispatched remote delete
+restores `deleted_at` and closes nothing.
 
 ## Feature flag
 

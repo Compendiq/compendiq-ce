@@ -3,7 +3,8 @@ import type { PoolClient } from 'pg';
 import { PAGE_HIERARCHY_LOCK_ID, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
 import { getPool, query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
-import { flushPageWriteInvalidations } from './page-write-invalidation.js';
+import { vitestIntOr } from '../utils/safe-int.js';
+import { flushPageWriteInvalidations, withPagePublicationTransaction } from './page-write-invalidation.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
 import { AI_POLICY_ENFORCEMENT_VERSION } from './ai-policy-runtime-guard.js';
 import {
@@ -181,6 +182,40 @@ export class PageWriteError extends Error {
     this.name = 'PageWriteError';
     this.statusCode = statusCode;
     this.reason = reason;
+  }
+}
+
+/**
+ * Quiescence waits this long for a full drain before it classifies what still
+ * blocks it (#1934). The same order as a room's 30 s release-retry cap.
+ */
+export const PAGE_WRITER_QUIESCE_OWN_COMMIT_WAIT_MS = vitestIntOr('PAGE_WRITER_QUIESCE_OWN_COMMIT_WAIT_MS', 30_000);
+/** End-to-end deadline of one classification: checkout, BEGIN, administrator lock, read and cleanup. */
+export const PAGE_WRITER_QUIESCE_CLASSIFY_BUDGET_MS = vitestIntOr('PAGE_WRITER_QUIESCE_CLASSIFY_BUDGET_MS', 10_000);
+/** From the bound on, durable state is re-read at least this often without a local change. */
+export const PAGE_WRITER_QUIESCE_RECLASSIFY_MS = vitestIntOr('PAGE_WRITER_QUIESCE_RECLASSIFY_MS', 5_000);
+export const RUNTIME_QUIESCE_BLOCKED_REASON = 'runtime_quiesce_blocked_by_collab_commit';
+export const RUNTIME_QUIESCE_CLASSIFICATION_UNAVAILABLE_REASON = 'runtime_quiesce_classification_unavailable';
+
+export type QuiesceBlockingIntent = { intentId: string; kind: string; pageIds: number[] };
+
+/**
+ * Quiescence cannot finish because every remaining blocker is a room admission
+ * of this runtime held by its page's own unknown-outcome collaborative commit
+ * (#1934). The gate stays closed; nothing was released, fenced or acknowledged.
+ */
+export class RuntimeQuiesceBlockedError extends PageWriteError {
+  readonly blockingIntents: readonly QuiesceBlockingIntent[];
+
+  constructor(blockingIntents: readonly QuiesceBlockingIntent[]) {
+    super(
+      409,
+      RUNTIME_QUIESCE_BLOCKED_REASON,
+      'This runtime cannot acknowledge quiescence while a collaborative room is held by its own '
+        + 'collaborative Save whose outcome is unknown. Terminate the process and fence it with '
+        + 'verified_local_termination, then reconcile the named intents.',
+    );
+    this.blockingIntents = blockingIntents;
   }
 }
 
@@ -523,7 +558,12 @@ const deferredRequestReleases = new Map<string, PageRuntimeAdmission>();
 let deferredRequestReleaseTimer: NodeJS.Timeout | undefined;
 const localRecoveries = new Map<string, 'running' | 'failed'>();
 const localRecoveryAdmins = new Map<string, string>();
-const localDrainWaiters = new Set<() => void>();
+// Woken on every change of `localBlockerGeneration`; each waiter re-checks.
+const localBlockerWaiters = new Set<() => void>();
+// Incremented at every transition that can change quiescence's view of what
+// blocks this runtime: operation start/finish, admission add/release and
+// intent effect state changes (#1934).
+let localBlockerGeneration = 0;
 
 // Successful phases are continuations, not terminal work: only settlement
 // releases their ownership. Failed effects may drain because their durable
@@ -537,10 +577,22 @@ function localRuntimeDrained(): boolean {
   return true;
 }
 
-function notifyLocalDrainWaiters(): void {
-  if (!localRuntimeDrained()) return;
-  for (const resolve of localDrainWaiters) resolve();
-  localDrainWaiters.clear();
+function localBlockersChanged(): void {
+  localBlockerGeneration += 1;
+  for (const wake of localBlockerWaiters) wake();
+  localBlockerWaiters.clear();
+}
+
+function setLocalIntentEffect(
+  intentId: string,
+  state: 'reserved' | 'reserved_uncommitted' | 'running' | 'succeeded' | 'failed',
+): void {
+  localIntentEffects.set(intentId, state);
+  localBlockersChanged();
+}
+
+function deleteLocalIntentEffect(intentId: string): void {
+  if (localIntentEffects.delete(intentId)) localBlockersChanged();
 }
 
 function beginLocalOperation(allowWhileQuiescing: boolean): void {
@@ -552,16 +604,169 @@ function beginLocalOperation(allowWhileQuiescing: boolean): void {
     );
   }
   localOperationCount += 1;
+  localBlockersChanged();
 }
 
 function finishLocalOperation(): void {
   localOperationCount -= 1;
-  notifyLocalDrainWaiters();
+  localBlockersChanged();
 }
 
-async function waitForLocalRuntimeDrain(): Promise<void> {
-  while (!localRuntimeDrained()) {
-    await new Promise<void>((resolve) => localDrainWaiters.add(resolve));
+/** Test-only: quiescence requests currently parked on a local blocker change. */
+export function _pageWriterQuiescenceWaitersForTest(): number {
+  return localBlockerWaiters.size;
+}
+
+/**
+ * The blocking intents when every remaining local blocker is a `collab_room`
+ * admission of this runtime on a page whose own collaborative commit of this
+ * runtime has an unknown outcome (#1934), otherwise null. Such an intent is a
+ * sufficient blocker of the room's protected flush; this does not claim it is
+ * the only possible cause. The administrator is rechecked at this disclosure
+ * point. One end-to-end deadline covers checkout, BEGIN, the administrator
+ * lock, the read and cleanup; on expiry the lease is destroyed, not awaited,
+ * and a lease that arrives later runs no SQL. An outcome observed after the
+ * monotonic cutoff is discarded even when the deadline timer has not run yet.
+ */
+async function classifyQuiescenceBlockers(
+  runtimeId: string,
+  actorId: string,
+): Promise<QuiesceBlockingIntent[] | null> {
+  if (localOperationCount !== 0 || localAdmissions.size === 0) return null;
+  for (const state of localIntentEffects.values()) {
+    if (state === 'running' || state === 'succeeded') return null;
+  }
+  const admissionIds = [...localAdmissions];
+  const unavailable = new PageWriteError(
+    503,
+    RUNTIME_QUIESCE_CLASSIFICATION_UNAVAILABLE_REASON,
+    'The runtime could not determine what blocks its quiescence; the gate stays closed. Retry the request.',
+  );
+  const controller = new AbortController();
+  // The backend's ES lib predates `Promise.withResolvers`.
+  const expired = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener('abort', () => reject(unavailable), { once: true });
+  });
+  const cutoff = performance.now() + PAGE_WRITER_QUIESCE_CLASSIFY_BUDGET_MS;
+  const deadline = setTimeout(() => controller.abort(unavailable), PAGE_WRITER_QUIESCE_CLASSIFY_BUDGET_MS);
+  const read = withPagePublicationTransaction(async (client) => {
+    await assertActiveRecoveryAdmin(client, actorId);
+    const rows = await client.query<{
+      admission_id: string;
+      intent_id: string | null;
+      kind: string | null;
+      page_ids: number[] | null;
+    }>(
+      `SELECT a.id AS admission_id, i.id AS intent_id, i.kind, i.page_ids
+         FROM page_runtime_admissions a
+         LEFT JOIN page_write_intents i
+           ON i.runtime_id = a.runtime_id
+          AND i.status = 'pending'
+          AND i.kind = ANY($3::text[])
+          AND i.page_ids = ARRAY[a.page_id]
+          AND i.remote_effect_started_at IS NOT NULL
+          AND i.remote_terminal_result IS NULL
+        WHERE a.id = ANY($1::uuid[])
+          AND a.runtime_id = $2
+          AND a.purpose = 'collab_room'
+          AND a.released_at IS NULL`,
+      [admissionIds, runtimeId, COLLAB_COMMIT_INTENT_KINDS],
+    );
+    return rows.rows;
+  }, controller.signal);
+  // The race below may abandon this transaction; its late outcome is ignored.
+  read.catch(() => undefined);
+  let rows: Awaited<typeof read>;
+  try {
+    rows = await Promise.race([read, expired]);
+  } catch (error) {
+    if (performance.now() >= cutoff) throw unavailable;
+    if (error instanceof PageWriteError && error.reason === 'recovery_admin_required') throw error;
+    if (error !== unavailable) {
+      logger.warn({ err: error, runtimeId }, 'page-writer quiescence: blocker classification failed');
+    }
+    throw unavailable;
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (performance.now() >= cutoff) throw unavailable;
+  const blocked = new Set<string>();
+  const intents = new Map<string, QuiesceBlockingIntent>();
+  for (const row of rows) {
+    if (row.intent_id === null || row.kind === null || row.page_ids === null) continue;
+    blocked.add(row.admission_id);
+    intents.set(row.intent_id, { intentId: row.intent_id, kind: row.kind, pageIds: row.page_ids });
+  }
+  if (admissionIds.some((id) => !blocked.has(id))) return null;
+  return [...intents.values()].sort((left, right) => left.intentId.localeCompare(right.intentId));
+}
+
+/**
+ * Wait for a full drain (#1934). Until the bound only a drain ends the wait.
+ * From the bound on, the remaining blockers are classified at the bound, on
+ * every local blocker change and every re-classification interval; a result
+ * is discarded when the generation moved while it was read. A full drain
+ * always wins, also over a classification that has just completed or failed.
+ * Any other set of blockers keeps today's unbounded wait.
+ */
+async function waitForQuiescentRuntime(runtimeId: string, actorId: string): Promise<void> {
+  if (localRuntimeDrained()) return;
+  let boundReached = false;
+  let reclassifyDue = false;
+  let classifiedGeneration: number | undefined;
+  let reclassifyTimer: NodeJS.Timeout | undefined;
+  let wake: (() => void) | undefined;
+  const signal = () => {
+    const pending = wake;
+    if (!pending) return;
+    wake = undefined;
+    localBlockerWaiters.delete(pending);
+    pending();
+  };
+  const boundTimer = setTimeout(() => {
+    boundReached = true;
+    signal();
+  }, PAGE_WRITER_QUIESCE_OWN_COMMIT_WAIT_MS);
+  try {
+    while (!localRuntimeDrained()) {
+      if (boundReached && (reclassifyDue || classifiedGeneration !== localBlockerGeneration)) {
+        reclassifyDue = false;
+        clearTimeout(reclassifyTimer);
+        const generation = localBlockerGeneration;
+        let blockingIntents: QuiesceBlockingIntent[] | null;
+        try {
+          blockingIntents = await classifyQuiescenceBlockers(runtimeId, actorId);
+        } catch (error) {
+          if (localRuntimeDrained()) return;
+          if (generation !== localBlockerGeneration) continue;
+          throw error;
+        }
+        if (localRuntimeDrained()) return;
+        if (generation !== localBlockerGeneration) continue;
+        if (blockingIntents) {
+          logger.warn(
+            { runtimeId, blockingIntents },
+            'page-writer quiescence refused: room admissions held by their own unknown-outcome collaborative commit',
+          );
+          throw new RuntimeQuiesceBlockedError(blockingIntents);
+        }
+        classifiedGeneration = generation;
+        reclassifyTimer = setTimeout(() => {
+          reclassifyDue = true;
+          signal();
+        }, PAGE_WRITER_QUIESCE_RECLASSIFY_MS);
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+        localBlockerWaiters.add(resolve);
+      });
+      wake = undefined;
+    }
+  } finally {
+    clearTimeout(boundTimer);
+    clearTimeout(reclassifyTimer);
+    if (wake) localBlockerWaiters.delete(wake);
   }
 }
 
@@ -1294,7 +1499,7 @@ export async function reservePageWriteIntentInTransaction(
   beginLocalOperation(false);
   try {
     const intent = await reservePageWriteIntentOnClient(client, input, processRuntimeId);
-    localIntentEffects.set(intent.id, 'reserved_uncommitted');
+    setLocalIntentEffect(intent.id, 'reserved_uncommitted');
     localIntentRecoveryModes.set(
       intent.id,
       INTENT_POLICIES[input.kind as IntentKind].recoveryMode,
@@ -1312,7 +1517,7 @@ export async function reservePageWriteIntent(
   try {
     const runtimeId = await getPageWriterRuntimeId();
     const intent = await inTransaction((client) => reservePageWriteIntentOnClient(client, input, runtimeId));
-    localIntentEffects.set(intent.id, 'reserved');
+    setLocalIntentEffect(intent.id, 'reserved');
     localIntentRecoveryModes.set(
       intent.id,
       INTENT_POLICIES[input.kind as IntentKind].recoveryMode,
@@ -1456,7 +1661,7 @@ export async function runPageWriteIntentEffect<T>(
     needsDurableAdoption = state === undefined || state === 'reserved_uncommitted';
     // Registration happens synchronously before the first await. Quiescence
     // therefore sees and drains the start marker and effect together.
-    localIntentEffects.set(intent.id, 'running');
+    setLocalIntentEffect(intent.id, 'running');
   } finally {
     finishLocalOperation();
   }
@@ -1467,20 +1672,18 @@ export async function runPageWriteIntentEffect<T>(
     }
     const result = await operation();
     await markPageWriteIntentEffectFinished(intent, phase, result, durable);
-    localIntentEffects.set(intent.id, 'succeeded');
+    setLocalIntentEffect(intent.id, 'succeeded');
     localIntentFailedRemotePhases.delete(intent.id);
     return result;
   } catch (error) {
     if (phase.kind === 'remote') localIntentFailedRemotePhases.add(intent.id);
     if (needsDurableAdoption && localIntentRecoveryModes.get(intent.id) === undefined) {
-      localIntentEffects.delete(intent.id);
+      deleteLocalIntentEffect(intent.id);
       localIntentFailedRemotePhases.delete(intent.id);
     } else {
-      localIntentEffects.set(intent.id, 'failed');
+      setLocalIntentEffect(intent.id, 'failed');
     }
     throw error;
-  } finally {
-    notifyLocalDrainWaiters();
   }
 }
 
@@ -1614,7 +1817,7 @@ export async function completePageWriteIntent<T>(
         invalidationPending: settled.rows[0]?.cache_invalidation_pending === true,
       };
     });
-    localIntentEffects.delete(intent.id);
+    deleteLocalIntentEffect(intent.id);
     localIntentRecoveryModes.delete(intent.id);
     localIntentFailedRemotePhases.delete(intent.id);
     if (result.invalidationPending) {
@@ -1639,10 +1842,10 @@ export async function completePageWriteIntent<T>(
         [intent.id, intent.runtimeId],
       );
       if (durable.rows[0]?.status === 'pending' && durable.rows[0].generated_terminal) {
-        localIntentEffects.set(intent.id, 'failed');
+        setLocalIntentEffect(intent.id, 'failed');
       }
       if (durable.rows[0]?.status === 'completed') {
-        localIntentEffects.delete(intent.id);
+        deleteLocalIntentEffect(intent.id);
         localIntentRecoveryModes.delete(intent.id);
         localIntentFailedRemotePhases.delete(intent.id);
         if (durable.rows[0].cache_invalidation_pending) {
@@ -1686,7 +1889,7 @@ export async function cancelPageWriteIntentBeforeEffect(intent: PageWriteIntent)
         throw new PageWriteError(409, 'intent_not_pending', 'The write intent was settled concurrently');
       }
     });
-    localIntentEffects.delete(intent.id);
+    deleteLocalIntentEffect(intent.id);
     localIntentRecoveryModes.delete(intent.id);
     localIntentFailedRemotePhases.delete(intent.id);
   } finally {
@@ -1785,6 +1988,7 @@ export async function admitPageRuntime(
       return { id: admissionId, runtimeId: id, pageId, lifecycleRevision, purpose };
     });
     localAdmissions.add(admission.id);
+    localBlockersChanged();
     return admission;
   } finally {
     finishLocalOperation();
@@ -1835,7 +2039,7 @@ export async function releasePageRuntime(admission: PageRuntimeAdmission): Promi
       ).then((result) => result.rowCount === 1).catch(() => false);
       if (!confirmed) throw error;
     }
-    localAdmissions.delete(admission.id);
+    if (localAdmissions.delete(admission.id)) localBlockersChanged();
   } finally {
     finishLocalOperation();
   }
@@ -1901,7 +2105,7 @@ export async function quiescePageWriterRuntime(
   const runtimeId = await getPageWriterRuntimeId();
 
   // Refuse an epoch this process must not drain before closing the local gate:
-  // closing it is irreversible, and `waitForLocalRuntimeDrain` can never finish
+  // closing it is irreversible, and `waitForQuiescentRuntime` can never finish
   // once an upgrade-retired epoch's admissions can no longer be released. The
   // transaction below re-reads this state under the runtime row lock.
   const durableState = await getPool().query<{
@@ -1947,7 +2151,7 @@ export async function quiescePageWriterRuntime(
   });
 
   processAcceptingEffects = false;
-  await waitForLocalRuntimeDrain();
+  await waitForQuiescentRuntime(runtimeId, authorization.actorId);
 
   const acknowledgmentId = await inTransaction(async (client) => {
     const current = await client.query<{
@@ -2664,7 +2868,7 @@ export async function reconcilePageWriteIntent(
       // `inTransaction` has resolved: the settlement is COMMITTED. Only now
       // may the verifier's deferred side effect run.
       await runAfterSettlement(recoveryToken.id, inspected.afterCommit);
-      localIntentEffects.delete(recoveryToken.id);
+      deleteLocalIntentEffect(recoveryToken.id);
       localIntentRecoveryModes.delete(recoveryToken.id);
       localIntentFailedRemotePhases.delete(recoveryToken.id);
       if (inspected.invalidationPending) {
@@ -2690,7 +2894,7 @@ export async function reconcilePageWriteIntent(
   
     // Verification completed inside this admitted recovery. Its local repair
     // is a continuation, so an intervening quiesce waits rather than aborting it.
-    localIntentEffects.set(recoveryToken.id, 'succeeded');
+    setLocalIntentEffect(recoveryToken.id, 'succeeded');
     localIntentRecoveryModes.set(recoveryToken.id, 'local_verified');
     await runPageWriteIntentEffect(recoveryToken, { kind: 'local' }, () => repairer(recoveryToken));
     const repaired = await verifyAndSettle(recoveryToken);
@@ -2702,7 +2906,7 @@ export async function reconcilePageWriteIntent(
       );
     }
     await runAfterSettlement(recoveryToken.id, repaired.afterCommit);
-    localIntentEffects.delete(recoveryToken.id);
+    deleteLocalIntentEffect(recoveryToken.id);
     localIntentRecoveryModes.delete(recoveryToken.id);
     localIntentFailedRemotePhases.delete(recoveryToken.id);
     if (repaired.invalidationPending) {
@@ -2710,7 +2914,7 @@ export async function reconcilePageWriteIntent(
     }
     return repaired.result;
   } catch (error) {
-    if (recoveryClaimed && localIntentEffects.has(intentId)) localIntentEffects.set(intentId, 'failed');
+    if (recoveryClaimed && localIntentEffects.has(intentId)) setLocalIntentEffect(intentId, 'failed');
     if (recoveryClaimed || previousRecoveryState === 'failed') localRecoveries.set(intentId, 'failed');
     else localRecoveries.delete(intentId);
     throw error;

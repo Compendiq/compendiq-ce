@@ -23,11 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - RTF extraction drops ignorable `{\*\…}` destinations it does not keep, so bookmark names, `HYPERLINK "url"` field codes and TextEdit's `;;` colour-table residue no longer reach the extracted text; a hyperlink keeps its visible result text, and text-box text (`\shpinst`, `\shptxt`) is kept without its shape properties (#1967).
 
+- A Save of a Confluence page no longer uploads the cached draw.io preview PNG of its diagrams (collaborative Save and `PUT /api/pages/:id`): `planLocalImagesForConfluence` skips every image inside a `.confluence-drawio` wrapper, so a page with only diagrams reserves `collab.commit.confluence` instead of `.media`, adds no attachment version, and a missing cached preview no longer refuses the Save with `pasted_image_unavailable` (#1935).
+
 - RTF extraction takes the file's bytes (`rtfToText(bytes: Uint8Array)`), so already-decoded text can no longer be corrupted by the UTF-8 re-decode. A raw non-ASCII character after a backslash or inside a `\ucN` fallback is skipped whole instead of leaving U+FFFD, and the cp949 private-use rows `C9`/`FE` are documented (#1960).
+
+- Recovering a local delete (`pages.delete.standalone`, `pages.delete.local`, `pages.bulk.delete.local`) no longer hangs when the reconciling pod hosts a writable collaborative room: the 4404 `committed_delete` close now runs after the settlement COMMIT instead of inside the transaction that holds the page lifecycle lock. A rolled-back settlement closes nothing and keeps `collab:active`, so the administrator's retry closes the room; one failing room close no longer skips the other pages of a standalone multi-page delete. A crash between the COMMIT and the close, or a COMMIT whose acknowledgment is lost, is not retried: open sockets close on disconnect and a fresh join answers 4404 (#1923).
 
 - RTF extraction keeps line breaks written as a backslash followed by a newline (`\`+LF, CR or CRLF), as TextEdit and `textutil` write every paragraph, instead of running the lines together (#1966).
 
 - Wide article PDF tables no longer wrap fitting carried header text twice per band; text placement and borders are unchanged (#1959).
+
+- Runtime quiescence no longer waits forever when its only blockers are collaborative rooms held by their page's own Save whose Confluence write failed after dispatch: after a 30 s bound `POST /api/admin/page-write-recovery/runtime/quiesce` answers `409 runtime_quiesce_blocked_by_collab_commit` naming the intents, `403` if the administrator lost authority, or `503 runtime_quiesce_classification_unavailable` if the check could not finish. The gate stays closed and nothing is released or acknowledged; terminate the process and fence it with `verified_local_termination` (#1934).
 
 - Article PDFs print imported table captions above the first row and separate words in adjacent paragraphs, list items, line breaks and nested cells (#1969).
 - ODT files written with the standard prefixes no longer return text that was deleted under change tracking; inserted text is kept (#1968).
@@ -38,7 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Article PDF exports that exceed 1,000 printed code rows now return HTTP 413 instead of risking a backend crash. The limit includes wrapped rows and applies across the whole batch (#1962).
 
+- After the first sync, a collaborative-editing close for a turned-off feature, a per-account connection limit or a server that stopped accepting changes now says so in the read-only draft banner instead of "The page or your access changed". The draft, **Download draft**, **Open current version** and the blocked Save are unchanged, and a feature turned off mid-session refreshes the collaboration config so reopening the editor edits normally. (#1927)
+
 - Stored search text written before the #1735 fix (an escaped `&amp;lt;br&amp;gt;` stored as `<br>`) is corrected by a resumable background job, so keyword search and search snippets, which read that stored text, find what the page shows (#1965); how snippets are displayed is not changed here. It runs once per hour until complete, then re-checks after 24 hours and every 30 days; each page is corrected with its draft and history in one step or left as it is, and pages it leaves are counted in the job log. Correcting a page's published or draft text gives it a new content revision, so its summary, quality and embedding work may run again; correcting only its history does not.
+
+- Saving a page in the editor now sends only the tag changes made in that editing session, so tags another client, an admin rename or a Confluence sync changed meanwhile are no longer reverted, and an untouched session no longer counts as unsaved after such a change (#1931). Where both sides changed the same tag, the later write wins.
 
 - Bulk Re-sync and scheduled Confluence version jumps keep overwritten edits in Local version history (#1918). The entry is available to preview and restore immediately, even when Confluence's version is equal or lower.
 

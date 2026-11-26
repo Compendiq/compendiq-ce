@@ -39,6 +39,9 @@ export async function enqueuePageWriteInvalidation(
  * Publication owns one abortable SQL transaction. Abandoning a queued pool
  * checkout can only release its eventual lease, never start a late query.
  * An active lease is closed on abort; without COMMIT, its mutations roll back.
+ * pg rejects the active query AND emits `error` on a checked-out client whose
+ * connection is lost; the event is recorded for the whole lease and the
+ * connection is discarded, so the loss reaches the caller as a rejection.
  */
 export async function withPagePublicationTransaction<T>(
   action: (client: PoolClient) => Promise<T>,
@@ -66,6 +69,11 @@ export async function withPagePublicationTransaction<T>(
     );
   });
 
+  let connectionError: Error | undefined;
+  // Stays attached when the connection is discarded: a closing client may
+  // still emit, and nothing else listens once the pool's idle handler is gone.
+  const recordConnectionError = (error: Error) => { connectionError ??= error; };
+  client.on('error', recordConnectionError);
   let destroyed = false;
   let finishClose!: () => void;
   const closed = new Promise<void>((resolve) => { finishClose = resolve; });
@@ -81,18 +89,28 @@ export async function withPagePublicationTransaction<T>(
     await client.query('BEGIN');
     signal.throwIfAborted();
     const result = await action(client);
+    if (connectionError) throw connectionError;
     signal.throwIfAborted();
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    if (!signal.aborted) await client.query('ROLLBACK').catch(() => undefined);
+    if (!signal.aborted && !connectionError) {
+      await client.query('ROLLBACK').catch((rollbackError: unknown) => {
+        connectionError ??= rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+      });
+    }
     throw error;
   } finally {
     signal.removeEventListener('abort', onAbort);
     if (destroyed) {
       await closed;
+    } else if (connectionError) {
+      // As `inTransaction`: discard the broken connection, never return it.
+      client.removeListener('end', finishClose);
+      client.release(connectionError);
     } else {
       client.removeListener('end', finishClose);
+      client.off('error', recordConnectionError);
       client.release();
     }
   }
