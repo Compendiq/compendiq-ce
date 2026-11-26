@@ -24,6 +24,7 @@ import {
   STORAGE_DERIVATION_EFFECT_KEY,
   type StorageDerivationFeatures,
 } from '../../../core/services/storage-derivation.js';
+import { ConfluenceStorageRefusedError } from '../../../core/services/confluence-storage-reader.js';
 import { getClientForUser } from './sync-service.js';
 
 interface PagePutState {
@@ -395,7 +396,21 @@ export async function publishConfluencePagePut(
     // injective, e.g. it drops a generated figure index). The route compares
     // the row's id, title and HTML before the provider PUT. The derivation
     // uses the features the intent recorded, once (#1953).
-    const targetStorage = deriveVersionRestoreStorage(target.body_html, page, publication.derivationFeatures);
+    let targetStorage: string;
+    try {
+      targetStorage = deriveVersionRestoreStorage(target.body_html, page, publication.derivationFeatures);
+    } catch (error) {
+      // #1955: the route derived this storage to reserve the intent, so a
+      // derivation that is refused now is one whose inputs changed since.
+      // Only the write-back's own typed refusal is read that way; any other
+      // error propagates, and nothing is derived again under another set.
+      if (!(error instanceof ConfluenceStorageRefusedError)) throw error;
+      throw new PageWriteError(
+        409,
+        'intent_restore_target_changed',
+        `Historical version ${publication.targetVersion} no longer matches the durable restore intent`,
+      );
+    }
     const targetDigest = confluencePagePutDigest({
       pageId: publication.pageId,
       confluenceId: publication.confluenceId,

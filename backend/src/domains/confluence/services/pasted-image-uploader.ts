@@ -227,8 +227,9 @@ export async function uploadPreparedPastedImage(
 }
 
 /**
- * Compatibility wrapper for the ordinary page-save path. Its caller already
- * reserves a terminal-only page intent before invoking this function.
+ * Plan, re-read and upload in one call. The ordinary page save no longer uses
+ * it (#1955): it plans before its intent is reserved, derives the storage
+ * from the plan, and uploads the prepared plan inside its effect.
  */
 export async function uploadLocalImagesToConfluence(
   html: string,

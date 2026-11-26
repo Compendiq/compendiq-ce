@@ -28,7 +28,11 @@ import {
 } from '../../core/services/content-converter.js';
 import { materializeDrawioPreviews } from '../../core/services/drawio-previews.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
-import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
+import {
+  planLocalImagesForConfluence,
+  preparePastedImagePlan,
+  uploadPreparedPastedImage,
+} from '../../domains/confluence/services/pasted-image-uploader.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
 import { toPageIdInt4, toPageIdText } from '../../core/utils/page-id-text.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -2831,11 +2835,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const remoteVersion = existingPage.remote_version ?? existingPage.version;
     const expectedVersions = { local: existingPage.version, remote: remoteVersion };
-    // Upload locally-pasted images to Confluence before converting HTML.
     // Pasted images have src="/api/attachments/{pageId}/{filename}" but lack
     // data-confluence-filename, meaning they only exist locally and Confluence
-    // doesn't know about them. We upload them as Confluence attachments so the
-    // ri:attachment reference resolves correctly after save.
+    // doesn't know about them. They are planned here and uploaded as
+    // Confluence attachments inside the effect, so the ri:attachment reference
+    // resolves after the save.
+    // #1955: the storage is derived once, from the planned HTML, before the
+    // intent is reserved and before anything is uploaded. A body the
+    // write-back refuses (ConfluenceStorageRefusedError) therefore leaves no
+    // intent, no attachment and no page change, and the effect below sends
+    // exactly the string that was judged here.
+    const imagePlan = await planLocalImagesForConfluence(body.bodyHtml);
+    const nextStorageBody = htmlToConfluence(imagePlan.bodyHtml, {
+      previousStorage: existingPage.body_storage,
+      legacyTasks: hasOnlyUncarriedTasks(existingPage.body_html),
+    });
     const expectedRevision: PageRevision = {
       contentRevision: existingPage.content_revision,
       lifecycleRevision: existingPage.lifecycle_revision,
@@ -2892,16 +2906,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         terminalResult: (result) => result.receipt,
       },
       async () => {
-        const uploadedBodyHtml = await uploadLocalImagesToConfluence(
-          body.bodyHtml,
-          existingPage.confluence_id!,
-          admittedClient,
-          request.log,
-        );
-        const nextStorageBody = htmlToConfluence(uploadedBodyHtml, {
-          previousStorage: existingPage.body_storage,
-          legacyTasks: hasOnlyUncarriedTasks(existingPage.body_html),
-        });
+        // Re-read every planned image (a missing or changed file refuses
+        // before the first remote mutation), then upload the plan.
+        for (const image of await preparePastedImagePlan(imagePlan)) {
+          await uploadPreparedPastedImage(image, existingPage.confluence_id!, admittedClient, request.log);
+        }
         const nextPage = await admittedClient.updatePage(
           existingPage.confluence_id!,
           body.title,
@@ -3649,6 +3658,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         legacyTasks: hasOnlyUncarriedTasks(page.body_html),
       }).html
       : page.draft_body_html;
+    // #1955: a remote publication derives its storage once, here, before the
+    // draft is published locally and before the intent is reserved, with the
+    // stored storage as the evidence for the draft's ri:url links. A body the
+    // write-back refuses leaves the draft a draft; a local-only publication
+    // derives nothing and is never refused for it.
+    const publishedStorage = remotePublicationRequired
+      ? htmlToConfluence(publishedHtml, { linkOrigin: page.body_storage })
+      : null;
     let remoteVersion = page.remote_version ?? page.version;
     const publishDraft = async (writeClient: PoolClient): Promise<void> => {
       const current = await loadAuthorizedContentWriteState(writeClient, page.id, userId, expectedRevision);
@@ -3725,10 +3742,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (publishIntent && page.confluence_id) {
       const admittedIntent = publishIntent;
       const expectedVersions = { local: publishedVersion, remote: remoteVersion };
-      let storageBody: string;
+      const storageBody = publishedStorage!;
       let admittedClient: ConfluenceClient;
       try {
-        storageBody = htmlToConfluence(publishedHtml);
         admittedClient = await withPageWriteTransaction(
           [page.id],
           (writeClient) => loadCurrentConfluenceWriteClient(

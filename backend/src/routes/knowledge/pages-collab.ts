@@ -231,7 +231,9 @@ async function commitConfluencePage(args: {
     previousStorage: existing.body_storage,
     legacyTasks: !taskIdsCarried,
   });
-  const storageBody = htmlToConfluence(assigned.html);
+  // #1955: the stored storage is the evidence for the room's ri:url links; a
+  // body the write-back refuses throws here, before the intent is reserved.
+  const storageBody = htmlToConfluence(assigned.html, { linkOrigin: existing.body_storage });
   const taskIdMarkers = assigned.taskIds.length === taskItems.length
     ? taskItems.flatMap((item, index) => {
       const taskId = assigned.taskIds[index]!;

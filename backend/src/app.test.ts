@@ -453,6 +453,28 @@ describe.skipIf(!canRun)('buildApp — error handler information leakage', () =>
     await closeTestApp(app);
   });
 
+  it('answers a refused Confluence storage with 422, its reason and a message that names no content (#1955)', async () => {
+    process.env.NODE_ENV = 'development';
+
+    const app = await createTestApp();
+    const { ConfluenceStorageRefusedError } = await import('./core/services/confluence-storage-reader.js');
+    app.get('/test/storage-refused', async () => {
+      throw new ConfluenceStorageRefusedError('unapproved-link');
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/test/storage-refused' });
+    expect(response.statusCode).toBe(422);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'ConfluenceStorageRefusedError',
+      reason: 'unapproved-link',
+      message: 'This page cannot be saved to Confluence: its content holds a link to a non-web address in a place where it '
+        + 'cannot be verified or removed. Nothing was changed.',
+      statusCode: 422,
+    });
+
+    await closeTestApp(app);
+  });
+
   it('forwards only allow-listed error codes', async () => {
     process.env.NODE_ENV = 'development';
 

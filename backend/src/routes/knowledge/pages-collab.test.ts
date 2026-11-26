@@ -70,6 +70,8 @@ import {
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
+import { confluenceToHtml } from '../../core/services/content-converter.js';
+import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { __internal as sync } from '../../domains/confluence/services/sync-service.js';
@@ -2961,6 +2963,113 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       } finally {
         await removePastedImageRoot(fixture.root, fixture.priorRoot);
       }
+    });
+  });
+
+  describe('ri:url links on a collaborative Save (#1955)', () => {
+    const STORED_LINK = '<ac:link><ri:url ri:value="/docs/guide" />'
+      + '<ac:plain-text-link-body><![CDATA[the guide]]></ac:plain-text-link-body></ac:link>';
+    const WEB_LINK = '<ac:link><ri:url ri:value="https://example.com/" />'
+      + '<ac:plain-text-link-body><![CDATA[example]]></ac:plain-text-link-body></ac:link>';
+    const STORAGE = `<p>See ${STORED_LINK} first.</p><p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3)}</p><p>Web ${WEB_LINK}.</p>`;
+
+    async function seedLinkPage(bodyHtml: string): Promise<{ token: string; pageId: number; confluenceId: string }> {
+      const { token, userId } = await createUser(`collab_link_${pageIdEntropy()}`);
+      const spaceKey = `LK${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+      const confluenceId = `cf-${pageIdEntropy()}`;
+      const pageId = await insertConfluencePage({ spaceKey, confluenceId, version: 4, bodyHtml });
+      await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, STORAGE]);
+      await grantSpaceRead(userId, spaceKey);
+      await seedConfluenceCredentials(userId);
+      await enableCollabFlag();
+      return { token, pageId, confluenceId };
+    }
+
+    async function joinEditor(pageId: number, token: string): Promise<{ ws: WebSocket; doc: Y.Doc }> {
+      const ws = await openWritableWhatwg(pageId, token);
+      const doc = new Y.Doc();
+      ws.addEventListener('message', (ev) => {
+        if (ev.data instanceof ArrayBuffer && !decodeControl(new Uint8Array(ev.data))) applySyncFrame(doc, new Uint8Array(ev.data));
+      });
+      await exchangeSyncStep1(ws, doc);
+      return { ws, doc };
+    }
+
+    /** Confluence for consecutive Saves: it stores what it is sent and its version follows. */
+    function mockProvider(confluenceId: string): { storages: string[]; reads: number } {
+      const provider = { storages: [] as string[], reads: 0 };
+      let remoteVersion = 4;
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+        provider.reads += 1;
+        return {
+          id: confluenceId, title: 'Conf page', status: 'current', type: 'page',
+          version: { number: remoteVersion, when: '2026-11-12T00:00:00Z' },
+        } as never;
+      });
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage, version) => {
+        provider.storages.push(storage);
+        remoteVersion = version + 1;
+        return {
+          id: confluenceId, title, status: 'current', type: 'page',
+          version: { number: remoteVersion, when: '2026-11-12T00:00:01Z' },
+          body: { storage: { value: storage } },
+        } as never;
+      });
+      return provider;
+    }
+
+    const save = (pageId: number, token: string, payload: CollabCommit) => app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    });
+
+    it('sends the stored link with the page\'s storage as its origin, and a link the page never stored as text', async () => {
+      const invented = '<p>New <a href="#confluence-url:javascript%3Aalert%281%29?body=plain">click me</a>.</p>';
+      const { token, pageId, confluenceId } = await seedLinkPage(`${confluenceToHtml(STORAGE)}${invented}`);
+      const editor = await joinEditor(pageId, token);
+      const provider = mockProvider(confluenceId);
+      const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+      // The room holds every link as the schema keeps it: fragments and the one real URL.
+      expect(yDocToHtml(room.doc)).toContain('href="#confluence-url:javascript%3Aalert%281%29?body=plain"');
+
+      const first = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+      expect(first.statusCode, first.body).toBe(200);
+      // The dispatched string, read by the independent oracle.
+      expect(oracleUrlLinks(provider.storages[0]!)).toEqual([
+        { value: '/docs/guide', link: {}, resource: {}, body: 'plain:the guide', text: 'the guide' },
+        { value: 'https://example.com/', link: {}, resource: {}, body: 'plain:example', text: 'example' },
+      ]);
+      expect(provider.storages[0]).toContain('<p>New click me.</p>');
+      // The room keeps its anchors; the next Save is judged against what this one stored, and writes the same bytes.
+      expect(yDocToHtml(room.doc)).toContain('href="#confluence-url:javascript%3Aalert%281%29?body=plain"');
+      const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
+      expect(second.statusCode, second.body).toBe(200);
+      expect(provider.storages[1]).toBe(provider.storages[0]);
+      editor.ws.close();
+    });
+
+    it('refuses a Save whose storage cannot be read and holds a url element, before the intent and the PUT (W3)', async () => {
+      // A navigable ri:url link beside an external image whose alt holds `<`: write-back leaves that
+      // attribute raw, so the storage is not well-formed and what it holds cannot be told.
+      const { token, pageId, confluenceId } = await seedLinkPage(
+        `${confluenceToHtml(STORAGE)}<p><img src="https://example.com/a.png" alt="a&lt;b"></p>`,
+      );
+      const editor = await joinEditor(pageId, token);
+      const provider = mockProvider(confluenceId);
+      const before = await query('SELECT version, body_html, body_storage FROM pages WHERE id = $1', [pageId]);
+
+      const response = await save(pageId, token, commitPayload(editor.ws, 'Save', Y.snapshot(editor.doc)));
+
+      expect(response.statusCode, response.body).toBe(422);
+      expect(JSON.parse(response.body)).toMatchObject({ reason: 'not-well-formed' });
+      expect(provider.storages).toEqual([]);
+      expect((await query('SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId])).rowCount).toBe(0);
+      expect((await query('SELECT version, body_html, body_storage FROM pages WHERE id = $1', [pageId])).rows).toEqual(before.rows);
+      // The room is still there, with its content.
+      expect(getDefaultCollabRuntime()!.getRoom(pageId)).toBeDefined();
+      editor.ws.close();
     });
   });
 

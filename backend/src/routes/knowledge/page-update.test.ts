@@ -27,6 +27,9 @@ import { lockPageLifecycle, reconcilePageWriteIntent, withPageWriteTransaction }
 import { registerOrdinaryPageWriteReconcilers } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 import { recordConfluenceVersionObservation } from '../../domains/confluence/services/sync-service.js';
 import { encryptPat } from '../../core/utils/crypto.js';
+import { confluenceToHtml } from '../../core/services/content-converter.js';
+import { encodeConfluenceLinkValue } from '../../core/services/confluence-link.js';
+import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import {
   buildKnowledgeTestApp,
   insertLocalSpace,
@@ -59,6 +62,10 @@ let attachmentsDir: string;
 let originalAttachmentsDir: string | undefined;
 let remoteVersion = 8;
 let attachmentUploadUrls: string[] = [];
+/** When set, an attachment upload is acknowledged with this filename (#1955 tests); otherwise it is a 404. */
+let acknowledgedAttachment: string | null = null;
+/** Every request the provider saw, in order: `POST attachment` / `PUT page`. */
+let providerCalls: string[] = [];
 let strictProviderVersion: number | null = null;
 let confluenceRequests: ConfluenceRequest[] = [];
 let compactPutReply = false;
@@ -206,12 +213,20 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       }
       if (request.method === 'POST' && request.url?.endsWith('/child/attachment')) {
         attachmentUploadUrls.push(request.url);
+        providerCalls.push('POST attachment');
+        if (acknowledgedAttachment !== null) {
+          for await (const chunk of request) void chunk;
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ results: [{ id: 'att-1', title: acknowledgedAttachment, version: { number: 1 } }] }));
+          return;
+        }
       }
       if (request.method !== 'PUT' || !request.url?.startsWith('/rest/api/content/')) {
         response.writeHead(404).end();
         return;
       }
       const body = await readRequestBody(request);
+      providerCalls.push('PUT page');
       confluenceRequests.push({
         method: request.method, url: request.url, body, authorization: request.headers.authorization,
       });
@@ -270,6 +285,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     await redis.flushDb();
     confluenceRequests = [];
     attachmentUploadUrls = [];
+    acknowledgedAttachment = null;
+    providerCalls = [];
     remoteVersion = 8;
     strictProviderVersion = null;
     compactPutReply = false;
@@ -661,6 +678,140 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     expect(response.statusCode, response.body).toBe(200);
     expect(attachmentUploadUrls).toEqual([]);
     expect(confluenceRequests).toHaveLength(1);
+  });
+
+  describe('ri:url links of the saved body (#1955)', () => {
+    const STORED_LINK = '<ac:link><ri:url ri:value="/docs/guide" />'
+      + '<ac:plain-text-link-body><![CDATA[the guide]]></ac:plain-text-link-body></ac:link>';
+    const STORAGE = `<p>See ${STORED_LINK} first.</p><p>${'Unrelated prose that keeps the two paragraphs apart. '.repeat(3)}</p>`;
+    const carrier = (value: string, text: string): string =>
+      `<a href="#confluence-url:${encodeConfluenceLinkValue(value)}?body=plain">${text}</a>`;
+
+    async function seedLinkedPage(): Promise<number> {
+      const pageId = await seedConfluencePage(currentUserId);
+      await query('UPDATE pages SET body_storage = $2, body_html = $3 WHERE id = $1', [pageId, STORAGE, confluenceToHtml(STORAGE, 'page-1')]);
+      return pageId;
+    }
+
+    async function intentRows(pageId: number): Promise<number> {
+      const rows = await query('SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId]);
+      return rows.rowCount ?? 0;
+    }
+
+    it('sends the stored link, and writes a copy, an invented one and raw link markup as their text', async () => {
+      const pageId = await seedLinkedPage();
+      const filler = `<p>${'Unrelated prose that keeps the two paragraphs apart. '.repeat(3)}</p>`;
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: {
+          title: 'Original',
+          version: 7,
+          bodyHtml: `<p>See ${carrier('/docs/guide', 'the guide')} first.</p>${filler}`
+            + `<p>Copy: ${carrier('/docs/guide', 'the guide')}.</p>`
+            + `<p>New: ${carrier('javascript:alert(1)', 'click me')}.</p>`
+            + '<p>Raw: <ac:link><ri:url ri:value="data:text/html,x"></ri:url>'
+            + '<ac:plain-text-link-body>raw text</ac:plain-text-link-body></ac:link>.</p>'
+            + '<p>Web: <a href="https://example.com/" class="#confluence-url:https%3A%2F%2Fexample.com%2F">example</a>.</p>',
+        },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(confluenceRequests).toHaveLength(1);
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      // The dispatched string, read by the independent oracle: the one stored unsafe link, in its place, and the web link.
+      expect(oracleUrlLinks(sent)).toEqual([
+        { value: '/docs/guide', link: {}, resource: {}, body: 'plain:the guide', text: 'the guide' },
+        { value: 'https://example.com/', link: {}, resource: {}, body: 'plain:example', text: 'example' },
+      ]);
+      expect(sent).toContain('<p>See <ac:link><ri:url ri:value="/docs/guide"></ri:url>');
+      expect(sent).toContain('<p>Copy: the guide.</p><p>New: click me.</p><p>Raw: raw text.</p>');
+      // The page mirrors what Confluence returned: the declined links are text there too.
+      const row = await pageRow(pageId);
+      expect(row.body_storage).toBe(sent);
+      expect(row.body_html).toContain('<p>Copy: the guide.</p><p>New: click me.</p>');
+      expect(row.body_html).not.toContain('javascript');
+    });
+
+    it('refuses a body that would carry a link past the check, before the intent, the upload and the PUT (W3)', async () => {
+      const pageId = await seedLinkedPage();
+      // A pasted image whose name holds a literal percent, as older editors wrote it: planned, never uploaded.
+      await mkdir(join(attachmentsDir, 'page-1'), { recursive: true });
+      await writeFile(join(attachmentsDir, 'page-1', '100%.png'), Buffer.from('pasted image bytes'));
+      acknowledgedAttachment = '100%.png';
+      const before = await pageRow(pageId);
+
+      for (const [body, reason] of [
+        ['<style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>', 'unapproved-link'],
+        ['<p title="a<b">x</p><style><ac:link><ri:url ri:value="/x"></ri:url></ac:link></style>', 'not-well-formed'],
+      ] as const) {
+        const response = await app.inject({
+          method: 'PUT',
+          url: `/api/pages/${pageId}`,
+          payload: { title: 'Changed', version: 7, bodyHtml: `<p>text <img src="/api/attachments/page-1/100%.png"></p>${body}` },
+        });
+        expect(response.statusCode, response.body).toBe(422);
+        // (The suite's own error handler answers; app.test.ts pins the production body.)
+        expect(response.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason });
+      }
+
+      expect(providerCalls).toEqual([]);
+      expect(attachmentUploadUrls).toEqual([]);
+      expect(await intentRows(pageId)).toBe(0);
+      expect(await pageRow(pageId)).toEqual(before);
+    });
+
+    it('uploads the planned image once and then sends exactly the storage it derived from the plan (W3)', async () => {
+      const pageId = await seedLinkedPage();
+      await mkdir(join(attachmentsDir, 'page-1'), { recursive: true });
+      await writeFile(join(attachmentsDir, 'page-1', '100%.png'), Buffer.from('pasted image bytes'));
+      acknowledgedAttachment = '100%.png';
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: {
+          title: 'Original',
+          version: 7,
+          bodyHtml: `<p>See ${carrier('/docs/guide', 'the guide')} first.</p><p><img src="/api/attachments/page-1/100%.png"></p>`,
+        },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      // One upload, before the one page PUT.
+      expect(providerCalls).toEqual(['POST attachment', 'PUT page']);
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      expect(sent).toBe(
+        '<p>See <ac:link><ri:url ri:value="/docs/guide"></ri:url><ac:plain-text-link-body><![CDATA[the guide]]></ac:plain-text-link-body></ac:link> first.</p>'
+        + '<p><ac:image><ri:attachment ri:filename="100%.png"></ri:attachment></ac:image></p>',
+      );
+    });
+
+    it('refuses a pasted image that is gone before reserving anything (W3)', async () => {
+      const pageId = await seedLinkedPage();
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Original', version: 7, bodyHtml: '<p><img src="/api/attachments/page-1/missing.png"></p>' },
+      });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ reason: 'pasted_image_unavailable' });
+      expect(providerCalls).toEqual([]);
+      expect(await intentRows(pageId)).toBe(0);
+    });
+
+    it('does not judge a save that stays local: Confluence disabled, the body is stored as written', async () => {
+      const pageId = await seedConfluencePage(currentUserId, { enabled: false });
+      const bodyHtml = '<style><ac:link><ri:url ri:value="/x"></ri:url></ac:link></style><p>local</p>';
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Original', version: 7, bodyHtml },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(providerCalls).toEqual([]);
+      expect((await pageRow(pageId)).body_html).toBe(bodyHtml);
+    });
   });
 
   it('recovers a compact acknowledged PUT after readback fails without replaying the mutation', async () => {
