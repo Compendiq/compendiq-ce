@@ -2500,17 +2500,21 @@ export interface HtmlToMarkdownOptions {
 // ---------------------------------------------------------------------------
 // #1956: tables on the AI Improve conversion.
 //
-// Only `{ layoutTokens: true }` registers the rule below. A table whose whole
-// structure GFM can state becomes a GFM table with its column alignment (an
-// editor-serialised table included: generated colgroup, one paragraph per
-// cell); every other table is written as its raw HTML, never through the
-// stock turndown-plugin-gfm rules, which drop spans, widths and cell
-// semantics. Every other htmlToMarkdown caller is unchanged.
+// Only `{ layoutTokens: true }` runs this. Before turndown sees the document,
+// every outermost table is decided on its original DOM: a table GFM states
+// losslessly (the Markdown is parsed back by the Apply parser and must give
+// the same cells, alignment and inline content) becomes a GFM table with its
+// column alignment, an editor-serialised table included (generated colgroup,
+// one paragraph per cell); every other table travels as its original HTML on
+// one line, so neither turndown's whitespace collapse nor Markdown's
+// HTML-block rule changes it on an unchanged echo. Every other htmlToMarkdown
+// caller is unchanged.
 // ---------------------------------------------------------------------------
 
 const GFM_TABLE_MAX_CELLS = 5000;
-/** The style TipTap generates for an unresized table or column: nothing authored. */
-const GENERATED_MIN_WIDTH_STYLE = /^\s*min-width:\s*\d+px\s*;?\s*$/;
+/** TipTap's `cellMinWidth` (neither schema sets it): the width it generates for an unresized column. */
+const TIPTAP_CELL_MIN_WIDTH = 25;
+const MIN_WIDTH_PX_STYLE = /^\s*min-width:\s*(\d+)px\s*;?\s*$/;
 /** A cell style that is nothing but its alignment. */
 const CELL_ALIGN_ONLY_STYLE = /^\s*text-align\s*:\s*(?:left|center|right)\s*;?\s*$/;
 /** Classes Confluence puts on its own tables and cells as decoration; any other class may carry meaning. */
@@ -2521,12 +2525,12 @@ const GFM_CELL_BLOCK_TAGS: Readonly<Record<string, true>> = Object.fromEntries([
   'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN',
   'NAV', 'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'UL',
 ].map((tag) => [tag, true] as const));
-
-interface GfmTable {
-  header: string[];
-  aligns: Array<TableCellAlign | null>;
-  rows: string[][];
-}
+/** Inline elements Markdown writes back under another name the editor reads as the same mark. */
+const GFM_EQUIVALENT_ELEMENTS: Readonly<Record<string, string>> = { B: 'STRONG', I: 'EM', S: 'DEL', STRIKE: 'DEL' };
+/** Link attributes TipTap renders by default: a link loaded without them gets them back. */
+const GENERATED_LINK_ATTRIBUTES: Readonly<Record<string, string>> = { target: '_blank', rel: 'noopener noreferrer nofollow' };
+/** Marks the empty table standing in for a decided table while turndown converts the rest of the page. */
+const IMPROVE_TABLE_SLOT = 'data-cq-improve-table';
 
 function attributesAllowed(el: Element, allowed: (name: string, value: string) => boolean): boolean {
   return Array.from(el.attributes).every((attr) => allowed(attr.name, attr.value));
@@ -2537,8 +2541,30 @@ function decorationOnly(value: string, known: Readonly<Record<string, true>>): b
   return tokens.length > 0 && tokens.every((token) => Object.hasOwn(known, token));
 }
 
-/** The HTML of a cell's single inline run: inline content, or exactly one attribute-less `p` of it; null when the cell holds anything else. */
-function gfmCellInlineHtml(cell: Element): string | null {
+function minWidthPx(style: string | null): number | null {
+  const match = MIN_WIDTH_PX_STYLE.exec(style ?? '');
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The table's sizing is generated, nothing authored: no colgroup and no table
+ * style; Confluence's bare colgroup (one attribute-less `col` per column, no
+ * table style); or TipTap's unresized one (every `col` exactly `min-width:
+ * 25px`, the table exactly their sum). Any other width, or a colgroup that
+ * does not match the columns, is the author's.
+ */
+function generatedTableSizing(table: Element, group: Element | undefined, width: number): boolean {
+  const style = table.getAttribute('style');
+  if (!group) return style === null;
+  const cols = Array.from(group.children);
+  if (group.attributes.length > 0 || cols.length !== width || cols.some((col) => col.nodeName !== 'COL')) return false;
+  if (cols.every((col) => col.attributes.length === 0)) return style === null;
+  return cols.every((col) => col.attributes.length === 1 && minWidthPx(col.getAttribute('style')) === TIPTAP_CELL_MIN_WIDTH)
+    && minWidthPx(style) === TIPTAP_CELL_MIN_WIDTH * width;
+}
+
+/** The element holding a cell's single inline run: the cell, or its only attribute-less `p`; null when the cell holds anything else. */
+function gfmCellRun(cell: Element): Element | null {
   const children = Array.from(cell.children);
   let run: Element = cell;
   if (children.length === 1 && children[0]!.nodeName === 'P') {
@@ -2549,30 +2575,90 @@ function gfmCellInlineHtml(cell: Element): string | null {
   }
   if (Array.from(run.querySelectorAll('*')).some((el) => Object.hasOwn(GFM_CELL_BLOCK_TAGS, el.nodeName))) return null;
   if (run === cell && children.some((el) => Object.hasOwn(GFM_CELL_BLOCK_TAGS, el.nodeName))) return null;
-  return run.innerHTML;
+  return run;
 }
 
 /**
- * The GFM form of a table, or null when GFM cannot state all of it. Accepted:
- * a rectangular table whose first row is all `th` and whose other rows are
- * all `td`, with no span, authored width, caption, footer, nested table,
- * attribute of meaning, multi-block cell, or cell alignment that differs from
- * its column's header; every cell converts to one line. The generated
- * colgroup and min-width style an editor table carries are not meaning.
+ * Inline content as the editor reads it: element names (Markdown's spelling),
+ * every attribute except a link's generated ones, comments, and text with
+ * whitespace runs collapsed. Two runs with the same shape load as the same
+ * cell content.
  */
-function gfmTableOf(table: Element, convertCell: (html: string) => string): GfmTable | null {
+function gfmInlineShape(node: Node): string {
+  let out = '';
+  let text = '';
+  const flush = (): void => {
+    out += text.replace(/[\t\n\f\r ]+/g, ' ');
+    text = '';
+  };
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType === 3) {
+      text += child.nodeValue ?? '';
+      continue;
+    }
+    flush();
+    if (child.nodeType !== 1) {
+      out += `<!${child.nodeType}:${child.nodeValue ?? ''}>`;
+      continue;
+    }
+    const el = child as Element;
+    const name = GFM_EQUIVALENT_ELEMENTS[el.nodeName] ?? el.nodeName;
+    const attrs = Array.from(el.attributes)
+      .filter((attr) => !(name === 'A' && Object.hasOwn(GENERATED_LINK_ATTRIBUTES, attr.name)
+        && GENERATED_LINK_ATTRIBUTES[attr.name] === attr.value))
+      .map((attr) => `${attr.name}=${JSON.stringify(attr.value)}`)
+      .sort();
+    out += `<${name} ${attrs.join(' ')}>${gfmInlineShape(el)}</${name}>`;
+  }
+  flush();
+  return out;
+}
+
+/**
+ * Does the Apply parser (markdownToHtml's marked) read `markdown` back as
+ * exactly this table: one table, the same rows and columns, header cells in
+ * the first row, the column alignment on every cell, and every cell's inline
+ * content of the same shape as the original run? Literal markup or character
+ * references in text, a backslash before a pipe in code, autolinked text and
+ * any mark or attribute Markdown cannot write all fail here.
+ */
+function gfmReadsBack(doc: Document, markdown: string, aligns: ReadonlyArray<TableCellAlign | null>, runs: Element[][]): boolean {
+  const html = EDITOR_MARKED.parse(markdown);
+  if (typeof html !== 'string') return false;
+  const holder = doc.createElement('div');
+  holder.innerHTML = html;
+  const table = holder.firstElementChild;
+  if (!table || table.nodeName !== 'TABLE' || holder.children.length !== 1
+    || (holder.textContent ?? '').trim() !== (table.textContent ?? '').trim()) return false;
+  const rows = Array.from(table.querySelectorAll('tr'));
+  if (rows.length !== runs.length) return false;
+  return rows.every((row, r) => {
+    const cells = Array.from(row.children);
+    return cells.length === aligns.length && cells.every((cell, c) =>
+      cell.nodeName === (r === 0 ? 'TH' : 'TD')
+      && cell.getAttribute('align') === aligns[c]
+      && gfmInlineShape(cell).trim() === gfmInlineShape(runs[r]![c]!).trim());
+  });
+}
+
+/**
+ * The GFM Markdown of a table, or null when GFM cannot state all of it.
+ * Accepted: a rectangular table whose first row is all `th` and whose other
+ * rows are all `td`, with only generated sizing (generatedTableSizing), no
+ * span, caption, footer, nested table, attribute of meaning, multi-block
+ * cell, or cell alignment that differs from its column's header; every cell
+ * converts to one line, and the result reads back as the same table
+ * (gfmReadsBack).
+ */
+function gfmTableOf(table: Element, convertCell: (html: string) => string): string | null {
   if (!attributesAllowed(table, (name, value) =>
-    (name === 'class' && decorationOnly(value, TABLE_DECORATION_CLASSES))
-    || (name === 'style' && GENERATED_MIN_WIDTH_STYLE.test(value)))) return null;
+    (name === 'class' && decorationOnly(value, TABLE_DECORATION_CLASSES)) || name === 'style')) return null;
   const cellCount = table.querySelectorAll('td, th').length;
   if (cellCount === 0 || cellCount > GFM_TABLE_MAX_CELLS || table.querySelector('table')) return null;
 
   const children = Array.from(table.children);
   const groups = children.filter((el) => el.nodeName === 'COLGROUP');
   if (groups.length > 1 || (groups.length === 1 && children[0] !== groups[0])) return null;
-  const group = groups[0];
-  if (group && (group.attributes.length > 0 || Array.from(group.children).some((col) => col.nodeName !== 'COL'
-    || !attributesAllowed(col, (name, value) => name === 'style' && GENERATED_MIN_WIDTH_STYLE.test(value))))) return null;
 
   const sections = children.filter((el) => el.nodeName !== 'COLGROUP');
   const theads = sections.filter((el) => el.nodeName === 'THEAD');
@@ -2590,10 +2676,13 @@ function gfmTableOf(table: Element, convertCell: (html: string) => string): GfmT
   const cellRows = rowElements.map((tr) => Array.from(tr.children));
   const width = cellRows[0]!.length;
   if (width === 0 || cellRows.some((row) => row.length !== width)) return null;
+  if (!generatedTableSizing(table, groups[0], width)) return null;
   const rows: string[][] = [];
+  const runs: Element[][] = [];
   const aligns: Array<TableCellAlign | null> = [];
   for (let r = 0; r < cellRows.length; r += 1) {
     const texts: string[] = [];
+    const rowRuns: Element[] = [];
     for (let c = 0; c < width; c += 1) {
       const cell = cellRows[r]![c]!;
       if (cell.nodeName !== (r === 0 ? 'TH' : 'TD')) return null;
@@ -2608,26 +2697,52 @@ function gfmTableOf(table: Element, convertCell: (html: string) => string): GfmT
       );
       if (r === 0) aligns.push(align);
       else if (align !== aligns[c]) return null;
-      const inline = gfmCellInlineHtml(cell);
-      if (inline === null) return null;
-      const text = convertCell(inline).trim();
+      const run = gfmCellRun(cell);
+      if (run === null) return null;
+      const text = convertCell(run.innerHTML).trim();
       if (text.includes('\n')) return null;
       // A pipe ends a cell: escape it, keeping the parity of any backslashes before it.
       texts.push(text.replace(/(\\*)\|/g, (m, slashes: string) => (slashes.length % 2 === 0 ? `${slashes}\\|` : m)));
+      rowRuns.push(run);
     }
     rows.push(texts);
+    runs.push(rowRuns);
   }
-  return { header: rows[0]!, aligns, rows: rows.slice(1) };
-}
-
-function gfmTableMarkdown(table: GfmTable): string {
   const marker = { left: ':--', center: ':-:', right: '--:' } as const;
   const line = (cells: readonly string[]): string => `| ${cells.join(' | ')} |`;
-  return `\n\n${[
-    line(table.header),
-    line(table.aligns.map((align) => (align ? marker[align] : '---'))),
-    ...table.rows.map(line),
+  const markdown = `\n\n${[
+    line(rows[0]!),
+    line(aligns.map((align) => (align ? marker[align] : '---'))),
+    ...rows.slice(1).map(line),
   ].join('\n')}\n\n`;
+  return gfmReadsBack(table.ownerDocument, markdown, aligns, runs) ? markdown : null;
+}
+
+/**
+ * Decides every outermost table of the Improve conversion on the original
+ * DOM (before turndown collapses any whitespace) and leaves an empty
+ * stand-in table where it was; `tables[i]` is the Markdown for stand-in `i`.
+ */
+function decideImproveTables(html: string, convertCell: (html: string) => string): { html: string; tables: string[] } {
+  if (!/<table/i.test(html)) return { html, tables: [] };
+  const doc = new JSDOM(`<body>${html}</body>`).window.document;
+  const outermost = Array.from(doc.body.querySelectorAll('table')).filter((table) => !table.parentElement?.closest('table'));
+  if (outermost.length === 0) return { html, tables: [] };
+  const tables = outermost.map((table, index) => {
+    // A table GFM cannot state travels as its original HTML on one line. Every
+    // line break becomes a character reference, which the HTML parser reads
+    // back as the same character in text and attribute values: no blank line
+    // can end the Markdown HTML block inside the table, so marked passes it
+    // through untouched (multi-line code, significant whitespace and literal
+    // Markdown in cells included).
+    const markdown = gfmTableOf(table, convertCell)
+      ?? `\n\n${table.outerHTML.replace(/\r/g, '&#13;').replace(/\n/g, '&#10;')}\n\n`;
+    const slot = doc.createElement('table');
+    slot.setAttribute(IMPROVE_TABLE_SLOT, String(index));
+    table.replaceWith(slot);
+    return markdown;
+  });
+  return { html: doc.body.innerHTML, tables };
 }
 
 /**
@@ -2660,14 +2775,14 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     },
   });
 
+  let improveTables: readonly string[] = [];
   if (layoutTokens) {
-    // #1956: on this conversion a table is GFM or raw HTML, nothing in between.
+    // #1956: on this conversion a table is GFM or its original HTML, nothing in
+    // between; decideImproveTables (below) decided each one before turndown.
     turndownService.addRule('improveTable', {
-      filter: 'table',
-      replacement: (_content, node) => {
-        const table = gfmTableOf(node as HTMLElement, (html) => turndownService.turndown(html));
-        return table ? gfmTableMarkdown(table) : `\n\n${(node as HTMLElement).outerHTML}\n\n`;
-      },
+      filter: (node) => node.nodeName === 'TABLE' && node.hasAttribute(IMPROVE_TABLE_SLOT),
+      replacement: (_content, node) =>
+        improveTables[Number((node as HTMLElement).getAttribute(IMPROVE_TABLE_SLOT))] ?? `\n\n${(node as HTMLElement).outerHTML}\n\n`,
     });
 
     // #765: layout containers — emit boundary tokens as standalone lines so the
@@ -2820,7 +2935,12 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     },
   });
 
-  return turndownService.turndown(html);
+  if (!layoutTokens) return turndownService.turndown(html);
+  // Cells convert with the fully configured service, so media tokens, links
+  // and marks in a GFM cell read exactly as they do in prose.
+  const decided = decideImproveTables(html, (cellHtml) => turndownService.turndown(cellHtml));
+  improveTables = decided.tables;
+  return turndownService.turndown(decided.html);
 }
 
 // ---------------------------------------------------------------------------

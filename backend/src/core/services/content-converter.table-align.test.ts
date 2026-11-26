@@ -5,10 +5,13 @@ import { JSDOM } from 'jsdom';
 import { describe, expect, it } from 'vitest';
 import {
   confluenceToHtml,
+  extractLayoutSkeleton,
   htmlToConfluence,
   htmlToEmbeddingText,
   htmlToMarkdown,
   markdownToHtml,
+  protectMedia,
+  restoreMedia,
 } from './content-converter.js';
 import { htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
@@ -173,7 +176,7 @@ describe('table cell alignment: GFM tables on the Improve conversion (#1956)', (
 
   it('writes left, center, right and unspecified markers, and the cell texts survive the round trip', async () => {
     const md = htmlToMarkdown(
-      '<table><colgroup><col></colgroup><tbody><tr><th align="left"><p>a</p></th><th align="center"><p>b</p></th><th align="right"><p>c</p></th><th><p>d</p></th></tr>'
+      '<table><colgroup><col><col><col><col></colgroup><tbody><tr><th align="left"><p>a</p></th><th align="center"><p>b</p></th><th align="right"><p>c</p></th><th><p>d</p></th></tr>'
       + '<tr><td align="left"><p>1</p></td><td align="center"><p>2</p></td><td align="right"><p>3</p></td><td><p>4</p></td></tr></tbody></table>',
       IMPROVE,
     );
@@ -193,7 +196,7 @@ describe('table cell alignment: GFM tables on the Improve conversion (#1956)', (
   });
 
   it('keeps inline formatting, links and images in a cell on one line, and escapes pipes', async () => {
-    const html = '<table><colgroup><col></colgroup><tbody><tr><th><p>a|b</p></th><th><p>c\\|d</p></th></tr>'
+    const html = '<table><colgroup><col><col></colgroup><tbody><tr><th><p>a|b</p></th><th><p>c\\|d</p></th></tr>'
       + '<tr><td><p><strong>x</strong> <a href="https://example.com/p">l</a> <code>y|z</code></p></td><td><p></p></td></tr></tbody></table>';
     const md = htmlToMarkdown(html, IMPROVE);
     expect(md).toContain('| a\\|b | c\\\\\\|d |');
@@ -239,6 +242,20 @@ describe('table cell alignment: GFM tables on the Improve conversion (#1956)', (
     ['a ragged row', '<table><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td></tr></tbody></table>'],
     ['a table without a header row', '<table><colgroup><col></colgroup><tbody><tr><td>1</td></tr></tbody></table>'],
     ['an invalid alignment value', '<table><tbody><tr><th align="justify">a</th></tr><tr><td>1</td></tr></tbody></table>'],
+    // Review T4: only TipTap's generated 25px-per-column sizing is not the author's.
+    ['an authored minimum width', '<table style="min-width: 540px;"><colgroup><col style="min-width: 540px;"></colgroup><tbody><tr><th>H</th></tr><tr><td>b</td></tr></tbody></table>'],
+    ['a colgroup with fewer columns than the rows', '<table style="min-width: 25px;"><colgroup><col style="min-width: 25px;"></colgroup><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>'],
+    ['a table minimum that is not the sum of its columns', '<table style="min-width: 75px;"><colgroup><col style="min-width: 25px;"><col style="min-width: 25px;"></colgroup><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>'],
+    ['a table minimum without a colgroup', '<table style="min-width: 25px;"><tbody><tr><th>a</th></tr><tr><td>1</td></tr></tbody></table>'],
+    // Review T1/T2: content GFM would read back differently.
+    ['literal markup in cell text', '<table><tbody><tr><th>a</th></tr><tr><td>The spelling &lt;em&gt;demo&lt;/em&gt;</td></tr></tbody></table>'],
+    ['a character reference spelled in cell text', '<table><tbody><tr><th>a</th></tr><tr><td>literal &amp;copy;</td></tr></tbody></table>'],
+    ['a backslash before a pipe in code', '<table><tbody><tr><th>a</th></tr><tr><td><code>left\\|right</code></td></tr></tbody></table>'],
+    ['highlight, underline and subscript', '<table><tbody><tr><th>a</th></tr><tr><td>H<sub>2</sub>O; <mark>Review</mark>; <u>due</u></td></tr></tbody></table>'],
+    ['a link with an id', '<table><tbody><tr><th>a</th></tr><tr><td><a href="https://example.com/p" id="anchor">l</a></td></tr></tbody></table>'],
+    ['a link with an authored rel', '<table><tbody><tr><th>a</th></tr><tr><td><a href="https://example.com/p" rel="noreferrer">l</a></td></tr></tbody></table>'],
+    ['an inline element with a class', '<table><tbody><tr><th>a</th></tr><tr><td><span class="term">t</span></td></tr></tbody></table>'],
+    ['a bare URL Markdown would turn into a link', '<table><tbody><tr><th>a</th></tr><tr><td>see https://example.com/p</td></tr></tbody></table>'],
   ];
 
   it.each(declined)('keeps %s as its raw HTML, every attribute intact', (_label, html) => {
@@ -260,6 +277,91 @@ describe('table cell alignment: GFM tables on the Improve conversion (#1956)', (
     expect(md).toContain('<table><thead><tr><th colspan="2">name</th></tr>');
     expect(md).toMatch(/before\n\n\| a/);
     expect(md).toMatch(/\|\n\nmid\n\n<table>/);
+  });
+});
+
+/**
+ * An unchanged model echo through the persisting Improve path, as the routes run it: the Improve request converts
+ * protectMedia(content) with layout tokens (`_helpers.ts`); Accept re-protects the stored body, parses the echo with
+ * its layout skeleton and media, then restores the media (`llm-conversations.ts`).
+ */
+async function applyUnchangedEcho(body: string): Promise<Document> {
+  const markdown = htmlToMarkdown(protectMedia(body).html, IMPROVE);
+  const { html: protectedBody, media } = protectMedia(body);
+  const applied = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedBody), protectedMedia: media });
+  return new JSDOM(`<body>${restoreMedia(applied, media)}</body>`).window.document;
+}
+
+/** An editor-serialised, unresized table: generated colgroup, one paragraph per cell, every column centred. */
+function editorTable(header: readonly string[], body: readonly string[]): string {
+  const cell = (tag: string, html: string): string => `<${tag} colspan="1" rowspan="1" align="center"><p>${html}</p></${tag}>`;
+  return `<table style="min-width: ${25 * header.length}px;"><colgroup>${'<col style="min-width: 25px;">'.repeat(header.length)}</colgroup>`
+    + `<tbody><tr>${header.map((h) => cell('th', h)).join('')}</tr><tr>${body.map((b) => cell('td', b)).join('')}</tr></tbody></table>`;
+}
+
+function firstTableHtml(html: string): string {
+  return new JSDOM(`<body>${html}</body>`).window.document.querySelector('table')!.outerHTML;
+}
+
+describe('table cell alignment: an unchanged Improve echo through Apply (#1956)', () => {
+  it('keeps an ordinary editor table as GFM and brings back its alignment and text', async () => {
+    expect(htmlToMarkdown(EDITOR_TABLE, IMPROVE).trim().startsWith('| a | b | c |')).toBe(true);
+    const doc = await applyUnchangedEcho(EDITOR_TABLE);
+    expect([...doc.querySelectorAll('th, td')].map((c) => [c.nodeName, c.textContent, c.getAttribute('align')])).toEqual([
+      ['TH', 'a', 'left'], ['TH', 'b', 'center'], ['TH', 'c', null], ['TD', '1', 'left'], ['TD', '2', 'center'], ['TD', '3', null],
+    ]);
+  });
+
+  it('keeps literal markup, a spelled character reference and a backslash before a pipe in code as they were', async () => {
+    const html = editorTable(['a', 'b', 'c'], ['The spelling &lt;em&gt;demo&lt;/em&gt;', 'literal &amp;copy;', '<code>left\\|right</code>']);
+    const doc = await applyUnchangedEcho(html);
+    const tds = [...doc.querySelectorAll('td')];
+    expect(tds.map((td) => td.textContent)).toEqual(['The spelling <em>demo</em>', 'literal &copy;', 'left\\|right']);
+    expect(doc.querySelector('td em')).toBeNull();
+    expect(tds[2]!.querySelector('code')!.textContent).toBe('left\\|right');
+    expect(doc.querySelector('table')!.outerHTML).toBe(firstTableHtml(html));
+  });
+
+  it('keeps highlight, underline, subscript, a link id and an inline class', async () => {
+    const html = editorTable(['a'], ['H<sub>2</sub>O; <mark>Review</mark>; <u>due</u> <a href="https://example.com/p" id="anchor">l</a> <span class="term">t</span>']);
+    const doc = await applyUnchangedEcho(html);
+    expect(doc.querySelector('table')!.outerHTML).toBe(firstTableHtml(html));
+    expect(['sub', 'mark', 'u', 'a#anchor', 'span.term'].map((selector) => doc.querySelector(`td ${selector}`) !== null))
+      .toEqual([true, true, true, true, true]);
+  });
+
+  it('sends a formatted link Markdown can state as GFM and brings back the same link', async () => {
+    const html = editorTable(['a'], ['<a target="_blank" rel="noopener noreferrer nofollow" href="https://example.com/p" title="T"><strong>bold</strong> link</a>']);
+    expect(htmlToMarkdown(html, IMPROVE)).toContain('| [**bold** link](https://example.com/p "T") |');
+    const link = (await applyUnchangedEcho(html)).querySelector('td a')!;
+    expect([link.getAttribute('href'), link.getAttribute('title'), link.textContent, link.querySelector('strong')?.textContent])
+      .toEqual(['https://example.com/p', 'T', 'bold link', 'bold']);
+    expect(link.attributes).toHaveLength(2);
+  });
+
+  it('carries a declined table with multi-line code, significant whitespace and media, between its neighbours', async () => {
+    const html = '<p>before</p><table><tbody><tr><th>a</th><th>b</th></tr>'
+      + '<tr><td><pre><code>one\n\n**literal**\n\nlast</code></pre></td><td style="white-space: pre-wrap">a   b</td></tr>'
+      + '<tr><td><img src="/attachments/x.png" alt="diagram"></td><td>z</td></tr></tbody></table><p>after</p>';
+    expect(htmlToMarkdown(protectMedia(html).html, IMPROVE).split('\n').filter((line) => line.includes('<table'))).toHaveLength(1);
+    const doc = await applyUnchangedEcho(html);
+    expect([...doc.body.children].map((el) => [el.nodeName, el.nodeName === 'P' ? el.textContent : ''])).toEqual([
+      ['P', 'before'], ['TABLE', ''], ['P', 'after'],
+    ]);
+    expect(doc.querySelector('td pre code')!.textContent).toBe('one\n\n**literal**\n\nlast');
+    expect(doc.querySelector('td strong, td p')).toBeNull();
+    const rows = doc.querySelectorAll('tr');
+    expect(rows[1]!.children[1]!.textContent).toBe('a   b');
+    expect(rows[1]!.children[1]!.getAttribute('style')).toBe('white-space: pre-wrap');
+    expect(rows[2]!.children[0]!.querySelector('img')?.outerHTML).toBe('<img src="/attachments/x.png" alt="diagram">');
+    expect(rows[2]!.children[1]!.textContent).toBe('z');
+  });
+
+  it.each([
+    ['an authored minimum width', '<table style="min-width: 540px;"><colgroup><col style="min-width: 540px;"></colgroup><tbody><tr><th colspan="1" rowspan="1" align="center"><p>H</p></th></tr><tr><td colspan="1" rowspan="1" align="center"><p>b</p></td></tr></tbody></table>'],
+    ['a colgroup that does not match the columns', '<table style="min-width: 25px;"><colgroup><col style="min-width: 25px;"></colgroup><tbody><tr><th colspan="1" rowspan="1"><p>a</p></th><th colspan="1" rowspan="1"><p>b</p></th></tr><tr><td colspan="1" rowspan="1"><p>1</p></td><td colspan="1" rowspan="1"><p>2</p></td></tr></tbody></table>'],
+  ])('keeps %s through Apply', async (_label, html) => {
+    expect((await applyUnchangedEcho(html)).querySelector('table')!.outerHTML).toBe(firstTableHtml(html));
   });
 });
 
