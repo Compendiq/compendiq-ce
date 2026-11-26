@@ -189,6 +189,26 @@ describe('baseline rendering-only media projection', () => {
     );
   });
 
+  it('renders the #1955 link kinds as they are: none of them is a media reference', () => {
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:blog-post ri:content-title="report.pdf" /></ac:link>'
+      + ' <ac:link><ri:space ri:space-key="OPS" /></ac:link>'
+      + ' <ac:link><ri:shortcut ri:key="jira" ri:parameter="logo.png" /></ac:link>'
+      + ' <ac:link><ri:content-entity ri:content-id="12345" /></ac:link>'
+      + ' <ac:link><ri:url ri:value="/api/attachments/9001/x.png" /></ac:link>'
+      + ' <ac:link><ri:url ri:value="https://example.com/a.png" /></ac:link></p>',
+      '9001',
+    );
+    const rendered = renderBaselineBodyHtml(html, 42, BASELINE_ID, [attachment('confluence', '9001', 'x.png')], '9001');
+    expect(rendered).not.toContain('/baselines/');
+    for (const href of [
+      '#confluence-blog-post:report.pdf', '#confluence-space:OPS', '#confluence-shortcut:jira?ri:parameter=logo.png',
+      '#confluence-content-entity:12345', '#confluence-url:%2Fapi%2Fattachments%2F9001%2Fx.png', 'https://example.com/a.png',
+    ]) {
+      expect(rendered).toContain(`href="${href}"`);
+    }
+  });
+
   it('renders a reference frozen before #1748 by its old decoding when the #1748 reading is not retained', () => {
     // A baseline frozen before #1748 retained each reference by the filename
     // as written. One that also reads as the #1748 grammar (a body flag, a

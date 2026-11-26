@@ -2,6 +2,7 @@ import { JSDOM, type VirtualConsole } from 'jsdom';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { Marked } from 'marked';
+import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
 import he from 'he';
 import {
   getAttachmentImageSource,
@@ -11,12 +12,16 @@ import { isConfluenceTaskId, MAX_CONFLUENCE_TASK_ID } from './confluence-task-id
 import { logger } from '../utils/logger.js';
 import {
   confluenceLinkAnchor,
+  confluenceLinkCarrierOf,
   confluenceLinkElement,
+  enforceConfluenceUrlLinkOrigin,
   escapeConfluenceLinkAttributes,
+  materializeConfluenceUrlLinks,
 } from './confluence-link.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   assertStorageDerivationFeatures,
+  derivationHas,
   type StorageDerivationFeatures,
 } from './storage-derivation.js';
 
@@ -365,6 +370,15 @@ export interface HtmlToConfluenceOptions {
    * other writer omits the option and derives with every registered feature.
    */
   derivationFeatures?: StorageDerivationFeatures;
+  /**
+   * The page's stored storage as evidence for its `ri:url` links (#1955): a
+   * link to a value that is not a navigable URL is written only as an
+   * occurrence this storage already holds. Omitted, `previousStorage` is the
+   * evidence; a writer that keeps `previousStorage` for `assignTaskIds` alone
+   * (collaborative Save, draft publish) passes the stored storage here. An
+   * explicit `null` is no evidence, never a fallback to `previousStorage`.
+   */
+  linkOrigin?: string | null;
 }
 
 /**
@@ -592,15 +606,15 @@ function taskItemContent(li: Element): Element {
 }
 
 /**
- * Run one static-snapshot conversion pass. No step of it is gated on a
- * storage-derivation feature yet; one that is reads `derivationHas` on this
- * pass's set (#1953).
+ * Run one static-snapshot conversion pass. A step gated on a
+ * storage-derivation feature reads `derivationHas` on this pass's set
+ * (#1953): the link kinds of #1955 are read only with `link-kinds`.
  */
 function confluenceToHtmlPass(
   storageXhtml: string,
   pageId: string | undefined,
   spaceKey: string | undefined,
-  _features: StorageDerivationFeatures,
+  features: StorageDerivationFeatures,
 ): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
@@ -769,18 +783,18 @@ function confluenceToHtmlPass(
       continue;
     }
 
-    // #1748: a page, attachment or anchor link becomes an <a> whose href
+    // #1748, #1955: a link to a page, an attachment, an anchor, a blog post,
+    // a space, a shortcut, a content entity or a URL becomes an <a> that
     // carries the whole link (confluence-link.ts), since the editor keeps no
     // data-* attribute of a link.
-    const replacement = confluenceLinkAnchor(link);
+    const replacement = confluenceLinkAnchor(link, features);
     if (replacement) {
       link.replaceWith(...replacement);
       continue;
     }
 
-    // Any other link — another resource (ri:blog-post, ri:space, ri:url, …),
-    // or a title, filename or anchor that is missing or no href can carry:
-    // its text only.
+    // Any other link — another resource, or a primary value that is missing
+    // or that no href can carry: its text only.
     const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
     const a = doc.createElement('a');
     if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
@@ -1662,9 +1676,14 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // target, its attributes and when needed the body element
   // (confluence-link.ts); the body's nodes move, so the image loop below still
   // converts an image inside one. Runs after every loop that rebuilds a body
-  // by re-parsing, so it sees each link where it finally sits.
-  for (const a of doc.querySelectorAll('a[href^="#confluence-"]')) {
-    const acLink = confluenceLinkElement(a);
+  // by re-parsing, so it sees each link where it finally sits. #1955: a
+  // navigable ri:url is a real href with its carrier in the class.
+  const linkKinds = derivationHas(options.derivationFeatures, 'link-kinds');
+  const linkAnchors = linkKinds
+    ? 'a[href^="#confluence-"], a[href][class^="#confluence-url:"]'
+    : 'a[href^="#confluence-"]';
+  for (const a of doc.querySelectorAll(linkAnchors)) {
+    const acLink = confluenceLinkElement(a, options.derivationFeatures);
     if (acLink) a.replaceWith(acLink);
   }
 
@@ -1717,6 +1736,21 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     span.replaceWith(emoticonWriteBack(span));
   }
 
+  // #1955: every ri:url link is judged on the string that is written, read as
+  // XML (confluence-link.ts): a link to a value that is not a navigable URL
+  // stays only where the stored page holds that occurrence, and a string that
+  // would carry one past the check is refused. The check may change the
+  // document and serialise it again; nothing follows it.
+  if (!linkKinds) return serialiseStorage(doc);
+  const linkOrigin = options.linkOrigin === undefined ? options.previousStorage : options.linkOrigin;
+  return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin);
+}
+
+/**
+ * The storage string of a document every reverse loop of htmlToConfluence has
+ * run over: its HTML serialisation, made XHTML.
+ */
+function serialiseStorage(doc: Document): string {
   let result = doc.body.innerHTML;
   // #1748: escape `<`, `>`, tab, LF and CR in ac:link / ri:* attribute values,
   // before the void-element pass below can rewrite a `<br>` inside one.
@@ -2347,58 +2381,163 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** An element a media token stands in: what a consumer needs to decide whether a token there may be replaced. */
+export interface MediaTokenContext {
+  /** The element's tag name, lower case. */
+  readonly tagName: string;
+  /** Its attributes as the HTML parser read them (`class`, a marker attribute, …). */
+  readonly attributes: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  /** The element's range in the string, or null for one the parser supplied itself (`tbody`). */
+  readonly start: number | null;
+  readonly end: number | null;
+  /** The enclosing element; null at the top. A `template`'s content has that template as parent. */
+  readonly parent: MediaTokenContext | null;
+}
+
+/** One place of a string where a media token stands as content, and what replaces it. */
+export interface MediaTokenPlacement {
+  /** The media entry's token (its unescaped spelling). */
+  readonly token: string;
+  /** The range of the original string that the entry's HTML replaces. */
+  readonly start: number;
+  readonly end: number;
+  /** The range is a whole `<p>TOKEN</p>`, not the bare token. */
+  readonly wrapped: boolean;
+  /** The element holding the replaced range, with its ancestors. */
+  readonly context: MediaTokenContext | null;
+}
+
+/** Elements whose text the HTML tokenizer never reads as content. */
+const MEDIA_OPAQUE_PARENTS = new Set([
+  'script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext', 'textarea', 'title',
+]);
+
+type Html5Node = DefaultTreeAdapterTypes.Node;
+
+/**
+ * Where the tokens of `media` stand as content in `html` (#1955), in source
+ * order. The HTML tokenizer decides, not a scan for `<` and `>`: a placement
+ * is a token spelling (raw, or turndown-escaped with `\_`) inside the source
+ * range of one text node, or the whole `<p>TOKEN</p>` of an attribute-less
+ * paragraph that holds nothing else. Offsets are offsets of `html` itself.
+ *
+ * A spelling anywhere else is no placement: in an attribute value, a comment
+ * (with `>` or an unmatched quote inside), a tag name, the text of a
+ * `script`, `style`, `textarea` or `title`, and text the tree builder moved
+ * or joined across markup (text directly inside a table), whose range is not
+ * one run of text. Placements never overlap. Each carries the element it
+ * stands in with that element's attributes and ancestors, so a consumer can
+ * refuse the ones in a code sample or a discarded container without parsing
+ * the string a second way.
+ */
+export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]): MediaTokenPlacement[] {
+  const tokenOf = new Map<string, string>();
+  const alternatives: string[] = [];
+  for (const { token } of media) {
+    for (const spelling of [token, token.replace(/_/g, '\\_')]) {
+      tokenOf.set(spelling, token);
+      // The bare form ends on a non-digit so token N never matches token N0…N9.
+      alternatives.push(`${escapeRegExp(spelling)}(?![0-9])`);
+    }
+  }
+  if (alternatives.length === 0 || !new RegExp(alternatives.join('|')).test(html)) return [];
+  const spellings = new RegExp(alternatives.join('|'), 'g');
+
+  const placements: MediaTokenPlacement[] = [];
+  const pending: Array<{ node: Html5Node; context: MediaTokenContext | null }> = [
+    { node: parseFragment(html, { sourceCodeLocationInfo: true }), context: null },
+  ];
+  while (pending.length > 0) {
+    const { node, context } = pending.pop()!;
+    if (!('childNodes' in node)) continue;
+    let own = context;
+    if ('tagName' in node) {
+      const location = node.sourceCodeLocation;
+      own = {
+        tagName: node.tagName, attributes: node.attrs, parent: context,
+        start: location?.startOffset ?? null, end: location?.endOffset ?? null,
+      };
+    }
+    // A template's children are its content fragment.
+    const children = 'content' in node ? node.content.childNodes : node.childNodes;
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index]!;
+      if (child.nodeName !== '#text') {
+        pending.push({ node: child, context: own });
+        continue;
+      }
+      const location = child.sourceCodeLocation;
+      if (!location || (own && MEDIA_OPAQUE_PARENTS.has(own.tagName))) continue;
+      const source = html.slice(location.startOffset, location.endOffset);
+      // One run of text: a range that holds markup, or that lies inside a sibling's range, is text
+      // the tree builder joined or moved (foster-parented out of a table), not text at that place.
+      const before = children[index - 1]?.sourceCodeLocation;
+      const after = children[index + 1]?.sourceCodeLocation;
+      if (source.includes('<') || (before && before.endOffset > location.startOffset) || (after && after.startOffset < location.endOffset)) {
+        continue;
+      }
+      // `<p>TOKEN</p>`: Markdown wrapped the lone token in a paragraph, which goes with it.
+      const paragraph = 'tagName' in node && node.tagName === 'p' && children.length === 1 && node.attrs.length === 0
+        ? node.sourceCodeLocation
+        : null;
+      const wrapped = paragraph?.endTag
+        ? /^<p>\s*([\s\S]*?)\s*<\/p>$/.exec(html.slice(paragraph.startOffset, paragraph.endOffset))?.[1]
+        : undefined;
+      if (wrapped !== undefined && tokenOf.has(wrapped)) {
+        placements.push({
+          token: tokenOf.get(wrapped)!, start: paragraph!.startOffset, end: paragraph!.endOffset, wrapped: true, context,
+        });
+        continue;
+      }
+      for (const match of source.matchAll(spellings)) {
+        const start = location.startOffset + match.index;
+        placements.push({ token: tokenOf.get(match[0])!, start, end: start + match[0].length, wrapped: false, context: own });
+      }
+    }
+  }
+  return placements.sort((a, b) => a.start - b.start);
+}
+
 /**
  * Re-inject protected media. Replaces `<p>TOKEN</p>` (markdown wrapped the lone
  * token in a paragraph) and bare TOKEN occurrences with the original HTML.
  * Also handles the turndown-escaped form (underscores escaped as \_) so that
  * tokens survive a full htmlToMarkdown→markdownToHtml round-trip.
  *
+ * #1955: only a token that stands as content is replaced ({@link
+ * locateMediaTokens}). A spelling in an attribute value (a link's href or
+ * class), a comment, a tag name or raw text stays as written, so restoring
+ * media can never rewrite an attribute. `accept` lets a caller refuse further
+ * placements by the element they stand in; the default takes every one.
+ *
  * #723 correctness:
- * - Single combined pass via one alternation regex + a *function* replacer.
- *   Function replacers treat their return value literally, so original media
- *   HTML containing `$`, `$&`, `$1`, `` $` ``, `$'`, `$$` (legitimate in
- *   Confluence attachment URLs / encoded query strings) is injected verbatim
- *   rather than being reinterpreted as String.replace special patterns.
- * - One pass also makes restoration collision-safe: already-injected media is
- *   never re-scanned, so an earlier entry whose original HTML literally
- *   contains a *later* token (e.g. in an `alt` / `data-diagram-name`) can no
- *   longer be corrupted by a subsequent replacement.
- * - `<p>TOKEN</p>` is preferred over the bare token via alternation order so
- *   the wrapping paragraph is consumed too. A `(?![0-9])` boundary on the bare
- *   form stops `..._1` from matching the prefix of `..._10`.
+ * - One pass over the original string, replaced ranges spliced in source
+ *   order: an original holding `$`, `$&`, `$1` (legitimate in Confluence
+ *   attachment URLs / encoded query strings) is injected verbatim, and
+ *   already-injected media is never re-scanned, so an earlier entry whose
+ *   original HTML literally contains a *later* token (e.g. in an `alt` /
+ *   `data-diagram-name`) cannot be corrupted by a subsequent replacement.
+ * - `<p>TOKEN</p>` is consumed with its paragraph. A `(?![0-9])` boundary on
+ *   the bare form stops `..._1` from matching the prefix of `..._10`.
  */
-export function restoreMedia(html: string, media: ProtectedMedia[]): string {
+export function restoreMedia(
+  html: string,
+  media: ProtectedMedia[],
+  options: { accept?: (placement: MediaTokenPlacement) => boolean } = {},
+): string {
   if (media.length === 0) return html;
-
-  // Map every token spelling (raw + turndown-escaped) back to its original HTML.
-  const byMatch = new Map<string, string>();
-  const wrappedAlts: string[] = [];
-  const bareAlts: string[] = [];
-  for (const { token, html: original } of media) {
-    const escapedToken = token.replace(/_/g, '\\_'); // e.g. CQ\_MEDIA\_PLACEHOLDER\_0
-    for (const t of [token, escapedToken]) {
-      const pat = escapeRegExp(t);
-      // Paragraph-wrapped form is matched first (it consumes the wrapping <p>);
-      // the bare form ends on a non-digit so token N never matches token N0…N9.
-      wrappedAlts.push(`<p>\\s*${pat}\\s*</p>`);
-      bareAlts.push(`${pat}(?![0-9])`);
-      byMatch.set(t, original);
-    }
+  const placements = locateMediaTokens(html, media);
+  if (placements.length === 0) return html;
+  const originals = new Map(media.map((entry) => [entry.token, entry.html] as const));
+  const parts: string[] = [];
+  let at = 0;
+  for (const placement of placements) {
+    if (placement.start < at || (options.accept && !options.accept(placement))) continue;
+    parts.push(html.slice(at, placement.start), originals.get(placement.token)!);
+    at = placement.end;
   }
-
-  // All wrapped alternatives precede all bare ones so a `<p>TOKEN</p>` is never
-  // partially matched by a bare-token alternative.
-  const combined = new RegExp([...wrappedAlts, ...bareAlts].join('|'), 'g');
-  return html.replace(combined, (matched) => {
-    // Recover the token spelling from the (possibly <p>-wrapped, whitespace-
-    // padded) match, then return the original literally (function replacers do
-    // not interpret `$`-sequences).
-    const inner = matched
-      .replace(/^<p>\s*/, '')
-      .replace(/\s*<\/p>$/, '')
-      .trim();
-    return byMatch.get(inner) ?? matched;
-  });
+  parts.push(html.slice(at));
+  return parts.join('');
 }
 
 export interface HtmlToMarkdownOptions {
@@ -2447,6 +2586,20 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
   });
 
   if (layoutTokens) {
+    // #1955: Markdown keeps only a link's destination, so a navigable ri:url
+    // (a real href with its carrier in the class) writes the carrier there
+    // and markdownToHtml restores the pair (materializeConfluenceUrlLinks).
+    // Improve only: every other caller (embeddings, diffs, tagging, quality,
+    // sub-page context) keeps the real URL it gets from the stock link rule.
+    turndownService.addRule('confluenceUrlLink', {
+      filter: (node) =>
+        node.nodeName === 'A' && !(node.getAttribute('href') ?? '').startsWith('#') && confluenceLinkCarrierOf(node) !== null,
+      replacement: (content, node) => {
+        const title = ((node as Element).getAttribute('title') ?? '').replace(/(\n+\s*)+/g, '\n');
+        return `[${content}](${confluenceLinkCarrierOf(node as Element)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
+      },
+    });
+
     // #765: layout containers — emit boundary tokens as standalone lines so the
     // wrapper structure survives the markdown round-trip while the prose inside
     // stays editable by the LLM. markdownToHtml() rebuilds the divs from the
@@ -3898,7 +4051,7 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     // skips them), so no masking is needed. Nothing else is touched: any
     // remaining [[[…]]] text is prose the strictness ladder deliberately kept,
     // and it now reaches the page verbatim instead of being stripped.
-    return rebuildLayoutFromSentinels(html, sentinelPrefix, sentinelTokens);
+    return materializeConfluenceUrlLinks(rebuildLayoutFromSentinels(html, sentinelPrefix, sentinelTokens));
   }
 
   html = transformOutsideHtmlCode(html, (segment) => {
@@ -3917,7 +4070,9 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     return out;
   });
 
-  return html;
+  // #1955: a link whose destination is the carrier of a navigable ri:url
+  // becomes the real link again, on parsed anchors only.
+  return materializeConfluenceUrlLinks(html);
 }
 
 /**

@@ -372,3 +372,459 @@ describe('content-converter: #1748 Confluence links survive write-back', () => {
     });
   });
 });
+
+/**
+ * #1955: links to a blog post, a space, a shortcut, a content entity and a URL
+ * are carried like the three #1748 kinds. A `ri:url` is a real href only for
+ * a lowercase http, https or mailto URL; any other value is an inert
+ * `#confluence-url:` carrier, and such a link is written back only as an
+ * occurrence the stored page already holds (content-converter.link-origin.test.ts).
+ */
+describe('content-converter: #1955 blog-post, space, shortcut, content-entity and url links survive write-back', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Storage as Confluence writes it.
+  const BLOG_POST =
+    '<ac:link><ri:blog-post ri:content-title="Q3 Update" ri:posting-day="2024/05/01" ri:space-key="ENG" />'
+    + '<ac:plain-text-link-body><![CDATA[read the update]]></ac:plain-text-link-body></ac:link>';
+  const SPACE = '<ac:link><ri:space ri:space-key="OPS" /></ac:link>';
+  const SHORTCUT =
+    '<ac:link><ri:shortcut ri:key="jira" ri:parameter="ABC-1" />'
+    + '<ac:plain-text-link-body><![CDATA[ABC-1]]></ac:plain-text-link-body></ac:link>';
+  const CONTENT_ENTITY =
+    '<ac:link><ri:content-entity ri:content-id="12345" /><ac:link-body>the <strong>doc</strong></ac:link-body></ac:link>';
+  const URL_HTTPS =
+    '<ac:link><ri:url ri:value="https://example.com/a?b=1&amp;c=2" />'
+    + '<ac:plain-text-link-body><![CDATA[example]]></ac:plain-text-link-body></ac:link>';
+  const URL_MAILTO = '<ac:link><ri:url ri:value="mailto:a@b.c" /></ac:link>';
+  const URL_REL =
+    '<ac:link><ri:url ri:value="/relative/a" /><ac:plain-text-link-body><![CDATA[docs]]></ac:plain-text-link-body></ac:link>';
+  const URL_JS =
+    '<ac:link><ri:url ri:value="javascript:alert(1)" /><ac:plain-text-link-body><![CDATA[click]]></ac:plain-text-link-body></ac:link>';
+  const URL_EMPTY = '<ac:link><ri:url ri:value="" /></ac:link>';
+
+  /** What write-back writes for storage as Confluence writes it: resource elements with an explicit end tag. */
+  const out = (storage: string): string => storage.replace(/<(ri:[a-z-]+)((?: [^\s="]+="[^"]*")*) \/>/g, '<$1$2></$1>');
+
+  const KINDS_PAGE =
+    `<p>News: ${BLOG_POST}.</p>`
+    + `<p>Space ${SPACE} and ticket ${SHORTCUT}.</p>`
+    + `<p>See ${CONTENT_ENTITY}.</p>`
+    + `<p>Web ${URL_HTTPS}, mail ${URL_MAILTO}.</p>`
+    + `<p>Old ${URL_REL}, odd ${URL_JS}, none ${URL_EMPTY}.</p>`;
+
+  /** confluenceToHtml(KINDS_PAGE), byte for byte. */
+  const KINDS_HTML =
+    '<p>News: <a href="#confluence-blog-post:Q3%20Update?ri:posting-day=2024%2F05%2F01&amp;ri:space-key=ENG&amp;body=plain"'
+    + ' data-confluence-link="blog-post">read the update</a>.</p>'
+    + '<p>Space <a href="#confluence-space:OPS" data-confluence-link="space">OPS</a>'
+    + ' and ticket <a href="#confluence-shortcut:jira?ri:parameter=ABC-1&amp;body=plain" data-confluence-link="shortcut">ABC-1</a>.</p>'
+    + '<p>See <a href="#confluence-content-entity:12345?body=rich" data-confluence-link="content-entity">the <strong>doc</strong></a>.</p>'
+    + '<p>Web <a href="https://example.com/a?b=1&amp;c=2"'
+    + ' class="#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain" data-confluence-link="url">example</a>,'
+    + ' mail <a href="mailto:a@b.c" class="#confluence-url:mailto%3Aa%40b.c" data-confluence-link="url">mailto:a@b.c</a>.</p>'
+    + '<p>Old <a href="#confluence-url:%2Frelative%2Fa?body=plain" data-confluence-link="url">docs</a>,'
+    + ' odd <a href="#confluence-url:javascript%3Aalert%281%29?body=plain" data-confluence-link="url">click</a>,'
+    + ' none <a href="#confluence-url:" data-confluence-link="url">(empty link)</a>.</p>';
+
+  /** Round trip with the page's own storage as the origin of its ri:url links. */
+  const roundTrip = (storage: string): string => htmlToConfluence(confluenceToHtml(storage), { previousStorage: storage });
+
+  describe('htmlToConfluence(confluenceToHtml(x))', () => {
+    it.each([
+      ['a blog post with a plain body, a posting day and a space key', BLOG_POST],
+      ['a space without a body', SPACE],
+      ['a shortcut with its parameter', SHORTCUT],
+      ['a content entity with a rich body', CONTENT_ENTITY],
+      ['an https URL with a plain body', URL_HTTPS],
+      ['a mailto URL without a body', URL_MAILTO],
+      ['a relative URL', URL_REL],
+      ['a javascript: URL', URL_JS],
+      ['an empty URL', URL_EMPTY],
+      [
+        'ac:* attributes on a blog-post link',
+        '<ac:link ac:card-appearance="inline" ac:anchor="Top"><ri:blog-post ri:content-title="Q3" ri:posting-day="2024/05/01" /></ac:link>',
+      ],
+      [
+        'a text-only rich body',
+        '<ac:link><ri:space ri:space-key="OPS" /><ac:link-body>the ops space</ac:link-body></ac:link>',
+      ],
+      [
+        'a plain body equal to the value',
+        '<ac:link><ri:shortcut ri:key="jira" /><ac:plain-text-link-body><![CDATA[jira]]></ac:plain-text-link-body></ac:link>',
+      ],
+      [
+        'a version on a content entity',
+        '<ac:link><ri:content-entity ri:content-id="12345" ri:version-at-save="3" /></ac:link>',
+      ],
+      [
+        '<, >, tab and line feed in a parameter',
+        '<ac:link><ri:shortcut ri:key="search" ri:parameter="a&lt;b&gt;c&#9;d&#10;e &amp; f" /></ac:link>',
+      ],
+      [
+        'a URL holding a quote, an ampersand, markup and a media token spelling',
+        '<ac:link><ri:url ri:value="https://example.com/&quot;q&quot;?a=1&amp;b=&lt;b&gt;CQ_MEDIA_PLACEHOLDER_0" /></ac:link>',
+      ],
+      [
+        'a mailto URL with headers',
+        '<ac:link><ri:url ri:value="mailto:?to=a@b.c&amp;subject=Hi%20there" />'
+        + '<ac:plain-text-link-body><![CDATA[write]]></ac:plain-text-link-body></ac:link>',
+      ],
+      [
+        'extra attributes on an unsafe URL link',
+        '<ac:link ac:anchor="x"><ri:url ri:value="/relative/a" ri:note="n" /><ac:link-body>the <em>docs</em></ac:link-body></ac:link>',
+      ],
+    ])('rebuilds %s', (_name, storage) => {
+      expect(roundTrip(`<p>See ${storage} here.</p>`)).toBe(`<p>See ${out(storage)} here.</p>`);
+    });
+
+    it('rebuilds a page holding every kind, and converts what it wrote to the same HTML again', () => {
+      const html = confluenceToHtml(KINDS_PAGE);
+      expect(html).toBe(KINDS_HTML);
+      expect(roundTrip(KINDS_PAGE)).toBe(out(KINDS_PAGE));
+      expect(confluenceToHtml(roundTrip(KINDS_PAGE))).toBe(html);
+    });
+
+    it('writes the primary attribute first, as #1748 does: Atlassian\'s own order for a blog post is normalised', () => {
+      const atlassian = '<ac:link><ri:blog-post ri:space-key="ENG" ri:content-title="First Post" ri:posting-day="2012/01/30" /></ac:link>';
+      expect(roundTrip(`<p>${atlassian}</p>`)).toBe(
+        '<p><ac:link><ri:blog-post ri:content-title="First Post" ri:space-key="ENG" ri:posting-day="2012/01/30"></ri:blog-post></ac:link></p>',
+      );
+    });
+
+    it('keeps the links inside a task, a table cell and a layout cell', () => {
+      const storage =
+        '<ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+        + `<ac:task-body>Read ${out(BLOG_POST)} and ${out(URL_REL)}</ac:task-body></ac:task></ac:task-list>`
+        + `<table><tbody><tr><td><p>${out(SPACE)}</p></td></tr></tbody></table>`
+        + `<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell><p>${out(SHORTCUT)}</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+      expect(links(roundTrip(storage))).toEqual(links(storage));
+    });
+
+    it('still writes a resource it does not know, and a primary value no href can carry, as text only', () => {
+      expect(confluenceToHtml('<p><ac:link><ri:unknown ri:x="1" /><ac:plain-text-link-body><![CDATA[t]]></ac:plain-text-link-body></ac:link></p>'))
+        .toBe('<p><a>t</a></p>');
+      expect(confluenceToHtml(`<p><ac:link><ri:space ri:space-key="${'a'.repeat(1025)}" /></ac:link> x</p>`)).toBe('<p><a></a> x</p>');
+      expect(confluenceToHtml('<p><ac:link><ri:blog-post ri:posting-day="2024/05/01" /></ac:link> x</p>')).toBe('<p><a></a> x</p>');
+    });
+  });
+
+  describe('the body', () => {
+    // V6: an authored body is never mistaken for "no body", whatever an editor does to its text.
+    const blog = (primary: string, body: string): string => `<p>x <ac:link><ri:blog-post ri:content-title="${primary}" />${body}</ac:link> y</p>`;
+    const plain = (text: string): string => `<ac:plain-text-link-body><![CDATA[${text}]]></ac:plain-text-link-body>`;
+    const viaCollab = (storage: string): string =>
+      htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(storage))), { linkOrigin: storage });
+
+    it.each([
+      ['a plain body that only differs from the value by white space', 'Q3 x', plain('Q3  x'), plain('Q3 x')],
+      // The collaborative schema moves a link's leading space out of it and its trailing space in.
+      ['a plain body with white space at its ends', 'Q3', plain(' Q3 '), plain('Q3 ')],
+      ['the literal label of an empty value as an authored body', '', plain('(empty link)'), plain('(empty link)')],
+      ['a plain body equal to the value', 'Q3', plain('Q3'), plain('Q3')],
+      ['a rich body whose text is the value', 'Q3 x', '<ac:link-body><span>Q3 x</span></ac:link-body>', '<ac:link-body>Q3 x</ac:link-body>'],
+      ['a rich body with markup', 'Q3', '<ac:link-body>the <strong>post</strong></ac:link-body>', '<ac:link-body>the <strong>post</strong></ac:link-body>'],
+    ])('carries the kind of %s', (_name, primary, body, afterEditor) => {
+      const storage = blog(primary, body);
+      const html = confluenceToHtml(storage);
+      expect(html).toContain(body.startsWith('<ac:link-body') ? 'body=rich' : 'body=plain');
+      // The converter alone writes the body back byte for byte.
+      expect(htmlToConfluence(html)).toBe(out(storage));
+      // An editor may normalise the text; the body and its kind stay.
+      const link = (body: string): string => `<ac:link><ri:blog-post ri:content-title="${primary}"></ri:blog-post>${body}</ac:link>`;
+      expect(links(viaCollab(storage))).toEqual([link(afterEditor)]);
+    });
+
+    it('carries the body kind of a ri:url link the same way, in the class of a navigable one', () => {
+      const html = confluenceToHtml('<p><ac:link><ri:url ri:value="https://example.com/" />'
+        + '<ac:plain-text-link-body><![CDATA[https://example.com/]]></ac:plain-text-link-body></ac:link></p>');
+      expect(html).toBe('<p><a href="https://example.com/" class="#confluence-url:https%3A%2F%2Fexample.com%2F?body=plain"'
+        + ' data-confluence-link="url">https://example.com/</a></p>');
+      expect(htmlToConfluence(html)).toBe('<p><ac:link><ri:url ri:value="https://example.com/"></ri:url>'
+        + '<ac:plain-text-link-body><![CDATA[https://example.com/]]></ac:plain-text-link-body></ac:link></p>');
+    });
+
+    it('treats a blank explicit body as no body, as #1748 does for its kinds (pinned normalisation)', () => {
+      for (const body of [plain(' '), plain(''), '<ac:link-body></ac:link-body>', '<ac:link-body> \n</ac:link-body>']) {
+        const html = confluenceToHtml(blog('Q3', body));
+        expect(html).toBe('<p>x <a href="#confluence-blog-post:Q3" data-confluence-link="blog-post">Q3</a> y</p>');
+        expect(htmlToConfluence(html)).toBe('<p>x <ac:link><ri:blog-post ri:content-title="Q3"></ri:blog-post></ac:link> y</p>');
+      }
+      // The same shapes on a page link are what they were before #1955.
+      const page = '<p>x <ac:link><ri:page ri:content-title="Q3" /><ac:plain-text-link-body><![CDATA[ ]]></ac:plain-text-link-body></ac:link> y</p>';
+      expect(confluenceToHtml(page)).toBe('<p>x <a href="#confluence-page:Q3" data-confluence-link="page">Q3</a> y</p>');
+    });
+
+    it('follows an edited link text: new wording is a plain body, the display text again is no body', () => {
+      const html = confluenceToHtml(`<p>${SPACE}</p>`);
+      expect(htmlToConfluence(html.replace('>OPS<', '>the ops space<'))).toBe(
+        '<p><ac:link><ri:space ri:space-key="OPS"></ri:space><ac:plain-text-link-body><![CDATA[the ops space]]></ac:plain-text-link-body></ac:link></p>',
+      );
+      expect(htmlToConfluence(html)).toBe('<p><ac:link><ri:space ri:space-key="OPS"></ri:space></ac:link></p>');
+    });
+
+    it('leaves the body rule of a page, attachment and anchor link as it was: the hint only when the text cannot tell', () => {
+      expect(confluenceToHtml(PAGE)).toBe(PAGE_HTML);
+      expect(PAGE_HTML).not.toContain('body=');
+    });
+  });
+
+  describe('a value an editor cannot show', () => {
+    // M4/C5: text that is only white space does not survive an editor, and a link without text is no link there.
+    it.each([
+      ['an empty value', '', '(empty link)'],
+      ['a space', ' ', '(empty link)'],
+      ['a tab', '&#9;', '(empty link)'],
+      ['a line feed', '&#10;', '(empty link)'],
+      ['a no-break space', '&#160;', '(empty link)'],
+      ['white space at the ends', ' Q3 ', 'Q3'],
+      ['two spaces inside', 'Q3  x', 'Q3 x'],
+      ['a tab inside', 'Q3&#9;x', 'Q3 x'],
+    ])('shows a label for %s and writes the value back as it was', async (_name, value, label) => {
+      for (const [resource, kind, attribute] of [['ri:blog-post', 'blog-post', 'ri:content-title'], ['ri:url', 'url', 'ri:value']] as const) {
+        const storage = `<p>before <ac:link><${resource} ${attribute}="${value}" /></ac:link> after</p>`;
+        const written = `<p>before <ac:link><${resource} ${attribute}="${value}"></${resource}></ac:link> after</p>`;
+        const html = confluenceToHtml(storage);
+        expect(html).toContain(`data-confluence-link="${kind}">${label}</a>`);
+        expect(htmlToConfluence(html, { previousStorage: storage })).toBe(written);
+        // Through the collaborative schema and through Improve the link is still there, with its value.
+        expect(htmlToConfluence(yDocToHtml(htmlToYDoc(html)), { linkOrigin: storage })).toBe(written);
+        const improved = await markdownToHtml(htmlToMarkdown(html, { layoutTokens: true }));
+        expect(htmlToConfluence(improved, { previousStorage: storage }).trim()).toBe(written);
+      }
+    });
+  });
+
+  describe('ri:url', () => {
+    it.each([
+      'http://example.com/',
+      'https://example.com/path?x=1#frag',
+      'mailto:a@b.c',
+      'mailto:?to=a@b.c&amp;subject=Hi%20there',
+    ])('writes %s as a real href with the carrier in the class', (value) => {
+      const html = confluenceToHtml(`<p><ac:link><ri:url ri:value="${value}" /></ac:link></p>`);
+      const a = new JSDOM(html).window.document.querySelector('a')!;
+      expect(a.getAttribute('href')).toBe(value.replace(/&amp;/g, '&'));
+      expect(a.getAttribute('class')).toMatch(/^#confluence-url:[A-Za-z0-9%._~-]+$/);
+      // No origin is needed: a navigable URL is a link anyone may write.
+      expect(htmlToConfluence(html)).toBe(`<p><ac:link><ri:url ri:value="${value}"></ri:url></ac:link></p>`);
+    });
+
+    it.each([
+      ['javascript:', 'javascript:alert(1)'],
+      ['mixed-case javascript:', 'JavaScript:alert(1)'],
+      ['upper-case javascript:', 'JAVASCRIPT:alert(1)'],
+      ['a tab inside the scheme', 'java&#9;script:alert(1)'],
+      ['a line feed inside the scheme', 'java&#10;script:alert(1)'],
+      ['an entity-encoded scheme letter', '&#x6A;avascript:alert(1)', 'javascript:alert(1)'],
+      ['an entity-encoded colon', 'javascript&#58;alert(1)', 'javascript:alert(1)'],
+      ['a leading space', ' javascript:alert(1)'],
+      ['data:', 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=='],
+      ['vbscript:', 'vbscript:msgbox(1)'],
+      ['file:', 'file:///etc/passwd'],
+      ['ftp:', 'ftp://example.com/'],
+      ['an upper-case allowed scheme', 'HTTPS://example.com/'],
+      ['a mixed-case allowed scheme', 'Https://example.com/'],
+      ['upper-case mailto', 'MAILTO:a@b.c'],
+      ['a leading space before https', ' https://example.com/'],
+      ['a trailing space', 'https://example.com/ '],
+      ['an embedded space', 'https://example.com/a b'],
+      ['a tab after the scheme', 'https:&#9;//example.com/'],
+      ['a zero-width space', 'https://exa&#x200B;mple.com/', 'https://exa\u200Bmple.com/'],
+      ['a right-to-left override', 'https://example.com/&#x202E;gnp.exe', 'https://example.com/\u202Egnp.exe'],
+      ['a protocol-relative URL', '//evil.example/'],
+      ['an absolute path', '/relative'],
+      ['a relative path', 'relative.html'],
+      ['a query', '?q=1'],
+      ['a fragment', '#frag'],
+      ['an empty value', ''],
+    ])('keeps %s an inert carrier that still writes back', (_name, value, written = value) => {
+      const storage = `<p>see <ac:link><ri:url ri:value="${value}" /><ac:plain-text-link-body><![CDATA[t]]></ac:plain-text-link-body></ac:link> now</p>`;
+      const html = confluenceToHtml(storage);
+      const anchors = [...new JSDOM(html).window.document.querySelectorAll('a')];
+      expect(anchors).toHaveLength(1);
+      const href = anchors[0]!.getAttribute('href')!;
+      // A fragment of this page, whatever the value: its own characters are all percent-encoded.
+      expect(href.startsWith('#confluence-url:')).toBe(true);
+      expect(href.slice('#confluence-url:'.length).split('?')[0]).toMatch(/^[A-Za-z0-9%._~-]*$/);
+      expect(anchors[0]!.hasAttribute('class')).toBe(false);
+      expect(new URL(href, 'https://kb.example/pages/1').origin).toBe('https://kb.example');
+      // The collaborative schema keeps it a fragment too.
+      expect(yDocToHtml(htmlToYDoc(html))).toContain(`href="${href.replace(/&/g, '&amp;')}"`);
+      expect(yDocToHtml(htmlToYDoc(html))).not.toMatch(/href="(?!#confluence-url:)/);
+      // With the page's own storage as origin it writes back as it was (a character reference that
+      // XML does not need is written as the character, as for every attribute); without, it is text.
+      expect(htmlToConfluence(html, { previousStorage: storage })).toBe(out(storage).replace(`"${value}"`, `"${written}"`));
+      expect(htmlToConfluence(html)).toBe('<p>see t now</p>');
+    });
+
+    it('reads the class only as the carrier of the anchor\'s own URL', () => {
+      const carrier = '#confluence-url:https%3A%2F%2Fexample.com%2F?ac:anchor=x';
+      const written = '<p><ac:link ac:anchor="x"><ri:url ri:value="https://example.com/"></ri:url></ac:link></p>';
+      expect(htmlToConfluence(`<p><a href="https://example.com/" class="${carrier}">https://example.com/</a></p>`)).toBe(written);
+      for (const html of [
+        // Another URL than the carrier's, a non-navigable href, a second class token, the prefix alone.
+        `<p><a href="https://example.com/other" class="${carrier}">t</a></p>`,
+        '<p><a href="javascript:alert(1)" class="#confluence-url:javascript%3Aalert%281%29">t</a></p>',
+        `<p><a href="https://example.com/" class="${carrier} extra">t</a></p>`,
+        '<p><a href="https://example.com/" class="#confluence-url:">t</a></p>',
+      ]) {
+        expect(htmlToConfluence(html)).toBe(html);
+      }
+    });
+
+    it('leaves an ordinary link as the <a> it is, with or without the editor\'s target and rel', () => {
+      const pasted = '<p><a target="_blank" rel="noopener noreferrer nofollow" href="https://example.com/x">plain</a></p>';
+      expect(htmlToConfluence(pasted)).toBe(pasted);
+      expect(htmlToConfluence('<p><a href="https://example.com/x" title="T" class="k">plain</a></p>'))
+        .toBe('<p><a href="https://example.com/x" title="T" class="k">plain</a></p>');
+    });
+  });
+
+  describe('the href', () => {
+    it('skips and logs an attribute it cannot carry, under the caps of #1748', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const attrs = Array.from({ length: 17 }, (_, i) => `ri:x-${i}="${i}"`).join(' ');
+      const html = confluenceToHtml(`<p><ac:link><ri:shortcut ri:key="jira" ${attrs} /></ac:link></p>`);
+      expect(new JSDOM(html).window.document.querySelector('a')!.getAttribute('href')!.split('&')).toHaveLength(16);
+      expect(warn).toHaveBeenCalledWith({ attributes: ['ri:x-16'], count: 1 }, 'Confluence link attributes not carried (#1748)');
+    });
+
+    it('keeps the class of a navigable URL within 16,384 characters and logs the attributes that do not fit', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const big = '日'.repeat(1024);
+      const html = confluenceToHtml(
+        `<p><ac:link ac:a="${big}" ac:b="${big}" ac:c="${big}"><ri:url ri:value="https://example.com/" />`
+        + '<ac:plain-text-link-body><![CDATA[t]]></ac:plain-text-link-body></ac:link></p>',
+      );
+      const a = new JSDOM(html).window.document.querySelector('a')!;
+      expect(a.getAttribute('href')).toBe('https://example.com/');
+      expect(a.getAttribute('class')!.length).toBeLessThanOrEqual(16_384);
+      // W5: the body kind is kept; an optional attribute gives way instead.
+      expect(a.getAttribute('class')!.endsWith('&body=plain')).toBe(true);
+      expect(warn).toHaveBeenCalledWith({ attributes: ['ac:b', 'ac:c'], count: 2 }, 'Confluence link attributes not carried (#1748)');
+      expect(htmlToConfluence(html)).toBe(
+        `<p><ac:link ac:a="${big}"><ri:url ri:value="https://example.com/"></ri:url>`
+        + '<ac:plain-text-link-body><![CDATA[t]]></ac:plain-text-link-body></ac:link></p>',
+      );
+    });
+
+    it.each([
+      ['an unencoded value', '#confluence-space:A B'],
+      ['a container on a blog post', '#confluence-blog-post:X?page.ri:space-key=ENG'],
+      ['a repeated parameter', '#confluence-shortcut:X?ri:parameter=a&amp;ri:parameter=b'],
+      ['the primary attribute as a parameter', '#confluence-content-entity:1?ri:content-id=2'],
+      ['17 attributes of one element', `#confluence-space:X?${Array.from({ length: 17 }, (_, i) => `ac:x-${i}=${i}`).join('&amp;')}`],
+      ['over 16,384 characters', `#confluence-url:${'a'.repeat(1024)}?${Array.from({ length: 16 }, (_, i) => `ac:x-${i}=${'a'.repeat(1024)}`).join('&amp;')}`],
+      ['a value over 1,024 characters', `#confluence-url:${'a'.repeat(1025)}`],
+    ])('leaves an href with %s as the <a> it is', (_case, href) => {
+      const html = `<p><a href="${href}">x</a></p>`;
+      expect(htmlToConfluence(html)).toBe(html);
+    });
+  });
+
+  describe('collab TipTap schema', () => {
+    it('keeps every #1955 link through a collab load, an unrelated edit and write-back', () => {
+      const doc = htmlToYDoc(confluenceToHtml(KINDS_PAGE));
+      const first = doc.getXmlFragment('default').get(0);
+      if (!(first instanceof Y.XmlElement)) throw new Error('KINDS_PAGE must open with a paragraph');
+      const text = first.get(0);
+      if (!(text instanceof Y.XmlText)) throw new Error('the opening paragraph must open with text');
+      text.insert(0, 'Edited. ');
+
+      const room = yDocToHtml(doc);
+      // Every unsafe value is still a fragment in the room.
+      for (const a of new JSDOM(room).window.document.querySelectorAll('a')) {
+        expect(a.getAttribute('href')).toMatch(/^(#confluence-|https:\/\/example\.com\/|mailto:a@b\.c$)/);
+      }
+      // A collaborative Save passes the stored storage as the links' origin.
+      expect(htmlToConfluence(room, { linkOrigin: KINDS_PAGE }))
+        .toBe(out(KINDS_PAGE).replace('<p>News: ', '<p>Edited. News: '));
+      // Without it the three unsafe URL links are text, and every other link is still a link.
+      expect(links(htmlToConfluence(room))).toEqual(links(out(KINDS_PAGE)).slice(0, 6));
+    });
+  });
+
+  describe('AI Improve round trip', () => {
+    async function improveAccept(storage: string): Promise<string> {
+      const { html: protectedHtml, media } = protectMedia(confluenceToHtml(storage));
+      const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      const html = restoreMedia(
+        await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedHtml) }),
+        media,
+      );
+      return htmlToConfluence(html, { previousStorage: storage });
+    }
+
+    it('keeps every #1955 link through the Improve conversion chain (no model call)', async () => {
+      expect(links(await improveAccept(KINDS_PAGE))).toEqual(links(out(KINDS_PAGE)));
+    });
+
+    it('writes the carrier of a navigable URL as the Markdown destination on Improve only', () => {
+      const html = confluenceToHtml(`<p>Web ${URL_HTTPS}, mail ${URL_MAILTO}.</p>`);
+      expect(htmlToMarkdown(html, { layoutTokens: true })).toBe(
+        'Web [example](#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain),'
+        + ' mail [mailto:a@b.c](#confluence-url:mailto%3Aa%40b.c).',
+      );
+      // Embeddings, diffs, tagging, quality and sub-page context get the URL, as for any link.
+      expect(htmlToMarkdown(html)).toBe('Web [example](https://example.com/a?b=1&c=2), mail [mailto:a@b.c](mailto:a@b.c).');
+      expect(htmlToMarkdown(html)).toBe(htmlToMarkdown('<p>Web <a href="https://example.com/a?b=1&amp;c=2">example</a>,'
+        + ' mail <a href="mailto:a@b.c">mailto:a@b.c</a>.</p>'));
+    });
+
+    it('keeps a link title and an ordinary link as the stock rule writes them', () => {
+      const carrier = '#confluence-url:https%3A%2F%2Fexample.com%2F';
+      expect(htmlToMarkdown(`<p><a href="https://example.com/" class="${carrier}" title='say "hi"'>t</a></p>`, { layoutTokens: true }))
+        .toBe(`[t](${carrier} "say \\"hi\\"")`);
+      expect(htmlToMarkdown('<p><a href="https://example.com/x" class="k">plain</a></p>', { layoutTokens: true }))
+        .toBe('[plain](https://example.com/x)');
+    });
+
+    it('turns the carrier of a navigable URL back into the real link, on parsed anchors only', async () => {
+      const carrier = '#confluence-url:https%3A%2F%2Fexample.com%2F%22q%22%3Fa%3D1%26b%3D%3Cb%3E?body=plain';
+      const html = await markdownToHtml(`See [t](${carrier}) and \`${carrier}\`.\n\n    ${carrier}\n\nPlain ${carrier} text.`);
+      const doc = new JSDOM(html).window.document;
+      const anchors = [...doc.querySelectorAll('a')];
+      expect(anchors).toHaveLength(1);
+      expect(anchors[0]!.getAttribute('href')).toBe('https://example.com/"q"?a=1&b=<b>');
+      expect(anchors[0]!.getAttribute('class')).toBe(carrier);
+      // The value's own quote, ampersand and markup made no element and no attribute.
+      expect(doc.querySelectorAll('b')).toHaveLength(0);
+      expect(anchors[0]!.getAttributeNames().sort()).toEqual(['class', 'href']);
+      expect(doc.querySelector('p code')!.textContent).toBe(carrier);
+      expect(doc.querySelector('pre code')!.textContent).toBe(`${carrier}\n`);
+      expect(doc.body.textContent).toContain(`Plain ${carrier} text.`);
+    });
+
+    it('leaves a carrier that is not navigable, an anchor with a class and a string without a carrier as they are', async () => {
+      const inert = '<p><a href="#confluence-url:javascript%3Aalert%281%29">j</a></p>';
+      expect((await markdownToHtml(inert)).trim()).toBe(inert);
+      const classed = '<p><a href="#confluence-url:https%3A%2F%2Fexample.com%2F" class="mine">c</a></p>';
+      expect((await markdownToHtml(classed)).trim()).toBe(classed);
+      const raw = '<p><a href="#confluence-url:https%3A%2F%2Fexample.com%2F">r</a></p>';
+      expect((await markdownToHtml(raw)).trim())
+        .toBe('<p><a href="https://example.com/" class="#confluence-url:https%3A%2F%2Fexample.com%2F">r</a></p>');
+      // Nothing to do: the very string marked wrote, not a re-serialisation of it.
+      expect(await markdownToHtml('A [link](https://example.com/?a=1&b=2) &amp; text')).toBe(
+        '<p>A <a href="https://example.com/?a=1&b=2">link</a> &amp; text</p>\n',
+      );
+    });
+  });
+
+  describe('stored tasks', () => {
+    const task = (body: string): string =>
+      `<ac:task-list><ac:task><ac:task-id>7</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>${body}</ac:task-body></ac:task></ac:task-list>`;
+
+    it('keeps the id of a task that holds a body-less #1955 link', () => {
+      const storage = task(`Read ${SPACE}`);
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-task-id="7"');
+      expect(htmlToConfluence(html, { previousStorage: storage })).toBe(task(`Read ${out(SPACE)}`));
+      // An id-less task with the same text takes the stored id by its text, which now includes the link's label.
+      const idless = html.replace(' data-task-id="7"', '');
+      expect(htmlToConfluence(idless, { previousStorage: storage })).toBe(task(`Read ${out(SPACE)}`));
+    });
+  });
+});

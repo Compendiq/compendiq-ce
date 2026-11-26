@@ -334,6 +334,53 @@ describe.skipIf(!dbAvailable)('page baseline manifest retained bytes', () => {
     expect(prepared.totalBytes).toBe(bytes.length);
   });
 
+  it('retains nothing for a link to a blog post, a space, a shortcut, a content entity or a URL (#1955)', async () => {
+    // None of the five names an attachment, in body_html or in body_storage, whatever its value looks like.
+    const storage = '<p><ac:link><ri:blog-post ri:content-title="report.pdf" ri:posting-day="2024/05/01" /></ac:link>'
+      + ' <ac:link><ri:space ri:space-key="OPS" /></ac:link>'
+      + ' <ac:link><ri:shortcut ri:key="jira" ri:parameter="logo.png" /></ac:link>'
+      + ' <ac:link><ri:content-entity ri:content-id="12345" /></ac:link>'
+      + ' <ac:link><ri:url ri:value="/api/attachments/90191/x.png" /></ac:link>'
+      + ' <ac:link><ri:url ri:value="https://example.com/a.png" /></ac:link></p>';
+    const pageId = await insertPage({
+      source: 'confluence',
+      confluenceId: '90191',
+      bodyStorage: storage,
+      bodyHtml: confluenceToHtml(storage, '90191'),
+    });
+    const prepared = await inspect(pageId);
+    expect(prepared.attachments).toEqual([]);
+  });
+
+  it('takes no dependency from a ri:filename on the target of a #1955 link, and keeps every other one (#1955)', async () => {
+    // The target of a link to a blog post or a URL carries an extra ri:filename: no attachment is named.
+    const ghosts = '<p><ac:link><ri:blog-post ri:content-title="Q3" ri:filename="ghost-blog.png" /></ac:link>'
+      + ' <ac:link><ri:url ri:value="/relative/a" ri:filename="ghost-url.png" /></ac:link></p>';
+    const ghostPage = await insertPage({ source: 'confluence', confluenceId: '90192', bodyStorage: ghosts, bodyHtml: '<p>x</p>' });
+    expect((await inspect(ghostPage)).attachments).toEqual([]);
+
+    // A real attachment inside such a link's rich body is still a dependency.
+    const inBody = '<p><ac:link><ri:blog-post ri:content-title="Q3" ri:filename="ghost.png" />'
+      + '<ac:link-body><ac:image><ri:attachment ri:filename="in-body.png" /></ac:image></ac:link-body></ac:link></p>';
+    const bodyPage = await insertPage({ source: 'confluence', confluenceId: '90193', bodyStorage: inBody, bodyHtml: '<p>x</p>' });
+    await writeStoredFile('90193', 'in-body.png', Buffer.from('in body'));
+    expect((await inspect(bodyPage)).attachments.map((entry) => entry.filename)).toEqual(['in-body.png']);
+
+    // The same elements anywhere but a link's target still count, and a missing file still refuses.
+    for (const [confluenceId, storage] of [
+      ['90194', '<ac:image><ri:url ri:value="https://example.com/a.png" ri:filename="image-url.png" /></ac:image>'],
+      ['90195', '<ac:structured-macro ac:name="x"><ac:parameter ac:name="p"><ri:blog-post ri:content-title="Q3" ri:filename="in-macro.png" /></ac:parameter></ac:structured-macro>'],
+      ['90196', '<p><ac:link><ri:page ri:content-title="P" /><ri:url ri:value="/a" ri:filename="second-child.png" /></ac:link></p>'],
+      ['90197', '<p><ac:link><ri:attachment ri:filename="real.png" /></ac:link></p>'],
+    ] as const) {
+      const pageId = await insertPage({ source: 'confluence', confluenceId, bodyStorage: storage, bodyHtml: '<p>x</p>' });
+      await expect(inspect(pageId)).rejects.toMatchObject({ reason: 'baseline_media_missing', statusCode: 409 });
+    }
+    await writeStoredFile('90194', 'image-url.png', Buffer.from('image url'));
+    const present = await query<{ id: number }>("SELECT id FROM pages WHERE confluence_id = '90194'");
+    expect((await inspect(present.rows[0]!.id)).attachments.map((entry) => entry.filename)).toEqual(['image-url.png']);
+  });
+
   it('retains storage-only dependencies and preserves the four raw icon fields', async () => {
     const pageId = await insertPage({
       bodyHtml:

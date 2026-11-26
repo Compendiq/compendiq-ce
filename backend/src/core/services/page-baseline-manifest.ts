@@ -11,7 +11,11 @@ import {
   type PageWriteIntent,
 } from './page-write-admission.js';
 import { userCanAccessPage } from './rbac-service.js';
-import { CONFLUENCE_ATTACHMENT_HREF_PREFIX, parseConfluenceLinkHref } from './confluence-link.js';
+import {
+  CONFLUENCE_ATTACHMENT_HREF_PREFIX,
+  isConfluenceLinkTargetWithoutFile,
+  parseConfluenceLinkHref,
+} from './confluence-link.js';
 import {
   BASELINE_STORE_DIRNAME,
   attachmentsRootNow,
@@ -505,7 +509,11 @@ function collectMediaSources(page: PageRow): MediaSource[] {
     : String(page.id);
   for (const element of storage.querySelectorAll('*')) {
     const attachmentFilename = element.getAttribute('ri:filename');
-    if (attachmentFilename !== null) {
+    // #1955: the target of a link to a blog post, a space, a shortcut, a
+    // content entity or a URL names no attachment, so a `ri:filename` on it
+    // is no dependency. Only on that target: the same element elsewhere
+    // (`ac:image > ri:url`, a macro parameter) still counts.
+    if (attachmentFilename !== null && !isConfluenceLinkTargetWithoutFile(element)) {
       addMediaSource(sources, mediaSource('confluence', pageKey, attachmentFilename));
     }
     if (
