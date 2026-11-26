@@ -16,6 +16,8 @@ import {
   assignTaskIds,
   confluenceToHtml,
   htmlToConfluence,
+  htmlToMarkdown,
+  markdownToHtml,
   measureTaskListConversion,
 } from './content-converter.js';
 import { applyHtmlToYDoc, collabCarriesTaskIds, collabTaskItems, htmlToYDoc, markTaskIds, yDocToHtml } from './collab-schema.js';
@@ -262,6 +264,19 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       expect(htmlToConfluence(NESTED_TASK_LIST_LEGACY_HTML, { previousStorage: NESTED_TASK_LIST_PAGE })).toBe(
         '<p>Release checklist</p><ac:task-list><ac:task><ac:task-id>11</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Release<ac:task-list><ac:task><ac:task-id>12</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>Write notes <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro><ac:structured-macro ac:name="toc"><ac:parameter ac:name="maxLevel">2</ac:parameter></ac:structured-macro></ac:task-body></ac:task><ac:task><ac:task-id>13</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Tag build<ac:task-list><ac:task><ac:task-id>14</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Push tag</ac:task-body></ac:task></ac:task-list></ac:task-body></ac:task></ac:task-list></ac:task-body></ac:task><ac:task><ac:task-id>16</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>Write notes <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro><ac:structured-macro ac:name="toc"><ac:parameter ac:name="maxLevel">2</ac:parameter></ac:structured-macro></ac:task-body></ac:task><ac:task><ac:task-id>17</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Tag build<ac:task-list><ac:task><ac:task-id>14</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Push tag</ac:task-body></ac:task></ac:task-list></ac:task-body></ac:task><ac:task><ac:task-id>18</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Push tag</ac:task-body></ac:task><ac:task><ac:task-id>15</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Announce</ac:task-body></ac:task></ac:task-list>',
       );
+    });
+
+    it('gives the unchanged tasks of a nested page their ids and statuses back after a Markdown cycle, which flattens them', async () => {
+      // Turndown writes `- [ ]` without nesting or ids (pre-existing; not part of #1957).
+      const back = await markdownToHtml(htmlToMarkdown(NESTED_TASK_LIST_HTML));
+      const written = storedTasks(htmlToConfluence(back, { previousStorage: NESTED_TASK_LIST_PAGE }));
+      const byText = new Map(written.map(({ id, status, body }) => [body.replace(/<[^>]+>/g, ''), [id, status]]));
+      expect(['Release', 'Tag build', 'Push tag', 'Announce'].map((text) => byText.get(text))).toEqual([
+        ['11', 'incomplete'],
+        ['13', 'incomplete'],
+        ['14', 'incomplete'],
+        ['15', 'incomplete'],
+      ]);
     });
   });
 
