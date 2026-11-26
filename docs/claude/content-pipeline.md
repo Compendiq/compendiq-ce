@@ -60,6 +60,39 @@ other text into two links around the code, and on a collaborative save splits a
 link around a line break (Yjs keeps marks on text only). Pinned by
 `content-converter.links.test.ts`.
 
+**Five more link kinds, and one rule for `ri:url` (#1955).** `ri:space`,
+`ri:blog-post`, `ri:shortcut`, `ri:content-entity` and `ri:url` links are
+carried like the #1748 kinds (`#confluence-space:<key>`,
+`#confluence-blog-post:<title>`, `#confluence-shortcut:<key>`,
+`#confluence-content-entity:<id>`, `#confluence-url:<value>`; `body=plain|rich`
+whenever the link has a body; without one the text is the value with white
+space collapsed, or `(empty link)`). The grammar is pure and lives in
+`@compendiq/contracts` (`confluence-link-grammar.ts`), re-exported by
+`confluence-link.ts`; never parse or build a carrier anywhere else. A `ri:url`
+whose value is a lowercase `http:`, `https:` or `mailto:` URL with no white
+space, control or format character (`isNavigableConfluenceUrl`) is a real link:
+the value is the `href` and the carrier is the `class`, accepted only when it
+carries exactly that href (`isConfluenceUrlClassCarrierFor`). Any other value
+(`javascript:`, `data:`, relative, `HTTPS:`, empty) is an inert
+`#confluence-url:` fragment and is never an href anywhere. On write-back a
+navigable `ri:url` is always written; any other `ri:url` is written only where
+`linkOrigin` (the page's stored storage) holds that very link, same target,
+same place or same body, and otherwise becomes its text
+(`confluence-url-origin.ts`). That is judged on the storage string about to be
+sent, read as XML by `confluence-storage-reader.ts` (saxes, never JSDOM, which
+reads storage as HTML): a body that still holds a `url` element the judgement
+did not approve, or cannot be read while it names one, throws
+`ConfluenceStorageRefusedError` (422, nothing sent, nothing changed). Every
+writer of a synced page gives the stored storage as the origin
+(`previousStorage`, or `linkOrigin` where a writer keeps `previousStorage` for
+task ids alone) and derives the storage once, before it reserves its intent;
+create and relocation have none, so they write no unsafe `ri:url`. `restoreMedia` replaces a token only where it
+stands as content (`locateMediaTokens`, parse5), never in an attribute. The
+change is the storage-derivation feature `link-kinds`. Limits: a link the
+editor splits keeps at most one piece; a link both moved and relabelled, or one
+of several identical links, becomes text; a row synced before #1955 holds
+these links as text until it is re-synced.
+
 `body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
 imports, drafts, version text; Notion imports join parts with blank lines, restores copy
 stored text), so `htmlToText` must equal what the page shows: the HTML parser decodes

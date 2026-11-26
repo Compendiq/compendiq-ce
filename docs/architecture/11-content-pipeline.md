@@ -100,7 +100,8 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
-| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); any other resource (`ri:blog-post`, `ri:space`, …) stays its text | `[text](href)` (the href is a valid link destination) |
+| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); `ri:user` is a mention; any other resource stays its text | `[text](href)` (the href is a valid link destination) |
+| `ac:link` (`ri:space` / `ri:blog-post` / `ri:shortcut` / `ri:content-entity` / `ri:url`) | `<a href="#confluence-space:<key>[?…]" data-confluence-link="space">` / `#confluence-blog-post:<title>[?…]` / `#confluence-shortcut:<key>[?…]` / `#confluence-content-entity:<id>[?…]` / `#confluence-url:<value>[?…]`; a `ri:url` whose value is a lowercase `http:`, `https:` or `mailto:` URL is `<a href="<value>" class="#confluence-url:<value>[?…]" data-confluence-link="url">` (#1955, below) | `[text](href)`; on Improve a `ri:url` link is `[text](#confluence-url:…)` |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
@@ -244,6 +245,96 @@ any change to the existing conflict policy.
   inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
   replacing the whole outer link, text included, with the mention (#314);
   Confluence never writes that nesting.
+- **Five more link kinds, and `ri:url` links that are judged before they are
+  written (#1955).** `ri:space` (`ri:space-key`), `ri:blog-post`
+  (`ri:content-title`), `ri:shortcut` (`ri:key`), `ri:content-entity`
+  (`ri:content-id`) and `ri:url` (`ri:value`) links used to become their text
+  on import and were deleted by the next write-back. They are carried by the
+  #1748 grammar under five more prefixes, `#confluence-space:`,
+  `#confluence-blog-post:`, `#confluence-shortcut:`,
+  `#confluence-content-entity:` and `#confluence-url:`, with the same
+  parameters and caps. The grammar is pure and lives in `@compendiq/contracts`
+  (`confluence-link-grammar.ts`), where both editor schemas can read it;
+  `core/services/confluence-link.ts` re-exports it and is the only module that
+  reads or builds link elements. Three things differ from the #1748 kinds:
+  - **Body.** `body=plain|rich` is carried whenever the link has a body, and is
+    the first thing reserved inside the href cap, so the body element never
+    depends on comparing the text. Without a body the text is the value with
+    every run of white space collapsed and the ends trimmed, or
+    `(empty link)` when nothing is left (a link without text is no link in the
+    editor); the label is display only and no body is written back for it. A
+    body that holds only white space counts as no body.
+  - **A navigable `ri:url` is a real link.** A value that is a lowercase
+    `http:`, `https:` or `mailto:` URL with no white space, control or format
+    character anywhere (`isNavigableConfluenceUrl`) is written as the `href`,
+    and the carrier goes in `class`, the one other attribute the Link mark
+    keeps. A class is a carrier only when it is one token that parses as a
+    `url` carrier whose value is exactly the element's href
+    (`isConfluenceUrlClassCarrierFor`); any other class is a class. Every
+    other value (`javascript:`, `data:`, `vbscript:`, `file:`, a relative
+    path, `HTTPS:`, an empty value, anything with a space or an invisible
+    character) is the inert fragment `#confluence-url:<value>` and is never an
+    href in the stored HTML, the editor, the viewer, Markdown or the Improve
+    preview. The baseline manifest and `link-extractor.ts` treat the five
+    kinds as links without a file and without a page.
+  - **An unsafe `ri:url` needs a stored origin.** A navigable `ri:url` is
+    always written back. Any other `ri:url` in the storage about to be sent is
+    kept only where the origin, the storage the page holds now
+    (`HtmlToConfluenceOptions.linkOrigin`, by default `previousStorage`), has
+    the same link: the same resource and attributes in any
+    order, with either the same body (text with white space collapsed, plus
+    its media) or the same place (the task it is in and the 64 characters of
+    text before and after it). A link in its stored place with an edited body
+    is kept; a moved link with its stored body is kept; a link that took the
+    place or the distinctive body of another stored link, one of several
+    identical copies outside the stored place, and one with no match at all
+    are unwrapped to their body (logged as `Confluence URL links without a
+    stored origin written as text (#1955)`, counts only). With no
+    origin every such link is unwrapped.
+  The judgement runs on the storage string itself, last, after every other
+  stage (`enforceConfluenceUrlLinkOrigin`, `confluence-url-origin.ts`). It
+  reads the string with `confluence-storage-reader.ts`: a streaming XML reader
+  (saxes, namespace-aware, the 248 XHTML entity names, no DOM) with fixed
+  limits (8 MiB, depth 1,024, 1,000,000 nodes), because JSDOM reads storage as
+  HTML and Confluence reads it as XML, and the two disagree about raw-text
+  elements, CDATA and comments. A link is recognised by the local name `url`
+  in any prefix; only `ri:url` in the Confluence namespace directly inside an
+  `ac:link` with a lossless carrier can be approved. After a repair the string
+  is serialised and read again, and the second reading is the one that counts.
+  `ConfluenceStorageRefusedError` (`not-well-formed`, `too-large`, `too-deep`,
+  `too-many-nodes`, `unapproved-link`) is thrown when the body still holds a
+  `url` element the judgement did not approve, or cannot be read as XML while
+  a `url` start tag appears in it; a body that names no such tag is returned
+  as it always was. The global error handler answers **422** with the reason
+  and a message that says nothing was changed; the user can remove the link or
+  the markup around it, or edit the page in Confluence. Every writer of a
+  synced page (`PUT /pages/:id`, draft publish, collaborative Save, version
+  restore, Improve apply) gives the stored storage as the origin and derives
+  the storage once, before the intent is reserved and before any upload, then
+  sends that very string; draft publish and collaborative Save pass it as
+  `linkOrigin` because they keep `previousStorage` for task ids alone. Create
+  and relocation have no origin. Recovery of a
+  version restore reads a refusal of the recorded derivation as
+  `intent_restore_target_changed` and sends nothing.
+  On Improve the Markdown destination of a `ri:url` link is always its
+  carrier, so a model that keeps the link returns the carrier and
+  `markdownToHtml` turns a navigable one back into the real href with its
+  class (`materializeConfluenceUrlLinks`). `restoreMedia` now replaces a media
+  token only where it stands as content (`locateMediaTokens`, parse5 source
+  locations): a token spelled in an attribute value, a comment or raw text
+  stays as written, so restoring media cannot rewrite an href or a class.
+  The whole change is the storage-derivation feature `link-kinds` (#1953): a
+  version restore reserved before it derives the bytes of the base commit and
+  never meets the judgement. Limits, all on the declining side: a link the
+  editor splits (around inline code, an image, a line break on a
+  collaborative Save) keeps at most one piece as the link; a link moved and
+  relabelled in one save becomes text, and so may one relabelled next to
+  another link with the same text; schemes are matched in lowercase only, so `HTTPS://…` is an
+  inert carrier; a literal TAB, LF or CR inside an attribute of a stored
+  unsafe link (XML reads it as a space) declines that link; a stored link with
+  more attributes than the grammar carries is no origin. A row synced before
+  #1955 holds these links as text; they come back with its next sync from
+  Confluence, or with the re-conversion of #1953.
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's
@@ -1286,7 +1377,9 @@ On `POST /llm/improvements/apply` the route:
    or pushed.
 3. Calls `restoreMedia(html, media)` to replace tokens (and their
    turndown-escaped variants `CQ\_MEDIA\_PLACEHOLDER\_N`) with the original
-   HTML verbatim.
+   HTML verbatim. A token is replaced only where it stands as content
+   (`locateMediaTokens`, #1955); one inside an attribute value, a comment or
+   raw text stays as written.
 4. Appends any media entries whose HTML is still missing after restoration
    (LLM dropped the token entirely) and logs a warning.
 

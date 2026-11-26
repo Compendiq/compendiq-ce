@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Confluence links to a space, a blog post, a shortcut, a content id and a URL survive an edit (#1955).** These `ac:link` kinds (`ri:space`, `ri:blog-post`, `ri:shortcut`, `ri:content-entity`, `ri:url`) were imported as plain text, so the next Save, restore or Improve deleted the link in Confluence. They are now links in Compendiq and are written back with their attributes and body. A `ri:url` link to an `http:`, `https:` or `mailto:` address opens that address; the other kinds do not navigate inside Compendiq. A page synced before this release shows these links as text until it is synced from Confluence again.
+
 - RTF extraction drops ignorable `{\*\…}` destinations it does not keep, so bookmark names, `HYPERLINK "url"` field codes and TextEdit's `;;` colour-table residue no longer reach the extracted text; a hyperlink keeps its visible result text, and text-box text (`\shpinst`, `\shptxt`) is kept without its shape properties (#1967).
 
 - A Save of a Confluence page no longer uploads the cached draw.io preview PNG of its diagrams (collaborative Save and `PUT /api/pages/:id`): `planLocalImagesForConfluence` skips every image inside a `.confluence-drawio` wrapper, so a page with only diagrams reserves `collab.commit.confluence` instead of `.media`, adds no attachment version, and a missing cached preview no longer refuses the Save with `pasted_image_unavailable` (#1935).
@@ -79,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scheduled Confluence version jumps preserve local edits (#2037).** When Confluence wins a conflict, sync saves the local title and body to Version History in the same transaction as the overwrite. Sync keeps the edit and reports a page failure if the snapshot cannot be stored.
 
 - **A version restore interrupted across an upgrade is recovered with the storage derivation it was reserved with (#1953).** Publishing a restore derives the Confluence storage of the historical version again and compares it with the digest in the write intent; a release that changed that derivation could not reproduce the digest of a restore reserved before it, and the intent stayed pending although Confluence had accepted the write. A restore intent now records the named storage-derivation features in force (`derivationFeatures`, written only when one is), and recovery derives with exactly that record; an intent without it is recovered with the derivation before the first feature. An intent that names a feature the running release does not register answers 409 `intent_restore_derivation_unsupported` and stays pending for a release that does, without a provider read or write. No feature is registered yet, so nothing a restore writes or stores changes.
+
+### Security
+
+- **A Confluence URL link that is not a web address is never an active link, and is only written back where Confluence already holds it (#1955).** A `ri:url` value such as `javascript:`, `data:` or a relative path is kept as an inert fragment in Compendiq, never as an `href`. On write-back such a link is kept only where the page's stored Confluence body holds the same link in the same place or with the same text; anywhere else it becomes its text. The check reads the exact body about to be sent as XML, the way Confluence does. A body that would still carry such a link, or that cannot be read while it contains one, is refused with **422** before anything is sent or stored. To save, remove the link or the markup around it, or edit the page in Confluence.
 
 ## [0.10.0] - 2026-11-19
 
