@@ -579,7 +579,45 @@ flowchart TB
   in `readOnlyReason` and each has its own sentence (`readOnlyDraftMessage`);
   `forbidden`, an unknown and an empty reason stay `permission_loss` with "The
   page or your access changed". A post-sync `flag_off` also refetches the
-  collaboration config. No rejoin is offered after the first sync.
+  collaboration config.
+- **Rejoin of a rate-limited draft (#2036, amendment A4).** The hook reports
+  `rejoinOffered` only for a post-sync `rate_limited` of a document with a
+  pinned epoch (`docEpochPinned`), `canRetry` once one full
+  `COLLAB_UPGRADE_WINDOW_SEC` has passed or an attempt ended unconfirmed, and
+  `rejoinAttempt` (`idle`, `attempting`, `unconfirmed`). The attempt itself is
+  `collab-rejoin-attempt.ts` (no React; the live-gateway tests run it too).
+  The read-only banner then shows **Rejoin** beside `Download draft` and
+  `Open current version`, with a status line (`rejoinStatusMessage`). Like the
+  join `Retry` it is inert through `aria-disabled`, never `disabled`, keeps
+  focus and reads `Rejoining…` while the attempt runs. Focus ownership is read
+  when the control leaves the document, not when it was pressed; if it held
+  focus and nothing else took it, focus goes to the "Page body" region, and a
+  surviving control or another page never loses focus to it. The banner and
+  both draft controls stay mounted before, during and after an attempt, and
+  Save stays blocked. An attempt merges the room's state into the only open
+  document, which can remove text typed offline; that is ordinary collaborative
+  behaviour, so **Download draft** always writes what the editor shows at that
+  moment (body, title, labels, page and lifecycle identity), in every state and
+  also after an attempt, and the page keeps no earlier copy. The status after an
+  unconfirmed attempt says only that the server could not be confirmed to hold
+  the draft and that Rejoin can be pressed again. A 4401 during an attempt
+  is refreshed once by the hook (`refreshAccessTokenOnce`, as outside an
+  attempt) and the same attempt continues on a new connection, so the banner keeps
+  reading `Rejoining…`, but only while the signed-in account is still the
+  document's (checked before the request and before its result is used); a second
+  4401, a refresh without a session or another account's session ends it in the
+  read-only draft with reason `unauthorized` (the generic "The page or your
+  access changed" banner), and a refresh that fails or does not settle within
+  `REJOIN_REFRESH_WAIT_MS` (30 s) ends it unconfirmed with Rejoin available
+  again. The editor becomes writable only
+  when the attempt proves the server
+  holds the draft (`docs/architecture/12-realtime-collaboration.md`). No other
+  reason is offered a rejoin. An unknown collaborative save (#2035) replaces the
+  retryable `rate_limited` state, whether it arrives during the cooldown, after
+  it or after an unconfirmed attempt (the Save answer may be the only signal: the
+  socket is closed and no cue follows): the reason becomes `commit_unknown`, the
+  cooldown and Rejoin go and the draft is kept. It never overwrites a terminal
+  refusal, and an answer for another document changes nothing.
 - **An unknown collaborative save pauses editing (#2035).** The
   `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or
   the `1001 commit_unknown` close sets `readOnlyReason: 'commit_unknown'`

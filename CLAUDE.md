@@ -42,7 +42,12 @@ A collaborative join that never synced is not a read-only draft (#1895):
 until the first sync the editor shows one message per close reason (4403
 `forbidden` and unknown reasons fail closed; `rate_limited` retries only after
 the server's upgrade window), no draft banner or Download draft, and Save stays
-blocked; after it every 4403 keeps the read-only draft. The gateway buffers
+blocked; after it every 4403 keeps the read-only draft, except that a
+`rate_limited` one of a document with a pinned epoch also offers a manual
+**Rejoin** after the upgrade window (#2036): editing returns only with a fresh
+`writable_admission`, a `sync` of the attempt, the server's own SyncStep1 and a
+proof that the server's whole state includes the draft, otherwise the draft
+stays read-only. The gateway buffers
 pre-live frames in order and never refuses them with 4403. `commit_unknown`
 (the control, or close `1001 commit_unknown`) is a read-only reason of its
 own: the page's own collaborative Save failed after dispatch, so the draft is

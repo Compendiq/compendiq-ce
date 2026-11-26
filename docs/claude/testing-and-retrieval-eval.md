@@ -606,6 +606,17 @@ about what it measured, and lint, typecheck and every other suite stay green.
 - Pure utilities → test directly with real inputs.
 - Mock at the boundary (HTTP), never at the service-function layer.
 
+One backend test imports frontend source on purpose: the live-room cases for the
+manual Rejoin in `routes/knowledge/pages-collab.test.ts` run
+`frontend/src/features/pages/collab-rejoin-attempt.ts` (the code
+`useCollabProvider` uses, free of React) against the real gateway instead of a
+copy of it (#2036). That file needs the full monorepo checkout (`frontend/src`
+beside `backend/`) and the root `npm ci`; the backend build, type check and image
+never compile tests, so nothing else changes. Its fence cases hold the probe frame
+on the tab's own transport and commit the epoch change (`invalidateCollabDocAfterBodyWrite`)
+or the unknown-outcome marker (`declareCollabCommitUnknown`) through their production
+functions; they never replace a service function.
+
 SMTP save success reconciles the submitted snapshot against the current draft;
 never clear the whole form: fields edited while the request is pending,
 including fields absent from its body, remain unsaved for the next request.
