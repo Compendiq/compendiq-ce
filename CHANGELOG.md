@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Article PDF exports that exceed 1,000 printed code rows now return HTTP 413 instead of risking a backend crash. The limit includes wrapped rows and applies across the whole batch (#1962).
 
+- After the first sync, a collaborative-editing close for a turned-off feature, a per-account connection limit or a server that stopped accepting changes now says so in the read-only draft banner instead of "The page or your access changed". The draft, **Download draft**, **Open current version** and the blocked Save are unchanged, and a feature turned off mid-session refreshes the collaboration config so reopening the editor edits normally. (#1927)
+
 - Stored search text written before the #1735 fix (an escaped `&amp;lt;br&amp;gt;` stored as `<br>`) is corrected by a resumable background job, so keyword search and search snippets, which read that stored text, find what the page shows (#1965); how snippets are displayed is not changed here. It runs once per hour until complete, then re-checks after 24 hours and every 30 days; each page is corrected with its draft and history in one step or left as it is, and pages it leaves are counted in the job log. Correcting a page's published or draft text gives it a new content revision, so its summary, quality and embedding work may run again; correcting only its history does not.
 
 - Saving a page in the editor now sends only the tag changes made in that editing session, so tags another client, an admin rename or a Confluence sync changed meanwhile are no longer reverted, and an untouched session no longer counts as unsaved after such a change (#1931). Where both sides changed the same tag, the later write wins.

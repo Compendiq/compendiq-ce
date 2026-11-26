@@ -77,7 +77,7 @@ import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../shared/lib/
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
-import { useCollabProvider, type UseCollabProviderResult } from './use-collab-provider';
+import { useCollabProvider, type CollabReadOnlyReason, type UseCollabProviderResult } from './use-collab-provider';
 import { mergePresence } from './merge-presence';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
@@ -159,12 +159,34 @@ function collabPreSyncMessage(
       return 'This page is no longer available for collaborative editing.';
     case 'unauthorized':
       return 'Your session expired. Sign in again to keep editing together.';
+    // Set only after the first sync, where the banner owns the copy (#1927).
+    case 'flag_off':
+    case 'rate_limited':
+    case 'readonly':
     case null:
       break;
   }
   return collab.reconnecting
     ? 'Could not connect to the collaborative session. Retrying…'
     : 'Connecting to the collaborative session…';
+}
+
+/**
+ * Body of the read-only draft banner (#1927). After the first sync a 4403 names
+ * its reason; every other cause, and any reason not listed, keeps the original
+ * sentence (fail closed).
+ */
+function readOnlyDraftMessage(reason: CollabReadOnlyReason | null): string {
+  switch (reason) {
+    case 'flag_off':
+      return 'Collaborative editing was turned off. Your open draft remains below and is not reapplied automatically.';
+    case 'rate_limited':
+      return 'Too many connection attempts from your account. Your open draft remains below and is not reapplied automatically.';
+    case 'readonly':
+      return 'The server stopped accepting changes from this tab. Your open draft remains below and is not reapplied automatically.';
+    default:
+      return 'The page or your access changed. Your open draft remains below and is not reapplied automatically.';
+  }
 }
 
 export function PageViewPage() {
@@ -372,6 +394,13 @@ export function PageViewPage() {
   // The refusal copy says to close and reopen the editor; make that reopen use
   // the current config and page instead of the cached ones.
   useEffect(() => {
+    // Post-sync `flag_off` (#1927): the server just said the feature is off, so
+    // record that at once; a pending or failed refresh must not leave the refused
+    // `enabled: true` able to start a new join. The refetch re-enables on fresh evidence.
+    if (collab.readOnlyReason === 'flag_off') {
+      queryClient.setQueryData<CollabConfig>(['collab-config'], { enabled: false });
+      void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
+    }
     if (!collabPreSync) return;
     if (collab.error === 'flag_off') void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
     if (collab.readOnlyReason === 'lifecycle_changed' || collab.readOnlyReason === 'document_changed' ||
@@ -1547,7 +1576,7 @@ export function PageViewPage() {
                   </p>
                   <p className="mt-1 leading-6 text-muted-foreground">
                     {writeLocked
-                      ? 'The page or your access changed. Your open draft remains below and is not reapplied automatically.'
+                      ? readOnlyDraftMessage(collab.readOnlyReason)
                       : 'Changes stay in this tab while the connection is unavailable. Reconnect before saving.'}
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
