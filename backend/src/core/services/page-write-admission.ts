@@ -1996,10 +1996,43 @@ export async function admitPageRuntime(
 }
 
 export async function releasePageRuntime(admission: PageRuntimeAdmission): Promise<void> {
+  await releaseRuntimeAdmission(admission);
+}
+
+/**
+ * Release a room admission whose page was hard-deleted (#1922). Its last
+ * flush has no row to write, so `releasePageRuntime`'s successful-flush
+ * precondition can never hold. Only the server's own proof counts: the page
+ * row is re-read inside the release transaction, after the runtime and
+ * lifecycle locks. Resolves `false`, releasing nothing, when the row exists;
+ * a failed proof rejects. Never call this on a caller's claim of deletion.
+ */
+export async function releasePageRuntimeForDeletedPage(admission: PageRuntimeAdmission): Promise<boolean> {
+  if (admission.purpose !== 'collab_room') {
+    throw new PageWriteError(
+      400, 'invalid_admission_purpose', 'Only a collaboration room admission is released for a deleted page',
+    );
+  }
+  return releaseRuntimeAdmission(admission, async (client) => {
+    const page = await client.query('SELECT 1 FROM pages WHERE id = $1', [admission.pageId]);
+    return page.rowCount === 0;
+  });
+}
+
+/**
+ * Shared release transaction. `releasable`, when given, runs after the token
+ * checks under the same locks; `false` keeps the admission and resolves
+ * `false`.
+ */
+async function releaseRuntimeAdmission(
+  admission: PageRuntimeAdmission,
+  releasable?: (client: PoolClient) => Promise<boolean>,
+): Promise<boolean> {
   beginLocalOperation(true);
   try {
+    let released: boolean;
     try {
-      await inTransaction(async (client) => {
+      released = await inTransaction(async (client) => {
         await assertRuntimeActive(client, admission.runtimeId);
         await lockPageLifecycle(client, [admission.pageId]);
         const result = await client.query<AdmissionRow>(
@@ -2019,7 +2052,8 @@ export async function releasePageRuntime(admission: PageRuntimeAdmission): Promi
         ) {
           throw new PageWriteError(409, 'admission_token_mismatch', 'The writable room admission token is stale');
         }
-        if (stored.released_at) return;
+        if (releasable && !(await releasable(client))) return false;
+        if (stored.released_at) return true;
         // Runtime epoch was locked before the page lifecycle lock.
         await client.query(
           `UPDATE page_runtime_admissions
@@ -2027,6 +2061,7 @@ export async function releasePageRuntime(admission: PageRuntimeAdmission): Promi
             WHERE id = $1 AND released_at IS NULL`,
           [admission.id],
         );
+        return true;
       });
     } catch (error) {
       // COMMIT may have landed even when its response did not. Only this exact
@@ -2038,8 +2073,10 @@ export async function releasePageRuntime(admission: PageRuntimeAdmission): Promi
         [admission.id, admission.runtimeId, admission.pageId, admission.lifecycleRevision, admission.purpose],
       ).then((result) => result.rowCount === 1).catch(() => false);
       if (!confirmed) throw error;
+      released = true;
     }
-    if (localAdmissions.delete(admission.id)) localBlockersChanged();
+    if (released && localAdmissions.delete(admission.id)) localBlockersChanged();
+    return released;
   } finally {
     finishLocalOperation();
   }

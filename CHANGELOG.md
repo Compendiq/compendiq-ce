@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - RTF extraction keeps line breaks written as a backslash followed by a newline (`\`+LF, CR or CRLF), as TextEdit and `textutil` write every paragraph, instead of running the lines together (#1966).
 
+- Hard-deleting a page with an open collaborative editor no longer leaves its writable room admission open: after the 4404 `committed_delete` close, a peer pod's tombstone, the last writer's disconnect or a deferred release retry, the room releases the admission once the release transaction proves the page row gone, so the page id stops answering `409 collab_session_active` and the hosting runtime can drain for quiescence. Any other flush failure still keeps the admission (#1922).
+
 - Wide article PDF tables no longer wrap fitting carried header text twice per band; text placement and borders are unchanged (#1959).
 
 - Runtime quiescence no longer waits forever when its only blockers are collaborative rooms held by their page's own Save whose Confluence write failed after dispatch: after a 30 s bound `POST /api/admin/page-write-recovery/runtime/quiesce` answers `409 runtime_quiesce_blocked_by_collab_commit` naming the intents, `403` if the administrator lost authority, or `503 runtime_quiesce_classification_unavailable` if the check could not finish. The gate stays closed and nothing is released or acknowledged; terminate the process and fence it with `verified_local_termination` (#1934).

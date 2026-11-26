@@ -132,7 +132,7 @@ sequenceDiagram
 | **4403** | `flag_off` | Flag off at join, or mid-session (every pod tombstones its rooms) | "Collaborative editing has been turned off". The client refetches `GET /api/collab/config`, no Retry | Read-only draft (`flag_off`): "Collaborative editing was turned off." The client also refetches `GET /api/collab/config` |
 | **4403** | `readonly` | 8 refused write frames from a read-only socket after the join (`COLLAB_READONLY_DROP_LIMIT`). Never sent for pre-live buffering | "The collaborative session closed before it finished loading." with Retry | Read-only draft (`readonly`): "The server stopped accepting changes from this tab." |
 | **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden`: read-only draft (`permission_loss`), also for an empty reason |
-| **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
+| **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) or hard delete. A hard delete also releases the room's admission once the page is proven gone (#1922) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
 | **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
 | **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable made a malformed declaration (a malformed `expectedDocEpoch` or `expectedDocEmpty`, or both together) or declared another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
 | **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect |
@@ -646,11 +646,22 @@ grace; a reconnect during grace cancels the timer, and a join after the release
 rebuilds the room from PostgreSQL. A failed flush keeps the admission (fail
 closed, see the runbook). A flush that waits for the page's own pending
 collaborative Save is retried after it (see *While the page's own collaborative
-Save is pending*).
+Save is pending*). The one flush failure that still releases is a hard-deleted page
+(#1922): a flush that fails with `page_not_found` hands the release to
+`releasePageRuntimeForDeletedPage`, which re-reads the page row in the release
+transaction after the runtime and lifecycle locks and releases
+(`clean_disconnect`) only if the row is absent. The local cleanup is the same as
+after a successful flush. A row that is still there, or a proof query that
+fails, keeps the admission.
 
 A committed hide/delete closes the page's rooms with **4404**
 `committed_delete` on every pod (`collab-tombstone.ts`: local close, then a
-Redis `tombstone` message). Intent recovery converges on the same close: a
+Redis `tombstone` message). After a hard delete each pod's writable room
+releases its admission through the deleted-page proof above, so the page id no
+longer answers `409 collab_session_active` and the pod's runtime can drain; a
+trashed page keeps its row and releases after a normal flush. If the tombstone
+did not run, the last writer's disconnect or a deferred release retry releases
+the same way. Intent recovery converges on the same close: a
 recovered delete, remote (`pages.delete.confluence`, `pages.bulk.delete.remote`)
 or local (`pages.delete.standalone`, `pages.delete.local`,
 `pages.bulk.delete.local`), tombstones after its settlement COMMIT, never inside

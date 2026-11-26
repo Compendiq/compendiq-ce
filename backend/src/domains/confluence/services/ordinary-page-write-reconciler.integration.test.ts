@@ -26,12 +26,10 @@ import {
 } from '../../../core/services/collab-room-service.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import {
-  type PageRuntimeAdmission,
   type RuntimeQuiescenceAcknowledgment,
   fencePageWriterRuntime,
   quiescePageWriterRuntime,
   reconcilePageWriteIntent,
-  releasePageRuntime,
   withPageWriteTransaction,
 } from '../../../core/services/page-write-admission.js';
 import { encryptPat } from '../../../core/utils/crypto.js';
@@ -390,11 +388,10 @@ function recordingSocket(closes: RecordedClose[]): WebSocket {
 const REMOTE_DELETE_KINDS = ['pages.delete.confluence', 'pages.bulk.delete.remote'] as const;
 type RemoteDeleteKind = (typeof REMOTE_DELETE_KINDS)[number];
 
-/** Rooms the #1780 cases opened; released before the next case truncates. */
+/** Rooms the #1780 cases opened; closed before the next case truncates. */
 const seededRooms: Array<{
   runtime: CollabRuntime;
   pageId: number;
-  admission: PageRuntimeAdmission | null;
 }> = [];
 
 /**
@@ -440,11 +437,7 @@ async function seedRecoverableRemoteDelete(input: {
     userId: actorId,
     writable: input.writable,
   });
-  seededRooms.push({
-    runtime: input.runtime,
-    pageId,
-    admission: input.runtime.getRoom(pageId)?.admission ?? null,
-  });
+  seededRooms.push({ runtime: input.runtime, pageId });
   const hidden = await query<{ content_revision: string; lifecycle_revision: string }>(
     `UPDATE pages SET deleted_at = NOW() WHERE id = $1
      RETURNING content_revision::text, lifecycle_revision::text`,
@@ -956,12 +949,8 @@ describeDb('ordinary page-write reconciliation', () => {
     });
 
     afterEach(async () => {
-      // A writable room's durable admission outlives a committed delete (its
-      // final flush finds no page). Release it while its row still exists so
-      // the quiescence case below can drain this process.
       for (const room of seededRooms.splice(0)) {
         await room.runtime.tombstone(room.pageId, 1001, 'test_cleanup');
-        if (room.admission) await releasePageRuntime(room.admission).catch(() => undefined);
       }
     });
 
@@ -1021,6 +1010,13 @@ describeDb('ordinary page-write reconciliation', () => {
         // Read straight after the response: the room was closed before it.
         expect(runtime.getRoom(seeded.pageId)).toBeUndefined();
         expect(await redis.sMembers(`collab:active:${seeded.pageId}`)).toEqual([]);
+        // The page row is gone, and so is the room's durable admission (#1922).
+        expect((await query<{ released: boolean; kind: string | null }>(
+          `SELECT released_at IS NOT NULL AS released, release_kind AS kind
+             FROM page_runtime_admissions WHERE page_id = $1`,
+          [seeded.pageId],
+        )).rows).toEqual([{ released: true, kind: 'clean_disconnect' }]);
+        await expect(assertNoLiveCollabRoom(seeded.pageId)).resolves.toBeUndefined();
       },
       15_000,
     );

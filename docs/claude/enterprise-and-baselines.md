@@ -210,6 +210,12 @@ between COMMIT and the close, or a COMMIT whose acknowledgment is lost (the
 reconcile rejects without running `afterCommit`, the intent is already settled),
 is not retried and a later reconcile does not close the room (a durable outbox is
 out of scope): sockets close on disconnect and a fresh join answers 4404.
+A writable room admission is released only after a successful flush, a
+server-proven fence, `doc_reset`/lifecycle retirement, the one-time upgrade
+retirement, or (#1922) a flush that
+failed with `page_not_found` for a page whose row the release transaction
+re-proves absent after runtime → lifecycle locking. Never widen that to other
+404s, other flush errors or a caller's claim of deletion.
 Persist the create identity and each upload receipt before further provider work.
 Bound receipt capacity by the admitted inventory, not a fixed aggregate that can
 fail after valid uploads; the generic terminal result binds a count and ordered

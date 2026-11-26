@@ -634,8 +634,79 @@ describe.skipIf(!canRun)('read-only PROTOCOL.md §6 (#1444)', () => {
 });
 
 describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
-  it('standalone DELETE after committed SQL closes 4404', async () => {
+  /** Every admission of the page, oldest first; at least one is expected. */
+  async function pageAdmissions(pageId: number): Promise<Array<{ released: boolean; kind: string | null }>> {
+    const result = await query<{ released: boolean; kind: string | null }>(
+      `SELECT released_at IS NOT NULL AS released, release_kind AS kind
+         FROM page_runtime_admissions WHERE page_id = $1 ORDER BY admitted_at`,
+      [pageId],
+    );
+    expect(result.rows.length).toBeGreaterThan(0);
+    return result.rows;
+  }
+
+  async function expectRoomReleased(pageId: number): Promise<void> {
+    for (const admission of await pageAdmissions(pageId)) {
+      expect(admission).toEqual({ released: true, kind: 'clean_disconnect' });
+    }
+    await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+    expect(getDefaultCollabRuntime()!.getRoom(pageId)).toBeUndefined();
+    expect(await getRedisClient()!.sMembers(`collab:active:${pageId}`)).toEqual([]);
+  }
+
+  it('standalone DELETE after committed SQL closes 4404, flushing an unsaved edit before the release', async () => {
     const { token, userId } = await createUser('collab_trash');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+
+    const ws = await openWritableWhatwg(pageId, token);
+    await waitOpen(ws);
+    const doc = new Y.Doc();
+    try {
+      applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+      const paragraph = new Y.XmlElement('paragraph');
+      const typed = new Y.XmlText();
+      typed.insert(0, 'TYPED_BEFORE_TRASH');
+      paragraph.insert(0, [typed]);
+      doc.getXmlFragment('default').push([paragraph]);
+      // The test's own waits keep their real-clock timeouts: arm them first.
+      const replyAfterEdit = waitSyncStep2(ws);
+      const closedP = waitClose(ws);
+      // Hold the room's real 2 s persist debounce: `setTimeout` is faked and
+      // never advanced until the room has closed, so only the close's own
+      // flush can make the edit durable. Sockets, PostgreSQL and Redis keep
+      // their real I/O; native timers armed earlier are still cleared natively.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
+        // The reply is ordered after the update on the same socket.
+        ws.send(encodeSyncStep1(doc));
+        await replyAfterEdit;
+        expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_BEFORE_TRASH');
+        expect(await persist.htmlFromPersistedDoc(pageId) ?? '').not.toContain('TYPED_BEFORE_TRASH');
+
+        const del = await app.inject({
+          method: 'DELETE',
+          url: `/api/pages/${pageId}`,
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(del.statusCode).toBe(200);
+        const closed = await closedP;
+        expect(closed.code).toBe(4404);
+      } finally {
+        vi.useRealTimers();
+      }
+    } finally {
+      doc.destroy();
+    }
+    // Trash keeps the row: the close flushed the edit, then released (#1922 control).
+    expect(await persist.htmlFromPersistedDoc(pageId)).toContain('TYPED_BEFORE_TRASH');
+    await expectRoomReleased(pageId);
+    expect((await query('SELECT 1 FROM pages WHERE id = $1 AND deleted_at IS NOT NULL', [pageId])).rowCount).toBe(1);
+  });
+
+  it('standalone permanent DELETE closes a writable room 4404 committed_delete and releases its admission (#1922)', async () => {
+    const { token, userId } = await createUser('collab_permanent');
     const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
     await enableCollabFlag();
 
@@ -644,12 +715,15 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
 
     const del = await app.inject({
       method: 'DELETE',
-      url: `/api/pages/${pageId}`,
+      url: `/api/pages/${pageId}?permanent=true`,
       headers: { authorization: `Bearer ${token}` },
     });
-    expect(del.statusCode).toBe(200);
+    expect(del.statusCode, del.body).toBe(200);
     const closed = await closedP;
-    expect(closed.code).toBe(4404);
+    expect(closed).toMatchObject({ code: 4404, reason: 'committed_delete' });
+    expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rowCount).toBe(0);
+    // Read straight after the response: the tombstone ran before it.
+    await expectRoomReleased(pageId);
   });
 
   it('bulk trash after committed SQL closes 4404', async () => {
@@ -828,6 +902,7 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
       expect(closed.code).toBe(4404);
       expect(closed.reason).toBe('committed_delete');
       expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rowCount).toBe(0);
+      await expectRoomReleased(pageId);
     } finally {
       await new Promise<void>((resolve, reject) => upstream.close((error) => (error ? reject(error) : resolve())));
     }
