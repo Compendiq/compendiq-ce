@@ -925,9 +925,13 @@ never releases the admission and never acknowledges. Terminate that
 process and fence it with independently verified local termination (below);
 where that cannot be verified, the fence fails closed and the intent stays
 pending. Edits that reached only its room while that Save was running then survive
-only in the editors' open tabs; a tab that reconnects does not send them again
-(#1928). Any other flush failure keeps the admission as before and schedules
-no retry.
+only in the editors' open tabs. The server SyncStep1 (#1928) asks a reconnecting
+tab for them only on a writable, lineage-verified join (a pinned epoch that
+matches the page, or the empty-document marker of a tab that holds nothing)
+whose browser bundle declares `docReplaySafe` (a bundle from before #1928 is
+never asked), which a page whose commit is unknown never grants; a tab told `commit_unknown` keeps them as a read-only
+draft with **Download draft** and does not reconnect. Any other flush failure
+keeps the admission as before and schedules no retry.
 
 ## Runtime retirement and fencing
 
@@ -1167,7 +1171,10 @@ Consequences and the remaining manual work:
 1. **Scale old replicas to 0 before upgrading** if their unflushed
    collaborative-room edits matter. A still-live old replica loses its write
    gate and room admissions at the retirement; its editors' unflushed work stays
-   only in their tabs (a reconnecting tab does not resend it, #1928). Never
+   only in their tabs (those tabs run an old bundle, which never sends
+   `docReplaySafe`, and never pinned a document epoch on the old replica, so a
+   reconnecting tab is not sent the server SyncStep1 that would ask for it
+   again, #1928). Never
    restart an old image after the cutover: it would register a fresh active
    epoch the guard cannot distinguish from a live one.
 2. **An epoch with dispatched unknown work still needs a termination-verified

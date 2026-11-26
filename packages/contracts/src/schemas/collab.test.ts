@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   COLLAB_DOC_EMPTY_MARKER,
+  COLLAB_DOC_REPLAY_SAFE,
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabConfigSchema,
@@ -133,6 +134,26 @@ describe('collab contracts (#1444)', () => {
       { expectedDocEpoch: epoch, expectedDocEmpty: '' },
     ]) {
       expect(CollabJoinDeclarationSchema.safeParse(malformed).success, JSON.stringify(malformed)).toBe(false);
+    }
+  });
+
+  it('takes the replay-safe capability beside any document declaration, with exactly one value (#1928)', () => {
+    const epoch = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+    expect(COLLAB_DOC_REPLAY_SAFE).toBe('1');
+    expect(CollabJoinDeclarationSchema.parse({ expectedDocEpoch: epoch, docReplaySafe: '1' }))
+      .toEqual({ expectedDocEpoch: epoch, docReplaySafe: '1' });
+    expect(CollabJoinDeclarationSchema.parse({ expectedDocEmpty: '1', docReplaySafe: '1' }))
+      .toEqual({ expectedDocEmpty: '1', docReplaySafe: '1' });
+    expect(CollabJoinDeclarationSchema.parse({ docReplaySafe: '1' })).toEqual({ docReplaySafe: '1' });
+    // Absent is absent: an older bundle sends no capability.
+    expect(CollabJoinDeclarationSchema.parse({ expectedDocEpoch: epoch, docReplaySafe: undefined }).docReplaySafe)
+      .toBeUndefined();
+
+    for (const value of ['', '0', 'true', '1 ', 1, true, null, ['1', '1']]) {
+      for (const declaration of [{ expectedDocEpoch: epoch }, { expectedDocEmpty: '1' }, {}]) {
+        const malformed = { ...declaration, docReplaySafe: value };
+        expect(CollabJoinDeclarationSchema.safeParse(malformed).success, JSON.stringify(malformed)).toBe(false);
+      }
     }
   });
 

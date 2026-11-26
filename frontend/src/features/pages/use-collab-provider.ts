@@ -5,6 +5,7 @@ import * as decoding from 'lib0/decoding';
 import { Awareness } from 'y-protocols/awareness';
 import {
   COLLAB_DOC_EMPTY_MARKER,
+  COLLAB_DOC_REPLAY_SAFE,
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabCommitUnknownControlSchema,
@@ -146,9 +147,10 @@ function holdsNoDocument(doc: Y.Doc): boolean {
  * declaration of a join is decided here, per connect (#2034). A pinned
  * document declares its epoch through `params.expectedDocEpoch` and never the
  * marker. An unpinned document adds `expectedDocEmpty` exactly while it holds
- * nothing. An unpinned document with content (a connection that dropped
- * before its first sync after applying updates, a first sync without the
- * `doc_epoch` control) declares nothing.
+ * nothing. An unpinned document with content declares nothing; the hook
+ * leaves only one such document connecting, one whose first sync came without
+ * the `doc_epoch` control. A document that holds bytes before its first sync
+ * never reaches a connect: the hook replaces it with a clean one (#1928).
  */
 class CollabWebsocketProvider extends WebsocketProvider {
   override get url(): string {
@@ -156,6 +158,20 @@ class CollabWebsocketProvider extends WebsocketProvider {
     if (this.params.expectedDocEpoch !== undefined || !holdsNoDocument(this.doc)) return url;
     return `${url}${url.includes('?') ? '&' : '?'}expectedDocEmpty=${COLLAB_DOC_EMPTY_MARKER}`;
   }
+}
+
+/** What a clean session continues from the session it replaces (#1928). */
+interface CleanRestart {
+  pageId: string;
+  /** The lifecycle revision the replaced session joined with. */
+  joinedRevision: string | undefined;
+  /** The token of an explicit connect; null reads the auth store. */
+  token: string | null;
+  /** Wait before connecting: y-websocket's backoff for a retry, 0 for an explicit connect. */
+  delayMs: number;
+  /** y-websocket's count of unsuccessful connections, so the backoff keeps growing. */
+  unsuccessful: number;
+  reconnecting: boolean;
 }
 
 /**
@@ -168,11 +184,22 @@ class CollabWebsocketProvider extends WebsocketProvider {
  * - A document keeps the epoch of the first connection that syncs it (#2034):
  *   that connection's `doc_epoch` control is pinned and sent as
  *   `expectedDocEpoch` on every later join (y-websocket rebuilds its URL on
- *   each connect). Until then a join sends `expectedDocEmpty` while the
- *   document holds nothing, and declares nothing once it holds content of an
- *   unknown lineage. The pin never changes; a first sync without the control
- *   stays unpinned. The pin does not prove the document was empty before that
- *   sync: an earlier connection may have left updates in it.
+ *   each connect). Until then a join sends `expectedDocEmpty`. The pin never
+ *   changes; a first sync without the control stays unpinned and declares
+ *   nothing afterwards.
+ * - Only a clean document is pinned (#1928). A connection can leave bytes in
+ *   the document before its first sync (an Update fanned out before the
+ *   SyncStep2, a sync cut short) and then close. Their lineage is unknown, so
+ *   they are never pinned and never replayed by the server's SyncStep1: the
+ *   next connect, whether y-websocket's own retry or an explicit one (token
+ *   refresh, Retry), starts a clean session through this hook's session
+ *   reset (new Y.Doc, awareness and provider; the editor rebinds to them).
+ *   It keeps the backoff and `reconnecting`, and declares the marker. Before
+ *   the first sync the editor holds no user content, so nothing is lost.
+ * - Every connect sends `docReplaySafe=1` (#1928), Retry and token refresh
+ *   included: the clean-document rule above makes this bundle safe to ask for
+ *   what the room lacks, and the server sends its SyncStep1 only to a
+ *   verified writer that says so. It grants nothing.
  * - A writable admission is acknowledged explicitly; page state is not permission.
  * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
  *   disconnect it, and never silently replay it into a new lifecycle.
@@ -217,8 +244,16 @@ export function useCollabProvider({
   const retry = useCallback(() => retryRef.current(), []);
   const declareCommitUnknownRef = useRef<(document: Y.Doc) => void>(() => undefined);
   const declareCommitUnknown = useCallback((document: Y.Doc) => declareCommitUnknownRef.current(document), []);
+  // A session that ended before its first sync with bytes in its document asks
+  // for a clean one (#1928): bumping `session` runs the effect's teardown and
+  // setup, and `cleanRestart` carries what the next connect continues with.
+  const [session, setSession] = useState(0);
+  const cleanRestart = useRef<CleanRestart | null>(null);
 
   useEffect(() => {
+    // Only a restart of this very page continues; anything else starts fresh.
+    const restart = cleanRestart.current?.pageId === pageId ? cleanRestart.current : null;
+    cleanRestart.current = null;
     setConnected(false);
     setWritable(false);
     setReadOnlyReason(null);
@@ -234,7 +269,7 @@ export function useCollabProvider({
       return;
     }
 
-    const token = useAuthStore.getState().accessToken;
+    const token = restart?.token ?? useAuthStore.getState().accessToken;
     if (!token) {
       setError('unauthorized');
       return;
@@ -245,16 +280,18 @@ export function useCollabProvider({
     let rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
     // Same timer-handle type use-presence uses for its reconnect timer.
     let rejoinTimer: ReturnType<typeof setTimeout> | undefined;
+    let restartTimer: ReturnType<typeof setTimeout> | undefined;
     let pausedToken: string | null | undefined;
     let hasSynced = false;
     let retryReady = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     // The `doc_epoch` control of the current connection, until the first sync
     // pins it: the pin is the candidate of the first connection that syncs.
-    // An earlier connection that dropped before its sync may already have left
-    // updates in the document, so the pin is not a proof about those bytes.
+    // Every byte the document holds then came from that connection: an earlier
+    // one either left nothing or ended this session (`restartClean`).
     let docEpochCandidate: string | null = null;
-    const joinedRevision = latestRevision.current;
+    // A clean restart is still the same join: it keeps the revision it joined with.
+    const joinedRevision = restart ? restart.joinedRevision : latestRevision.current;
     const doc = new Y.Doc();
     const awareness = new Awareness(doc);
     setYdoc(doc);
@@ -268,20 +305,50 @@ export function useCollabProvider({
 
     const ws = new CollabWebsocketProvider(collabWsUrl(), String(pageId), doc, {
       protocols: [COLLAB_WS_PROTOCOL, token],
-      params: joinedRevision === undefined ? {} : { expectedLifecycleRevision: joinedRevision },
+      // Every connect says this bundle is replay-safe (#1928): it never pins
+      // or replays bytes received before a first sync (`restartClean`). Only
+      // then does the server ask it for what the room lacks. Later `params`
+      // updates keep it.
+      params: {
+        ...(joinedRevision === undefined ? {} : { expectedLifecycleRevision: joinedRevision }),
+        docReplaySafe: COLLAB_DOC_REPLAY_SAFE,
+      },
       disableBc: true,
       resyncInterval: 30_000,
       awareness,
+      // A clean restart connects at the end of setup, after its backoff.
+      connect: restart === null,
     });
     setProvider(ws);
+
+    /**
+     * Ends this session before its first sync because its document holds
+     * bytes no first sync accounted for, and asks for a clean one that
+     * continues the join (#1928). Never called after the first sync: from
+     * then on the document may hold the user's edits.
+     */
+    const restartClean = (next: Omit<CleanRestart, 'pageId' | 'joinedRevision'>) => {
+      if (cancelled) return;
+      ws.shouldConnect = false;
+      cleanRestart.current = { ...next, pageId: String(pageId), joinedRevision };
+      setSession((current) => current + 1);
+    };
+    /** Every explicit connect: this session, or a clean one when its document holds bytes before its first sync. */
+    const connectSession = (connectToken: string | null) => {
+      if (!hasSynced && !holdsNoDocument(doc)) {
+        restartClean({ token: connectToken, delayMs: 0, unsuccessful: ws.wsUnsuccessfulReconnects, reconnecting: false });
+        return;
+      }
+      if (connectToken) ws.protocols = [COLLAB_WS_PROTOCOL, connectToken];
+      ws.connect();
+    };
 
     const resumeWithNewToken = () => {
       const state = useAuthStore.getState();
       if (cancelled || blocked || pausedToken === undefined || !state.accessToken ||
           state.accessToken === pausedToken || state.user?.id !== selfUserId) return;
       pausedToken = undefined;
-      ws.protocols = [COLLAB_WS_PROTOCOL, state.accessToken];
-      ws.connect();
+      connectSession(state.accessToken);
     };
     const unsubscribeAuth = useAuthStore.subscribe(resumeWithNewToken);
 
@@ -324,8 +391,7 @@ export function useCollabProvider({
       blocked = false;
       setCanRetry(false);
       setError(null);
-      ws.protocols = [COLLAB_WS_PROTOCOL, state.accessToken];
-      ws.connect();
+      connectSession(state.accessToken);
     };
     ws.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
       try {
@@ -393,8 +459,7 @@ export function useCollabProvider({
               preserveReadOnly('unauthorized');
               return;
             }
-            ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
-            ws.connect();
+            connectSession(fresh);
           },
           (error: unknown) => {
             if (cancelled || blocked) return;
@@ -410,9 +475,7 @@ export function useCollabProvider({
             rejoinBackoffMs = Math.min(rejoinBackoffMs * 2, REJOIN_BACKOFF_CAP_MS);
             rejoinTimer = setTimeout(() => {
               if (cancelled || blocked) return;
-              const current = useAuthStore.getState().accessToken;
-              if (current) ws.protocols = [COLLAB_WS_PROTOCOL, current];
-              ws.connect();
+              connectSession(useAuthStore.getState().accessToken);
             }, delay);
           },
         );
@@ -428,7 +491,7 @@ export function useCollabProvider({
     });
     ws.on('connection-close', (event: CloseEvent | null) => {
       // A connection that closed before its first sync cannot supply the pin:
-      // its candidate is discarded. Document updates it applied are retained.
+      // its candidate is discarded.
       if (!hasSynced) docEpochCandidate = null;
       if (cancelled) return;
       setConnected(false);
@@ -437,13 +500,35 @@ export function useCollabProvider({
       if (event?.code === 1001 && event.reason === 'commit_unknown') preserveReadOnly('commit_unknown');
       // y-websocket retries every close outside 4400–4499; those arrive as `closed`.
       const terminal = event !== null && event.code >= 4400 && event.code < 4500;
-      if (!hasSynced && !blocked && !terminal) setReconnecting(true);
+      if (!hasSynced && !blocked && !terminal) {
+        setReconnecting(true);
+        // Its retry would carry the bytes this connection left behind: a clean
+        // session retries instead, after the same backoff. y-websocket counts
+        // this close right after this event and waits 2^count × 100 ms.
+        if (!holdsNoDocument(doc)) {
+          const unsuccessful = ws.wsUnsuccessfulReconnects + 1;
+          restartClean({
+            token: null,
+            delayMs: Math.min(2 ** unsuccessful * 100, ws.maxBackoffTime),
+            unsuccessful,
+            reconnecting: true,
+          });
+        }
+      }
     });
+
+    if (restart) {
+      ws.wsUnsuccessfulReconnects = restart.unsuccessful;
+      if (restart.reconnecting) setReconnecting(true);
+      if (restart.delayMs === 0) ws.connect();
+      else restartTimer = setTimeout(() => { if (!cancelled) ws.connect(); }, restart.delayMs);
+    }
 
     return () => {
       cancelled = true;
       unsubscribeAuth();
       clearTimeout(rejoinTimer);
+      clearTimeout(restartTimer);
       clearTimeout(retryTimer);
       retryRef.current = () => undefined;
       declareCommitUnknownRef.current = () => undefined;
@@ -459,7 +544,7 @@ export function useCollabProvider({
       setCanRetry(false);
       setDocEpochPinned(false);
     };
-  }, [enabled, pageId]);
+  }, [enabled, pageId, session]);
 
   return {
     ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error,

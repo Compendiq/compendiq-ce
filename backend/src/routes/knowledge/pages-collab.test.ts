@@ -7,13 +7,13 @@
  * refresh, second connection syncs. This file fails if the server 401s the
  * handshake (`onRequest authenticate` throw → close 1006).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi, onTestFinished } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
-import type { AddressInfo } from 'node:net';
+import { Socket, type AddressInfo } from 'node:net';
 import { createServer } from 'node:http';
 import * as jose from 'jose';
 import * as Y from 'yjs';
@@ -22,6 +22,8 @@ import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { WebSocket as NodeWs } from 'ws';
+import pg from 'pg';
+import { WebsocketProvider } from 'y-websocket';
 
 vi.mock('node:dns/promises', () => ({
   lookup: vi.fn(async () => {
@@ -33,11 +35,19 @@ vi.mock('node:dns/promises', () => ({
 
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import { PAGE_LIFECYCLE_LOCK_KEY } from '../../core/db/advisory-locks.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken, generateRefreshToken, revokeAllUserTokens } from '../../core/plugins/auth.js';
 import { logger } from '../../core/utils/logger.js';
-import { COLLAB_UPGRADE_WINDOW_SEC, COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
+import {
+  COLLAB_DOC_EMPTY_MARKER,
+  COLLAB_DOC_REPLAY_SAFE,
+  COLLAB_UPGRADE_WINDOW_SEC,
+  COLLAB_WS_PROTOCOL,
+  CollabDocEpochControlSchema,
+  type CollabCommit,
+} from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
@@ -4140,4 +4150,797 @@ describe('#1739 collaborative PK-only identifier boundary', () => {
     expect(closed.opened).toBe(true);
     expect(closed.code).toBe(4403);
   });
+});
+
+/**
+ * #1928 — the gateway's SyncStep1 after a lineage-verified writable join.
+ * The tab is a real y-websocket 3.1 `WebsocketProvider`; the lines around it
+ * repeat what `use-collab-provider.ts` does with the `doc_epoch` control and
+ * the join declaration: pin the epoch at the first sync, declare it on every
+ * later join, send the empty-document marker while the unpinned document holds
+ * nothing, never reconnect a reset document, and connect a document that
+ * holds bytes before its first sync only as a clean one (`connect`). `marker:
+ * false` is a bundle that predates the marker: its first join declares nothing.
+ */
+const SYNC_STEP1 = 0;
+
+interface HookTab {
+  /** The current session's provider and document; `connect` can replace both. */
+  readonly provider: WebsocketProvider;
+  readonly doc: Y.Doc;
+  controls: TestControl[];
+  closes: Array<{ code: number; reason: string }>;
+  /** Server SyncStep1 frames this tab received, over all its connections. */
+  serverSyncStep1s: () => number;
+  /** The tab's replies to those SyncStep1 frames, in order. */
+  replies: Uint8Array[];
+  /**
+   * The hook's explicit connect: a document that holds bytes before its first
+   * sync is replaced by a clean session first (#1928).
+   */
+  connect: () => void;
+  /** Fault injection: the server's SyncStep2 frames are lost, so the tab never completes a sync. */
+  loseSyncStep2: boolean;
+}
+
+function holdsNothing(doc: Y.Doc): boolean {
+  return doc.store.pendingStructs === null
+    && doc.store.pendingDs === null
+    && Y.equalSnapshots(Y.snapshot(doc), Y.emptySnapshot);
+}
+
+/** The hook's per-connect declaration: the pinned epoch from `params`, else the marker while the document holds nothing. */
+class MarkerProvider extends WebsocketProvider {
+  override get url(): string {
+    const url = super.url;
+    if (this.params.expectedDocEpoch !== undefined || !holdsNothing(this.doc)) return url;
+    return `${url}${url.includes('?') ? '&' : '?'}expectedDocEmpty=${COLLAB_DOC_EMPTY_MARKER}`;
+  }
+}
+
+/**
+ * `marker: false` is a bundle from before the empty-document marker;
+ * `replaySafe: false` is a bundle from before #1928 (#2034/#2035): it sends
+ * no `docReplaySafe` and keeps a document that holds bytes from before its
+ * first sync. The current bundle has both.
+ */
+function openHookTab(
+  pageId: number, token: string, revision: string, { marker = true, replaySafe = marker } = {},
+): HookTab {
+  const controls: TestControl[] = [];
+  const closes: Array<{ code: number; reason: string }> = [];
+  const replies: Uint8Array[] = [];
+  let serverSyncStep1s = 0;
+  let session!: { provider: WebsocketProvider; doc: Y.Doc; hasSynced: () => boolean };
+  const tab: HookTab = {
+    get provider() { return session.provider; },
+    get doc() { return session.doc; },
+    controls,
+    closes,
+    serverSyncStep1s: () => serverSyncStep1s,
+    replies,
+    connect: () => {
+      if (replaySafe && !session.hasSynced() && !holdsNothing(session.doc)) {
+        session.provider.destroy();
+        session.doc.destroy();
+        session = openSession();
+        return;
+      }
+      session.provider.connect();
+    },
+    loseSyncStep2: false,
+  };
+
+  function openSession(): typeof session {
+    const doc = new Y.Doc();
+    let candidate: string | null = null;
+    let hasSynced = false;
+    const Provider = marker ? MarkerProvider : WebsocketProvider;
+    const provider = new Provider(`${baseWs}/api/collab`, String(pageId), doc, {
+      protocols: [COLLAB_WS_PROTOCOL, token],
+      params: {
+        expectedLifecycleRevision: revision,
+        ...(replaySafe ? { docReplaySafe: COLLAB_DOC_REPLAY_SAFE } : {}),
+      },
+      disableBc: true,
+    });
+    const answerSync = provider.messageHandlers[MESSAGE_SYNC]!;
+    provider.messageHandlers[MESSAGE_SYNC] = (encoder, decoder, origin, emitSynced, messageType) => {
+      const subtype = decoding.peekVarUint(decoder);
+      if (subtype === SYNC_STEP2 && tab.loseSyncStep2) return;
+      if (subtype === SYNC_STEP1) serverSyncStep1s += 1;
+      answerSync(encoder, decoder, origin, emitSynced, messageType);
+      if (subtype === SYNC_STEP1) replies.push(encoding.toUint8Array(encoder));
+    };
+    provider.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
+      const control = JSON.parse(decoding.readVarString(decoder)) as TestControl;
+      controls.push(control);
+      const epoch = CollabDocEpochControlSchema.safeParse(control);
+      if (epoch.success && !hasSynced) candidate = epoch.data.epoch;
+    };
+    provider.on('sync', (isSynced: boolean) => {
+      if (!isSynced || hasSynced) return;
+      hasSynced = true;
+      if (candidate !== null) provider.params = { ...provider.params, expectedDocEpoch: candidate };
+    });
+    provider.on('connection-close', (event: CloseEvent | null) => {
+      if (!hasSynced) candidate = null;
+      if (!event) return;
+      closes.push({ code: event.code, reason: event.reason });
+      if (event.code === 1001 && event.reason === 'doc_reset') provider.shouldConnect = false;
+    });
+    onTestFinished(() => {
+      provider.destroy();
+      doc.destroy();
+    });
+    return { provider, doc, hasSynced: () => hasSynced };
+  }
+
+  session = openSession();
+  return tab;
+}
+
+/** Synced and writable on the current connection, whose controls start after `since`. */
+async function hookTabWritable(tab: HookTab, since = 0): Promise<void> {
+  await vi.waitFor(() => {
+    expect(tab.provider.synced).toBe(true);
+    expect(tab.controls.slice(since).map((control) => control.type)).toContain('writable_admission');
+  }, { timeout: 10_000 });
+}
+
+function typeInto(doc: Y.Doc, text: string): void {
+  doc.transact(() => {
+    const paragraph = new Y.XmlElement('paragraph');
+    const content = new Y.XmlText();
+    content.insert(0, text);
+    paragraph.insert(0, [content]);
+    doc.getXmlFragment('default').push([paragraph]);
+  });
+}
+
+function liveRoomHtml(pageId: number): string {
+  const room = getDefaultCollabRuntime()!.getRoom(pageId);
+  return room ? yDocToHtml(room.doc) : '';
+}
+
+/** A collaborative Save of everything the tab's document holds now. */
+function saveTabSnapshot(pageId: number, token: string, revision: string, doc: Y.Doc) {
+  return app.inject({
+    method: 'POST',
+    url: `/api/pages/${pageId}/collab/commit`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      title: 'Collab page',
+      expectedLifecycleRevision: revision,
+      expectedDocumentState: Buffer.from(Y.encodeSnapshot(Y.snapshot(doc))).toString('base64'),
+    },
+  });
+}
+
+function frameKind(frame: Uint8Array): string {
+  if (frame[0] === MESSAGE_SYNC) return ['sync_step1', 'sync_step2', 'sync_update'][frame[1]!] ?? 'sync_other';
+  if (frame[0] === MESSAGE_AWARENESS) return 'awareness';
+  return 'other';
+}
+
+describe.skipIf(!canRun)('server SyncStep1 recovers what only the tab holds (#1928)', () => {
+  async function pinnedTab(name: string): Promise<{ tab: HookTab; pageId: number; token: string; revision: string }> {
+    const { token, userId } = await createUser(name);
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>recovery-seed</p>' });
+    await enableCollabFlag();
+    const revision = await pageLifecycleRevision(pageId);
+    const tab = openHookTab(pageId, token, revision);
+    await hookTabWritable(tab);
+    // The first join declared an empty document and was asked once; the epoch is pinned from here on.
+    expect(tab.serverSyncStep1s()).toBe(1);
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toMatch(/^[0-9a-f-]{36}$/);
+    return { tab, pageId, token, revision };
+  }
+
+  /** The update a SyncStep2 reply carries. */
+  function replyUpdate(reply: Uint8Array): Uint8Array {
+    const decoder = decoding.createDecoder(reply);
+    expect(decoding.readVarUint(decoder)).toBe(MESSAGE_SYNC);
+    expect(decoding.readVarUint(decoder)).toBe(1);
+    return decoding.readVarUint8Array(decoder);
+  }
+
+  it('a first join of a fresh page declares an empty document, is asked once right after writable_admission, and its empty reply changes nothing', async () => {
+    const { token, userId } = await createUser('collab_syncstep1_first_join');
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>first-join-seed</p>' });
+    await enableCollabFlag();
+    const revision = await pageLifecycleRevision(pageId);
+    const runtime = getDefaultCollabRuntime()!;
+    const handleFrame = runtime.handleInboundFrame;
+    const handledReplies: string[] = [];
+    const frameSpy = vi.spyOn(runtime, 'handleInboundFrame').mockImplementation(async (framePageId, id, buf) => {
+      const result = await handleFrame(framePageId, id, buf);
+      if (framePageId === pageId && frameKind(buf) === 'sync_step2') handledReplies.push(result);
+      return result;
+    });
+    onTestFinished(() => frameSpy.mockRestore());
+    const tab = openHookTab(pageId, token, revision);
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEmpty')).toBe('1');
+
+    await hookTabWritable(tab);
+
+    const room = runtime.getRoom(pageId)!;
+    expect([...room.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(tab.serverSyncStep1s()).toBe(1);
+    expect(tab.controls.map((control) => control.type)).toEqual(['doc_epoch', 'page_lifecycle', 'writable_admission']);
+    // The tab held nothing when it was asked: its reply is an empty update,
+    // handled through the fenced write path.
+    expect(tab.replies).toHaveLength(1);
+    const update = Y.decodeUpdate(replyUpdate(tab.replies[0]!));
+    expect(update.structs).toEqual([]);
+    expect(update.ds.clients.size).toBe(0);
+    await vi.waitFor(() => expect(handledReplies).toEqual(['ok']), { timeout: 10_000 });
+    // The room still holds the seed once, written by the seed alone.
+    expect([...Y.decodeStateVector(Y.encodeStateVector(room.doc)).keys()]).not.toContain(tab.doc.clientID);
+    await persist.flushCollabPersist(room);
+    const stored = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+    for (const html of [yDocToHtml(room.doc), yDocToHtml(tab.doc), stored.rows[0]!.body_html]) {
+      expect(html.split('first-join-seed')).toHaveLength(2);
+    }
+    expect(tab.serverSyncStep1s()).toBe(1);
+  }, 30_000);
+
+  it.each([
+    ['a client with the replay-safe capability is asked once on its marked first join and once on its pinned rejoin', true],
+    ['a client without it (#2034/#2035 bundle) is verified on both joins and never asked', false],
+  ] as const)('%s', async (_case, replaySafe) => {
+    const { token, userId } = await createUser(`collab_syncstep1_capability_${replaySafe ? 'yes' : 'no'}`);
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>capability-seed</p>' });
+    await enableCollabFlag();
+    const revision = await pageLifecycleRevision(pageId);
+    const runtime = getDefaultCollabRuntime()!;
+    const tab = openHookTab(pageId, token, revision, { replaySafe });
+    const joinUrl = new URL(tab.provider.url);
+    expect(joinUrl.searchParams.get('expectedDocEmpty')).toBe('1');
+    expect(joinUrl.searchParams.get('docReplaySafe')).toBe(replaySafe ? '1' : null);
+
+    await hookTabWritable(tab);
+    expect([...runtime.getRoom(pageId)!.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(tab.serverSyncStep1s()).toBe(replaySafe ? 1 : 0);
+
+    const epoch = runtime.getRoom(pageId)!.docEpoch;
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(epoch);
+    const since = tab.controls.length;
+    tab.provider.disconnect();
+    tab.provider.connect();
+    await hookTabWritable(tab, since);
+    expect([...runtime.getRoom(pageId)!.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    expect(tab.serverSyncStep1s()).toBe(replaySafe ? 2 : 0);
+    expect(tab.controls.slice(since).map((control) => control.type)).not.toContain('doc_reset');
+  }, 30_000);
+
+  it('in one live room, a marked empty tab is asked and a join that declares nothing is not; a pre-marker bundle\'s pinned rejoin is verified but, without the capability, not asked', async () => {
+    const { token, userId } = await createUser('collab_syncstep1_undeclared');
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>undeclared-seed</p>' });
+    await enableCollabFlag();
+    const revision = await pageLifecycleRevision(pageId);
+    // A bundle without the marker joins first and seeds the room.
+    const undeclared = openHookTab(pageId, token, revision, { marker: false });
+    expect(new URL(undeclared.provider.url).searchParams.has('expectedDocEmpty')).toBe(false);
+    await hookTabWritable(undeclared);
+    // An empty tab of the current bundle joins the same room with the marker.
+    const marked = openHookTab(pageId, token, revision);
+    expect(new URL(marked.provider.url).searchParams.get('expectedDocEmpty')).toBe('1');
+    await hookTabWritable(marked);
+
+    const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+    expect([...room.sockets.values()]).toMatchObject([
+      { writable: true, lineageVerified: false },
+      { writable: true, lineageVerified: true },
+    ]);
+    expect(undeclared.serverSyncStep1s()).toBe(0);
+    expect(marked.serverSyncStep1s()).toBe(1);
+
+    // Pinned at the first sync, the undeclared tab's rejoin declares the epoch
+    // and is verified; a bundle from before #1928 sends no capability and is not asked.
+    expect(new URL(undeclared.provider.url).searchParams.get('expectedDocEpoch')).toBe(room.docEpoch);
+    expect(new URL(undeclared.provider.url).searchParams.has('docReplaySafe')).toBe(false);
+    const since = undeclared.controls.length;
+    undeclared.provider.disconnect();
+    undeclared.provider.connect();
+    await hookTabWritable(undeclared, since);
+    const rejoined = [...getDefaultCollabRuntime()!.getRoom(pageId)!.sockets.values()];
+    expect(rejoined.filter((socket) => socket.lineageVerified)).toHaveLength(2);
+    expect(undeclared.serverSyncStep1s()).toBe(0);
+    expect(marked.serverSyncStep1s()).toBe(1);
+  }, 30_000);
+
+  it.each([
+    ['the current bundle joins lineage B from a clean document; its pinned rejoin is asked', true],
+    ['a bundle without #1928 keeps the bytes and pins B; its verified rejoin is never asked', false],
+  ] as const)('a tab that received an edit of lineage A before its first sync and dropped: %s, and nothing of A reaches B or the database', async (_case, replaySafe) => {
+    const { token, userId } = await createUser(`collab_syncstep1_partial_sync_${replaySafe ? 'current' : 'older'}`);
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>lineage-a-seed</p>' });
+    await enableCollabFlag();
+    const revision = await pageLifecycleRevision(pageId);
+    const runtime = getDefaultCollabRuntime()!;
+    const handleFrame = runtime.handleInboundFrame;
+    const handledReplies: string[] = [];
+    const frameSpy = vi.spyOn(runtime, 'handleInboundFrame').mockImplementation(async (framePageId, id, buf) => {
+      const result = await handleFrame(framePageId, id, buf);
+      if (framePageId === pageId && frameKind(buf) === 'sync_step2') handledReplies.push(result);
+      return result;
+    });
+    onTestFinished(() => frameSpy.mockRestore());
+
+    // Lineage A: a writer, and a tab whose first sync never completes (its SyncStep2 is lost).
+    const writer = openHookTab(pageId, token, revision);
+    await hookTabWritable(writer);
+    const epochA = runtime.getRoom(pageId)!.docEpoch;
+    const tab = openHookTab(pageId, token, revision, { replaySafe });
+    tab.loseSyncStep2 = true;
+    await vi.waitFor(() => {
+      expect(tab.controls.map((control) => control.type)).toContain('writable_admission');
+    }, { timeout: 10_000 });
+    expect(tab.provider.synced).toBe(false);
+    // The writer's edit of A is fanned out to the tab before its first sync.
+    typeInto(writer.doc, 'LINEAGE_A_EDIT');
+    await vi.waitFor(() => expect(holdsNothing(tab.doc)).toBe(false), { timeout: 10_000 });
+    await vi.waitFor(() => expect(liveRoomHtml(pageId)).toContain('LINEAGE_A_EDIT'), { timeout: 10_000 });
+    const lineageA = new Set([
+      ...Y.decodeStateVector(Y.encodeStateVector(runtime.getRoom(pageId)!.doc)).keys(),
+      writer.doc.clientID,
+    ]);
+    const stale = tab.doc;
+
+    // Both leave; lineage A ends with a non-collab body write.
+    tab.provider.disconnect();
+    writer.provider.disconnect();
+    await vi.waitFor(() => expect(runtime.getRoom(pageId)?.sockets.size ?? 0).toBe(0));
+    await runtime.dropRoom(pageId);
+    const current = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Collab page', bodyHtml: '<p>LINEAGE_B_BODY</p>', version: current.rows[0]!.version },
+    });
+    expect(put.statusCode, put.body).toBe(200);
+
+    // The tab reconnects. The current bundle starts from a clean document: its
+    // marker join seeds lineage B and is verified. A bundle without #1928
+    // reconnects the document it kept; it declares nothing and pins B.
+    tab.loseSyncStep2 = false;
+    let since = tab.controls.length;
+    tab.connect();
+    if (replaySafe) expect(tab.doc).not.toBe(stale);
+    else expect(tab.doc).toBe(stale);
+    await hookTabWritable(tab, since);
+    const roomB = runtime.getRoom(pageId)!;
+    expect(roomB.docEpoch).not.toBe(epochA);
+    expect([...roomB.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: replaySafe }]);
+    expect(new URL(tab.provider.url).searchParams.get('expectedDocEpoch')).toBe(roomB.docEpoch);
+
+    // A later rejoin declares B and is verified. Only a replay-safe client is
+    // asked; its reply is handled on the fenced path.
+    const asked = tab.serverSyncStep1s();
+    const handledBefore = handledReplies.length;
+    since = tab.controls.length;
+    tab.provider.disconnect();
+    tab.provider.connect();
+    await hookTabWritable(tab, since);
+    expect([...runtime.getRoom(pageId)!.sockets.values()]).toMatchObject([{ writable: true, lineageVerified: true }]);
+    const fromA = (update: Uint8Array) => Y.decodeUpdate(update).structs
+      .map((struct) => struct.id.client)
+      .filter((client) => lineageA.has(client));
+    if (replaySafe) {
+      expect(tab.serverSyncStep1s()).toBe(asked + 1);
+      await vi.waitFor(() => expect(handledReplies.slice(handledBefore)).toContain('ok'), { timeout: 10_000 });
+      expect(fromA(replyUpdate(tab.replies.at(-1)!))).toEqual([]);
+    } else {
+      // The stale document still holds A's edit, parked; it is never asked for it.
+      expect(tab.doc.store.pendingStructs).not.toBeNull();
+      expect(tab.serverSyncStep1s()).toBe(0);
+    }
+
+    const room = runtime.getRoom(pageId)!;
+    expect(room.docEpoch).toBe(roomB.docEpoch);
+    expect(room.doc.store.pendingStructs).toBeNull();
+    expect(fromA(Y.encodeStateAsUpdate(room.doc))).toEqual([]);
+    await persist.flushCollabPersist(room);
+    const stored = await query<{ doc_state: Buffer; body_html: string }>(
+      `SELECT d.doc_state, p.body_html FROM page_collaborative_docs d JOIN pages p ON p.id = d.page_id
+        WHERE d.page_id = $1`,
+      [pageId],
+    );
+    expect(fromA(new Uint8Array(stored.rows[0]!.doc_state))).toEqual([]);
+    for (const html of [yDocToHtml(room.doc), yDocToHtml(tab.doc), stored.rows[0]!.body_html]) {
+      expect(html.split('LINEAGE_B_BODY')).toHaveLength(2);
+      expect(html).not.toContain('LINEAGE_A_EDIT');
+      expect(html).not.toContain('lineage-a-seed');
+    }
+  }, 40_000);
+
+  it('a frame refused with 1001 collab_validation_unavailable reaches the room after the reconnect, and the Save returns 200', async () => {
+    const { tab, pageId, token, revision } = await pinnedTab('collab_syncstep1_refused');
+    // A real fault at the database boundary of that one frame: its write
+    // transaction queues behind a held page lifecycle lock and its backend is
+    // terminated there. The lock is released before the tab reconnects.
+    const holder = await getPool().connect();
+    let holding = true;
+    const releaseHolder = async (): Promise<void> => {
+      if (!holding) return;
+      holding = false;
+      await holder.query('ROLLBACK').catch(() => undefined);
+      holder.release();
+    };
+    onTestFinished(releaseHolder);
+    await holder.query('BEGIN');
+    await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, pageId]);
+    const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+
+    typeInto(tab.doc, 'REFUSED_FRAME');
+    let framePids: number[] = [];
+    await vi.waitFor(async () => {
+      const blocked = await query<{ pid: number }>(
+        `SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
+        [holderPid],
+      );
+      framePids = blocked.rows.map((row) => row.pid);
+      expect(framePids).toHaveLength(1);
+    }, { timeout: 8_000 });
+    const terminated = await query<{ terminated: boolean }>(
+      'SELECT pg_terminate_backend($1) AS terminated', [framePids[0]],
+    );
+    expect(terminated.rows[0]!.terminated).toBe(true);
+    await releaseHolder();
+
+    await vi.waitFor(() => {
+      expect(tab.closes).toContainEqual({ code: 1001, reason: 'collab_validation_unavailable' });
+    }, { timeout: 8_000 });
+    expect(liveRoomHtml(pageId)).not.toContain('REFUSED_FRAME');
+
+    // y-websocket reconnects by itself, declaring the pinned epoch.
+    await vi.waitFor(() => expect(liveRoomHtml(pageId)).toContain('REFUSED_FRAME'), { timeout: 10_000 });
+    // One SyncStep1 on the first join, one on the rejoin.
+    expect(tab.serverSyncStep1s()).toBe(2);
+    const saved = await saveTabSnapshot(pageId, token, revision, tab.doc);
+    expect(saved.statusCode, saved.body).toBe(200);
+  }, 30_000);
+
+  it('an edit made while disconnected after the first sync reaches the room after the reconnect, and the Save returns 200', async () => {
+    const { tab, pageId, token, revision } = await pinnedTab('collab_syncstep1_offline');
+    tab.provider.disconnect();
+    await vi.waitFor(() => expect(tab.provider.wsconnected).toBe(false));
+    typeInto(tab.doc, 'TYPED_OFFLINE');
+    const since = tab.controls.length;
+
+    tab.provider.connect();
+
+    await hookTabWritable(tab, since);
+    await vi.waitFor(() => expect(liveRoomHtml(pageId)).toContain('TYPED_OFFLINE'), { timeout: 10_000 });
+    expect(tab.serverSyncStep1s()).toBe(2);
+    const saved = await saveTabSnapshot(pageId, token, revision, tab.doc);
+    expect(saved.statusCode, saved.body).toBe(200);
+  }, 30_000);
+
+  it('a stale tab with an offline edit still ends in doc_reset after a non-collab body write; the body appears once', async () => {
+    const { tab, pageId, token, revision } = await pinnedTab('collab_syncstep1_stale');
+    tab.provider.disconnect();
+    await vi.waitFor(() => expect(tab.provider.wsconnected).toBe(false));
+    typeInto(tab.doc, 'STALE_OFFLINE_EDIT');
+    // The tab stayed away: its room is gone, then a PUT replaces the body and ends the lineage.
+    const runtime = getDefaultCollabRuntime()!;
+    await vi.waitFor(() => expect(runtime.getRoom(pageId)?.sockets.size ?? 0).toBe(0));
+    await runtime.dropRoom(pageId);
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Collab page', bodyHtml: '<p>REPLACED_BODY</p>', version: 1 },
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    const since = tab.controls.length;
+
+    tab.provider.connect();
+
+    await vi.waitFor(() => {
+      expect(tab.closes.at(-1)).toEqual({ code: 1001, reason: 'doc_reset' });
+    }, { timeout: 10_000 });
+    expect(tab.controls.slice(since)).toEqual([{ type: 'doc_reset' }]);
+    // Only the first join was asked; the reset rejoin is not.
+    expect(tab.serverSyncStep1s()).toBe(1);
+    const fresh = openHookTab(pageId, token, revision);
+    await hookTabWritable(fresh);
+    await persist.flushCollabPersist(runtime.getRoom(pageId)!);
+    const stored = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+    for (const html of [liveRoomHtml(pageId), yDocToHtml(fresh.doc), stored.rows[0]!.body_html]) {
+      expect(html.split('REPLACED_BODY')).toHaveLength(2);
+      expect(html).not.toContain('recovery-seed');
+      expect(html).not.toContain('STALE_OFFLINE_EDIT');
+    }
+  }, 30_000);
+});
+
+describe.skipIf(!canRun)('gateway handoff to the live path (#1928)', () => {
+  interface JoinInterceptor {
+    entered: Promise<void>;
+    proceed: () => void;
+    commitReached: Promise<void>;
+    releaseCommit: () => void;
+    serverClosed: Promise<void>;
+    /** The server side of the intercepted join's socket, once the join began. */
+    serverSocket: () => NodeWs | null;
+    /** Settles when the intercepted `attachSocket` has returned or thrown. */
+    joined: Promise<unknown>;
+    /** What the server read on the socket since the join began. */
+    received: Array<{ kind: string; bytes: number }>;
+    /** The frames of this socket the room handled, in order. */
+    handled: string[];
+  }
+
+  /**
+   * Wraps the next join: it waits inside `attachSocket` until `proceed`, and
+   * the COMMIT of its fenced final step is paused until `releaseCommit`, or
+   * fails. That COMMIT is bound to the join's own checkout: the pooled client
+   * that holds the page's lifecycle lock when `goLive` runs, which only the
+   * final step's transaction can hold at that moment. No other transaction's
+   * COMMIT is touched.
+   */
+  function interceptJoin(commit: 'pause' | 'fail'): JoinInterceptor {
+    const runtime = getDefaultCollabRuntime()!;
+    const attach = runtime.attachSocket;
+    const handleFrame = runtime.handleInboundFrame;
+    const entered = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    const commitReached = Promise.withResolvers<void>();
+    const commitRelease = Promise.withResolvers<void>();
+    const serverClosed = Promise.withResolvers<void>();
+    const joined = Promise.withResolvers<unknown>();
+    const received: JoinInterceptor['received'] = [];
+    const handled: string[] = [];
+    let connId: string | null = null;
+    let joinPageId: number | null = null;
+    let serverSocket: NodeWs | null = null;
+    // At most one client at a time: the page's lifecycle lock is exclusive.
+    const lifecycleHolder = new Set<pg.Client>();
+    const finalStepClient = new Set<pg.Client>();
+    const sendQuery = pg.Client.prototype.query as (...args: unknown[]) => unknown;
+    const querySpy = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+      const [text, values] = args;
+      if (finalStepClient.has(this) && text === 'COMMIT') {
+        finalStepClient.clear();
+        lifecycleHolder.clear();
+        commitReached.resolve();
+        if (commit === 'fail') return Promise.reject(new Error('final step COMMIT lost'));
+        return commitRelease.promise.then(() => sendQuery.apply(this, args));
+      }
+      const sent = sendQuery.apply(this, args);
+      if (
+        text === 'SELECT pg_advisory_xact_lock($1, $2)' && Array.isArray(values)
+        && values[0] === PAGE_LIFECYCLE_LOCK_KEY && joinPageId !== null && values[1] === joinPageId
+      ) {
+        void (sent as Promise<unknown>).then(() => {
+          lifecycleHolder.clear();
+          lifecycleHolder.add(this);
+        }, () => undefined);
+      } else if (lifecycleHolder.has(this) && (text === 'COMMIT' || text === 'ROLLBACK')) {
+        lifecycleHolder.clear();
+      }
+      return sent;
+    } as never);
+    const attachSpy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (pageId, socket) => {
+      connId = socket.id;
+      joinPageId = pageId;
+      serverSocket = socket.ws;
+      socket.ws.on('message', (data) => {
+        const frame = Array.isArray(data) ? new Uint8Array(Buffer.concat(data)) : new Uint8Array(data);
+        received.push({ kind: frameKind(frame), bytes: frame.byteLength });
+      });
+      socket.ws.on('close', () => serverClosed.resolve());
+      entered.resolve();
+      await proceed.promise;
+      const goLive = socket.goLive;
+      const attaching = attach(pageId, {
+        ...socket,
+        ...(goLive ? {
+          goLive: () => {
+            for (const client of lifecycleHolder) finalStepClient.add(client);
+            goLive();
+          },
+        } : {}),
+      });
+      attaching.then(joined.resolve, joined.resolve);
+      return attaching;
+    });
+    const frameSpy = vi.spyOn(runtime, 'handleInboundFrame').mockImplementation(async (pageId, id, buf) => {
+      if (id === connId) handled.push(frameKind(buf));
+      return handleFrame(pageId, id, buf);
+    });
+    onTestFinished(() => {
+      proceed.resolve();
+      commitRelease.resolve();
+      querySpy.mockRestore();
+      attachSpy.mockRestore();
+      frameSpy.mockRestore();
+    });
+    return {
+      entered: entered.promise,
+      proceed: () => proceed.resolve(),
+      commitReached: commitReached.promise,
+      releaseCommit: () => commitRelease.resolve(),
+      serverClosed: serverClosed.promise,
+      serverSocket: () => serverSocket,
+      joined: joined.promise,
+      received,
+      handled,
+    };
+  }
+
+  /** A pinned tab that is offline; `edit` runs on its document while it is away. */
+  async function offlinePinnedTab(name: string, edit: (doc: Y.Doc) => void): Promise<{ tab: HookTab; pageId: number }> {
+    const { token, userId } = await createUser(name);
+    const pageId = await insertStandalone({ ownerId: userId, bodyHtml: '<p>handoff-seed</p>' });
+    await enableCollabFlag();
+    const tab = openHookTab(pageId, token, await pageLifecycleRevision(pageId));
+    await hookTabWritable(tab);
+    tab.provider.disconnect();
+    await vi.waitFor(() => expect(tab.provider.wsconnected).toBe(false));
+    edit(tab.doc);
+    return { tab, pageId };
+  }
+
+  /** Reconnect and let the join run once a typed edit sits in the pre-live buffer. */
+  async function rejoinWithBufferedEdit(tab: HookTab, join: JoinInterceptor, text: string): Promise<void> {
+    tab.provider.connect();
+    await join.entered;
+    await vi.waitFor(() => expect(tab.provider.wsconnected).toBe(true));
+    typeInto(tab.doc, text);
+    await vi.waitFor(() => expect(join.received.map((frame) => frame.kind)).toContain('sync_update'));
+    join.proceed();
+    await join.commitReached;
+  }
+
+  it('takes a reply between 1 MiB and 10 MiB while the final COMMIT is paused, after the earlier buffered frame, without 1013', async () => {
+    const offline = `OFFLINE_BULK_${'x'.repeat(1_200_000)}`;
+    const { tab, pageId } = await offlinePinnedTab('collab_handoff_large', (doc) => typeInto(doc, offline));
+    const join = interceptJoin('pause');
+
+    await rejoinWithBufferedEdit(tab, join, 'PRELIVE_EDIT');
+
+    // The tab got the SyncStep1 and replied while the join's transaction is still open.
+    await vi.waitFor(() => {
+      expect(join.received.some((frame) => frame.kind === 'sync_step2' && frame.bytes > 1024 * 1024)).toBe(true);
+    }, { timeout: 10_000 });
+    // One SyncStep1 on the first join, one on this rejoin.
+    expect(tab.serverSyncStep1s()).toBe(2);
+    // Nothing is handled under the join's lock, and the reply did not overflow the pre-live buffer.
+    expect(join.handled).toEqual([]);
+    expect(tab.closes).toEqual([]);
+
+    join.releaseCommit();
+
+    await vi.waitFor(() => {
+      const html = liveRoomHtml(pageId);
+      expect(html).toContain('PRELIVE_EDIT');
+      expect(html).toContain(offline);
+    }, { timeout: 10_000 });
+    // The buffered frames first, in arrival order, then the reply.
+    expect(join.handled.slice(0, 4)).toEqual(['sync_step1', 'awareness', 'sync_update', 'sync_step2']);
+    expect(tab.closes).toEqual([]);
+    expect(tab.provider.wsconnected).toBe(true);
+  }, 30_000);
+
+  it.each([
+    ['the socket closes while the final COMMIT is paused', 'pause'],
+    ['the final transaction rolls back', 'fail'],
+  ] as const)('drops the buffered mutation when %s', async (_case, commit) => {
+    const { tab, pageId } = await offlinePinnedTab(`collab_handoff_drop_${commit}`, () => undefined);
+    // Whatever happens to this connection, the tab must not reconnect and replay its edit.
+    tab.provider.on('connection-close', () => { tab.provider.shouldConnect = false; });
+    const join = interceptJoin(commit);
+
+    await rejoinWithBufferedEdit(tab, join, 'GATED_EDIT');
+    if (commit === 'pause') {
+      tab.provider.disconnect();
+      await join.serverClosed;
+      join.releaseCommit();
+    } else {
+      await join.serverClosed;
+      expect(tab.closes).toContainEqual({ code: 1001, reason: 'collab_validation_unavailable' });
+    }
+    await join.joined;
+    // Every continuation of the join and of the gated chain runs before the next macrotask.
+    const drained = Promise.withResolvers<void>();
+    setImmediate(drained.resolve);
+    await drained.promise;
+
+    expect(join.handled).toEqual([]);
+    expect(liveRoomHtml(pageId)).not.toContain('GATED_EDIT');
+    const stored = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+    expect(stored.rows[0]!.body_html).not.toContain('GATED_EDIT');
+  }, 30_000);
+
+  it('drops the buffered mutation when the socket is CLOSING, before its close event, as the final COMMIT completes', async () => {
+    const { tab, pageId } = await offlinePinnedTab('collab_handoff_closing', () => undefined);
+    tab.provider.on('connection-close', () => { tab.provider.shouldConnect = false; });
+    const join = interceptJoin('pause');
+
+    await rejoinWithBufferedEdit(tab, join, 'CLOSING_EDIT');
+    // The server starts closing the transport (as a room path does with
+    // `ws.close`) while the COMMIT is paused. Its completion is held: the
+    // underlying TCP socket (a private member of ws) is not read, so the
+    // tab's close reply and the `close` event wait.
+    const transport = join.serverSocket()!;
+    const tcp = '_socket' in transport ? transport._socket : null;
+    if (!(tcp instanceof Socket)) throw new Error('ws no longer exposes its TCP socket');
+    tcp.pause();
+    // Resumed on failure as well, so a failed assertion cannot leave the transport stalled.
+    onTestFinished(() => { tcp.resume(); });
+    let closeEmitted = false;
+    transport.on('close', () => { closeEmitted = true; });
+    transport.close(1001, 'closing_during_join');
+    expect(transport.readyState).toBe(NodeWs.CLOSING);
+
+    join.releaseCommit();
+    await join.joined;
+    const drained = Promise.withResolvers<void>();
+    setImmediate(drained.resolve);
+    await drained.promise;
+
+    // Still CLOSING, no close event yet: nothing queued was dispatched or applied.
+    expect(transport.readyState).toBe(NodeWs.CLOSING);
+    expect(closeEmitted).toBe(false);
+    expect(join.handled).toEqual([]);
+    expect(liveRoomHtml(pageId)).not.toContain('CLOSING_EDIT');
+
+    tcp.resume();
+    await join.serverClosed;
+    expect(join.handled).toEqual([]);
+    expect(liveRoomHtml(pageId)).not.toContain('CLOSING_EDIT');
+    const stored = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+    expect(stored.rows[0]!.body_html).not.toContain('CLOSING_EDIT');
+  }, 30_000);
+
+  it('bounds the reply by the 10 MiB WebSocket maxPayload', async () => {
+    const { tab, pageId } = await offlinePinnedTab('collab_handoff_max_payload', () => undefined);
+    const runtime = getDefaultCollabRuntime()!;
+    const attach = runtime.attachSocket;
+    const handleFrame = runtime.handleInboundFrame;
+    const serverErrors: Array<{ code: unknown; message: string }> = [];
+    const serverClosed = Promise.withResolvers<void>();
+    const handledBytes: number[] = [];
+    let connId: string | null = null;
+    const attachSpy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (joinPageId, socket) => {
+      connId = socket.id;
+      socket.ws.on('error', (err: Error & { code?: unknown }) => {
+        serverErrors.push({ code: err.code, message: err.message });
+      });
+      socket.ws.on('close', () => serverClosed.resolve());
+      return attach(joinPageId, socket);
+    });
+    const frameSpy = vi.spyOn(runtime, 'handleInboundFrame').mockImplementation(async (framePageId, id, buf) => {
+      if (id === connId) handledBytes.push(buf.byteLength);
+      return handleFrame(framePageId, id, buf);
+    });
+    onTestFinished(() => {
+      attachSpy.mockRestore();
+      frameSpy.mockRestore();
+    });
+    const since = tab.controls.length;
+    tab.provider.connect();
+    await hookTabWritable(tab, since);
+    tab.provider.on('connection-close', () => { tab.provider.shouldConnect = false; });
+    const before = liveRoomHtml(pageId);
+    const closesBefore = tab.closes.length;
+
+    tab.provider.ws!.send(new Uint8Array(10 * 1024 * 1024 + 1));
+
+    // The server's receiver refuses the frame for its length and closes the
+    // socket. The client may see the server's 1009, or an abnormal 1006 when
+    // the server tears the connection down while the client is still writing.
+    await serverClosed.promise;
+    expect(serverErrors).toContainEqual(expect.objectContaining({ code: 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' }));
+    await vi.waitFor(() => expect(tab.closes.length).toBeGreaterThan(closesBefore), { timeout: 10_000 });
+    expect([1009, 1006]).toContain(tab.closes.at(-1)!.code);
+    // The frame never reached the room, and the document is unchanged.
+    expect(handledBytes.every((bytes) => bytes <= 10 * 1024 * 1024)).toBe(true);
+    expect(liveRoomHtml(pageId)).toBe(before);
+  }, 30_000);
 });

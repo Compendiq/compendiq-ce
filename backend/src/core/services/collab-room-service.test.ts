@@ -5,7 +5,7 @@
  * two pods: a delayed second subscriber must still converge, and applying
  * with origin `'redis'` must not republish.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi, onTestFinished } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -3229,6 +3229,378 @@ describe.skipIf(!canRun)('room admission of a hard-deleted page (#1922)', () => 
         await runtimeA!.close();
         await releasePageRuntime(admission);
       }
+    });
+  });
+});
+
+describe.skipIf(!canRun)('server SyncStep1 after a lineage-verified writable join (#1928)', () => {
+  type Recorder = { ws: WebSocket; sent: Uint8Array[]; closes: Array<[number, string]> };
+
+  function recorder(): Recorder {
+    const sent: Uint8Array[] = [];
+    const closes: Array<[number, string]> = [];
+    const ws = {
+      readyState: 1,
+      send(frame: Uint8Array) { sent.push(new Uint8Array(frame)); },
+      close(code?: number, reason?: string) { closes.push([code ?? 1005, String(reason ?? '')]); },
+    } as unknown as WebSocket;
+    return { ws, sent, closes };
+  }
+
+  /** What a frame is: a control by its type, or a sync message by its subtype. */
+  function kindOf(frame: Uint8Array): string {
+    if (frame[0] === 0) return ['sync_step1', 'sync_step2', 'sync_update'][frame[1]!] ?? 'sync_other';
+    if (frame[0] === 1) return 'awareness';
+    if (frame[0] === 4) return `control:${decodeControlFrames([frame])[0]!.type as string}`;
+    return 'other';
+  }
+
+  function kinds(sent: readonly Uint8Array[]): string[] {
+    return sent.map(kindOf);
+  }
+
+  function serverSyncStep1s(sent: readonly Uint8Array[]): Uint8Array[] {
+    return sent.filter((frame) => kindOf(frame) === 'sync_step1');
+  }
+
+  function stateVectorOf(syncStep1: Uint8Array): Uint8Array {
+    const decoder = decoding.createDecoder(syncStep1);
+    decoding.readVarUint(decoder);
+    decoding.readVarUint(decoder);
+    return decoding.readVarUint8Array(decoder);
+  }
+
+  /** The reply y-websocket sends to a server SyncStep1: a SyncStep2 with what the server lacks. */
+  function replyTo(syncStep1: Uint8Array, client: Y.Doc): Uint8Array {
+    const decoder = decoding.createDecoder(syncStep1);
+    decoding.readVarUint(decoder);
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 0);
+    syncProtocol.readSyncMessage(decoder, encoder, client, 'server');
+    return encoding.toUint8Array(encoder);
+  }
+
+  /** A tab's document of the room's lineage that holds an edit the room never received. */
+  function tabWithUnsentEdit(room: CollabRoom, text: string): Y.Doc {
+    const tab = new Y.Doc();
+    Y.applyUpdate(tab, Y.encodeStateAsUpdate(room.doc));
+    appendParagraph(tab, text);
+    onTestFinished(() => tab.destroy());
+    return tab;
+  }
+
+  /** A first writer seeds the room's persisted document; its epoch is what a returning tab declares. */
+  async function seededRoom(pageId: number): Promise<{ room: CollabRoom; epoch: string; revision: string; seed: Recorder }> {
+    const state = await query<{ lifecycle_revision: string }>(
+      'SELECT lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+    );
+    const revision = state.rows[0]!.lifecycle_revision;
+    const seed = recorder();
+    await runtimeA!.attachSocket(pageId, {
+      id: 'seed-writer', ws: seed.ws, userId: USER_A, writable: true, expectedLifecycleRevision: revision,
+    });
+    const room = runtimeA!.getRoom(pageId)!;
+    return { room, epoch: room.docEpoch!, revision, seed };
+  }
+
+  /** A writer whose join declared `epoch`; a replay-safe client unless `docReplaySafe` is false. */
+  async function joinVerified(
+    pageId: number, id: string, epoch: string, revision: string, docReplaySafe = true,
+  ): Promise<Recorder> {
+    const socket = recorder();
+    const joined = await runtimeA!.attachSocket(pageId, {
+      id,
+      ws: socket.ws,
+      userId: USER_A,
+      writable: true,
+      expectedLifecycleRevision: revision,
+      expectedDocEpoch: { kind: 'declared', epoch },
+      docReplaySafe,
+    });
+    expect(joined.writable).toBe(true);
+    expect(joined.lineageVerified).toBe(true);
+    return socket;
+  }
+
+  /**
+   * The page's own collaborative Save dispatched its remote effect: in flight,
+   * or with `unknown` its failure marker committed. No cue is published, as if
+   * the Redis cue were still on its way. Settled when the test finishes.
+   */
+  async function ownCommit(pageId: number, state: 'in_flight' | 'unknown'): Promise<void> {
+    const intent = await reservePageWriteIntent({
+      pageIds: [pageId],
+      kind: 'collab.commit.confluence',
+      actorId: USER_A,
+      effect: {
+        effectClass: 'remote',
+        pageId,
+        confluenceId: `cf-${pageId}`,
+        expectedRemoteVersion: '4',
+        intendedStateDigest: 'a'.repeat(64),
+      },
+    });
+    await query(
+      `UPDATE page_write_intents
+          SET remote_effect_started_at = NOW(),
+              remote_effect_failed_at = CASE WHEN $2 THEN NOW() END
+        WHERE id = $1`,
+      [intent.id, state === 'unknown'],
+    );
+    onTestFinished(async () => {
+      await query(
+        `UPDATE page_write_intents
+            SET status = 'cancelled', settled_at = NOW(), settlement_reason = 'test settlement',
+                settlement_proof = '{}'::jsonb
+          WHERE id = $1`,
+        [intent.id],
+      );
+    });
+  }
+
+  it('sends a verified writer exactly one SyncStep1 with the room state vector, right after writable_admission, and applies its reply through the fenced path', async () => {
+    const pageId = nextPageId();
+    const { room, epoch, revision, seed } = await seededRoom(pageId);
+    // The seeding first join declared nothing: it is not lineage-verified and is not asked.
+    expect(serverSyncStep1s(seed.sent)).toEqual([]);
+
+    const tab = await joinVerified(pageId, 'verified-writer', epoch, revision);
+
+    const sequence = kinds(tab.sent);
+    expect(sequence.filter((kind) => kind === 'sync_step1')).toHaveLength(1);
+    expect(sequence.slice(-2)).toEqual(['control:writable_admission', 'sync_step1']);
+    const [solicitation] = serverSyncStep1s(tab.sent);
+    expect(stateVectorOf(solicitation!)).toEqual(Y.encodeStateVector(room.doc));
+
+    // The tab answers with what the room lacks; the reply is an ordinary fenced write.
+    const reply = replyTo(solicitation!, tabWithUnsentEdit(room, 'UNSENT_BEFORE_REJOIN'));
+    expect(kindOf(reply)).toBe('sync_step2');
+    expect(await runtimeA!.handleInboundFrame(pageId, 'verified-writer', reply)).toBe('ok');
+    expect(yDocToHtml(room.doc)).toContain('UNSENT_BEFORE_REJOIN');
+    // None at any later time on that socket.
+    expect(serverSyncStep1s(tab.sent)).toHaveLength(1);
+  });
+
+  it('sends a first join that declares an empty document exactly one SyncStep1 right after writable_admission; its empty reply changes nothing, and its own SyncStep1 is answered under the fence', async () => {
+    const pageId = nextPageId();
+    const state = await query<{ lifecycle_revision: string }>(
+      'SELECT lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+    );
+    const tab = recorder();
+    const joined = await runtimeA!.attachSocket(pageId, {
+      id: 'empty-first-join',
+      ws: tab.ws,
+      userId: USER_A,
+      writable: true,
+      expectedLifecycleRevision: state.rows[0]!.lifecycle_revision,
+      expectedDocEpoch: { kind: 'empty' },
+      docReplaySafe: true,
+    });
+
+    // The join seeded the room's persisted document and is verified against it.
+    expect(joined.writable).toBe(true);
+    expect(joined.lineageVerified).toBe(true);
+    const room = runtimeA!.getRoom(pageId)!;
+    expect(room.docEpoch).not.toBeNull();
+    const sequence = kinds(tab.sent);
+    expect(sequence.filter((kind) => kind === 'sync_step1')).toHaveLength(1);
+    expect(sequence.slice(-2)).toEqual(['control:writable_admission', 'sync_step1']);
+    const [solicitation] = serverSyncStep1s(tab.sent);
+    expect(stateVectorOf(solicitation!)).toEqual(Y.encodeStateVector(room.doc));
+
+    // The tab holds nothing: its reply is applied on the fenced path and changes nothing.
+    const before = Y.encodeStateAsUpdate(room.doc);
+    const empty = new Y.Doc();
+    onTestFinished(() => empty.destroy());
+    const reply = replyTo(solicitation!, empty);
+    expect(kindOf(reply)).toBe('sync_step2');
+    expect(await runtimeA!.handleInboundFrame(pageId, 'empty-first-join', reply)).toBe('ok');
+    expect(Y.encodeStateAsUpdate(room.doc)).toEqual(before);
+
+    // Its own SyncStep1 is answered like any verified writer's: inside the
+    // fence, so a committed invalidation of the row leaves it unanswered.
+    let sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'empty-first-join', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+    expect(kinds(tab.sent.slice(sent))).toEqual(['sync_step2']);
+    await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'empty-first-join', encodeSyncStep1(new Y.Doc())))
+      .toBe('dropped');
+    await vi.waitFor(() => expect(tab.closes).toEqual([[1001, 'doc_reset']]));
+    expect(kinds(tab.sent.slice(sent))).toEqual(['control:doc_reset']);
+    expect(serverSyncStep1s(tab.sent)).toHaveLength(1);
+  });
+
+  it.each([
+    ['a pinned rejoin with the matching epoch', 'declared'],
+    ['a first join with the empty-document marker', 'empty'],
+  ] as const)('verifies %s from a client without the replay-safe capability but sends it no SyncStep1; its own SyncStep1 is still answered under the fence', async (_name, kind) => {
+    const pageId = nextPageId();
+    const state = await query<{ lifecycle_revision: string }>(
+      'SELECT lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+    );
+    const revision = state.rows[0]!.lifecycle_revision;
+    let tab: Recorder;
+    if (kind === 'declared') {
+      const { epoch } = await seededRoom(pageId);
+      tab = await joinVerified(pageId, 'older-bundle', epoch, revision, false);
+    } else {
+      tab = recorder();
+      const joined = await runtimeA!.attachSocket(pageId, {
+        id: 'older-bundle',
+        ws: tab.ws,
+        userId: USER_A,
+        writable: true,
+        expectedLifecycleRevision: revision,
+        expectedDocEpoch: { kind: 'empty' },
+      });
+      expect(joined).toMatchObject({ writable: true, lineageVerified: true });
+    }
+
+    expect(kinds(tab.sent).at(-1)).toBe('control:writable_admission');
+    expect(serverSyncStep1s(tab.sent)).toEqual([]);
+    // The fence on its own SyncStep1 does not depend on the capability: once
+    // the row is invalidated it is not answered, and the room retires.
+    let sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'older-bundle', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+    expect(kinds(tab.sent.slice(sent))).toEqual(['sync_step2']);
+    await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    sent = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'older-bundle', encodeSyncStep1(new Y.Doc())))
+      .toBe('dropped');
+    await vi.waitFor(() => expect(tab.closes).toEqual([[1001, 'doc_reset']]));
+    expect(kinds(tab.sent.slice(sent))).toEqual(['control:doc_reset']);
+    expect(serverSyncStep1s(tab.sent)).toEqual([]);
+  });
+
+  it.each([
+    'an undeclared rejoin',
+    'a read-only join',
+    'a stale lifecycle revision (writable_refused)',
+    'a missing lifecycle revision (writable_refused)',
+    'an unknown own commit (commit_unknown)',
+  ] as const)('sends no SyncStep1 to %s', async (join) => {
+    const pageId = nextPageId();
+    const { epoch, revision } = await seededRoom(pageId);
+    if (join === 'an unknown own commit (commit_unknown)') await ownCommit(pageId, 'unknown');
+    const info = vi.spyOn(logger, 'info');
+    onTestFinished(() => info.mockRestore());
+    const socket = recorder();
+
+    const joined = await runtimeA!.attachSocket(pageId, {
+      id: 'not-asked',
+      ws: socket.ws,
+      userId: USER_A,
+      writable: join !== 'a read-only join',
+      expectedLifecycleRevision: join === 'a stale lifecycle revision (writable_refused)'
+        ? String(BigInt(revision) + 1n)
+        : join === 'a missing lifecycle revision (writable_refused)' ? null : revision,
+      ...(join === 'an undeclared rejoin' ? {} : { expectedDocEpoch: { kind: 'declared' as const, epoch } }),
+      // A replay-safe client: only the join's outcome keeps it from being asked.
+      docReplaySafe: true,
+    });
+
+    expect(joined.lineageVerified).toBe(false);
+    expect(joined.writable).toBe(join === 'an undeclared rejoin');
+    const outcome = {
+      'an undeclared rejoin': 'control:writable_admission',
+      'a read-only join': 'control:permission_loss',
+      'a stale lifecycle revision (writable_refused)': 'control:writable_refused',
+      'a missing lifecycle revision (writable_refused)': 'control:writable_refused',
+      'an unknown own commit (commit_unknown)': 'control:commit_unknown',
+    }[join];
+    expect(kinds(socket.sent)).toContain(outcome);
+    expect(serverSyncStep1s(socket.sent)).toEqual([]);
+    // Its own SyncStep1 is answered as before, and nothing counts as a refused write.
+    const before = socket.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'not-asked', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+    expect(kinds(socket.sent.slice(before))).toEqual(['sync_step2']);
+    expect(info.mock.calls.filter((call) => call[1] === 'collab.readonly_drop')).toEqual([]);
+  });
+
+  it('sends a demoted writer no later SyncStep1, clears its verification and answers its SyncStep1 as a reader', async () => {
+    const pageId = nextPageId();
+    const { epoch, revision } = await seededRoom(pageId);
+    const tab = await joinVerified(pageId, 'demoted-writer', epoch, revision);
+    expect(serverSyncStep1s(tab.sent)).toHaveLength(1);
+
+    await runtimeA!.demoteSocket(pageId, 'demoted-writer');
+    // A read-only socket is never lineage-verified.
+    expect(runtimeA!.getRoom(pageId)!.sockets.get('demoted-writer'))
+      .toMatchObject({ writable: false, lineageVerified: false });
+    const before = tab.sent.length;
+    expect(await runtimeA!.handleInboundFrame(pageId, 'demoted-writer', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+
+    expect(kinds(tab.sent.slice(before))).toEqual(['sync_step2']);
+    expect(serverSyncStep1s(tab.sent)).toHaveLength(1);
+  });
+
+  describe('fenced answer to a verified writer', () => {
+    /** A verified writer whose reply to the server SyncStep1 the room has applied, and a reader. */
+    async function afterValidReplay(pageId: number): Promise<{ writer: Recorder; reader: Recorder }> {
+      const { room, epoch, revision } = await seededRoom(pageId);
+      const writer = await joinVerified(pageId, 'replayed-writer', epoch, revision);
+      const reply = replyTo(serverSyncStep1s(writer.sent)[0]!, tabWithUnsentEdit(room, 'REPLAYED'));
+      expect(await runtimeA!.handleInboundFrame(pageId, 'replayed-writer', reply)).toBe('ok');
+      expect(yDocToHtml(room.doc)).toContain('REPLAYED');
+      const reader = recorder();
+      await runtimeA!.attachSocket(pageId, { id: 'reader', ws: reader.ws, userId: USER_B, writable: false });
+      return { writer, reader };
+    }
+
+    it('sends no answer once an invalidation of the collaborative row committed, and the room retires', async () => {
+      const pageId = nextPageId();
+      const { writer, reader } = await afterValidReplay(pageId);
+      await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+
+      // A reader's SyncStep1 is answered as before, without a fence.
+      const readerBefore = reader.sent.length;
+      expect(await runtimeA!.handleInboundFrame(pageId, 'reader', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+      expect(kinds(reader.sent.slice(readerBefore))).toEqual(['sync_step2']);
+
+      const writerBefore = writer.sent.length;
+      expect(await runtimeA!.handleInboundFrame(pageId, 'replayed-writer', encodeSyncStep1(new Y.Doc())))
+        .toBe('dropped');
+
+      await vi.waitFor(() => expect(writer.closes).toEqual([[1001, 'doc_reset']]));
+      expect(kinds(writer.sent.slice(writerBefore))).toEqual(['control:doc_reset']);
+      await vi.waitFor(() => expect(runtimeA!.getRoom(pageId)).toBeUndefined());
+    });
+
+    it('sends no answer once the own commit is marked unknown before its cue arrives, and demotes the writer and clears its verification', async () => {
+      const pageId = nextPageId();
+      const { writer, reader } = await afterValidReplay(pageId);
+      await ownCommit(pageId, 'unknown');
+
+      const readerBefore = reader.sent.length;
+      expect(await runtimeA!.handleInboundFrame(pageId, 'reader', encodeSyncStep1(new Y.Doc()))).toBe('ok');
+      expect(kinds(reader.sent.slice(readerBefore))).toEqual(['sync_step2']);
+
+      const writerBefore = writer.sent.length;
+      expect(await runtimeA!.handleInboundFrame(pageId, 'replayed-writer', encodeSyncStep1(new Y.Doc())))
+        .toBe('dropped');
+
+      expect(kinds(writer.sent.slice(writerBefore))).toEqual(['control:commit_unknown', 'control:permission_loss']);
+      expect(writer.closes).toEqual([[1001, 'commit_unknown']]);
+      expect(runtimeA!.getRoom(pageId)!.sockets.get('replayed-writer'))
+        .toMatchObject({ writable: false, lineageVerified: false, commitUnknownGated: true });
+    });
+
+    it('refuses neither the replay nor the answer while the page\'s own Save is in flight', async () => {
+      const pageId = nextPageId();
+      const { room, epoch, revision } = await seededRoom(pageId);
+      await ownCommit(pageId, 'in_flight');
+
+      const writer = await joinVerified(pageId, 'writer-during-save', epoch, revision);
+      const reply = replyTo(serverSyncStep1s(writer.sent)[0]!, tabWithUnsentEdit(room, 'REPLAYED_DURING_SAVE'));
+      expect(await runtimeA!.handleInboundFrame(pageId, 'writer-during-save', reply)).toBe('ok');
+      const before = writer.sent.length;
+      expect(await runtimeA!.handleInboundFrame(pageId, 'writer-during-save', encodeSyncStep1(new Y.Doc())))
+        .toBe('ok');
+
+      expect(kinds(writer.sent.slice(before))).toEqual(['sync_step2']);
+      expect(yDocToHtml(room.doc)).toContain('REPLAYED_DURING_SAVE');
+      expect(writer.closes).toEqual([]);
     });
   });
 });

@@ -55,17 +55,31 @@ export const COLLAB_DOC_EMPTY_MARKER = '1' as const;
 export const CollabDocEmptyMarkerSchema = z.literal(COLLAB_DOC_EMPTY_MARKER);
 
 /**
+ * Value of the `docReplaySafe` join parameter (#1928). A client capability,
+ * not a claim about one document: a browser bundle sends it on every connect
+ * when it never pins or replays bytes received before a document's first sync
+ * (it restarts from a clean `Y.Doc` instead). The server sends its SyncStep1,
+ * which asks the client for what the room lacks, only to a verified writer
+ * that declared it. It is not a permission. `1` is its only value.
+ */
+export const COLLAB_DOC_REPLAY_SAFE = '1' as const;
+export const CollabDocReplaySafeSchema = z.literal(COLLAB_DOC_REPLAY_SAFE);
+
+const replayCapability = { docReplaySafe: CollabDocReplaySafeSchema.optional() };
+
+/**
  * What a join to `/api/collab/:pageId` declares about the document its client
  * holds (#2034), as query parameters: the epoch that document was synced
- * from, or that it holds no document, or nothing. The two parameters exclude
- * each other; anything this schema rejects is a malformed declaration, never
- * an absent one. Neither parameter is a credential, and the server cannot
- * check the empty-document claim.
+ * from, or that it holds no document, or nothing; and, independently, whether
+ * the client is replay-safe (#1928). The two document parameters exclude each
+ * other; anything this schema rejects is a malformed declaration, never an
+ * absent one. No parameter is a credential, and the server cannot check the
+ * empty-document claim or the capability.
  */
 export const CollabJoinDeclarationSchema = z.union([
-  z.object({ expectedDocEpoch: CollabDocEpochSchema, expectedDocEmpty: z.undefined().optional() }),
-  z.object({ expectedDocEpoch: z.undefined().optional(), expectedDocEmpty: CollabDocEmptyMarkerSchema }),
-  z.object({ expectedDocEpoch: z.undefined().optional(), expectedDocEmpty: z.undefined().optional() }),
+  z.object({ expectedDocEpoch: CollabDocEpochSchema, expectedDocEmpty: z.undefined().optional(), ...replayCapability }),
+  z.object({ expectedDocEpoch: z.undefined().optional(), expectedDocEmpty: CollabDocEmptyMarkerSchema, ...replayCapability }),
+  z.object({ expectedDocEpoch: z.undefined().optional(), expectedDocEmpty: z.undefined().optional(), ...replayCapability }),
 ]);
 export type CollabJoinDeclaration = z.infer<typeof CollabJoinDeclarationSchema>;
 
