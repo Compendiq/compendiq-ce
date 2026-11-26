@@ -1018,6 +1018,49 @@ describe('ArticleViewer', () => {
       expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
         .toEqual(['42', '7']);
     });
+
+    // #1957: a nested task list as confluenceToHtml writes it (the backend's
+    // NESTED_TASK_LIST_HTML): the subtask holds a block macro, the stock
+    // TaskItem rule took that macro for the whole parent task.
+    it('keeps nested tasks, their ids and a subtask macro at their depth in a copy out of the read view (#1957)', async () => {
+      const html =
+        '<p>Release checklist</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="11">Release'
+        + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="12">Write notes '
+        + '<span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="13">Tag build<ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="14">Push tag</li></ul></li></ul></li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="15">Announce</li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => {
+        let depth = 0;
+        for (let el: Element | null = li; el; el = el.parentElement) {
+          if (el.matches('ul[data-type="taskList"]')) depth += 1;
+        }
+        return [li.getAttribute('data-task-id'), li.getAttribute('data-checked'), depth];
+      })).toEqual([['11', 'false', 1], ['12', 'true', 2], ['13', 'false', 2], ['14', 'false', 3], ['15', 'false', 1]]);
+      expect([...clipboard.querySelectorAll('.confluence-toc')].map((toc) => toc.closest('li')?.getAttribute('data-task-id')))
+        .toEqual(['12']);
+      expect(clipboard.querySelector('li[data-task-id="11"] > div > p')?.textContent).toBe('Release');
+    });
   });
 
   describe('text color and highlight in read mode', () => {
