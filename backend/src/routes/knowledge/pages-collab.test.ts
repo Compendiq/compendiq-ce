@@ -644,8 +644,79 @@ describe.skipIf(!canRun)('read-only PROTOCOL.md §6 (#1444)', () => {
 });
 
 describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
-  it('standalone DELETE after committed SQL closes 4404', async () => {
+  /** Every admission of the page, oldest first; at least one is expected. */
+  async function pageAdmissions(pageId: number): Promise<Array<{ released: boolean; kind: string | null }>> {
+    const result = await query<{ released: boolean; kind: string | null }>(
+      `SELECT released_at IS NOT NULL AS released, release_kind AS kind
+         FROM page_runtime_admissions WHERE page_id = $1 ORDER BY admitted_at`,
+      [pageId],
+    );
+    expect(result.rows.length).toBeGreaterThan(0);
+    return result.rows;
+  }
+
+  async function expectRoomReleased(pageId: number): Promise<void> {
+    for (const admission of await pageAdmissions(pageId)) {
+      expect(admission).toEqual({ released: true, kind: 'clean_disconnect' });
+    }
+    await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+    expect(getDefaultCollabRuntime()!.getRoom(pageId)).toBeUndefined();
+    expect(await getRedisClient()!.sMembers(`collab:active:${pageId}`)).toEqual([]);
+  }
+
+  it('standalone DELETE after committed SQL closes 4404, flushing an unsaved edit before the release', async () => {
     const { token, userId } = await createUser('collab_trash');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+
+    const ws = await openWritableWhatwg(pageId, token);
+    await waitOpen(ws);
+    const doc = new Y.Doc();
+    try {
+      applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+      const paragraph = new Y.XmlElement('paragraph');
+      const typed = new Y.XmlText();
+      typed.insert(0, 'TYPED_BEFORE_TRASH');
+      paragraph.insert(0, [typed]);
+      doc.getXmlFragment('default').push([paragraph]);
+      // The test's own waits keep their real-clock timeouts: arm them first.
+      const replyAfterEdit = waitSyncStep2(ws);
+      const closedP = waitClose(ws);
+      // Hold the room's real 2 s persist debounce: `setTimeout` is faked and
+      // never advanced until the room has closed, so only the close's own
+      // flush can make the edit durable. Sockets, PostgreSQL and Redis keep
+      // their real I/O; native timers armed earlier are still cleared natively.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
+        // The reply is ordered after the update on the same socket.
+        ws.send(encodeSyncStep1(doc));
+        await replyAfterEdit;
+        expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_BEFORE_TRASH');
+        expect(await persist.htmlFromPersistedDoc(pageId) ?? '').not.toContain('TYPED_BEFORE_TRASH');
+
+        const del = await app.inject({
+          method: 'DELETE',
+          url: `/api/pages/${pageId}`,
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(del.statusCode).toBe(200);
+        const closed = await closedP;
+        expect(closed.code).toBe(4404);
+      } finally {
+        vi.useRealTimers();
+      }
+    } finally {
+      doc.destroy();
+    }
+    // Trash keeps the row: the close flushed the edit, then released (#1922 control).
+    expect(await persist.htmlFromPersistedDoc(pageId)).toContain('TYPED_BEFORE_TRASH');
+    await expectRoomReleased(pageId);
+    expect((await query('SELECT 1 FROM pages WHERE id = $1 AND deleted_at IS NOT NULL', [pageId])).rowCount).toBe(1);
+  });
+
+  it('standalone permanent DELETE closes a writable room 4404 committed_delete and releases its admission (#1922)', async () => {
+    const { token, userId } = await createUser('collab_permanent');
     const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
     await enableCollabFlag();
 
@@ -654,12 +725,15 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
 
     const del = await app.inject({
       method: 'DELETE',
-      url: `/api/pages/${pageId}`,
+      url: `/api/pages/${pageId}?permanent=true`,
       headers: { authorization: `Bearer ${token}` },
     });
-    expect(del.statusCode).toBe(200);
+    expect(del.statusCode, del.body).toBe(200);
     const closed = await closedP;
-    expect(closed.code).toBe(4404);
+    expect(closed).toMatchObject({ code: 4404, reason: 'committed_delete' });
+    expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rowCount).toBe(0);
+    // Read straight after the response: the tombstone ran before it.
+    await expectRoomReleased(pageId);
   });
 
   it('bulk trash after committed SQL closes 4404', async () => {
@@ -838,6 +912,7 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
       expect(closed.code).toBe(4404);
       expect(closed.reason).toBe('committed_delete');
       expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rowCount).toBe(0);
+      await expectRoomReleased(pageId);
     } finally {
       await new Promise<void>((resolve, reject) => upstream.close((error) => (error ? reject(error) : resolve())));
     }
@@ -2263,6 +2338,119 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       await removePastedImageRoot(fixture.root, fixture.priorRoot);
     }
   });
+
+  describe('draw.io previews on a collaborative Save (#1935)', () => {
+    const DRAWIO = '<div class="confluence-drawio" data-diagram-name="Arch">'
+      + '<img src="/api/attachments/local-src/Arch.png" alt="Arch"></div>';
+
+    async function commitWith(bodyHtml: string) {
+      const fixture = await createPastedImageRoot();
+      let upstream: ReturnType<typeof createServer> | null = null;
+      let ws: WebSocket | null = null;
+      try {
+        await fs.promises.writeFile(
+          path.join(fixture.root, 'local-src', 'Arch.png'),
+          Buffer.from('cached drawio preview bytes'),
+        );
+        const { token, userId, pageId, confluenceId } = await seedConfluencePage({ version: 4, bodyHtml });
+        const attachmentPosts: Array<{ filename: string | null; contentType: string }> = [];
+        const pagePuts: Array<{ storage: string }> = [];
+        upstream = createServer(async (request, response) => {
+          const urlPath = new URL(request.url ?? '/', 'http://fixture.test').pathname;
+          response.setHeader('content-type', 'application/json');
+          if (request.method === 'POST' && urlPath === `/rest/api/content/${confluenceId}/child/attachment`) {
+            let raw = '';
+            for await (const chunk of request) raw += String(chunk);
+            attachmentPosts.push({
+              filename: /filename="([^"]*)"/.exec(raw)?.[1] ?? null,
+              contentType: String(request.headers['content-type'] ?? ''),
+            });
+            response.end(JSON.stringify({ results: [{
+              id: 'attachment-1',
+              title: attachmentPosts.at(-1)!.filename,
+              mediaType: 'image/png',
+              version: { number: 1, when: '2026-09-20T00:00:01Z' },
+            }] }));
+            return;
+          }
+          if (urlPath !== `/rest/api/content/${confluenceId}`) {
+            response.writeHead(404).end();
+            return;
+          }
+          if (request.method === 'GET') {
+            response.end(JSON.stringify({
+              id: confluenceId, title: 'Conf page', type: 'page', status: 'current',
+              version: { number: 4, when: '2026-09-20T00:00:00Z' },
+              body: { storage: { value: '<p>commit-seed</p>' } },
+            }));
+            return;
+          }
+          if (request.method !== 'PUT') {
+            response.writeHead(405).end();
+            return;
+          }
+          let bytes = '';
+          for await (const chunk of request) bytes += String(chunk);
+          const sent = JSON.parse(bytes);
+          pagePuts.push({ storage: sent.body.storage.value });
+          response.end(JSON.stringify({
+            ...sent, id: confluenceId, status: 'current', version: { number: 5, when: '2026-09-20T00:00:02Z' },
+          }));
+        });
+        await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
+        const baseUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1', [userId, baseUrl]);
+
+        ws = await openAndSync(pageId, token);
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: commitPayload(ws, 'Drawio commit'),
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        const intents = await query<{ kind: string; status: string }>(
+          `SELECT kind, status FROM page_write_intents
+            WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+          [pageId],
+        );
+        return { attachmentPosts, pagePuts, intents: intents.rows };
+      } finally {
+        ws?.close();
+        if (upstream) {
+          upstream.closeAllConnections();
+          await new Promise<void>((resolve) => upstream!.close(() => resolve()));
+        }
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    }
+
+    it('reserves the non-media kind and uploads nothing for a page with only draw.io previews', async () => {
+      const { attachmentPosts, pagePuts, intents } = await commitWith(`<p>text</p>${DRAWIO}`);
+
+      expect(attachmentPosts).toEqual([]);
+      expect(pagePuts).toHaveLength(1);
+      expect(pagePuts[0]!.storage).toContain('ac:name="drawio"');
+      expect(pagePuts[0]!.storage).toContain('<ac:parameter ac:name="diagramName">Arch</ac:parameter>');
+      expect(intents).toEqual([{ kind: 'collab.commit.confluence', status: 'completed' }]);
+    });
+
+    it('reserves the media kind and uploads exactly the pasted image next to a draw.io preview', async () => {
+      const { attachmentPosts, pagePuts, intents } = await commitWith(
+        `<p>text</p>${DRAWIO}<img src="/api/attachments/local-src/pasted.png">`,
+      );
+
+      expect(attachmentPosts).toHaveLength(1);
+      expect(attachmentPosts[0]).toMatchObject({ filename: 'pasted.png' });
+      expect(attachmentPosts[0]!.contentType).toMatch(/^multipart\/form-data; boundary=/);
+      expect(pagePuts).toHaveLength(1);
+      expect(pagePuts[0]!.storage).toContain('ac:name="drawio"');
+      expect(pagePuts[0]!.storage).toContain('<ac:parameter ac:name="diagramName">Arch</ac:parameter>');
+      expect(pagePuts[0]!.storage).toContain('ri:filename="pasted.png"');
+      expect(intents).toEqual([{ kind: 'collab.commit.confluence.media', status: 'completed' }]);
+    });
+  });
+
 
   it('cancels before remote dispatch when planned pasted-image bytes change', async () => {
     const fixture = await createPastedImageRoot();

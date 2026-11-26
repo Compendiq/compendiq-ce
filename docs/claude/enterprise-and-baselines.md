@@ -148,7 +148,11 @@ Recovery administration is checked on the mutation client at fencing, claim,
 verification, repair and settlement. Quiescence authorizes and audits before
 closing the gate, then rechecks after draining; revocation leaves the gate
 closed but cannot produce an acknowledgment. Original-writer authority remains
-a separate check.
+a separate check. When every remaining blocker is a room admission held by its
+page's own unknown-outcome collaborative Save of this runtime, quiescence
+answers `409 runtime_quiesce_blocked_by_collab_commit` with the intent ids after
+its 30 s bound (#1934); it never releases, fences or acknowledges, and any
+other blocker keeps the unbounded wait.
 Every accepted recovery attempt, including a same-runtime retry by a different
 admin, records that actor and reason before callbacks. Quiescence cancellation
 records the acting admin in `settled_by`, not the original writer.
@@ -220,12 +224,27 @@ effect was dispatched, quiesced and marked otherwise), and started unknown
 intents still need a termination-verified fence.
 
 Local delete recovery uses exact tombstones and retries committed cleanup
-without repeating deletion.
+without repeating deletion. It closes the deleted pages' collaborative rooms
+(4404 `committed_delete`, every pod) from `afterCommit` too. The page ids run
+independently and concurrently (`Promise.allSettled`, each rejection logged),
+never inside the settlement transaction: that holds the page lifecycle lock a
+writable room's final flush takes.
 Remote delete recovery completes the normal delete's room closure: its
 reconciler destroys the row inside the settlement transaction and closes
 collaborative rooms (4404 `committed_delete`, every pod) from `afterCommit`,
-after COMMIT. `afterCommit` never runs on rollback; its failure is logged, never
-a failed recovery of a settled intent.
+after COMMIT. `afterCommit` never runs on rollback (no 4404 is sent and
+`collab:active` is kept; the retry closes the room); its failure is logged, never
+a failed recovery of a settled intent. Accepted residual for both: a crash
+between COMMIT and the close, or a COMMIT whose acknowledgment is lost (the
+reconcile rejects without running `afterCommit`, the intent is already settled),
+is not retried and a later reconcile does not close the room (a durable outbox is
+out of scope): sockets close on disconnect and a fresh join answers 4404.
+A writable room admission is released only after a successful flush, a
+server-proven fence, `doc_reset`/lifecycle retirement, the one-time upgrade
+retirement, or (#1922) a flush that
+failed with `page_not_found` for a page whose row the release transaction
+re-proves absent after runtime → lifecycle locking. Never widen that to other
+404s, other flush errors or a caller's claim of deletion.
 Persist the create identity and each upload receipt before further provider work.
 Bound receipt capacity by the admitted inventory, not a fixed aggregate that can
 fail after valid uploads; the generic terminal result binds a count and ordered

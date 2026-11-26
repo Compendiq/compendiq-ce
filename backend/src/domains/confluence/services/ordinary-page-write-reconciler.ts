@@ -7,6 +7,7 @@ import { confluenceToHtml, htmlToText } from '../../../core/services/content-con
 import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
+import { logger } from '../../../core/utils/logger.js';
 import {
   discardPageIconForDeletedPage,
   pageIconDirectoryAbsent,
@@ -1163,13 +1164,34 @@ const reconcileDelete: PageWriteIntentReconciler = async (client, intent) => {
       details: { remoteEffectsCompleted: true, terminalEvidence: 'remote-page-absent' },
     },
     result: { pageId },
-    // 4404 is permanent. Unlike the local-delete siblings, this row is
-    // destroyed by the settlement transaction itself, so close the rooms only
-    // after that COMMIT; doing it in here would also wait on our own page
-    // lifecycle lock, which a writable room's final flush takes.
+    // 4404 is permanent, and a writable room's final flush takes the page
+    // lifecycle lock this settlement transaction holds. Close the rooms only
+    // after that COMMIT, never inside it; the local-delete kinds do the same
+    // through `tombstoneDeletedPagesAfterCommit`.
     afterCommit: () => tombstoneCollabRoomAfterCommit(pageId),
   };
 };
+
+/**
+ * The `afterCommit` side effect of the local-delete kinds. Each id is closed
+ * independently: one failing tombstone is logged and must not skip the others.
+ * `runAfterSettlement` only contains the closure's rejection as a whole.
+ */
+function tombstoneDeletedPagesAfterCommit(intentId: string, pageIds: readonly number[]): () => Promise<void> {
+  return async () => {
+    const outcomes = await Promise.allSettled(
+      pageIds.map((pageId) => tombstoneCollabRoomAfterCommit(pageId)),
+    );
+    outcomes.forEach((outcome, index) => {
+      if (outcome.status === 'rejected') {
+        logger.warn(
+          { err: outcome.reason, intentId, pageId: pageIds[index] },
+          'page-write recovery: closing the collaboration room of a deleted page failed after the intent settled',
+        );
+      }
+    });
+  };
+}
 const LOCAL_DELETE_KINDS = [
   'pages.delete.standalone',
   'pages.delete.local',
@@ -1338,7 +1360,6 @@ const reconcileLocalDelete: PageWriteIntentReconciler = async (client, intent) =
     // it. Re-running the existing cleanup applies those rules without guessing.
     for (const pageId of deletedIds) {
       await cleanupStandalonePageAttachmentDirs({ id: pageId }, client);
-      await tombstoneCollabRoomAfterCommit(pageId);
     }
     await enqueuePageWriteInvalidation(client, intent.id);
     return {
@@ -1354,6 +1375,8 @@ const reconcileLocalDelete: PageWriteIntentReconciler = async (client, intent) =
         },
       },
       result: { deletedCount: deletedIds.length },
+      // This transaction holds the page lifecycle lock; see reconcileDelete.
+      afterCommit: tombstoneDeletedPagesAfterCommit(intent.id, deletedIds),
     };
   }
 
@@ -1413,7 +1436,6 @@ const reconcileLocalDelete: PageWriteIntentReconciler = async (client, intent) =
   // Even with the directory already absent, repeat the cleanup service so its
   // Redis failure counters converge too. It is identity-bound and idempotent.
   await cleanPageAttachments(identity.confluenceId, { client, strict: true });
-  await tombstoneCollabRoomAfterCommit(identity.pageId);
   await enqueuePageWriteInvalidation(client, intent.id);
   return {
     outcome: 'applied' as const,
@@ -1428,6 +1450,8 @@ const reconcileLocalDelete: PageWriteIntentReconciler = async (client, intent) =
       },
     },
     result: { pageId: identity.pageId },
+    // This transaction holds the page lifecycle lock; see reconcileDelete.
+    afterCommit: tombstoneDeletedPagesAfterCommit(intent.id, [identity.pageId]),
   };
 };
 

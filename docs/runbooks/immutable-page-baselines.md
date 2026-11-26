@@ -540,7 +540,9 @@ While the freeze holds the page lifecycle locks it refuses with
 unreleased runtime admission (`assertPageFreezeIdle`). A writable collaborative
 room admission is the common case: it exists from the moment an editor joins
 write-enabled and is released only by a clean disconnect with a successful
-flush or by a server-proven fence. Redis presence is not the authority, and a
+flush, by a server-proven fence, or by one of the server-decided retirements
+listed under *Diagnosing blocked writers*, such as a page proven hard-deleted
+(#1922). Redis presence is not the authority, and a
 read-only viewer holds no admission, so neither blocks. The refusal writes
 nothing: no baseline, reservation, history or lifecycle event. The shared
 client explains it as "someone is editing this article right now — ask them to
@@ -802,10 +804,31 @@ establish a terminal outcome.
 
 A writable room admission remains active until a clean disconnect and successful
 flush, or a server-proven runtime fence. Redis liveness, a missing heartbeat,
-elapsed time, and process age do not expire it. The one non-fence exit is the
-schema-upgrade retirement described under *One-time152 Notion identity snapshot
-upgrade* (`release_kind = 'upgrade_retired'`), which is justified by the write
-gate it closes in the same transaction. A flush that only waits for
+elapsed time, and process age do not expire it. A few intentional releases need
+neither a flush nor a fence, and each is decided by the server:
+
+- the room's retirement on `doc_reset` and on a lifecycle change (freeze or
+  thaw), which end the room's document or its lifecycle revision and release
+  without a final flush;
+- the schema-upgrade retirement described under *One-time152 Notion identity
+  snapshot upgrade* (`release_kind = 'upgrade_retired'`), which is justified by
+  the write gate it closes in the same transaction;
+- a page proven absent (#1922): when the room's final flush fails with
+  `page_not_found`, the room re-reads the page inside its release transaction,
+  after the runtime and page lifecycle locks, and releases the admission
+  (`release_kind = 'clean_disconnect'`) only if the row is gone. A hard-deleted
+  page has no row for the room's edits to land in. If the row is still there or
+  the proof query fails, the admission is kept; no other flush failure, HTTP
+  404 or caller's claim of deletion releases it.
+
+The deleted-page exit releases only the room admission, never a write intent.
+The delete's own intent (for example `pages.delete.standalone`,
+`pages.delete.confluence` or `pages.bulk.delete.remote`) destroys the row
+before it settles, so a room can release while that intent is still pending;
+the intent settles, or stays pending for reconciliation, on its own path. Any
+other pending intent on the
+page refuses the protected delete paths before they destroy the row, so this
+exit is no way around a competing pending intent. A flush that only waits for
 the page's own pending collaborative Save (`collab.commit.confluence` or
 `.media`) is not a failure: the room keeps the admission and retries the flush
 and release once that Save settles, at once on its `pages_version` control and
@@ -881,15 +904,24 @@ persist them:
   failure marker recorded, the failed Save itself no longer holds its
   runtime's drain, also when it failed between an upload and the page update.
   A runtime that hosts no room of the page can therefore acknowledge
-  quiescence. A runtime that hosts one still waits behind that room admission
-  (#1934). While the failure marker is not recorded, a Save that failed
-  between its phases keeps holding the drain as before.
+  quiescence. A runtime that hosts one cannot drain behind that room
+  admission; when that is all that is left on it, quiescence there answers a
+  definite `409 runtime_quiesce_blocked_by_collab_commit` (#1934, see
+  *Quiescence blocked by its own collaborative Save* below). While the failure
+  marker is not recorded, a Save that failed between its phases keeps holding
+  the drain as before.
 
 After reconciliation, rooms of the page on other runtimes persist on their
 next edit, last-writer flush or release retry. The runtime that ran the Save
 cannot get there while it hosts a room of that page. Reconciliation needs that
 runtime fenced, and the room admission it holds behind the pending intent
-keeps it from draining, so quiescence never answers (#1934). Terminate that
+keeps it from draining. When that is all that is left on that runtime (no
+local operation or effect continuation running, and every room admission it
+holds is on a page with its own such Save), quiescence there answers a
+definite `409 runtime_quiesce_blocked_by_collab_commit` naming the blocking
+intent once its wait bound has passed (#1934, see *Quiescence blocked by its
+own collaborative Save* below); any other remaining blocker keeps the wait. It
+never releases the admission and never acknowledges. Terminate that
 process and fence it with independently verified local termination (below);
 where that cannot be verified, the fence fails closed and the intent stays
 pending. Edits that reached only its room while that Save was running then survive
@@ -990,6 +1022,77 @@ Authorization: Bearer <system-admin-token>
 The result is `{ "unresolvedIntents": <non-negative integer> }`. Remove or
 restart the quiesced process before returning it to service; its writer gate is
 intentionally irreversible for that process lifetime.
+
+### Quiescence blocked by its own collaborative Save (#1934)
+
+Quiescence waits up to 30 s for a full drain. Until then only a drain ends the
+wait. From that bound on, the process classifies what still blocks it: at the
+bound, on every change of its local work (an operation starts or finishes, an
+admission is taken or released, an effect changes state) and at least every
+5 s, re-reading the database each time. One classification has a 10 s
+deadline covering the connection checkout, the administrator check, the read
+and cleanup. A drain always wins: if the process is drained when a timer or a
+classification completes, the request goes on to the normal acknowledgment.
+
+The request answers `409` when nothing else runs (no local operation, no
+running or successful effect continuation) and every remaining room admission
+of this process is on a page whose own collaborative Save
+(`collab.commit.confluence` or `.media`) of this process is still pending with
+a dispatched remote call and no terminal result. Such an intent is enough to
+keep the room's flush, and therefore its admission, from finishing. The body
+names ids and kinds only:
+
+```json
+{
+  "error": "PageWriteError",
+  "reason": "runtime_quiesce_blocked_by_collab_commit",
+  "code": "runtime_quiesce_blocked_by_collab_commit",
+  "message": "…",
+  "blockingIntents": [
+    { "intentId": "<intent UUID>", "kind": "collab.commit.confluence", "pageIds": [42] }
+  ],
+  "runbook": "docs/runbooks/immutable-page-baselines.md"
+}
+```
+
+With a responsive database it arrives at the bound; for a blocker set that
+stays the same it arrives no later than 40 s (bound plus one classification).
+No time is promised while the blockers keep changing, or while any other
+blocker remains (a running operation, a foreign pending intent, an ordinary
+flush failure on a page without such a Save): those keep the unbounded wait
+described above. A running operation is waited for first; the `409` follows
+its drain.
+
+Two other refusals end the request without ids:
+
+- `403 recovery_admin_required`: the administrator was demoted or deactivated
+  after the request was accepted. The administrator is checked again before
+  any id is disclosed.
+- `503 runtime_quiesce_classification_unavailable`: the classification missed
+  its deadline, its database read failed or its connection was lost (the
+  broken connection is discarded). A result that arrives after the deadline is
+  discarded, and a connection that arrives after the deadline runs no SQL.
+
+In every refusal the writer gate stays closed (this process refuses every new
+admission and effect with `409 runtime_quiescing`; an already admitted
+continuation may still finish), no acknowledgment is written, and
+the room admission and the intent stay exactly as they were: nothing is
+released, fenced or force-cleared. Sending the request again re-audits it and
+runs the same wait.
+
+The way out of the `409`: terminate the process, fence it with
+`verified_local_termination` (*Independently verified local termination*
+below), then reconcile each named intent. For
+`collab.commit.confluence.media` that does not unblock the page: the kind is
+`remote_terminal_only`, so after a dispatched upload without a terminal result
+reconciliation still answers `intent_outcome_unrecoverable` and the page stays
+write-blocked. A Save that failed between an image upload and the page update
+leaves a successful upload continuation. While its failure marker (#2035,
+above) is not recorded, that continuation keeps quiescence waiting and the
+case is not answered by this `409`. Once the marker is recorded the
+continuation no longer holds the drain: a parked request re-checks at once and
+answers this `409` naming the `.media` intent when only such room admissions
+remain.
 
 ### Crashed process with no started effects
 
@@ -1198,10 +1301,17 @@ can destroy the observation the verifier needs.
 
 Local standalone, integration-off synced, and bulk hard-delete intents have
 registered recovery. Exact deletion tombstones prove which rows committed;
-cleanup retries attachments/icons, collaboration tombstones and durable cache
-publication without repeating the delete. Partial or conflicting evidence stays
-pending. Once deletion is committed, an active recovery administrator may finish
-cleanup even if the original writer is no longer active.
+cleanup retries attachments/icons and durable cache publication without
+repeating the delete. Once the settlement commits, the deleted pages'
+collaboration rooms are closed (4404 `committed_delete`), the page ids
+independently and concurrently; a settlement that rolls back closes nothing, and
+retrying the reconcile closes them. Not retried: a crash between the COMMIT and
+that close, or a COMMIT whose acknowledgment is lost (the reconcile fails but
+the intent is already settled, so a later reconcile does not close the rooms).
+In both, open sockets close on disconnect and a fresh join answers 4404.
+Partial or conflicting evidence stays pending. Once deletion is committed, an
+active recovery administrator may finish cleanup even if the original writer is
+no longer active.
 
 ### `remote_conditional`
 
@@ -1260,7 +1370,8 @@ kind-specific recovery distinguishes three states:
 A Confluence delete whose remote delete is known complete and observed absent
 finishes the local hard delete, attachment/icon cleanup and cache publication in
 the settlement transaction, then closes open collaborative rooms with 4404 after
-COMMIT. An undispatched one restores the hidden row and leaves its rooms open.
+COMMIT; a writable room then releases its admission once it proves the page row
+gone (#1922). An undispatched one restores the hidden row and leaves its rooms open.
 
 Ordinary page updates and draft publications record a successful PUT
 acknowledgment before any follow-up GET. A compact reply is therefore not
