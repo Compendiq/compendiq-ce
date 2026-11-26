@@ -256,11 +256,16 @@ function sanitizeHtml(html: string): string {
     // data-drawio-xml are stripped with every other data-* attribute, since
     // they would tie the new page to another page's attachment or hand the
     // draw.io editor XML from the file.
+    // #1956: GFM column alignment. marked emits `align="left|center|right"` on
+    // every th/td of an aligned column. ALLOWED_ATTR is global, so `align` is
+    // admitted here for every allowed tag and removed again below from
+    // everything but th/td, and from a th/td with any other value.
     ALLOWED_ATTR: [
       'href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel',
       'start', 'type',
       'data-type', 'data-checked',
       'data-diagram-name',
+      'align',
     ],
     ADD_URI_SAFE_ATTR: ['data-diagram-name'],
     ALLOW_DATA_ATTR: false,
@@ -269,6 +274,18 @@ function sanitizeHtml(html: string): string {
   for (const element of body.querySelectorAll('[data-diagram-name]')) {
     if (UNWRITABLE_DIAGRAM_NAME.test(element.getAttribute('data-diagram-name') ?? '')) {
       element.removeAttribute('data-diagram-name');
+    }
+  }
+  // #1956: `align` survives on th/td only, with one of three values, written
+  // canonical (lower case). A post-pass rather than a DOMPurify hook: hooks
+  // are registered on the singleton shared with the Notion converter.
+  for (const element of body.querySelectorAll('[align]')) {
+    const value = (element.getAttribute('align') ?? '').trim().toLowerCase();
+    if ((element.tagName === 'TH' || element.tagName === 'TD')
+      && (value === 'left' || value === 'center' || value === 'right')) {
+      element.setAttribute('align', value);
+    } else {
+      element.removeAttribute('align');
     }
   }
   return body.innerHTML;
