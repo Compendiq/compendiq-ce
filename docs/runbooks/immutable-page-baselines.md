@@ -1039,10 +1039,17 @@ can destroy the observation the verifier needs.
 
 Local standalone, integration-off synced, and bulk hard-delete intents have
 registered recovery. Exact deletion tombstones prove which rows committed;
-cleanup retries attachments/icons, collaboration tombstones and durable cache
-publication without repeating the delete. Partial or conflicting evidence stays
-pending. Once deletion is committed, an active recovery administrator may finish
-cleanup even if the original writer is no longer active.
+cleanup retries attachments/icons and durable cache publication without
+repeating the delete. Once the settlement commits, the deleted pages'
+collaboration rooms are closed (4404 `committed_delete`), the page ids
+independently and concurrently; a settlement that rolls back closes nothing, and
+retrying the reconcile closes them. Not retried: a crash between the COMMIT and
+that close, or a COMMIT whose acknowledgment is lost (the reconcile fails but
+the intent is already settled, so a later reconcile does not close the rooms).
+In both, open sockets close on disconnect and a fresh join answers 4404.
+Partial or conflicting evidence stays pending. Once deletion is committed, an
+active recovery administrator may finish cleanup even if the original writer is
+no longer active.
 
 ### `remote_conditional`
 
