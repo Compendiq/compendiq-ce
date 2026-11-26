@@ -36,3 +36,4 @@ export * from './schemas/searxng.js';
 export * from './types/common.js';
 export * from './llm.js';
 export * from './image-analysis.js';
+export * from './confluence-link-grammar.js';
