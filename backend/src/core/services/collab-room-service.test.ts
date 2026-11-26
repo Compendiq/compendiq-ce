@@ -39,12 +39,13 @@ import {
   type CollabRuntime,
   type CollabInboundResult,
 } from './collab-room-service.js';
-import { assertNoLiveCollabRoom } from './collab-guard.js';
+import { assertNoLiveCollabRoom, isLiveCollabRoom } from './collab-guard.js';
 import { setRedisClient } from './redis-cache.js';
 import * as persist from './collab-persistence.js';
 import {
   admitPageRuntime,
   cancelPageWriteIntentBeforeEffect,
+  PageWriteError,
   releasePageRuntime,
   reservePageWriteIntent,
   withPageWriteTransaction,
@@ -2865,5 +2866,369 @@ describe.skipIf(!canRun)('own collaborative Save window (#1763)', () => {
       // Shutdown retained this admission on purpose; retire the known token.
       await releasePageRuntime(admission);
     }
+  });
+});
+
+describe.skipIf(!canRun)('room admission of a hard-deleted page (#1922)', () => {
+  type Close = { code: number; reason: string };
+
+  /**
+   * A second backend process: fresh module instances with their own writer
+   * runtime, local drain state, pool and default collaboration runtime. Its
+   * quiescence proves its local admissions drained without closing the gate
+   * of the process the other tests share.
+   */
+  async function collabReplica() {
+    // Dynamic on purpose: a static import would share this process's
+    // instances (body-text-backfill.integration.test.ts uses the same pattern).
+    vi.resetModules();
+    const roomService = await import('./collab-room-service.js');
+    const tombstones = await import('./collab-tombstone.js');
+    const writer = await import('./page-write-admission.js');
+    const pg = await import('../db/postgres.js');
+    vi.resetModules();
+    const teardown = await roomService.initCollabBus(main!);
+    return {
+      runtime: roomService.getDefaultCollabRuntime()!,
+      tombstoneAfterCommit: tombstones.tombstoneCollabRoomAfterCommit,
+      /** Resolves `true` once the replica acknowledged quiescence, `false` if it is still waiting after 5 s. */
+      async drains(): Promise<boolean> {
+        // Quiescence waits for drain without a deadline of its own: a retained
+        // admission would hang the test instead of failing this assertion.
+        const { promise: waiting, resolve } = Promise.withResolvers<false>();
+        const timer = setTimeout(() => resolve(false), 5_000);
+        try {
+          return await Promise.race([
+            writer.quiescePageWriterRuntime({
+              actorId: SYSTEM_ADMIN,
+              reason: 'Drain the replica that hosted the deleted page',
+            }).then(() => true),
+            waiting,
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      async close(): Promise<void> {
+        await teardown();
+        await pg.closePool();
+      },
+    };
+  }
+
+  async function admissionState(admissionId: string): Promise<{ released: boolean; kind: string | null }> {
+    const result = await query<{ released: boolean; kind: string | null }>(
+      `SELECT released_at IS NOT NULL AS released, release_kind AS kind
+         FROM page_runtime_admissions WHERE id = $1`,
+      [admissionId],
+    );
+    return result.rows[0]!;
+  }
+
+  async function hardDelete(pageId: number): Promise<void> {
+    await query('DELETE FROM pages WHERE id = $1', [pageId]);
+  }
+
+  async function attachWriter(runtime: CollabRuntime, pageId: number, id: string, closes: Close[] = []) {
+    await runtime.attachSocket(pageId, {
+      id, ws: stubWs((code, reason) => { closes.push({ code, reason }); }), userId: USER_A, writable: true,
+    });
+    const room = runtime.getRoom(pageId)!;
+    expect(room.admission).not.toBeNull();
+    return room.admission!;
+  }
+
+  /** The one backend whose statement `holder` blocks, with that statement's text. */
+  async function statementBlockedBy(holderPid: number): Promise<{ pid: number; query: string }> {
+    let blocked: { pid: number; query: string } | undefined;
+    await vi.waitFor(async () => {
+      const rows = await query<{ pid: number; query: string }>(
+        `SELECT pid, query FROM pg_stat_activity
+          WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
+        [holderPid],
+      );
+      expect(rows.rows).toHaveLength(1);
+      blocked = rows.rows[0]!;
+    });
+    return blocked!;
+  }
+
+  /** Cancel the one statement `holder` blocks, the way a statement timeout would end it. */
+  async function cancelStatementBlockedBy(holderPid: number): Promise<void> {
+    const { pid } = await statementBlockedBy(holderPid);
+    await query('SELECT pg_cancel_backend($1)', [pid]);
+  }
+
+  async function withSlowDeferredRetry<T>(run: () => Promise<T>): Promise<T> {
+    const previousRetry = process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+    // A 60 s backoff leaves the deferral outstanding until the test acts.
+    process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = '60000';
+    try {
+      return await run();
+    } finally {
+      if (previousRetry === undefined) delete process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+      else process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = previousRetry;
+    }
+  }
+
+  it('the deleting pod closes its writable room 4404, releases the admission and drains', async () => {
+    const replica = await collabReplica();
+    try {
+      const pageId = nextPageId();
+      const closes: Close[] = [];
+      const admission = await attachWriter(replica.runtime, pageId, 'editor', closes);
+      expect(await main!.sMembers(`collab:active:${pageId}`)).toContain(`${replica.runtime.podId}:editor`);
+      await hardDelete(pageId);
+
+      await replica.tombstoneAfterCommit(pageId);
+
+      expect(closes).toEqual([{ code: 4404, reason: 'committed_delete' }]);
+      expect(await admissionState(admission.id)).toEqual({ released: true, kind: 'clean_disconnect' });
+      expect(await isLiveCollabRoom(pageId)).toBe(false);
+      expect(replica.runtime.getRoom(pageId)).toBeUndefined();
+      expect(await main!.sMembers(`collab:active:${pageId}`)).toEqual([]);
+      expect(await replica.drains()).toBe(true);
+    } finally {
+      await replica.close();
+    }
+  });
+
+  it('a peer pod closes its writable room on the Redis tombstone, releases the admission and drains', async () => {
+    const replica = await collabReplica();
+    try {
+      const pageId = nextPageId();
+      const closes: Close[] = [];
+      const admission = await attachWriter(replica.runtime, pageId, 'peer-editor', closes);
+      await hardDelete(pageId);
+
+      // What `tombstoneCollabRoomAfterCommit` runs on the deleting pod, which hosts no room.
+      await runtimeA!.tombstone(pageId, 4404, 'committed_delete');
+
+      await vi.waitFor(async () => {
+        expect(closes).toEqual([{ code: 4404, reason: 'committed_delete' }]);
+        expect(replica.runtime.getRoom(pageId)).toBeUndefined();
+        expect(await admissionState(admission.id)).toEqual({ released: true, kind: 'clean_disconnect' });
+      }, { timeout: 5_000 });
+      expect(await isLiveCollabRoom(pageId)).toBe(false);
+      expect(await main!.sMembers(`collab:active:${pageId}`)).toEqual([]);
+      expect(await replica.drains()).toBe(true);
+    } finally {
+      await replica.close();
+    }
+  });
+
+  it('the last writer leaving after a hard delete without a tombstone releases the admission and drops the room', async () => {
+    const replica = await collabReplica();
+    try {
+      const pageId = nextPageId();
+      const admission = await attachWriter(replica.runtime, pageId, 'last-editor');
+      await hardDelete(pageId);
+
+      await replica.runtime.detachSocket(pageId, 'last-editor');
+
+      expect(await admissionState(admission.id)).toEqual({ released: true, kind: 'clean_disconnect' });
+      expect(await isLiveCollabRoom(pageId)).toBe(false);
+      // Both the socket's and the room's suffixes; no tombstone deleted the key.
+      expect(await main!.sMembers(`collab:active:${pageId}`)).toEqual([]);
+      await vi.waitFor(() => {
+        expect(replica.runtime.getRoom(pageId)).toBeUndefined();
+      });
+      expect(await replica.drains()).toBe(true);
+    } finally {
+      await replica.close();
+    }
+  });
+
+  it('a deferred release retried after the page was hard-deleted releases the admission and drops the room', async () => {
+    await withSlowDeferredRetry(async () => {
+      const pageId = nextPageId();
+      const admission = await attachWriter(runtimeA!, pageId, 'deferred-editor');
+      const commit = await reservePageWriteIntent({
+        pageIds: [pageId],
+        kind: 'collab.commit.confluence',
+        actorId: USER_A,
+        effect: {
+          effectClass: 'remote',
+          pageId,
+          confluenceId: `cf-${pageId}`,
+          expectedRemoteVersion: '4',
+          intendedStateDigest: 'a'.repeat(64),
+        },
+      });
+      let settled = false;
+      try {
+        await runtimeA!.detachSocket(pageId, 'deferred-editor');
+        const room = runtimeA!.getRoom(pageId)!;
+        expect(room.deferredReleaseAttempts).toBe(1);
+        await cancelPageWriteIntentBeforeEffect(commit);
+        settled = true;
+        await hardDelete(pageId);
+
+        // The commit's cue runs the outstanding retry now instead of in 60 s.
+        runtimeA!.broadcastControl(pageId, { type: 'pages_version', version: 2 });
+
+        await vi.waitFor(async () => {
+          expect(await admissionState(admission.id)).toEqual({ released: true, kind: 'clean_disconnect' });
+          expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+        }, { timeout: 5_000 });
+        expect(await isLiveCollabRoom(pageId)).toBe(false);
+        expect(await main!.sMembers(`collab:active:${pageId}`)).toEqual([]);
+      } finally {
+        if (!settled) await cancelPageWriteIntentBeforeEffect(commit);
+      }
+    });
+  });
+
+  it('a page_not_found flush keeps the admission while the page row still exists', async () => {
+    const pageId = nextPageId();
+    const admission = await attachWriter(runtimeA!, pageId, 'editor');
+    const flush = vi.spyOn(persist, 'flushCollabPersist')
+      .mockRejectedValue(new PageWriteError(404, 'page_not_found', 'One or more pages no longer exist'));
+    try {
+      await runtimeA!.tombstone(pageId, 4404, 'committed_delete');
+
+      expect(flush).toHaveBeenCalled();
+      expect(await admissionState(admission.id)).toEqual({ released: false, kind: null });
+      await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({ code: 'collab_session_active' });
+    } finally {
+      flush.mockRestore();
+      // The room is gone and kept this admission on purpose; retire the known token.
+      await releasePageRuntime(admission);
+    }
+  });
+
+  it('a deleted page whose absence cannot be proven keeps the admission', async () => {
+    const pageId = nextPageId();
+    const admission = await attachWriter(runtimeA!, pageId, 'editor');
+    await hardDelete(pageId);
+    const holder = await getPool().connect();
+    const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+    const realFlush = persist.flushCollabPersist;
+    // The real flush fails with page_not_found; the table lock then holds the
+    // release's absence proof until it is cancelled.
+    const flush = vi.spyOn(persist, 'flushCollabPersist').mockImplementation(async (room) => {
+      try {
+        await realFlush(room);
+      } finally {
+        await holder.query('BEGIN');
+        await holder.query('LOCK TABLE pages IN ACCESS EXCLUSIVE MODE');
+      }
+    });
+    const warn = vi.spyOn(logger, 'warn');
+    let closing: Promise<void> | undefined;
+    try {
+      closing = runtimeA!.tombstone(pageId, 4404, 'committed_delete');
+      const proof = await statementBlockedBy(holderPid);
+      // The blocked read is the absence proof, and its transaction already
+      // holds the runtime row (FOR SHARE) and the page lifecycle lock: the
+      // proof runs behind the lifecycle fence, not before it.
+      expect(proof.query).toBe('SELECT 1 FROM pages WHERE id = $1');
+      const lifecycleLock = await query<{ granted: boolean }>(
+        `SELECT granted FROM pg_locks
+          WHERE pid = $1 AND locktype = 'advisory'
+            AND classid = $2::int::oid AND objid = $3::int::oid AND objsubid = 2`,
+        [proof.pid, PAGE_LIFECYCLE_LOCK_KEY, pageId],
+      );
+      expect(lifecycleLock.rows).toEqual([{ granted: true }]);
+      await expect(query('SELECT pg_try_advisory_xact_lock($1, $2) AS acquired', [PAGE_LIFECYCLE_LOCK_KEY, pageId]))
+        .resolves.toMatchObject({ rows: [{ acquired: false }] });
+      await expect(query(
+        'SELECT 1 FROM page_writer_runtimes WHERE runtime_id = $1 FOR UPDATE NOWAIT',
+        [admission.runtimeId],
+      )).rejects.toMatchObject({ code: '55P03' });
+      await query('SELECT pg_cancel_backend($1)', [proof.pid]);
+      await closing;
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ pageId, err: expect.objectContaining({ code: '57014' }) }),
+        'collab: deleted-page release could not prove the page absent',
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ pageId, err: expect.objectContaining({ reason: 'page_not_found' }) }),
+        'collab: room close retained durable admission',
+      );
+      expect(await admissionState(admission.id)).toEqual({ released: false, kind: null });
+      expect(await isLiveCollabRoom(pageId)).toBe(true);
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+      await closing?.catch(() => undefined);
+      warn.mockRestore();
+      flush.mockRestore();
+      await releasePageRuntime(admission);
+    }
+  });
+
+  it('a transient flush failure on a hard-deleted page keeps the admission', async () => {
+    const pageId = nextPageId();
+    const admission = await attachWriter(runtimeA!, pageId, 'editor');
+    await hardDelete(pageId);
+    const holder = await getPool().connect();
+    let closing: Promise<void> | undefined;
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [PAGE_LIFECYCLE_LOCK_KEY, pageId]);
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      closing = runtimeA!.tombstone(pageId, 4404, 'committed_delete');
+      // The flush waits for the lifecycle lock; cancelling it is its failure.
+      await cancelStatementBlockedBy(holderPid);
+      await closing;
+
+      expect(await admissionState(admission.id)).toEqual({ released: false, kind: null });
+      expect(await isLiveCollabRoom(pageId)).toBe(true);
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+      await closing?.catch(() => undefined);
+      await releasePageRuntime(admission);
+    }
+  });
+
+  it.each([
+    ['stale_lifecycle', new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after room admission')],
+    ['admission_token_mismatch', new PageWriteError(409, 'admission_token_mismatch', 'The writable room admission is stale')],
+    ['runtime_fenced', new PageWriteError(409, 'runtime_fenced', 'This writer runtime has been permanently fenced')],
+    ['page_write_busy', new PageWriteError(409, 'page_write_busy', 'Another external page write is unresolved')],
+    ['another 404 reason', new PageWriteError(404, 'attachment_not_found', 'The attachment no longer exists')],
+    ['a bare 404', Object.assign(new Error('Not Found'), { statusCode: 404 })],
+    ['a lost connection', Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' })],
+  ] as const)('a %s flush failure on a hard-deleted page keeps the admission', async (_label, failure) => {
+    const pageId = nextPageId();
+    const admission = await attachWriter(runtimeA!, pageId, 'editor');
+    await hardDelete(pageId);
+    const flush = vi.spyOn(persist, 'flushCollabPersist').mockRejectedValue(failure);
+    try {
+      await runtimeA!.tombstone(pageId, 4404, 'committed_delete');
+
+      expect(flush).toHaveBeenCalled();
+      expect(await admissionState(admission.id)).toEqual({ released: false, kind: null });
+      expect(await isLiveCollabRoom(pageId)).toBe(true);
+    } finally {
+      flush.mockRestore();
+      await releasePageRuntime(admission);
+    }
+  });
+
+  it('a collab_commit_pending flush on a hard-deleted page defers the release and keeps the admission', async () => {
+    await withSlowDeferredRetry(async () => {
+      const pageId = nextPageId();
+      const admission = await attachWriter(runtimeA!, pageId, 'editor');
+      await hardDelete(pageId);
+      const flush = vi.spyOn(persist, 'flushCollabPersist')
+        .mockRejectedValue(new PageWriteError(409, 'collab_commit_pending', "The page's own collaborative Save has not settled"));
+      try {
+        await runtimeA!.detachSocket(pageId, 'editor');
+
+        const room = runtimeA!.getRoom(pageId)!;
+        expect(room.deferredReleaseAttempts).toBe(1);
+        expect(room.deferredRelease).not.toBeNull();
+        expect(room.admission?.id).toBe(admission.id);
+        expect(await admissionState(admission.id)).toEqual({ released: false, kind: null });
+      } finally {
+        flush.mockRestore();
+        await runtimeA!.close();
+        await releasePageRuntime(admission);
+      }
+    });
   });
 });

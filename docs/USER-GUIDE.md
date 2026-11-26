@@ -271,6 +271,14 @@ Press **Edit** again and choose **Restore draft** to continue with your text —
 saving it then replaces the newer version — or **Edit published version** to
 start from the current text.
 
+Tag changes you make while editing are applied when you save: only the tags
+you added or removed in that editing session are sent, on top of the tags the
+page has by then. A tag someone else added (or an administrator rename, or a
+Confluence sync) while you were editing stays, and a tag they removed is not put
+back. If you and someone else changed the very same tag, the later change wins.
+Changes to tags that you did not make never count as unsaved edits, so Cancel
+does not ask you to discard them.
+
 ### Page Details
 
 Open **Details** in the right-hand page inspector (`Alt+D`). The panel groups
@@ -324,6 +332,13 @@ Tags help organize and categorize your knowledge base:
 3. Add tags manually or accept AI-suggested tags.
 
 Compendiq can automatically suggest tags based on page content using LLM classification.
+
+While you are editing a page, tag changes are held in the editor and saved with
+the page. Saving applies only your own additions and removals to the page's
+current tags, so tags that other people, an administrator or a sync changed in the
+meantime are kept. If you and another person changed the same tag, whoever saves
+last decides. A reserved AI-policy tag that the server refuses stays in the editor
+with the reason shown in the tag control.
 
 ### Page Comments
 

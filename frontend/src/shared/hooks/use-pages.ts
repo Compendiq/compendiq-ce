@@ -419,6 +419,16 @@ export function describeAiPolicyRefusal(error: unknown): AiPolicyRefusal | null 
 }
 
 /**
+ * The committed label set of a label-write reply, or null when the reply does
+ * not carry a valid one (#1931). The single validation shared by the cache
+ * write below and the editor's indeterminate-outcome path.
+ */
+export function parseCommittedLabels(data: unknown): string[] | null {
+  const labels = (data as { labels?: unknown } | null | undefined)?.labels;
+  return Array.isArray(labels) && labels.every((l) => typeof l === 'string') ? labels : null;
+}
+
+/**
  * Label writes go through the server's normalizer and policy authority
  * (#283): a reserved label (`no-ai`, `local-ai-only`, `all-ai` and their
  * synonyms) can tighten or — with authority — relax the article's policy, a
@@ -440,9 +450,12 @@ export function useUpdatePageLabels() {
         body: JSON.stringify({ addLabels, removeLabels }),
       }),
     onSuccess: (data, variables) => {
-      if (Array.isArray(data?.labels)) {
+      // A reply without a valid label set never reaches the cache; the
+      // settled invalidation below refetches the truth.
+      const labels = parseCommittedLabels(data);
+      if (labels) {
         queryClient.setQueryData<PageDetail>(['pages', variables.id], (old) =>
-          old ? { ...old, labels: data.labels } : old,
+          old ? { ...old, labels } : old,
         );
       }
     },

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -89,7 +89,7 @@ const initialPage = {
   bodyText: 'Published body',
   version: 1,
   parentId: null,
-  labels: [],
+  labels: [] as string[],
   author: 'me',
   lastModifiedAt: '2026-09-20T12:00:00.000Z',
   lastSynced: '2026-09-20T12:00:00.000Z',
@@ -214,6 +214,14 @@ let commitMode: 'success' | 'confluence_modified' | 'confluence_modified_after_d
 let deferredCommit: Promise<void> | null = null;
 let pageUpdateMode: 'success' | 'failure' = 'success';
 let deferredPageUpdate: Promise<void> | null = null;
+// #1931: a server that merges label adds and removes into the labels it holds
+// now. `labelSettle` runs on the merged set, like the server's normalizer and
+// policy authority; `deferredLabelWrite` holds the response of the write.
+type LabelWrite = { addLabels?: string[]; removeLabels?: string[] };
+let labelWrites: LabelWrite[] = [];
+let deferredLabelWrite: Promise<void> | null = null;
+let labelReplyUnacknowledged = false;
+let labelSettle: ((labels: string[], write: LabelWrite) => string[]) | null = null;
 
 beforeEach(() => {
   Socket.instances = [];
@@ -226,6 +234,10 @@ beforeEach(() => {
   deferredCommit = null;
   pageUpdateMode = 'success';
   deferredPageUpdate = null;
+  labelWrites = [];
+  deferredLabelWrite = null;
+  labelSettle = null;
+  labelReplyUnacknowledged = false;
   vi.stubGlobal('WebSocket', Socket);
   Element.prototype.scrollTo = vi.fn();
   localStorage.clear();
@@ -269,6 +281,17 @@ beforeEach(() => {
         title: currentPage.title,
         version: currentPage.version,
       });
+    }
+    if (url === '/api/pages/42/labels' && method === 'PUT') {
+      const write = JSON.parse(String(init?.body)) as LabelWrite;
+      labelWrites.push(write);
+      const removed = write.removeLabels ?? [];
+      let labels = currentPage.labels.filter((l) => !removed.includes(l));
+      for (const l of write.addLabels ?? []) if (!labels.includes(l)) labels.push(l);
+      if (labelSettle) labels = labelSettle(labels, write);
+      currentPage = { ...currentPage, labels };
+      if (deferredLabelWrite) await deferredLabelWrite;
+      return labelReplyUnacknowledged ? json({}) : json({ labels });
     }
     if (url === '/api/collab/config') {
       if (deferredCollabConfig) return json(await deferredCollabConfig);
@@ -1014,6 +1037,197 @@ describe('collaborative join before the first sync (#1895)', () => {
       expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
     });
     expect(Socket.instances).toHaveLength(1);
+  });
+});
+
+describe('collaborative Save keeps the session label baseline when the document stays open (#1931)', () => {
+  /** The chips live in the tag popover; open it once. */
+  async function openTags() {
+    if (!screen.queryByTestId('tag-editor')) fireEvent.click(screen.getByTestId('tag-popover-trigger'));
+    await screen.findByTestId('tag-editor');
+  }
+
+  async function closeTags() {
+    if (screen.queryByTestId('tag-editor')) fireEvent.click(screen.getByTestId('tag-popover-trigger'));
+    await waitFor(() => expect(screen.queryByTestId('tag-editor')).toBeNull());
+  }
+
+  async function addTag(tag: string) {
+    await openTags();
+    const input = await screen.findByLabelText('New tag name');
+    fireEvent.change(input, { target: { value: tag } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+  }
+
+  let info: MockInstance<typeof toast.info>;
+  let success: MockInstance<typeof toast.success>;
+  let warning: MockInstance<typeof toast.warning>;
+  beforeEach(() => {
+    info = vi.spyOn(toast, 'info');
+    success = vi.spyOn(toast, 'success');
+    warning = vi.spyOn(toast, 'warning');
+  });
+
+  async function saveAndWaitForCommits(count: number) {
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(count));
+  }
+
+  /** Types into the body while the first commit is pending so the Save leaves the document open. */
+  async function changeBodyWhileSaving() {
+    const editor = document.querySelector('.ProseMirror');
+    if (!(editor instanceof HTMLElement)) throw new Error('Editor did not mount');
+    editor.focus();
+    fireEvent.keyDown(editor, { key: 'a', code: 'KeyA', ctrlKey: true });
+    fireEvent.keyDown(editor, { key: 'Backspace', code: 'Backspace', keyCode: 8 });
+    await waitFor(() => expect(editor).not.toHaveTextContent('Typed before Save'));
+  }
+
+  it('rebases onto the committed labels, so the second Save sends no label change', async () => {
+    currentPage = { ...initialPage, labels: ['a'] };
+    let finishCommit!: () => void;
+    deferredCommit = new Promise<void>((resolve) => { finishCommit = resolve; });
+    renderPage();
+    await joinWritableSession();
+    await pasteBodyText('Typed before Save');
+    await addTag('mine');
+    await saveAndWaitForCommits(1);
+    // A peer removes `a` and adds `peer` while the commit is in flight.
+    currentPage = { ...currentPage, labels: ['peer'] };
+    await changeBodyWhileSaving();
+    await act(async () => { finishCommit(); });
+
+    await waitFor(() => expect(labelWrites).toEqual([{ addLabels: ['mine'], removeLabels: [] }]));
+    await waitFor(() => expect(info).toHaveBeenCalledWith(
+      'Saved the captured version. The document changed while saving; it remains open.',
+    ));
+    // The draft now shows what the server holds: `a` is gone, `peer` is there.
+    await openTags();
+    await waitFor(() => expect(screen.getByTestId('remove-tag-peer')).toBeInTheDocument());
+    expect(screen.queryByTestId('remove-tag-a')).toBeNull();
+    expect(screen.getByTestId('remove-tag-mine')).toBeInTheDocument();
+    await closeTags();
+
+    deferredCommit = null;
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    await saveAndWaitForCommits(2);
+    await waitFor(() => expect(success).toHaveBeenCalled());
+    // Advancing only the baseline would re-add `a` and remove `peer` here.
+    expect(labelWrites).toHaveLength(1);
+    expect([...currentPage.labels].sort()).toEqual(['mine', 'peer']);
+  });
+
+  it('does not fight a normalized or retained label on the second Save', async () => {
+    currentPage = { ...initialPage, labels: ['no-ai'] };
+    // The server maps a synonym to its canonical label, and removing a
+    // reserved label alone keeps it (#283).
+    labelSettle = (labels) => {
+      const settled = labels.map((l) => (l === 'draft' ? 'wip' : l));
+      if (!settled.includes('no-ai')) settled.push('no-ai');
+      return settled;
+    };
+    let finishCommit!: () => void;
+    deferredCommit = new Promise<void>((resolve) => { finishCommit = resolve; });
+    renderPage();
+    await joinWritableSession();
+    await pasteBodyText('Typed before Save');
+    await openTags();
+    fireEvent.click(screen.getByTestId('remove-tag-no-ai'));
+    await addTag('draft');
+    await saveAndWaitForCommits(1);
+    await changeBodyWhileSaving();
+    await act(async () => { finishCommit(); });
+
+    await waitFor(() => expect(labelWrites).toEqual([{ addLabels: ['draft'], removeLabels: ['no-ai'] }]));
+    await openTags();
+    expect(screen.getByTestId('remove-tag-no-ai')).toBeInTheDocument();
+    expect(screen.getByTestId('remove-tag-wip')).toBeInTheDocument();
+    expect(screen.queryByTestId('remove-tag-draft')).toBeNull();
+    await closeTags();
+
+    deferredCommit = null;
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    await saveAndWaitForCommits(2);
+    await waitFor(() => expect(success).toHaveBeenCalled());
+    expect(labelWrites).toHaveLength(1);
+  });
+
+  it('sends only the tags edited while the first Save was in flight as the second delta', async () => {
+    currentPage = { ...initialPage, labels: ['a'] };
+    let finishCommit!: () => void;
+    deferredCommit = new Promise<void>((resolve) => { finishCommit = resolve; });
+    renderPage();
+    await joinWritableSession();
+    await pasteBodyText('Typed before Save');
+    await addTag('one');
+    await saveAndWaitForCommits(1);
+    // Edited after the Save took its snapshot: not part of the first write.
+    await addTag('two');
+    fireEvent.click(screen.getByTestId('remove-tag-a'));
+    await act(async () => { finishCommit(); });
+
+    await waitFor(() => expect(labelWrites).toEqual([{ addLabels: ['one'], removeLabels: [] }]));
+    await waitFor(() => expect(info).toHaveBeenCalledWith(
+      'Saved the captured version. The document changed while saving; it remains open.',
+    ));
+    await openTags();
+    expect(screen.queryByTestId('remove-tag-a')).toBeNull();
+    expect(screen.getByTestId('remove-tag-one')).toBeInTheDocument();
+    expect(screen.getByTestId('remove-tag-two')).toBeInTheDocument();
+
+    deferredCommit = null;
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    await saveAndWaitForCommits(2);
+    await waitFor(() => expect(labelWrites).toHaveLength(2));
+    expect(labelWrites[1]).toEqual({ addLabels: ['two'], removeLabels: ['a'] });
+  });
+
+  it('keeps a peer tag addition and removal that the tab has already refetched, with no label write', async () => {
+    currentPage = { ...initialPage, labels: ['a'] };
+    const client = renderPage();
+    await joinWritableSession();
+    await pasteBodyText('Typed before Save');
+    // A peer removes `a` and adds `peer`; the tab refetches it before Save.
+    currentPage = { ...currentPage, labels: ['peer'] };
+    await act(async () => { window.dispatchEvent(new Event('visibilitychange')); });
+    await waitFor(() => expect(client.getQueryData<{ labels: string[] }>(['pages', '42'])?.labels).toEqual(['peer']));
+
+    await saveAndWaitForCommits(1);
+    await waitFor(() => expect(success).toHaveBeenCalled());
+    expect(labelWrites).toEqual([]);
+    expect(currentPage.labels).toEqual(['peer']);
+  });
+
+  it('does not invent committed labels when the write carries none: the document stays open, baseline and draft untouched', async () => {
+    labelReplyUnacknowledged = true;
+    let finishCommit!: () => void;
+    deferredCommit = new Promise<void>((resolve) => { finishCommit = resolve; });
+    renderPage();
+    await joinWritableSession();
+    await pasteBodyText('Typed before Save');
+    await addTag('mine');
+    await saveAndWaitForCommits(1);
+    currentPage = { ...currentPage, labels: ['peer'] };
+    await changeBodyWhileSaving();
+    await act(async () => { finishCommit(); });
+
+    await waitFor(() => expect(labelWrites).toHaveLength(1));
+    await waitFor(() => expect(warning).toHaveBeenCalledWith(
+      'Content saved, but the tag change could not be confirmed. The editor stays open; check the tags and save again.',
+    ));
+    await openTags();
+    expect(screen.getByTestId('remove-tag-mine')).toBeInTheDocument();
+    expect(screen.queryByTestId('remove-tag-peer')).toBeNull();
+    await closeTags();
+
+    deferredCommit = null;
+    labelReplyUnacknowledged = false;
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    await saveAndWaitForCommits(2);
+    await waitFor(() => expect(labelWrites).toHaveLength(2));
+    expect(labelWrites[1]).toEqual({ addLabels: ['mine'], removeLabels: [] });
   });
 });
 

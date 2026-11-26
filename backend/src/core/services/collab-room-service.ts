@@ -37,6 +37,7 @@ import {
   processCollabCommitLatches,
   readCollabCommitState,
   releasePageRuntime,
+  releasePageRuntimeForDeletedPage,
   withCollabCommitKnown,
   withRedisCommandDeadline,
   withPageLifecycleRead,
@@ -1166,6 +1167,9 @@ export async function createCollabRuntime(
     if ([...room.sockets.values()].some((socket) => socket.writable)) return;
     const admission = room.admission;
     if (!admission) return;
+    // A hard-deleted page leaves this flush no row to write (#1922). Only the
+    // release below acts on it, and only after it re-proves the row absent.
+    let pageNotFound: PageWriteError | null = null;
     try {
       await persist.flushCollabPersist(room);
     } catch (error) {
@@ -1178,17 +1182,35 @@ export async function createCollabRuntime(
       // The page's own pending collaborative Save fences this flush: a wait,
       // not a failure. Keep the admission and retry once it settles (#1763).
       // Every other failure propagates and keeps the admission (runbook).
-      if (!isCollabCommitPending(error)) throw error;
-      deferRelease(room);
-      return;
+      if (isCollabCommitPending(error)) {
+        deferRelease(room);
+        return;
+      }
+      if (!(error instanceof PageWriteError) || error.reason !== 'page_not_found') throw error;
+      pageNotFound = error;
     }
     // Socket demotion/disconnection remains immediate while a flush is in
     // flight; joins and retirement share the ownership queue.
     if (
       [...room.sockets.values()].some((socket) => socket.writable)
       || room.admission?.id !== admission.id
-    ) return;
-    await releasePageRuntime(admission);
+    ) {
+      if (pageNotFound) throw pageNotFound;
+      return;
+    }
+    if (pageNotFound) {
+      let released: boolean;
+      try {
+        released = await releasePageRuntimeForDeletedPage(admission);
+      } catch (proofError) {
+        logger.warn({ err: proofError, pageId: room.pageId }, 'collab: deleted-page release could not prove the page absent');
+        throw pageNotFound;
+      }
+      if (!released) throw pageNotFound;
+      logger.info({ pageId: room.pageId }, 'collab.release_deleted_page');
+    } else {
+      await releasePageRuntime(admission);
+    }
     cancelDeferredRelease(room);
     room.admission = null;
     room.persistable = false;

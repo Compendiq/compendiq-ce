@@ -70,6 +70,10 @@ export async function planLocalImagesForConfluence(html: string): Promise<Pasted
   let changed = false;
 
   for (const img of doc.querySelectorAll('img[src^="/api/attachments/"]')) {
+    // htmlToConfluence replaces every `.confluence-drawio` wrapper with the
+    // draw.io macro and drops its preview img, so an upload would never be
+    // referenced (#1935). Skip before any marker check or file read.
+    if (img.closest('.confluence-drawio')) continue;
     if (img.getAttribute('data-confluence-filename')) continue;
     if (img.getAttribute('data-confluence-image-source')) continue;
 

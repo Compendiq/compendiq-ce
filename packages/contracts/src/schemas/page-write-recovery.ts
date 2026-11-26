@@ -81,6 +81,25 @@ export const PageWriterQuiesceResultSchema = z.object({
   acknowledgmentId: z.string().uuid(),
   deploymentIdentity: RuntimeIdentitySchema,
 });
+export const PAGE_WRITER_QUIESCE_RUNBOOK = 'docs/runbooks/immutable-page-baselines.md';
+/**
+ * 409 from runtime quiescence when every remaining blocker is a room admission
+ * held by its page's own unknown-outcome collaborative commit (#1934). Ids and
+ * kinds only: no effect descriptor, actor or payload.
+ */
+export const PageWriterQuiesceBlockedSchema = z.object({
+  error: z.literal('PageWriteError'),
+  reason: z.literal('runtime_quiesce_blocked_by_collab_commit'),
+  code: z.literal('runtime_quiesce_blocked_by_collab_commit'),
+  message: z.string().min(1).max(1000),
+  blockingIntents: z.array(z.object({
+    intentId: z.string().uuid(),
+    kind: z.enum(['collab.commit.confluence', 'collab.commit.confluence.media']),
+    pageIds: z.array(PageIdSchema).length(1),
+  }).strict()).min(1),
+  runbook: z.literal(PAGE_WRITER_QUIESCE_RUNBOOK),
+}).strict();
+export type PageWriterQuiesceBlocked = z.infer<typeof PageWriterQuiesceBlockedSchema>;
 export const PageWriterFenceResultSchema = z.object({ unresolvedIntents: z.number().int().nonnegative() });
 export const PageWriteReconcileResultSchema = z.object({
   intentId: z.string().uuid(),

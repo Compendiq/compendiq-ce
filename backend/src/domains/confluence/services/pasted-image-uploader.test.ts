@@ -293,4 +293,43 @@ describe('uploadLocalImagesToConfluence', () => {
     expect(plan.markers).toEqual([{ src: '/api/attachments/local-1/a%20b.png', filename: 'a b.png' }]);
     expect(plan.images.map((image) => image.filename)).toEqual(['a b.png']);
   });
+
+  describe('draw.io preview wrappers (#1935)', () => {
+    it('neither plans nor marks an img inside a .confluence-drawio wrapper, nested or foreign', async () => {
+      await seedAttachment('cf-1', 'Arch.png');
+      await seedAttachment('cf-2', 'Other.png');
+      const html =
+        '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/cf-1/Arch.png" alt="Arch"></div>'
+        + '<table><tbody><tr><td><div class="confluence-drawio"><img src="/api/attachments/cf-1/Arch.png"></div></td></tr></tbody></table>'
+        + '<div class="confluence-drawio"><img src="/api/attachments/cf-2/Other.png"></div>';
+
+      const plan = await planLocalImagesForConfluence(html);
+
+      expect(plan.images).toEqual([]);
+      expect(plan.markers).toEqual([]);
+      expect(plan.bodyHtml).toBe(html);
+    });
+
+    it('still plans a pasted img outside a wrapper with exactly its own marker', async () => {
+      await seedAttachment('cf-1', 'Arch.png');
+      await seedAttachment('local-1', 'pasted.png');
+      const plan = await planLocalImagesForConfluence(
+        '<div class="confluence-drawio"><img src="/api/attachments/cf-1/Arch.png"></div>'
+        + '<p><img src="/api/attachments/local-1/pasted.png"></p>',
+      );
+
+      expect(plan.images.map((image) => image.filename)).toEqual(['pasted.png']);
+      expect(plan.markers).toEqual([{ src: '/api/attachments/local-1/pasted.png', filename: 'pasted.png' }]);
+      expect(plan.bodyHtml).toContain('<img src="/api/attachments/cf-1/Arch.png">');
+      expect(plan.bodyHtml).toContain('data-confluence-filename="pasted.png"');
+    });
+
+    it('does not refuse a missing wrapper preview file, but still refuses a missing pasted file', async () => {
+      const wrapped = '<div class="confluence-drawio"><img src="/api/attachments/cf-1/gone.png"></div>';
+      await expect(planLocalImagesForConfluence(wrapped)).resolves.toMatchObject({ images: [], markers: [] });
+      await expect(
+        planLocalImagesForConfluence(`${wrapped}<p><img src="/api/attachments/cf-1/gone2.png"></p>`),
+      ).rejects.toMatchObject({ statusCode: 409, reason: 'pasted_image_unavailable' });
+    });
+  });
 });
