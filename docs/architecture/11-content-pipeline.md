@@ -729,11 +729,14 @@ after DOMPurify: `ALLOWED_ATTR` is global), lower case, with those three values;
 Write-back (storage-derivation feature `cell-align`) writes `style="text-align: X;"` and
 `confluenceToHtml` appends `align` beside a plain stored style, so a Confluence cell
 round-trips byte for byte; a style that mentions `text-align` always decides and an
-ambiguous one (duplicate, quoted, custom property, upper-case property, over 1,024
-characters) means no alignment and is never rewritten. On the Improve conversion a
-representable table (first row all `th`, rectangular, no span/width/caption/footer,
-one-line cells) becomes a GFM table with its markers and any other table stays raw HTML;
-Markdown → HTML → Markdown keeps the column alignment.
+ambiguous one (duplicate, quoted, custom property, upper-case property, a priority other
+than a lower-case `!important`, over 1,024 characters) means no alignment and is never
+rewritten. On the Improve conversion a representable table (first row all `th`,
+rectangular, only generated sizing, no span/caption/footer, one-line cells) becomes a GFM
+table with its markers only when marked reads that Markdown back as the same table and the
+same inline content; any other table travels as its original HTML on one line (line
+breaks as `&#10;`), which an unchanged echo applies as it was. Markdown → HTML → Markdown
+keeps the column alignment.
 
 **Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
 ` ```drawio ` fence into `div.confluence-drawio[data-diagram-name]`, and the

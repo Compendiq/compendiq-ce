@@ -384,7 +384,11 @@ mentions `text-align` decides, and unless it is exactly one plain lower-case dec
 characters) the cell has no alignment; without such a style `align` decides. The reading
 is one text (`// <table-cell-align:begin>`) in `collab-schema.ts`, `article-extensions.ts`
 and `content-converter.ts`, compared by `collab-schema-parity.test.ts`; a browser reads
-upper-case property names and the Node hosts do not, so the block declines them. The
+property names and priorities case-insensitively and the Node hosts do not, so the block
+declines an upper-case property and any `!` other than a lower-case `!important` ending its
+declaration (`!IMPORTANT`, `! important`). The vectors every host is tested with are one
+fixture (`__fixtures__/table-cell-align-vectors.json`: converter, collaborative schema,
+frontend schema, and Chromium in `e2e/table-cell-align.spec.ts`). The
 import sanitiser admits `align` by a post-pass (`ALLOWED_ATTR` is global, and a DOMPurify
 hook would sit on the singleton the Notion converter shares) on `th`/`td` with one of the
 three values, written lower case; `style` stays stripped on import. Write-back (feature
@@ -393,20 +397,33 @@ three values, written lower case; `style` stays stripped on import. Write-back (
 byte, a style without it only gets the declaration appended, and nothing is rewritten.
 `confluenceToHtml` appends `align="X"` next to a plain `text-align` style and leaves the
 style alone, so `htmlToConfluence(confluenceToHtml(x))` is `x`. On the **AI Improve
-conversion only** (`htmlToMarkdown` with `layoutTokens: true`) a table is either GFM with
-its markers (`:--`, `:-:`, `--:` from the header cell; an editor table's generated
-`colgroup` and one paragraph per cell included; pipes escaped) or its raw HTML, never
-the stock rules, which drop spans and widths. Raw HTML is kept for a span, an authored
-width, a caption, a footer, a nested table, a multi-block or line-break cell, a
-highlight, a class other than Confluence's own decoration, a paragraph with its own
-alignment, a body cell aligned differently from its header, a table over 5,000 cells,
-or a header that is not the first row. Every other `htmlToMarkdown` caller (embedding
-text, tagging, chat context, sub-page context in an Improve request) is byte-identical to
-before, including for an aligned editor table, which they still see as raw HTML.
-**Known limits:** tables the Improve rule declines keep the model's echo as the only
-carrier of their attributes; non-Improve callers keep stock turndown's output for
-`<p>`-celled tables (broken Markdown, pre-existing); alignment is per column in GFM and
-per cell in the model (a body cell that differs keeps its table raw).
+conversion only** (`htmlToMarkdown` with `layoutTokens: true`) every outermost table is
+decided on the original DOM before turndown runs, and is either GFM with its markers
+(`:--`, `:-:`, `--:` from the header cell; an editor table's generated sizing and one
+paragraph per cell included; pipes escaped) or its original HTML, never the stock rules,
+which drop spans and widths. GFM is used only when it is lossless: the Markdown is parsed
+back with the Apply parser (`markdownToHtml`'s marked) and must give the same rows, header
+cells, alignment and per-cell inline content (element names, attributes apart from a
+link's generated `target`/`rel`, text). So literal markup or a character reference spelled
+in cell text, a backslash before a pipe in code, a bare URL, highlight, underline,
+subscript, a link `id` or authored `rel`, or an inline class keep the table as HTML.
+Generated sizing is only no colgroup and no table style, Confluence's bare colgroup, or
+TipTap's unresized one (one `col` per column at `min-width: 25px`, the table their sum);
+any other width or a colgroup that does not match the columns is the author's. HTML is
+also kept for a span, a caption, a footer, a nested table, a multi-block or line-break
+cell, a cell highlight, a class other than Confluence's own decoration, a paragraph with its
+own alignment, a body cell aligned differently from its header, a table over 5,000 cells,
+or a header that is not the first row. The HTML is carried on one line, every line break
+written as `&#10;` (`&#13;`), so turndown's whitespace collapse never touches it and no
+blank line can end marked's HTML block: an unchanged echo applies multi-line code,
+significant whitespace, media and the neighbouring prose as they were. Every other
+`htmlToMarkdown` caller (embedding text, tagging, chat context, sub-page context in an
+Improve request) is byte-identical to before, including for an aligned editor table,
+which they still see as raw HTML. **Known limits:** tables kept as HTML keep the model's
+echo as the only carrier of their attributes, and one inside a turndown-flattened panel
+(`> **INFO**: …`) is reparsed inline as before; non-Improve callers keep stock turndown's
+output for `<p>`-celled tables (broken Markdown, pre-existing); alignment is per column in
+GFM and per cell in the model (a body cell that differs keeps its table as HTML).
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
