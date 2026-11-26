@@ -17,6 +17,7 @@ import {
   CollabConfigSchema,
   PagePrimaryKeySchema,
   type CollabCommit,
+  type CollabCommitConflictSaveOutcome,
 } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
@@ -53,12 +54,14 @@ import {
   completePageWriteIntent,
   assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
+  declareCollabCommitUnknown,
   deferPageRequestAdmissionRelease,
   PageWriteError,
   releasePageRuntime,
   reservePageWriteIntentInTransaction,
   runPageWriteIntentEffect,
   withPageWriteTransaction,
+  type CollabCommitUnknownDeclaration,
   type PageRuntimeAdmission,
 } from '../../core/services/page-write-admission.js';
 import {
@@ -78,18 +81,33 @@ const UPGRADE_LIMIT_PER_MIN = 20;
 const PRELIVE_FRAME_LIMIT = 64;
 const PRELIVE_BYTE_LIMIT = 1024 * 1024;
 
+// After dispatch the Save's own outcome is unknown and the room stops accepting
+// edits (#2035), so that answer promises neither an open session nor an
+// untouched page. `saveOutcome` tells the editor which of the two it got.
+const CONFLUENCE_MODIFIED_MESSAGE: Record<CollabCommitConflictSaveOutcome, string> = {
+  not_dispatched:
+    'This page was modified in Confluence. Your collaborative session is still open — nobody\'s edits were overwritten.',
+  unknown:
+    'Confluence reported a newer version of this page while it was being saved. The result of this save is unknown.',
+};
+
 function throwConfluenceModified(
   fastify: FastifyInstance,
   remoteVersion: number,
   localVersion: number,
+  saveOutcome: CollabCommitConflictSaveOutcome,
 ): never {
   throw Object.assign(
-    fastify.httpErrors.conflict(
-      'This page was modified in Confluence. Your collaborative session is still open — nobody\'s edits were overwritten.',
-    ),
-    { code: 'confluence_modified', remoteVersion, localVersion },
+    fastify.httpErrors.conflict(CONFLUENCE_MODIFIED_MESSAGE[saveOutcome]),
+    { code: 'confluence_modified', remoteVersion, localVersion, saveOutcome },
   );
 }
+
+/** What a Confluence commit left behind for the route's cleanup. */
+type CollabCommitOutcome = {
+  /** Set when this request's own remote phase ended without a terminal result (#2035). */
+  unknown: CollabCommitUnknownDeclaration | null;
+};
 
 type CollabCommitPage = {
   id: number;
@@ -193,9 +211,11 @@ async function commitConfluencePage(args: {
   docEpoch: string;
   runtime: CollabRuntime;
   admission: PageRuntimeAdmission;
+  outcome: CollabCommitOutcome;
 }) {
   const {
     fastify, request, pageId, userId, existing, body, html, taskItems, taskIdsCarried, docEpoch, runtime, admission,
+    outcome,
   } = args;
   if (!existing.confluence_id) {
     throw fastify.httpErrors.badRequest('Confluence page is missing a remote id');
@@ -242,7 +262,7 @@ async function commitConfluencePage(args: {
   const remoteVersion = remote.version.number;
   const expectedRemoteVersion = existing.remote_version ?? existing.version;
   if (remoteVersion !== expectedRemoteVersion) {
-    throwConfluenceModified(fastify, remoteVersion, expectedRemoteVersion);
+    throwConfluenceModified(fastify, remoteVersion, expectedRemoteVersion, 'not_dispatched');
   }
 
   const publication = describeCollabCommit({
@@ -287,51 +307,59 @@ async function commitConfluencePage(args: {
     throw error;
   }
 
+  // From the first remote phase on, an exit without a terminal result leaves
+  // this intent pending with its remote effect started: only reconciliation
+  // can tell whether Confluence applied it (#2035).
+  let remotePhaseEntered = false;
+  let publishing = false;
   const attachmentReceipts: PastedImageUploadReceipt[] = [];
-  for (const image of preparedImages) {
-    let attachmentClient: ConfluenceClient;
+  const { updateClient, remotePublication } = await (async () => {
     try {
-      attachmentClient = await withPageWriteTransaction(
-        [pageId],
-        (dbClient) => currentConfluenceCommitClient(dbClient, existing, userId),
-        { intent },
-      );
-    } catch (error) {
-      if (attachmentReceipts.length === 0) {
-        await cancelPageWriteIntentBeforeEffect(intent);
+      for (const image of preparedImages) {
+        let attachmentClient: ConfluenceClient;
+        try {
+          attachmentClient = await withPageWriteTransaction(
+            [pageId],
+            (dbClient) => currentConfluenceCommitClient(dbClient, existing, userId),
+            { intent },
+          );
+        } catch (error) {
+          if (attachmentReceipts.length === 0) {
+            await cancelPageWriteIntentBeforeEffect(intent);
+          }
+          throw error;
+        }
+        remotePhaseEntered = true;
+        const receipt = await runPageWriteIntentEffect(
+          intent,
+          { kind: 'remote', completesRemoteWork: false },
+          () => uploadPreparedPastedImage(
+            image,
+            existing.confluence_id!,
+            attachmentClient,
+            request.log,
+          ),
+        );
+        attachmentReceipts.push(receipt);
       }
-      throw error;
-    }
-    const receipt = await runPageWriteIntentEffect(
-      intent,
-      { kind: 'remote', completesRemoteWork: false },
-      () => uploadPreparedPastedImage(
-        image,
-        existing.confluence_id!,
-        attachmentClient,
-        request.log,
-      ),
-    );
-    attachmentReceipts.push(receipt);
-  }
 
-  let updateClient: ConfluenceClient;
-  try {
-    updateClient = await withPageWriteTransaction(
-      [pageId],
-      (dbClient) => currentConfluenceCommitClient(dbClient, existing, userId),
-      { intent },
-    );
-  } catch (error) {
-    if (attachmentReceipts.length === 0) {
-      await cancelPageWriteIntentBeforeEffect(intent);
-    }
-    throw error;
-  }
+      let publishClient: ConfluenceClient;
+      try {
+        publishClient = await withPageWriteTransaction(
+          [pageId],
+          (dbClient) => currentConfluenceCommitClient(dbClient, existing, userId),
+          { intent },
+        );
+      } catch (error) {
+        if (attachmentReceipts.length === 0) {
+          await cancelPageWriteIntentBeforeEffect(intent);
+        }
+        throw error;
+      }
 
-  const remotePublication = await (async () => {
-    try {
-      return await runPageWriteIntentEffect(
+      remotePhaseEntered = true;
+      publishing = true;
+      const published = await runPageWriteIntentEffect(
         intent,
         {
           kind: 'remote',
@@ -342,7 +370,7 @@ async function commitConfluencePage(args: {
           }),
         },
         async () => {
-          const confPage = await updateClient.updatePage(
+          const confPage = await publishClient.updatePage(
             existing.confluence_id!,
             body.title,
             storageBody,
@@ -358,17 +386,30 @@ async function commitConfluencePage(args: {
           };
         },
       );
-    } catch (err) {
-      if (err instanceof ConfluenceError && err.statusCode === 409) {
+      return { updateClient: publishClient, remotePublication: published };
+    } catch (error) {
+      if (!remotePhaseEntered) throw error;
+      // Synchronously, before the first await: from here every fence of this
+      // process treats the intent as unknown. The durable marker follows; it
+      // matches only an intent whose remote effect started and has no terminal
+      // result, so a failure before dispatch records nothing. Nothing is
+      // cancelled or settled from the HTTP status.
+      const declaration = declareCollabCommitUnknown(
+        intent,
+        () => runtime.announceCommitUnknown(pageId, intent.id),
+      );
+      outcome.unknown = declaration;
+      await declaration.record();
+      if (publishing && error instanceof ConfluenceError && error.statusCode === 409) {
         let observedVersion = expectedRemoteVersion + 1;
         try {
           observedVersion = (await readClient.getPage(existing.confluence_id!)).version.number;
         } catch {
           // The durable intent remains pending for exact reconciliation.
         }
-        throwConfluenceModified(fastify, observedVersion, expectedRemoteVersion);
+        throwConfluenceModified(fastify, observedVersion, expectedRemoteVersion, 'unknown');
       }
-      throw err;
+      throw error;
     }
   })();
   const confPage = await confirmPagePublication(
@@ -591,6 +632,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
 
     const runtime = getDefaultCollabRuntime();
     let admission: PageRuntimeAdmission | null = null;
+    const outcome: CollabCommitOutcome = { unknown: null };
     try {
       if (!runtime) {
         throw new PageWriteError(
@@ -626,6 +668,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           docEpoch: snapshot.docEpoch,
           runtime,
           admission,
+          outcome,
         });
       }
 
@@ -706,6 +749,9 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           logger.warn({ err: error, pageId, admissionId: admission.id }, 'collab: request cleanup deferred; durable admission retained');
         }
       }
+      // After the release attempt, whether it succeeded or was deferred: the
+      // cue prompts every room of the page to stop accepting edits (#2035).
+      outcome.unknown?.announce();
     }
   });
 

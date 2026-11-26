@@ -580,6 +580,25 @@ flowchart TB
   `forbidden`, an unknown and an empty reason stay `permission_loss` with "The
   page or your access changed". A post-sync `flag_off` also refetches the
   collaboration config. No rejoin is offered after the first sync.
+- **An unknown collaborative save pauses editing (#2035).** The
+  `commit_unknown` control (parsed with `CollabCommitUnknownControlSchema`) or
+  the `1001 commit_unknown` close sets `readOnlyReason: 'commit_unknown'`
+  through the same `preserveReadOnly` path: the `Y.Doc` stays mounted, the
+  provider disconnects and never reconnects, and the `permission_loss` the
+  server sends afterwards for older bundles changes nothing. After the first
+  sync the banner says "A collaborative save of this page did not finish, and
+  its result is unknown. Editing is paused until that save is resolved. Your
+  open draft remains below and is not reapplied automatically." with
+  `Download draft` and `Open current version`; before it, the editor slot
+  shows the first two sentences and no draft controls. Save stays blocked.
+  The answer to the saver's own Save does the same without the control: a 409
+  whose body carries `saveOutcome: 'unknown'` (`CollabCommitConflictSchema`)
+  makes `PageViewPage` call `declareCommitUnknown(document)` for the document
+  it submitted, so the tab is on the read-only draft even when the control is
+  late or lost. `ConfluenceModifiedAlert` is for `not_dispatched` (or no
+  field) only, the version check before dispatch, where the session really is
+  still open; it is not rendered in the `commit_unknown` state, whichever of
+  the 409 and the control arrived first.
 - **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
   ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
   caret palette. `@tiptap/extension-collaboration-caret` — not the v2

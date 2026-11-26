@@ -7,6 +7,7 @@ import {
   COLLAB_DOC_EMPTY_MARKER,
   COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
+  CollabCommitUnknownControlSchema,
   CollabDocEpochControlSchema,
   CollabRefusalReasonSchema,
   CollabWritableAdmissionControlSchema,
@@ -39,7 +40,8 @@ export type CollabReadOnlyReason =
   | 'not_found'
   | 'flag_off'
   | 'rate_limited'
-  | 'readonly';
+  | 'readonly'
+  | 'commit_unknown';
 
 export interface UseCollabProviderResult {
   ydoc: Y.Doc | null;
@@ -62,6 +64,13 @@ export interface UseCollabProviderResult {
    * False for a document that synced from a server or a room that named none.
    */
   docEpochPinned: boolean;
+  /**
+   * The Save route answered that the collaborative save of `document` has an
+   * unknown result (#2035). Enters the state the `commit_unknown` control
+   * does, at once: that control may be late or never arrive. A document that
+   * is no longer the mounted one is ignored.
+   */
+  declareCommitUnknown: (document: Y.Doc) => void;
 }
 
 function collabWsUrl(): string {
@@ -167,6 +176,12 @@ class CollabWebsocketProvider extends WebsocketProvider {
  * - A writable admission is acknowledged explicitly; page state is not permission.
  * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
  *   disconnect it, and never silently replay it into a new lifecycle.
+ * - `commit_unknown` (the control, or the `1001 commit_unknown` close for a
+ *   client that missed it) keeps the Y.Doc the same way and never reconnects
+ *   (#2035): a collaborative save of the page did not finish and its result is
+ *   unknown. The `permission_loss` the server sends after it changes nothing.
+ *   The Save route's own answer enters the same state through
+ *   `declareCommitUnknown`, without waiting for the control.
  * - Before the first sync a 4403 reason is parsed with `CollabRefusalReasonSchema`:
  *   `rate_limited` (Retry once `COLLAB_UPGRADE_WINDOW_SEC` has passed), `flag_off`,
  *   and `readonly` (an interrupted join, Retry at once) preserve no document.
@@ -200,6 +215,8 @@ export function useCollabProvider({
   // Each join installs its own rejoin; `retry` keeps one identity for callers.
   const retryRef = useRef<() => void>(() => undefined);
   const retry = useCallback(() => retryRef.current(), []);
+  const declareCommitUnknownRef = useRef<(document: Y.Doc) => void>(() => undefined);
+  const declareCommitUnknown = useCallback((document: Y.Doc) => declareCommitUnknownRef.current(document), []);
 
   useEffect(() => {
     setConnected(false);
@@ -277,6 +294,9 @@ export function useCollabProvider({
       // Keep both the document and provider identity mounted in TipTap.
       ws.disconnect();
     };
+    declareCommitUnknownRef.current = (document) => {
+      if (document === doc) preserveReadOnly('commit_unknown');
+    };
     // A refused first join has no document to preserve; a retry is explicit.
     const refuseBeforeSync = (joinError: Exclude<CollabJoinError, 'unauthorized' | 'forbidden' | 'not_found'>) => {
       if (cancelled || blocked) return;
@@ -330,6 +350,10 @@ export function useCollabProvider({
           if (!cancelled && !blocked && admission.data.lifecycleRevision === joinedRevision) {
             setWritable(true);
           }
+          return;
+        }
+        if (CollabCommitUnknownControlSchema.safeParse(control).success) {
+          preserveReadOnly('commit_unknown');
           return;
         }
         if (typeof control !== 'object' || control === null || !('type' in control)) return;
@@ -410,6 +434,7 @@ export function useCollabProvider({
       setConnected(false);
       setWritable(false);
       if (event?.code === 1001 && event.reason === 'doc_reset') preserveReadOnly('document_changed');
+      if (event?.code === 1001 && event.reason === 'commit_unknown') preserveReadOnly('commit_unknown');
       // y-websocket retries every close outside 4400–4499; those arrive as `closed`.
       const terminal = event !== null && event.code >= 4400 && event.code < 4500;
       if (!hasSynced && !blocked && !terminal) setReconnecting(true);
@@ -421,6 +446,7 @@ export function useCollabProvider({
       clearTimeout(rejoinTimer);
       clearTimeout(retryTimer);
       retryRef.current = () => undefined;
+      declareCommitUnknownRef.current = () => undefined;
       awareness.off('update', refreshAwareness);
       ws.destroy();
       awareness.destroy();
@@ -437,6 +463,6 @@ export function useCollabProvider({
 
   return {
     ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error,
-    reconnecting, canRetry, retry, docEpochPinned,
+    reconnecting, canRetry, retry, docEpochPinned, declareCommitUnknown,
   };
 }

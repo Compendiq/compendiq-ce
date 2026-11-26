@@ -1,6 +1,10 @@
 /**
  * Honest refusal when Confluence moved while a collab session is live (#1448).
  * `role="status"` (not alert) so AT is not interrupted; the session stays open.
+ *
+ * Only for the version check before the Save was sent. A Save that Confluence
+ * refused after dispatch has an unknown result (#2035): the editor goes to its
+ * read-only draft instead, and this strip is not shown.
  */
 import { cn } from '../../shared/lib/cn';
 

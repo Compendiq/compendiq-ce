@@ -244,6 +244,7 @@ erDiagram
         timestamptz effect_started_at
         timestamptz effect_finished_at
         timestamptz remote_effect_started_at "first mutating remote phase"
+        timestamptz remote_effect_failed_at "migration 160: the owner's remote phase ended without a terminal result (#2035); NULL unless remote_effect_started_at is set"
         timestamptz remote_effects_completed_at "all remote phases succeeded"
         jsonb remote_terminal_result "bounded server-owned terminal identity"
         boolean cache_invalidation_pending "retry until pages/search eviction succeeds"

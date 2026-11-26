@@ -512,6 +512,119 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(Socket.instances).toHaveLength(0);
   });
 
+  describe('unknown collaborative save (#2035)', () => {
+    const mount = () => renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '1',
+    }));
+    const joinWritable = (socket: Socket) => {
+      act(() => {
+        socket.open();
+        hydrate(socket, 'Draft typed before the save failed');
+        control(socket, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+    };
+
+    it.each<[string, (socket: Socket, draft: Y.Doc, declare: (document: Y.Doc) => void) => void]>([
+      ['the commit_unknown control', (socket) => control(socket, { type: 'commit_unknown' })],
+      ['the 1001 commit_unknown close of a client that missed the control', (socket) => socket.close(1001, 'commit_unknown')],
+      ['the Save route\'s own answer, with no control and no close from the room', (_socket, draft, declare) => declare(draft)],
+    ])('keeps the document as a commit_unknown read-only draft on %s and never reconnects', async (_name, arrive) => {
+      const { result } = mount();
+      const socket = Socket.instances[0]!;
+      joinWritable(socket);
+      expect(result.current.writable).toBe(true);
+      const draft = result.current.ydoc!;
+      act(() => { draft.getText('draft').insert(0, 'Unsaved: '); });
+
+      act(() => { arrive(socket, draft, result.current.declareCommitUnknown); });
+
+      expect(result.current.readOnlyReason).toBe('commit_unknown');
+      expect(result.current.writable).toBe(false);
+      expect(result.current.connected).toBe(false);
+      expect(result.current.ydoc).toBe(draft);
+      expect(draft.getText('draft').toString()).toBe('Unsaved: Draft typed before the save failed');
+      // A synced document keeps its draft state; this is not a join error.
+      expect(result.current.synced).toBe(true);
+      expect(result.current.error).toBeNull();
+      expect(socket.readyState).toBe(Socket.CLOSED);
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(Socket.instances).toHaveLength(1);
+    });
+
+    it('ignores a Save answer for a document that is no longer the mounted one', () => {
+      const { result } = mount();
+      const socket = Socket.instances[0]!;
+      joinWritable(socket);
+      const earlier = new Y.Doc();
+
+      act(() => { result.current.declareCommitUnknown(earlier); });
+
+      expect(result.current.readOnlyReason).toBeNull();
+      expect(result.current.writable).toBe(true);
+      expect(socket.readyState).toBe(Socket.OPEN);
+      earlier.destroy();
+    });
+
+    it('ignores the permission_loss and the close that follow the control', async () => {
+      const { result } = mount();
+      const socket = Socket.instances[0]!;
+      joinWritable(socket);
+      const receive = socket.onmessage!;
+      const close = socket.onclose!;
+
+      // The server sends all three in a row; the provider has already disconnected after the first.
+      act(() => {
+        control(socket, { type: 'commit_unknown' });
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 4);
+        encoding.writeVarString(encoder, JSON.stringify({ type: 'permission_loss', reason: 'edit_permission_revoked' }));
+        receive(new MessageEvent('message', { data: encoding.toUint8Array(encoder).slice().buffer }));
+        close(new CloseEvent('close', { code: 1001, reason: 'commit_unknown' }));
+      });
+
+      expect(result.current.readOnlyReason).toBe('commit_unknown');
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(result.current.readOnlyReason).toBe('commit_unknown');
+      expect(Socket.instances).toHaveLength(1);
+    });
+
+    it('reports a join gated before the first sync without a document', () => {
+      const { result } = mount();
+      const socket = Socket.instances[0]!;
+      act(() => {
+        socket.open();
+        control(socket, lifecycle('1'));
+        control(socket, { type: 'commit_unknown' });
+        control(socket, { type: 'permission_loss', reason: 'edit_permission_revoked' });
+      });
+
+      expect(result.current.readOnlyReason).toBe('commit_unknown');
+      expect(result.current.synced).toBe(false);
+      expect(result.current.writable).toBe(false);
+      expect(result.current.error).toBeNull();
+      expect(Socket.instances).toHaveLength(1);
+    });
+
+    it('grants no edit authority for an unknown control or a commit_unknown that carries a payload', () => {
+      const { result } = mount();
+      const socket = Socket.instances[0]!;
+      act(() => {
+        socket.open();
+        control(socket, lifecycle('1'));
+        hydrate(socket);
+        control(socket, { type: 'commit_resolved', lifecycleRevision: '1' });
+        control(socket, { type: 'commit_unknown', writable: true, lifecycleRevision: '1' });
+      });
+
+      expect(result.current.writable).toBe(false);
+      // Neither frame is the strict control: the session keeps waiting for a real admission.
+      expect(result.current.readOnlyReason).toBeNull();
+      expect(socket.readyState).toBe(Socket.OPEN);
+      act(() => { control(socket, { type: 'writable_admission', lifecycleRevision: '1' }); });
+      expect(result.current.writable).toBe(true);
+    });
+  });
+
   describe('document epoch (#2034)', () => {
     const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
     const OTHER_EPOCH = '0d9c1b2a-3e4f-4a5b-8c6d-7e8f9a0b1c2d';
