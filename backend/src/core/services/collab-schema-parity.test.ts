@@ -333,30 +333,11 @@ function markedBlock(src: string, name: string): string | null {
   return src.slice(from, to + end.length);
 }
 
-/** `[label, cell attributes, expected align]` — every row must read the same in all hosts (browser, happy-dom, jsdom, domino). */
-const CELL_ALIGN_VECTORS: Array<[string, string, string | null]> = [
-  ['align attribute', 'align="center"', 'center'],
-  ['attribute case and whitespace', 'ALIGN=" Right "', 'right'],
-  ['plain style', 'style="text-align:left"', 'left'],
-  ['style with !important', 'style="text-align: center !important"', 'center'],
-  ['style among other declarations', 'style="color: red; text-align: right; background-color: rgb(1, 2, 3)"', 'right'],
-  ['unrelated style keeps the attribute', 'style="color: red" align="left"', 'left'],
-  ['style decides over the attribute', 'style="text-align: right" align="left"', 'right'],
-  ['non-canonical style declines the attribute', 'style="text-align: justify" align="center"', null],
-  ['invalid value', 'align="justify"', null],
-  ['url-like value', 'align="javascript:x"', null],
-  ['empty value', 'align=""', null],
-  ['duplicate declarations', 'style="text-align: left; text-align: right"', null],
-  ['duplicate declarations, differing priority', 'style="text-align: left !important; text-align: right"', null],
-  ['custom property mentioning text-align', 'style="--x: text-align: center"', null],
-  ['quoted value containing a semicolon', 'style="content: \'a;text-align:center\'"', null],
-  ['quoted value', 'style="text-align: \'center\'"', null],
-  ['comment', 'style="text-align: center /* x */"', null],
-  ['upper-case property', 'style="TEXT-ALIGN: RIGHT"', null],
-  ['mixed-case property, attribute ignored', 'style="Text-Align:center" align="left"', null],
-  ['text-align-last', 'style="text-align-last: center"', null],
-  ['over-long style', `style="text-align: center; ${'color: red; '.repeat(100)}"`, null],
-];
+/** `[label, cell attributes, expected align]` — every row must read the same in all hosts (browser, happy-dom, jsdom). */
+const vectorFixture: { vectors: Array<[string, string, string | null]> } = JSON.parse(
+  readFileSync(join(here, '__fixtures__/table-cell-align-vectors.json'), 'utf8'),
+);
+const CELL_ALIGN_VECTORS = vectorFixture.vectors;
 
 describe('table cell alignment definition (#1956)', () => {
   const article = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');

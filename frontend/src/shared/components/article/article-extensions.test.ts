@@ -1302,33 +1302,13 @@ describe('ExtendedTable options', () => {
 });
 
 /**
- * Table cell alignment (#1956), in the frontend (jsdom) host. The vector table is the one in the backend
- * collab-schema-parity.test.ts (browser/happy-dom reading) and content-converter.table-align.test.ts
- * (jsdom/domino reading); the three must stay identical.
+ * Table cell alignment (#1956), in the frontend (jsdom) host. The vectors are one fixture, also read by the backend
+ * collab-schema-parity.test.ts (happy-dom), content-converter.table-align.test.ts (jsdom) and the e2e browser check.
  */
-const CELL_ALIGN_VECTORS: Array<[string, string, string | null]> = [
-  ['align attribute', 'align="center"', 'center'],
-  ['attribute case and whitespace', 'ALIGN=" Right "', 'right'],
-  ['plain style', 'style="text-align:left"', 'left'],
-  ['style with !important', 'style="text-align: center !important"', 'center'],
-  ['style among other declarations', 'style="color: red; text-align: right; background-color: rgb(1, 2, 3)"', 'right'],
-  ['unrelated style keeps the attribute', 'style="color: red" align="left"', 'left'],
-  ['style decides over the attribute', 'style="text-align: right" align="left"', 'right'],
-  ['non-canonical style declines the attribute', 'style="text-align: justify" align="center"', null],
-  ['invalid value', 'align="justify"', null],
-  ['url-like value', 'align="javascript:x"', null],
-  ['empty value', 'align=""', null],
-  ['duplicate declarations', 'style="text-align: left; text-align: right"', null],
-  ['duplicate declarations, differing priority', 'style="text-align: left !important; text-align: right"', null],
-  ['custom property mentioning text-align', 'style="--x: text-align: center"', null],
-  ['quoted value containing a semicolon', 'style="content: \'a;text-align:center\'"', null],
-  ['quoted value', 'style="text-align: \'center\'"', null],
-  ['comment', 'style="text-align: center /* x */"', null],
-  ['upper-case property', 'style="TEXT-ALIGN: RIGHT"', null],
-  ['mixed-case property, attribute ignored', 'style="Text-Align:center" align="left"', null],
-  ['text-align-last', 'style="text-align-last: center"', null],
-  ['over-long style', `style="text-align: center; ${'color: red; '.repeat(100)}"`, null],
-];
+const vectorFixture: { vectors: Array<[string, string, string | null]> } = JSON.parse(
+  readFileSync(resolve(__dirname, '../../../../../backend/src/core/services/__fixtures__/table-cell-align-vectors.json'), 'utf8'),
+);
+const CELL_ALIGN_VECTORS = vectorFixture.vectors;
 
 describe('table cell alignment (#1956)', () => {
   const extensions = [StarterKit, ExtendedTable, TableRow, ConfluenceTableCell, ConfluenceTableHeader];

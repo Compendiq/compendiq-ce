@@ -1512,9 +1512,11 @@ function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlig
   if (style.length > TABLE_CELL_STYLE_MAX) return 'other';
   const mentions = style.match(/text-align/gi);
   if (!mentions) return null;
-  // A browser reads property names case-insensitively and the Node hosts disagree: only the exact
-  // lower-case spelling is read, any other spelling is declined before the CSSOM is asked.
+  // A browser reads property names and priorities case-insensitively and the Node hosts disagree: only
+  // the exact lower-case property is read, and a `!` only as a lower-case `!important` ending its
+  // declaration (`!IMPORTANT`, `! important` are declined) before the CSSOM is asked.
   if (mentions.length !== 1 || mentions[0] !== 'text-align' || /["'\\]|\/\*|--|url\(/i.test(style)) return 'other';
+  if (/!(?!important\s*(?:;|$))/.test(style)) return 'other';
   return normalizeTableCellAlign(cssTextAlign) ?? 'other';
 }
 function resolveTableCellAlign(style: string, cssTextAlign: string, alignAttr: string | null): TableCellAlign | null {

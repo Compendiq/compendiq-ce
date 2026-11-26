@@ -10,6 +10,7 @@ import {
   htmlToMarkdown,
   markdownToHtml,
 } from './content-converter.js';
+import { htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
 import { TABLE_PAGE } from './__fixtures__/confluence-xhtml.js';
 
@@ -291,33 +292,14 @@ describe('htmlToMarkdown outside the Improve conversion is unchanged (D6, #1956)
 });
 
 /**
- * The converter reads cells through jsdom (confluenceToHtml, htmlToConfluence) and domino (turndown); the
- * schemas through the browser / happy-dom. The shared guard makes them agree: every row is the same vector as
- * in collab-schema-parity.test.ts and article-extensions.test.ts, and the three tables must stay identical.
+ * The converter reads cells through jsdom (confluenceToHtml, htmlToConfluence, the Improve table rule); the schemas
+ * through the browser / happy-dom / jsdom. The shared guard makes them agree: the vectors are one fixture, also read
+ * by collab-schema-parity.test.ts, article-extensions.test.ts and the e2e browser check.
  */
-const CELL_ALIGN_VECTORS: Array<[string, string, string | null]> = [
-  ['align attribute', 'align="center"', 'center'],
-  ['attribute case and whitespace', 'ALIGN=" Right "', 'right'],
-  ['plain style', 'style="text-align:left"', 'left'],
-  ['style with !important', 'style="text-align: center !important"', 'center'],
-  ['style among other declarations', 'style="color: red; text-align: right; background-color: rgb(1, 2, 3)"', 'right'],
-  ['unrelated style keeps the attribute', 'style="color: red" align="left"', 'left'],
-  ['style decides over the attribute', 'style="text-align: right" align="left"', 'right'],
-  ['non-canonical style declines the attribute', 'style="text-align: justify" align="center"', null],
-  ['invalid value', 'align="justify"', null],
-  ['url-like value', 'align="javascript:x"', null],
-  ['empty value', 'align=""', null],
-  ['duplicate declarations', 'style="text-align: left; text-align: right"', null],
-  ['duplicate declarations, differing priority', 'style="text-align: left !important; text-align: right"', null],
-  ['custom property mentioning text-align', 'style="--x: text-align: center"', null],
-  ['quoted value containing a semicolon', 'style="content: \'a;text-align:center\'"', null],
-  ['quoted value', 'style="text-align: \'center\'"', null],
-  ['comment', 'style="text-align: center /* x */"', null],
-  ['upper-case property', 'style="TEXT-ALIGN: RIGHT"', null],
-  ['mixed-case property, attribute ignored', 'style="Text-Align:center" align="left"', null],
-  ['text-align-last', 'style="text-align-last: center"', null],
-  ['over-long style', `style="text-align: center; ${'color: red; '.repeat(100)}"`, null],
-];
+const vectorFixture: { vectors: Array<[string, string, string | null]> } = JSON.parse(
+  readFileSync(join(here, '__fixtures__/table-cell-align-vectors.json'), 'utf8'),
+);
+const CELL_ALIGN_VECTORS = vectorFixture.vectors;
 
 describe('the converter reads a cell as both schemas do (#1956)', () => {
   it.each(CELL_ALIGN_VECTORS.filter(([, attrs]) => !attrs.includes('align=') && attrs.includes('style=')))(
@@ -344,9 +326,23 @@ describe('the converter reads a cell as both schemas do (#1956)', () => {
     },
   );
 
-  // Markdown (domino): a table is GFM only for the plain forms; for every ambiguous vector the cell is never read
-  // as aligned, whichever form the table takes.
-  it.each(CELL_ALIGN_VECTORS)('htmlToMarkdown (domino) never reads %s differently from the schemas', (label, attrs, expected) => {
+  // C6 / review T5: Confluence storage → confluenceToHtml (jsdom) → collaborative schema (happy-dom) → save. A form
+  // the guard reads keeps its alignment through the save; a form it declines is declined by every host alike.
+  it.each(CELL_ALIGN_VECTORS.filter(([, attrs]) => !/align="/i.test(attrs)))(
+    'storage read and collaborative save agree on %s',
+    (_label, attrs, expected) => {
+      const read = confluenceToHtml(table(`<td ${attrs}>c</td>`));
+      expect(cells(read)[0]!.getAttribute('align')).toBe(expected);
+      const collab = yDocToHtml(htmlToYDoc(read));
+      expect(cells(collab)[0]!.getAttribute('align')).toBe(expected);
+      const [saved] = cells(htmlToConfluence(collab));
+      expect(saved!.getAttribute('style')).toBe(expected === null ? null : `text-align: ${expected};`);
+    },
+  );
+
+  // Markdown (the Improve table rule reads the original DOM through jsdom): a table is GFM only for the plain forms;
+  // for every ambiguous vector the cell is never read as aligned, whichever form the table takes.
+  it.each(CELL_ALIGN_VECTORS)('htmlToMarkdown never reads %s differently from the schemas', (label, attrs, expected) => {
     const md = htmlToMarkdown(
       `<table><colgroup><col></colgroup><tbody><tr><th ${attrs}>h</th></tr><tr><td ${attrs}>c</td></tr></tbody></table>`, IMPROVE,
     ).trim();
