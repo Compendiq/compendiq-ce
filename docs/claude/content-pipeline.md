@@ -359,8 +359,9 @@ draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
 which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
 text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
 status lozenges, Jira links and images are inline and keep their tasks. The
-import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
-`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked`,
+`data-diagram-name` (#1754) and, on `th`/`td` only, `align` (#1956) by name:
+never `ALLOW_DATA_ATTR: true`, never `<input>`.
 
 `data-diagram-name` is admitted by name and as URI-safe, so a
 ` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
@@ -371,6 +372,41 @@ control character, one that marked reads as a closing fence (three backticks, th
 or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
 `data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
 the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
+
+**Table column alignment (#1956).** `tableCell` and `tableHeader` carry an `align`
+attribute (`left|center|right`, none by default) in both TipTap schemas
+(`ConfluenceTableCell` / `ConfluenceTableHeader`; the Yjs key is the stock `align`, so
+existing rooms load unchanged). It is read from the cell's inline style or its `align`
+attribute and rendered as `align="…"`, which `index.css` applies on `th` too (the prose
+`th` rule would otherwise win). **One precedence everywhere:** an inline `style` that
+mentions `text-align` decides, and unless it is exactly one plain lower-case declaration
+(no quotes, escapes, `url(`, comments or custom properties, no duplicate, at most 1,024
+characters) the cell has no alignment; without such a style `align` decides. The reading
+is one text (`// <table-cell-align:begin>`) in `collab-schema.ts`, `article-extensions.ts`
+and `content-converter.ts`, compared by `collab-schema-parity.test.ts`; a browser reads
+upper-case property names and the Node hosts do not, so the block declines them. The
+import sanitiser admits `align` by a post-pass (`ALLOWED_ATTR` is global, and a DOMPurify
+hook would sit on the singleton the Notion converter shares) on `th`/`td` with one of the
+three values, written lower case; `style` stays stripped on import. Write-back (feature
+`cell-align`, above) removes `align` from every cell and writes
+`style="text-align: X;"`; a style that already mentions `text-align` is kept byte for
+byte, a style without it only gets the declaration appended, and nothing is rewritten.
+`confluenceToHtml` appends `align="X"` next to a plain `text-align` style and leaves the
+style alone, so `htmlToConfluence(confluenceToHtml(x))` is `x`. On the **AI Improve
+conversion only** (`htmlToMarkdown` with `layoutTokens: true`) a table is either GFM with
+its markers (`:--`, `:-:`, `--:` from the header cell; an editor table's generated
+`colgroup` and one paragraph per cell included; pipes escaped) or its raw HTML, never
+the stock rules, which drop spans and widths. Raw HTML is kept for a span, an authored
+width, a caption, a footer, a nested table, a multi-block or line-break cell, a
+highlight, a class other than Confluence's own decoration, a paragraph with its own
+alignment, a body cell aligned differently from its header, a table over 5,000 cells,
+or a header that is not the first row. Every other `htmlToMarkdown` caller (embedding
+text, tagging, chat context, sub-page context in an Improve request) is byte-identical to
+before, including for an aligned editor table, which they still see as raw HTML.
+**Known limits:** tables the Improve rule declines keep the model's echo as the only
+carrier of their attributes; non-Improve callers keep stock turndown's output for
+`<p>`-celled tables (broken Markdown, pre-existing); alignment is per column in GFM and
+per cell in the model (a body cell that differs keeps its table raw).
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
