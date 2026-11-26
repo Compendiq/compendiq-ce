@@ -511,4 +511,349 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(result.current.provider).toBeNull();
     expect(Socket.instances).toHaveLength(0);
   });
+
+  describe('document epoch (#2034)', () => {
+    const EPOCH = '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f';
+    const OTHER_EPOCH = '0d9c1b2a-3e4f-4a5b-8c6d-7e8f9a0b1c2d';
+
+    const declared = (socket: Socket) => new URL(socket.url).searchParams.get('expectedDocEpoch');
+    const mount = () => renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '1',
+    }));
+    /** Drop the connection and let y-websocket open the next one. */
+    const reconnect = async (socket: Socket): Promise<Socket> => {
+      const opened = Socket.instances.length;
+      act(() => { socket.close(1006, 'offline'); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(Socket.instances).toHaveLength(opened + 1);
+      return Socket.instances[opened]!;
+    };
+
+    it('pins the control\'s epoch at the first sync and declares it on every later join, never on the first', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      expect(declared(first)).toBeNull();
+      expect(result.current.docEpochPinned).toBe(false);
+      act(() => {
+        first.open();
+        control(first, { type: 'doc_epoch', epoch: EPOCH });
+        control(first, lifecycle('1'));
+      });
+      // Remembered, not pinned: the document has not synced yet.
+      expect(result.current.docEpochPinned).toBe(false);
+      act(() => {
+        hydrate(first);
+        control(first, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      expect(result.current.docEpochPinned).toBe(true);
+      expect(result.current.writable).toBe(true);
+
+      const second = await reconnect(first);
+      expect(declared(second)).toBe(EPOCH);
+      expect(new URL(second.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+      act(() => { second.open(); hydrate(second); });
+      const third = await reconnect(second);
+      expect(declared(third)).toBe(EPOCH);
+      expect(result.current.docEpochPinned).toBe(true);
+    });
+
+    it('never changes the pin: a later doc_epoch control is ignored', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => {
+        first.open();
+        control(first, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(first);
+        // Also on the connection that pinned it.
+        control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH });
+      });
+      const second = await reconnect(first);
+      expect(declared(second)).toBe(EPOCH);
+      act(() => {
+        second.open();
+        control(second, { type: 'doc_epoch', epoch: OTHER_EPOCH });
+        hydrate(second);
+      });
+      const third = await reconnect(second);
+      expect(declared(third)).toBe(EPOCH);
+      expect(result.current.docEpochPinned).toBe(true);
+    });
+
+    it('stays unpinned for its lifetime when the first sync came without the control', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, lifecycle('1')); hydrate(first); });
+      expect(result.current.synced).toBe(true);
+      expect(result.current.docEpochPinned).toBe(false);
+
+      const second = await reconnect(first);
+      expect(declared(second)).toBeNull();
+      // A later connection names an epoch: the document already holds content of an unknown lineage.
+      act(() => {
+        second.open();
+        control(second, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(second);
+      });
+      const third = await reconnect(second);
+      expect(declared(third)).toBeNull();
+      expect(result.current.docEpochPinned).toBe(false);
+    });
+
+    it('forgets a remembered epoch when its connection closes before the first sync', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); });
+      const second = await reconnect(first);
+      // Nothing was synced, so nothing is declared and nothing of that connection is kept.
+      expect(declared(second)).toBeNull();
+      act(() => { second.open(); hydrate(second); });
+      expect(result.current.docEpochPinned).toBe(false);
+      const third = await reconnect(second);
+      expect(declared(third)).toBeNull();
+    });
+
+    it('pins the epoch of the connection that delivers the first sync, not an earlier connection\'s', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); });
+      const second = await reconnect(first);
+      act(() => {
+        second.open();
+        control(second, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(second);
+      });
+      expect(result.current.docEpochPinned).toBe(true);
+      expect(declared(await reconnect(second))).toBe(EPOCH);
+    });
+
+    it('works as before against a server that never sends the control', async () => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => {
+        first.open();
+        control(first, lifecycle('1'));
+        hydrate(first, 'Old server text');
+        control(first, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      expect(result.current).toMatchObject({
+        synced: true, connected: true, writable: true, error: null, readOnlyReason: null, docEpochPinned: false,
+      });
+      const second = await reconnect(first);
+      expect(declared(second)).toBeNull();
+      act(() => {
+        second.open();
+        hydrate(second, 'Old server text');
+        control(second, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      expect(result.current).toMatchObject({ writable: true, readOnlyReason: null, docEpochPinned: false });
+      expect(result.current.ydoc!.getText('draft').toString()).toContain('Old server text');
+    });
+
+    it.each([
+      ['not a UUID', { type: 'doc_epoch', epoch: 'not-a-uuid' }],
+      ['no epoch', { type: 'doc_epoch' }],
+      ['an extra field', { type: 'doc_epoch', epoch: EPOCH, writable: true }],
+    ])('does not pin a doc_epoch control with %s', async (_name, frame) => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => { first.open(); control(first, frame); hydrate(first); });
+      expect(result.current.docEpochPinned).toBe(false);
+      expect(result.current.writable).toBe(false);
+      expect(declared(await reconnect(first))).toBeNull();
+    });
+
+    it.each([
+      ['the control and the close', true],
+      ['the close alone', false],
+    ])('keeps the draft as document_changed and never reconnects when a declared rejoin gets doc_reset (%s)', async (_name, withControl) => {
+      const { result } = mount();
+      const first = Socket.instances[0]!;
+      act(() => {
+        first.open();
+        control(first, { type: 'doc_epoch', epoch: EPOCH });
+        hydrate(first, 'Draft the tab still holds');
+        control(first, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      const draft = result.current.ydoc!;
+      const second = await reconnect(first);
+      expect(declared(second)).toBe(EPOCH);
+      act(() => {
+        second.open();
+        if (withControl) control(second, { type: 'doc_reset' });
+        second.close(1001, 'doc_reset');
+      });
+      expect(result.current.readOnlyReason).toBe('document_changed');
+      expect(result.current.writable).toBe(false);
+      expect(result.current.connected).toBe(false);
+      expect(result.current.ydoc).toBe(draft);
+      expect(draft.getText('draft').toString()).toBe('Draft the tab still holds');
+      // The synced document keeps its draft state; this is not a pre-sync join error.
+      expect(result.current.synced).toBe(true);
+      expect(result.current.error).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(Socket.instances).toHaveLength(2);
+    });
+
+    describe('empty-document marker', () => {
+      const marker = (socket: Socket) => new URL(socket.url).searchParams.get('expectedDocEmpty');
+      /** A Yjs update frame, as a peer's edit reaches a socket outside the sync handshake. */
+      const update = (socket: Socket, bytes: Uint8Array) => {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeUpdate(encoder, bytes);
+        socket.receive(encoding.toUint8Array(encoder));
+      };
+      /** The updates of two successive edits; the second cannot be integrated without the first. */
+      const twoEdits = (): [Uint8Array, Uint8Array] => {
+        const server = new Y.Doc();
+        const updates: Uint8Array[] = [];
+        server.on('update', (bytes: Uint8Array) => updates.push(bytes));
+        server.getText('draft').insert(0, 'first');
+        server.getText('draft').insert(5, ' second');
+        server.destroy();
+        return [updates[0]!, updates[1]!];
+      };
+      /** The server's SyncStep2 for a document that holds nothing. */
+      const hydrateEmpty = (socket: Socket) => {
+        const server = new Y.Doc();
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, 0);
+        syncProtocol.writeSyncStep2(encoder, server);
+        socket.receive(encoding.toUint8Array(encoder));
+        server.destroy();
+      };
+
+      it('is decided for each connect: sent while the unpinned document is empty, dropped once it holds content, replaced by the epoch once pinned', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        expect(declared(first)).toBeNull();
+        expect(new URL(first.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+
+        // The connection drops before it delivered anything: still empty.
+        act(() => { first.open(); control(first, { type: 'doc_epoch', epoch: OTHER_EPOCH }); });
+        const second = await reconnect(first);
+        expect(marker(second)).toBe('1');
+        expect(declared(second)).toBeNull();
+
+        // A peer's edit arrives before the first sync, then the connection drops.
+        act(() => { second.open(); update(second, twoEdits()[0]); });
+        expect(result.current.synced).toBe(false);
+        expect(result.current.ydoc!.getText('draft').toString()).toBe('first');
+        const third = await reconnect(second);
+        expect(marker(third)).toBeNull();
+        expect(declared(third)).toBeNull();
+
+        // The first sync pins: from here the epoch is declared and never the marker.
+        act(() => {
+          third.open();
+          control(third, { type: 'doc_epoch', epoch: EPOCH });
+          hydrate(third);
+        });
+        expect(result.current.docEpochPinned).toBe(true);
+        const fourth = await reconnect(third);
+        expect(declared(fourth)).toBe(EPOCH);
+        expect(marker(fourth)).toBeNull();
+      });
+
+      it('is never sent for a pinned document, even one that is still empty', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        act(() => {
+          first.open();
+          control(first, { type: 'doc_epoch', epoch: EPOCH });
+          hydrateEmpty(first);
+        });
+        expect(result.current.synced).toBe(true);
+        expect(result.current.docEpochPinned).toBe(true);
+        expect(Y.encodeStateAsUpdate(result.current.ydoc!)).toEqual(Y.encodeStateAsUpdate(new Y.Doc()));
+
+        const second = await reconnect(first);
+        expect(declared(second)).toBe(EPOCH);
+        expect(marker(second)).toBeNull();
+      });
+
+      it('is sent again by an unpinned document that synced and still holds nothing', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        act(() => { first.open(); hydrateEmpty(first); });
+        expect(result.current.synced).toBe(true);
+        expect(result.current.docEpochPinned).toBe(false);
+
+        const second = await reconnect(first);
+        expect(marker(second)).toBe('1');
+        expect(declared(second)).toBeNull();
+      });
+
+      it('is not sent for an unpinned document that holds content: such a join declares nothing', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        // A first sync without the control (an older pod, a provisional room) never pins.
+        act(() => { first.open(); control(first, lifecycle('1')); hydrate(first); });
+        expect(result.current.docEpochPinned).toBe(false);
+
+        const second = await reconnect(first);
+        expect(marker(second)).toBeNull();
+        expect(declared(second)).toBeNull();
+        expect(new URL(second.url).searchParams.get('expectedLifecycleRevision')).toBe('1');
+      });
+
+      it('is not sent while the document holds an update parked for a missing dependency', async () => {
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        // Only the second edit arrives: nothing is integrated, but Yjs keeps
+        // the update and would send it along with the document's state.
+        act(() => { first.open(); update(first, twoEdits()[1]); });
+        const doc = result.current.ydoc!;
+        expect(doc.getText('draft').toString()).toBe('');
+        expect(Y.decodeStateVector(Y.encodeStateVector(doc)).size).toBe(0);
+
+        const second = await reconnect(first);
+        expect(marker(second)).toBeNull();
+        expect(declared(second)).toBeNull();
+      });
+
+      it('is not sent while the document holds only a parked deletion it cannot apply yet', async () => {
+        // An edit and its deletion: the second update is a delete set without a struct.
+        const server = new Y.Doc();
+        const updates: Uint8Array[] = [];
+        server.on('update', (bytes: Uint8Array) => updates.push(bytes));
+        server.getText('draft').insert(0, 'first');
+        server.getText('draft').delete(0, 5);
+        server.destroy();
+        const deletion = updates[1]!;
+        expect(Y.decodeUpdate(deletion).structs).toEqual([]);
+        expect(Y.decodeUpdate(deletion).ds.clients.size).toBe(1);
+
+        const { result } = mount();
+        const first = Socket.instances[0]!;
+        expect(marker(first)).toBe('1');
+        // A retry that still holds nothing sends the marker again.
+        act(() => { first.open(); });
+        const second = await reconnect(first);
+        expect(marker(second)).toBe('1');
+
+        // The deletion arrives without the edit it deletes. No clock and no
+        // deletion is integrated and no struct is parked, but Yjs keeps the
+        // delete set and sends it along with the document's state.
+        act(() => { second.open(); update(second, deletion); });
+        const doc = result.current.ydoc!;
+        expect(Y.equalSnapshots(Y.snapshot(doc), Y.emptySnapshot)).toBe(true);
+        expect(doc.store.pendingStructs).toBeNull();
+        expect(Y.decodeUpdate(Y.encodeStateAsUpdate(doc)).ds.clients.size).toBe(1);
+
+        const third = await reconnect(second);
+        expect(marker(third)).toBeNull();
+        expect(declared(third)).toBeNull();
+      });
+
+      it('is the only parameter of a join without a lifecycle revision', () => {
+        renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
+        expect(new URL(Socket.instances[0]!.url).search).toBe('?expectedDocEmpty=1');
+      });
+    });
+  });
 });

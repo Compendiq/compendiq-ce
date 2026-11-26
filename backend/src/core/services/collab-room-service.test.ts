@@ -279,6 +279,13 @@ beforeEach(async () => {
   runtimeB = await createCollabRuntime(main, 'pod-b');
 });
 
+/** The epoch of the page's persisted document, which a Save's post-commit marks carry (#2034). */
+async function docEpochOf(pageId: number): Promise<string> {
+  const epoch = await persist.readCollabDocEpoch(pageId);
+  if (epoch === null) throw new Error('the page has no persisted collaborative document');
+  return epoch;
+}
+
 describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
 
   it('acknowledges only a durable writable admission at its exact lifecycle revision', async () => {
@@ -618,6 +625,54 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     );
     expect(persisted.rows[0]?.count).toBe('0');
   });
+
+  it.each([
+    ['malformed', { kind: 'malformed' }],
+    ['mismatched', { kind: 'declared', epoch: '7b0f4c1e-52a8-4d3f-9c6b-1a2b3c4d5e6f' }],
+  ] as const)(
+    'a join to a frozen page keeps its read-only outcome with a %s expectedDocEpoch: no epoch decision (#2034)',
+    async (_name, expectedDocEpoch) => {
+      const pageId = nextPageId();
+      await setPageBaselineCreationEnabled(SYSTEM_ADMIN, true);
+      const prepared = await previewPageBaseline(pageId, USER_A);
+      await freezePage({
+        pageId,
+        actorId: USER_A,
+        reason: 'Publish the reviewed page before a collaboration join',
+        expectedContentRevision: prepared.contentRevision,
+        expectedManifestDigest: prepared.manifestDigest,
+      });
+      const state = await query<{ lifecycle_revision: string }>(
+        'SELECT lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+      );
+      const sent: Uint8Array[] = [];
+      const closes: Array<{ code: number; reason: string }> = [];
+
+      // Edit permission and the current lifecycle revision: only the freeze keeps it read-only.
+      const joined = await runtimeA!.attachSocket(pageId, {
+        id: 'frozen-editor',
+        ws: {
+          readyState: 1,
+          send(frame: Uint8Array) { sent.push(frame); },
+          close(code?: number, reason?: string) { closes.push({ code: code ?? 1005, reason: String(reason ?? '') }); },
+        } as unknown as WebSocket,
+        userId: USER_A,
+        writable: true,
+        expectedLifecycleRevision: state.rows[0]!.lifecycle_revision,
+        expectedDocEpoch,
+      });
+
+      expect(joined.writable).toBe(false);
+      expect(joined.joinRefused).toBeUndefined();
+      expect(closes).toEqual([]);
+      expect(runtimeA!.getRoom(pageId)!.sockets.has('frozen-editor')).toBe(true);
+      expect(decodeControlFrames(sent)).toEqual([
+        expect.objectContaining({
+          type: 'page_lifecycle', isFrozen: true, lifecycleRevision: state.rows[0]!.lifecycle_revision,
+        }),
+      ]);
+    },
+  );
 
   it('freeze loses to an admitted editor and leaves its in-memory work mounted', async () => {
     const pageId = nextPageId();
@@ -1468,34 +1523,6 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     }
   });
 
-  it('a real reset preserves inbound bytes when the peer retires its older document', async () => {
-    const pageId = nextPageId();
-    await runtimeA!.attachSocket(pageId, {
-      id: 'a1', ws: stubWs(), userId: USER_A, writable: true,
-    });
-    await runtimeB!.attachSocket(pageId, {
-      id: 'b1', ws: stubWs(), userId: USER_B, writable: true,
-    });
-    const paragraph = new Y.XmlElement('paragraph');
-    const text = new Y.XmlText();
-    text.insert(0, 'COLLAB_TYPED_PARAGRAPH');
-    paragraph.insert(0, [text]);
-    runtimeB!.getRoom(pageId)!.doc.getXmlFragment('default').push([paragraph]);
-    await runtimeA!.resetFromHtml(pageId, '<p>REMOTE_WINS</p>');
-    await vi.waitFor(() => expect(runtimeB!.getRoom(pageId)).toBeUndefined(), { timeout: 2_000 });
-    const stored = await query<{ doc_state: Buffer }>(
-      'SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1', [pageId],
-    );
-    const restored = new Y.Doc();
-    try {
-      Y.applyUpdate(restored, new Uint8Array(stored.rows[0]!.doc_state));
-      expect(yDocToHtml(restored)).toBe('<p>REMOTE_WINS</p>');
-    } finally {
-      restored.destroy();
-    }
-    await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
-  });
-
   it('activates the durable admission before BYTEA initialization so a writer already 409s', async () => {
     if (!main) throw new Error('unreachable');
     const pageId = nextPageId();
@@ -1669,7 +1696,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       await main!.publish(collabDocChannel(pageId), JSON.stringify({
         origin: 'delayed-peer', kind: 'tombstone', code: 1001, reason: 'doc_reset',
       }));
-      await vi.waitFor(() => expect(persist.isCollabResetting(pageId)).toBe(true));
+      await vi.waitFor(() => expect(oldRoom.resetFrozen).toBe(true));
       await holder.query('COMMIT');
       await Promise.all([detach, freshJoin]);
       await vi.waitFor(() => expect(oldRoom.flushing).toBe(false));
@@ -1689,7 +1716,6 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       await holder.query('ROLLBACK');
       holder.release();
       await Promise.allSettled([detach, freshJoin]);
-      persist.endCollabReset(pageId);
     }
   });
 
@@ -1798,30 +1824,32 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     expect(namesAfter).not.toContain('Alice');
   });
 
-  it('ignores state_dump while a doc_reset freeze is in flight', async () => {
+  it('an untagged freeze from an older pod stops the room persisting and taking state dumps until its tombstone', async () => {
     const pageId = nextPageId();
+    const closes: Array<{ code: number; reason: string }> = [];
     await runtimeA!.attachSocket(pageId, {
-      id: 'writer', ws: stubWs(), userId: USER_A, writable: true,
+      id: 'writer', ws: stubWs((code, reason) => closes.push({ code, reason })), userId: USER_A, writable: true,
     });
     const roomA = runtimeA!.getRoom(pageId)!;
-    const roomB = await runtimeB!.getOrCreateRoom(pageId);
-    persist.beginCollabReset(pageId);
-    roomB.persistable = false;
-    const dumpDoc = new Y.Doc();
-    dumpDoc.getText('t').insert(0, 'SHOULD_NOT_APPLY');
-    const dump = Y.encodeStateAsUpdate(dumpDoc);
-    dumpDoc.destroy();
+    expect(roomA.persistable).toBe(true);
+    appendParagraph(roomA.doc, 'TYPED_BEFORE_OLD_POD_RESET');
+    // A pod that predates #2034 still resets in place: freeze, replace, tombstone.
     await main!.publish(collabDocChannel(pageId), JSON.stringify({
-      origin: runtimeA!.podId,
-      kind: 'state_dump',
-      update: Buffer.from(dump).toString('base64'),
-      lifecycleRevision: roomA.lifecycleRevision,
-      admission: roomA.admission,
+      origin: 'older-pod', kind: 'freeze', reason: 'doc_reset',
     }));
-    await new Promise((r) => setTimeout(r, 200));
-    expect(roomB.doc.getText('t').toString()).not.toContain('SHOULD_NOT_APPLY');
-    expect(roomB.persistable).toBe(false);
-    persist.endCollabReset(pageId);
+    await vi.waitFor(() => expect(roomA.resetFrozen).toBe(true));
+    expect(roomA.persistable).toBe(false);
+    expect(roomA.persistTimer).toBeNull();
+    await persist.flushCollabPersist(roomA);
+    const body = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+    expect(body.rows[0]!.body_html).not.toContain('TYPED_BEFORE_OLD_POD_RESET');
+
+    await main!.publish(collabDocChannel(pageId), JSON.stringify({
+      origin: 'older-pod', kind: 'tombstone', code: 1001, reason: 'doc_reset',
+    }));
+    await vi.waitFor(() => expect(runtimeA!.getRoom(pageId)).toBeUndefined());
+    expect(closes).toEqual([{ code: 1001, reason: 'doc_reset' }]);
+    await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
   });
 
   it('a throwing bus apply does not skip the rest of the queue', async () => {
@@ -1941,7 +1969,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       const bus = await observeBus(pageId);
       const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
       try {
-        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId));
 
         expect(imageAttributes(roomA.doc)).toEqual([MARKED]);
         expect(originsA).toEqual([COLLAB_IMAGE_MARKER_ORIGIN]);
@@ -1989,7 +2017,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       const room = runtimeA!.getRoom(pageId)!;
       const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
       try {
-        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId));
       } finally {
         await releasePageRuntime(request);
       }
@@ -2014,7 +2042,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       const bus = await observeBus(pageId);
       const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
       try {
-        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId));
 
         await vi.waitFor(() => expect(imageAttributes(roomB.doc)).toEqual([MARKED]));
         await bus.drain();
@@ -2152,7 +2180,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       const bus = await observeBus(pageId);
       const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
       try {
-        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId));
 
         await vi.waitFor(() => expect(imageAttributes(roomA.doc)).toEqual([MARKED]), { timeout: 4_000 });
         expect(imageAttributes(roomB.doc)).toEqual([MARKED]);
@@ -2177,7 +2205,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       expect(runtimeA!.getRoom(pageId)).toBeUndefined();
       const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
       try {
-        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId));
       } finally {
         await releasePageRuntime(request);
       }
@@ -2206,7 +2234,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       }) as typeof redis.publish);
       const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
       try {
-        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId));
       } finally {
         publishSpy.mockRestore();
         await releasePageRuntime(request);
@@ -2250,7 +2278,8 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         const info = vi.spyOn(logger, 'info');
         const warn = vi.spyOn(logger, 'warn');
         try {
-          await expect(runtimeA!.markUploadedImages(pageId, request, MARKERS)).resolves.toBeUndefined();
+          await expect(runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId)))
+            .resolves.toBeUndefined();
           expect(imageAttributes(room.doc)).toEqual([{ src: IMAGE_SRC }]);
           expect(await persist.htmlFromPersistedDoc(pageId)).not.toContain('data-confluence-filename');
           // Both steps were refused by the write fence: an expected outcome, logged with its reason.
@@ -2281,7 +2310,8 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       const info = vi.spyOn(logger, 'info');
       const warn = vi.spyOn(logger, 'warn');
       try {
-        await expect(runtimeA!.markUploadedImages(pageId, request, MARKERS)).resolves.toBeUndefined();
+        await expect(runtimeA!.markUploadedImages(pageId, request, MARKERS, await docEpochOf(pageId)))
+          .resolves.toBeUndefined();
 
         // The in-place step does not depend on the persisted one.
         expect(imageAttributes(room.doc)).toEqual([MARKED]);
@@ -2392,7 +2422,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       expect(runtimeA!.getRoom(pageId)).toBeUndefined();
       const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
       try {
-        await runtimeA!.markWrittenTaskIds(pageId, request, []);
+        await runtimeA!.markWrittenTaskIds(pageId, request, [], await docEpochOf(pageId));
       } finally {
         await releasePageRuntime(request);
       }

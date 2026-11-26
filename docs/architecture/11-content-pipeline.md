@@ -40,9 +40,12 @@ so the next join re-inits from HTML (Decision B).
 skips confluence-wins / HTML-equality overwrite while `collab:active:{pageId}` is
 non-empty **unless** the remote `version.number` increased (lossy snapshot HTML
 would look like `htmlChanged` even when nobody edited Confluence). On a real
-remote increase: apply the inbound HTML, rebuild the Y.Doc + BYTEA, send control
-`doc_reset`, close sockets with **1001** so `y-websocket` reconnects onto the
-remote body. Empty-room inbound writes still `DELETE` BYTEA (Decision B).
+remote increase: apply the inbound HTML and, in the same transaction, `DELETE`
+the page's `page_collaborative_docs` row (#2034). That ends the document
+lineage for a live room as well as for none: the room of the previous
+generation can no longer persist, is retired with control `doc_reset` and
+close **1001** (its editors keep their documents as read-only drafts), and the
+next writable join seeds a new document from the remote body (Decision B).
 
 ## Flow
 

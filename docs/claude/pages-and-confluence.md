@@ -448,6 +448,18 @@ history under the same transaction and page row lock. Advance the live
 revision past a stored snapshot even when the provider version is lower.
 Scheduled version-unchanged sync retains its existing overwrite behavior.
 
+The three inbound publications that replace the body of an existing page
+(scheduled version-jump upsert, scheduled conflict-policy update, bulk Re-sync
+`apply_incoming`) delete the page's `page_collaborative_docs` row in that same
+transaction, under the lifecycle lock it already holds, whether or not a room
+is live (#2034, amendment A8). Key the delete on the accepted publication
+decision and the exact row the statement updated, never on the presence of
+`SET body_html`: an unchanged bulk refresh, a fresh create and the
+creator-journal branch keep or have no lineage. After the COMMIT send
+`hintCollabDocRetired(pageId)`; it only prompts rooms to re-read their row and
+never fails the sync. There is no reset of a live room from HTML any more, and
+a failed delete rolls the publication back.
+
 Version History identifies rows by `(source, versionNumber)` (#1918). A synced
 live row is Confluence history only when both counters agree and there is no
 local edit marker. Otherwise the live identity is Local. Hide only the exact

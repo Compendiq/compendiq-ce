@@ -110,10 +110,17 @@ sequenceDiagram
         B->>B: destroy provider do not reconnect
     else ok
         Note over F: frames before live are buffered in order, 64 frames and 1 MiB, overflow closes 1013
-        F->>G: load or create room then stamp awareness
-        B->>G: binary SyncStep1
-        G-->>B: SyncStep2 only, the server does not currently send SyncStep1, see issue 1928
-        Note over G: read-only peers drop SyncStep2 and Update by first two bytes
+        F->>G: attachSocket with the lineage declaration, expectedDocEpoch or expectedDocEmpty, load or create room, stamp awareness
+        alt would be writable and the declaration is malformed or names another epoch than the row
+            G-->>B: control doc_reset then close 1001 doc_reset, socket not attached, no admission
+            B->>B: keep the Y.Doc as a read-only draft, do not reconnect
+        else attached
+            G-->>B: control doc_epoch when the room has a persisted document, then page_lifecycle, then writable_admission or its refusal
+            B->>G: binary SyncStep1
+            G-->>B: SyncStep2 only, the server does not currently send SyncStep1, see issue 1928
+            B->>B: first sync pins the doc_epoch of this connection for every later join
+            Note over G: read-only peers drop SyncStep2 and Update by first two bytes
+        end
     end
 ```
 
@@ -127,7 +134,8 @@ sequenceDiagram
 | **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden`: read-only draft (`permission_loss`), also for an empty reason |
 | **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
 | **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
-| **1001** | `doc_reset` and transient reasons | Transient resync after `doc_reset` or in-flight Confluence hide — reconnect | "Could not connect…"; `doc_reset`: "This page was replaced while the editor was opening" | Working offline, then reconnect; `doc_reset`: read-only draft |
+| **1001** | `doc_reset` | The document lineage changed (#2034): a join that would be writable made a malformed declaration (a malformed `expectedDocEpoch` or `expectedDocEmpty`, or both together) or declared another epoch than the page's row (refused before any admission, socket never attached); a room was retired because its `page_collaborative_docs` row was deleted or replaced; a read-only room adopted the document a writable join seeded; an older pod reset the document in place. Always preceded by the `doc_reset` control | "This page was replaced while the editor was opening" | Read-only draft (`document_changed`) with **Download draft**, no reconnect |
+| **1001** | any other | Transient: shutdown, an in-flight Confluence hide, a refused frame fence (`collab_validation_unavailable`), a lost transport — reconnect | "Could not connect to the collaborative session. Retrying…" | Working offline, then reconnect |
 | HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
 
 **Before live (#1895).** Until the join completes (JWT, flag, page row,
@@ -144,6 +152,168 @@ Close **after** the 101, **before** any SyncStep1. Do not throw
 `fastify.authenticate` in `onRequest` on this route.
 
 `:pageId` on the wire is integer `pages.id`, never `confluence_id`.
+
+## Document epoch and join outcome precedence (#2034)
+
+`page_collaborative_docs.doc_epoch` (migration 159, `UUID NOT NULL DEFAULT
+gen_random_uuid()`) identifies one document lineage. A lineage starts when the
+HTML seed of a writable join inserts the row and ends when that row is deleted;
+nothing rewrites a row into another lineage, and a row inserted by a pod that
+predates the column still gets its own value. The column is the only
+authority: nothing in the `Y.Doc` carries the epoch and no client can change
+it (amendment A2 to #2034, which first placed it in the `compendiq.meta` map:
+that map is part of the document every writer and every merge can alter).
+
+A room reads its `docEpoch` with the document: from the row on a read-only
+load, from `INSERT … RETURNING` on the seed, from the row when a provisional
+room adopts the persisted document. It is `null` exactly while the room has no
+persisted document (an HTML-only reader room).
+
+The client learns the epoch from a type-4 control and declares on every join
+which document it holds:
+
+- **Control.** When a socket is attached to a room with a persisted document,
+  the gateway sends `{ type: 'doc_epoch', epoch }` before the lifecycle and
+  admission controls. A provisional room sends none.
+- **Pin.** `use-collab-provider.ts` remembers the control of the current
+  connection and pins it at the first sync of its `Y.Doc`: the pin is the
+  candidate of the first connection that completes a sync. A connection that
+  closes before the first sync is forgotten. The pin never changes afterwards;
+  later controls are ignored. A document whose first sync came without the
+  control (pre-epoch pod, provisional room) stays unpinned for its lifetime.
+  The pin does not prove that the document held nothing before that sync: an
+  earlier connection that dropped before its own first sync can have left
+  applied or parked updates in it, and they are pinned to the later
+  connection's epoch with everything else. Until then such a document declares
+  nothing (below), so its joins stay unverified.
+- **Declaration.** Two optional join parameters, decided for each connect
+  (y-websocket 3.1 builds the URL on every connect; the hook's provider
+  subclass decides there). They exclude each other:
+  - `expectedDocEpoch=<uuid>`: "I hold the document of this epoch". Sent by a
+    pinned document on every later join (the pin is written to the provider's
+    `params`), and never together with the marker.
+  - `expectedDocEmpty=1`: "I hold no document" (the empty-document marker,
+    a flag whose only value is `1`). Sent by an unpinned document exactly
+    while it is provably empty: an empty Yjs state vector, an empty delete set
+    and no update parked for a missing dependency. That is a tab's first join,
+    and each retry of it that still has nothing.
+  - Neither: an unpinned document that holds content, for example a
+    connection that applied or parked updates and dropped before its first
+    sync, or a first sync that came without the control. Older browser bundles
+    differ: one that predates the epoch sends neither on every join; an
+    epoch-aware one that predates the marker sends neither on its first join
+    and its pinned epoch on later ones.
+
+  The gateway reads the pair with `CollabJoinDeclarationSchema` as `absent`
+  (neither), `declared` (exactly one UUID), `empty` (exactly the marker) or
+  `malformed` (an empty value, a repeated parameter, any other text, or both
+  parameters together).
+
+Neither parameter is a credential. Authentication, page access, edit
+permission and the lifecycle checks run first and are unchanged; a declaration
+can only end that join or decide whether the socket is lineage-verified.
+
+**Trust in the empty-document marker.** The server cannot check the claim. A
+client that sets the marker while it holds content is in the same position as
+any writer, who can already write arbitrary content into the document: the
+marker grants no access and skips no check a writable join passes. It exists
+so that the joins that never set it, old bundles and partially synced tabs,
+stay unverified and are not asked to send their contents (#1928 sends its
+SyncStep1 to verified sockets only).
+
+**Join outcome precedence** (first match wins):
+
+1. The route closes as before: 4404, 4401, 4403 `flag_off`, 4403
+   `rate_limited`, `1001 no_runtime`.
+2. The join would not be writable (no edit permission, a frozen page, a
+   missing or stale `expectedLifecycleRevision`): today's outcome, attached
+   read-only, **no epoch decision**.
+3. The declaration is malformed (`expectedDocEpoch` or `expectedDocEmpty`
+   malformed, or both present), or it declares an epoch different from the
+   page's `doc_epoch` (or the page has no row): `doc_reset` control, close
+   `1001 doc_reset`, the socket is not attached and no admission is kept. Only
+   the joining socket is affected: the room's other sockets stay, and a refused
+   join does not cancel an empty room's eviction. The marker alone names no
+   epoch, so it is never a mismatch: it passes this step in a page without a
+   row, where its join seeds the document.
+4. Otherwise the join is writable: `writable_admission`.
+
+A frozen page is step 2 whatever the join declares: the refused admission
+gives it today's read-only outcome and the declaration is not looked at.
+
+Step 3 is decided at three points, the same for every declaration. A declared
+join is writable only when its declaration equals the epoch of the document
+the room ends up holding; a join with the marker passes each point's
+declaration comparison, because it names no epoch, and each point's stale-heap
+decision applies to it unchanged:
+
+- *Pre-check, before the admission.* A malformed declaration is refused with
+  no read. Otherwise the row is read without locks. A room whose `docEpoch`
+  differs from that read may be a stale heap and is decided first: the row is
+  read again under the page lifecycle lock, which is the proof. What the proof
+  shows decides how the heap is retired. A superseded document on a page that
+  still exists is retired with `doc_reset` to its sockets, and the join
+  restarts once against a fresh room, so a tab of the current generation that
+  meets a superseded room is admitted, and a tab of an old generation still
+  causes the stale room it found to be retired before it is refused. A page
+  proven absent is not a document reset: its room goes through the
+  committed-delete teardown (`4404 committed_delete`), and the restarted join
+  fails as any join to a missing page does (see the paragraph "A room is
+  **retired** only on an authoritative mismatch" below). Then a declaration
+  that differs from the row refuses the socket.
+- *Admission precondition.* The same conditions run as the `precondition` of
+  `admitPageRuntime`, inside the admission transaction under the page lifecycle
+  lock that every invalidation, seed and inbound publication also takes, so a
+  lineage that changes after the pre-check leaves no admission behind.
+- *After the room has its document.* A provisional room loads, seeds or adopts
+  its document in a transaction after the admission's, and the row can be
+  deleted or reseeded in between. Before the room keeps the admission, a
+  declared epoch must equal the epoch the room now holds; otherwise the
+  admission this join acquired is released and the socket is refused. A room
+  that already owns an admission accepts a declared epoch only when it equals
+  its own `docEpoch`.
+
+**Not in this change: the final step.** The current-epoch assertion in one
+fenced transaction that also writes `writable_admission` (design D-2034,
+"final step of `attachSocket`") arrives with #2035. Until then a publication
+that commits after the join's last fenced transaction and before the positive
+control is written still lets that control be sent for a document whose
+lineage has just ended. What holds in that window: no mutation of the ended
+lineage is accepted or persisted. A client SyncStep2 or Update, a persist, a
+merge and a peer exchange each assert the current epoch first and apply
+nothing, and the first of those boundaries the room reaches retires it with
+`doc_reset`. An ordinary client SyncStep1 is not such a boundary: it is
+answered from the room's document without a fenced transaction, so until the
+room is retired that socket can still be sent the superseded document's bytes.
+The fenced answer arrives with #1928. What the join decision guarantees here
+is that a declared join is never writable in a room that holds another epoch
+than the one it declared.
+
+`CollabSocket.lineageVerified` is true only for a writable socket whose join
+went through those points and either declared the room's epoch or declared an
+empty document (owner decision of 2026-11-25, which replaces amendment A1 for
+the first join: a client that holds nothing has nothing of another lineage to
+bring). The room's epoch is then established: the marker's own join seeded or
+adopted the document, or joined the room that holds it. A join that declares
+nothing is admitted as before and is never verified. A lineage that ends
+during a join (`collab_lineage_changed` from the seed, adoption or merge)
+answers `doc_reset` to a join that named an epoch; a join that named none,
+undeclared or with the marker, fails as a join (`1001`) and its client
+reconnects into a fresh room. #1928 sends its server SyncStep1 only to
+writable, lineage-verified sockets.
+
+Type-4 control frames (JSON, server to client):
+
+| Control | Meaning |
+|---------|---------|
+| `doc_epoch` | Epoch of the room's persisted document; sent once per join, first (#2034) |
+| `page_lifecycle` | Lifecycle revision, frozen state and baseline of the page |
+| `writable_admission` | Positive write admission at exactly that lifecycle revision |
+| `writable_refused` | The join stays read-only: lifecycle revision missing or stale |
+| `permission_loss` | No edit permission at join, or revoked later |
+| `pages_version` | A collaborative Save settled at that `pages.version` |
+| `doc_reset` | The document lineage changed; the client keeps its `Y.Doc` as a draft |
+| `tombstone` | The page was hidden or deleted |
 
 ## Dual-run with #301 SSE
 
@@ -236,10 +406,133 @@ an empty fragment is dual-init duplication.
 
 BYTEA is valid only while it still corresponds to live `body_html`. Every
 non-collab writer that updates `body_html` while the room is empty (PUT,
-restore, Apply, draft-publish, inbound sync with `sCard = 0`, flag-off
-rollback) must `DELETE FROM page_collaborative_docs WHERE page_id = $1`.
-The no-row init path is how the next join recovers — not first-ever join
-only. A live room still 409s those HTTP writers; it does not DELETE.
+restore, Apply, draft-publish, flag-off rollback) must
+`DELETE FROM page_collaborative_docs WHERE page_id = $1`. The no-row init path
+is how the next join recovers — not first-ever join only — and that seed is a
+new lineage with a new `doc_epoch`. A live room still 409s those HTTP writers; it does not
+DELETE. Draft publish, the Confluence page-PUT publication (normal and
+recovered), relocation and the draw.io preview publication delete inside their
+write transaction, so body and lineage commit together. `PUT /pages/:id`,
+local version restore and AI-improve Apply delete in their own transaction
+after the body commit: that short window is unchanged, and a room that races
+it is fenced by the missing row as described next.
+
+**Lineage is validated at every boundary (#2034).** A returning tab holds the
+same `Y.Doc` and the same `expectedLifecycleRevision` after such a delete, and
+a state-vector comparison cannot tell a replaced document from an offline
+edit: in both the client holds struct IDs the room has never seen. So the row
+decides, in the statement or transaction that already holds the page lifecycle
+lock:
+
+- *Persist.* A room never inserts. `persistAndSnapshot`,
+  `persistCollabDocState` and the post-Save mark writers run `UPDATE … WHERE
+  page_id = $1 AND doc_epoch = $2`; zero rows answer `collab_lineage_changed`
+  (409) before `pages.body_html` is touched. Only the seed inserts.
+- *Merge.* `mergePersistedCollabDoc` reads `doc_state, doc_epoch` and refuses
+  a missing row or another epoch before applying any byte.
+- *Current-epoch assertion.* Two rooms can agree on a superseded epoch, so
+  equality between a room and a peer or a declaration proves nothing. The
+  client `syncMutation` transaction, the peer-apply transaction (`sync`,
+  `state_dump`), the `state_dump_request` answer and the in-room post-Save
+  marks read the row on their own lifecycle-fenced client and require it to
+  equal `room.docEpoch` before a byte is consumed or emitted.
+- *Peer messages.* Bus `sync`, `state_dump_request` and `state_dump` carry the
+  sender's `docEpoch`. A receiver neither consumes bytes from nor emits bytes
+  for a message tagged with another epoch than its room's; the message is only
+  a prompt to re-read its own row. A message without the tag (older pod) is
+  handled as before.
+- *Provisional receiver.* A room without a persisted document never merges
+  persisted or peer bytes into its HTML seed: it adopts the persisted
+  generation as a new document and takes that row's epoch.
+- *Marks.* The post-Save image and task-id marks carry the epoch of the Save's
+  snapshot through the room, the bus message and the persisted document; a mark
+  for another epoch is skipped (best effort, as before).
+
+A room is **retired** only on an authoritative mismatch, a
+`collab_lineage_changed` from one of those checks against the row, never on a
+client declaration or a foreign message alone. After the failing transaction
+has ended, `closeRoomSockets(room, 1001, 'doc_reset')` sends the control,
+closes the sockets and releases the admission without a flush (nothing is left
+to write into), and the heap is dropped; the editors keep their documents as
+read-only drafts. A hard delete cascades the collaborative row. The two
+lifecycle-locked re-reads that do not pass the write fence (the revalidation
+after a retire hint or a foreign message, and the join pre-check) therefore
+also read the `pages` row. A page proven absent is not a document reset: its
+room gets the committed-delete teardown, the same
+`closeRoomSockets(room, 4404, 'committed_delete')` call and release handling
+the committed-delete tombstone uses, and whichever of the two arrives later
+finds no room. The retirement is queued on the room's ownership and is never
+awaited by the persist chain, the bus queue or a frame handler. No "the row
+cannot change while an admission is live" assumption is needed: a stale room
+cannot persist, merge, accept a client frame, or answer or apply a peer
+exchange, and it is retired at the first of those boundaries it reaches. A
+join into a stale room is refused or restarted by the checks above; the one
+remaining window, a lineage that ends between the join's last transaction and
+its `writable_admission`, is closed by #2035's final step (see *Not in this
+change* above).
+
+**Inbound publication and the retire hint (#2034, amendment A8).** The three
+inbound Confluence writers that update an existing page (scheduled sync
+version-jump upsert, scheduled conflict-policy update, bulk Re-sync
+`apply_incoming`) delete the page's row inside the transaction that publishes
+the incoming body, under the lifecycle lock that transaction holds plus the
+collab-init lock, for a live room as well as for none. The delete is keyed on
+the accepted publication decision and the exact row the statement updated: an
+unchanged bulk refresh, a fresh create and the creator-journal branch keep or
+have no lineage. Publication and lineage transition therefore commit together
+or roll back together, and from that COMMIT a room of the previous generation
+cannot write `body_html`, `body_storage` or the provider counter back: its
+persist updates zero rows. There is no pause, no freeze, no replacement write
+and no eager re-seed; the next writable join seeds the new lineage from the
+published body. This replaces `resetFromHtml` / `resetCollabRoomFromHtml`,
+`replaceCollabDocFromHtml` and the process-wide reset flags, which no longer
+exist. The conflict policy and its `live_collab_hold` rule are unchanged.
+
+After the COMMIT the writer sends a retire hint (`hintCollabDocRetired`): the
+local room and, through a `doc_reset` tombstone marked `hint: true`, the rooms
+on other pods re-read the row under the lifecycle lock and retire only when
+their own row is gone or replaced. A hint that reaches a room of a newer
+generation does nothing, even when the body is byte-identical again; a lost
+hint only delays the retirement to the room's next boundary. The hint does
+not delete the page's `collab:active` key; each retired room removes its own
+members. An untagged `freeze` or `doc_reset` tombstone from an older pod and
+the delete (4404) and `flag_off` tombstones behave as before.
+
+**Owner convergence.** An idle superseded room keeps its admission until it is
+retired, and its hint can be lost. A join of the new generation converges
+without it: the dump request it sends is tagged with the new epoch, so the
+superseded owner revalidates and retires instead of staying silent. In
+`withFreshRoomState` a dump round that times out re-reads the owner set. A
+changed set starts a completely new round (new request id, fresh owner set,
+counted against `OWNER_CORRELATION_ATTEMPTS`), so a late answer to the expired
+round cannot satisfy it; an unchanged set fails closed. An owner that is
+current, or whose state cannot be resolved, is never dropped from the quorum.
+
+**Mixed versions.** These guarantees hold when every collaboration-serving
+backend process runs this version. The default deployment has one backend
+process, which restarts as a whole. A deployment with several backend
+processes follows the rolling-upgrade gate in the
+[immutable-page baselines runbook](../runbooks/immutable-page-baselines.md):
+switch collaborative editing off, verify `GET /api/collab/config` on each old
+process directly, replace the processes, confirm the drain only after every
+old process has stopped and its database sessions have ended, then switch it
+on again. During an ungated mix no guarantee is given. Two kinds of older
+peer exist. *Pre-epoch* is a version without #2034: no `doc_epoch`, neither
+join parameter. *Epoch-aware without the marker* is a build of #2034 from
+before `expectedDocEmpty`: it has the column, the `doc_epoch` control and
+`expectedDocEpoch`, and does not know the marker. This is what to expect:
+
+| Situation | Behaviour |
+|---|---|
+| Pre-epoch pod serves a join | Ignores `expectedDocEpoch` and `expectedDocEmpty` and sends no `doc_epoch`: today's behaviour on that socket |
+| Pre-epoch pod writes the collab row | A new row gets a fresh epoch from the column default. Its unguarded upsert can still overwrite a row, and its in-place reset keeps the epoch (the reason for the gate) |
+| Pre-epoch pod's bus messages | Carry no `docEpoch`; handled as before |
+| Tab that synced on a new pod, later merged replacement content on a pre-epoch pod, then reaches a new pod | Its pin does not change. It mismatches (`doc_reset`) when the replacement was a delete and a new seed. A pre-epoch pod's in-place reset keeps the column value, so the tab can match: this is why the gate is required. A tab that never pinned and holds content is unverified |
+| Pre-epoch bundle on a new pod | Declares nothing and ignores `doc_epoch` on every join: admitted as before, never verified, a first join included |
+| New bundle on a pre-epoch pod | Never receives `doc_epoch`, so it never pins; it sends the marker while its document is empty, which the pod ignores, and nothing afterwards |
+| Epoch-aware pod without the marker serves a join | Ignores `expectedDocEmpty`, so a first join is admitted unverified there. It still sends `doc_epoch` and reads `expectedDocEpoch`: the tab pins at its first sync, and its later joins are decided by the epoch like on a new pod |
+| Epoch-aware bundle without the marker on a new pod | Its first join declares nothing: admitted as before, unverified. After its first sync it is pinned and declares the epoch: a rejoin is verified on a match and gets `doc_reset` on a mismatch |
+| New bundle on an epoch-aware pod without the marker | Its marker is ignored on the first join (unverified); it pins from that pod's `doc_epoch` and declares the epoch afterwards |
 
 **While the page's own collaborative Save is pending (#1763).** A Confluence
 commit compares its provider read with `pages.remote_version`, including

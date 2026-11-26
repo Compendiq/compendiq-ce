@@ -276,6 +276,44 @@ It marks the task ids it wrote the same way (`markWrittenTaskIds`, bus kind
 `task_ids`), and that transaction also sets `confluenceTaskIds` in the document's
 `compendiq.meta` Y.Map (#1751).
 
+`page_collaborative_docs.doc_epoch` is the only authority on a collaborative
+document's lineage (#2034): database-generated at the seed insert, constant
+for the life of the row, ended by deleting the row. Nothing in the `Y.Doc`
+carries it. A room never inserts or upserts the row: persist, merge and
+post-Save marks name the epoch they hold and answer `collab_lineage_changed`
+before touching `pages.body_html`; client frames, peer updates, state dumps
+and dump answers assert the row's current epoch on their lifecycle-fenced
+client first, because two rooms can agree on a superseded epoch. A room is
+retired only on that authoritative mismatch, through
+`closeRoomSockets(room, 1001, 'doc_reset')` after the failing transaction
+ended; never await the persist chain or take room ownership from inside it,
+the bus queue or a frame handler (schedule it). Bus messages of another
+generation and the retire hint are prompts to re-read the row, never reasons.
+That re-read also reads the `pages` row: a hard delete cascades the
+collaborative row, and a page proven absent gets the committed-delete teardown
+(`closeRoomSockets(room, 4404, 'committed_delete')`, the tombstone's own call),
+never `doc_reset`.
+A join that would be writable and makes a malformed declaration, or declares
+another `expectedDocEpoch` than the row's, is refused (`doc_reset`, `1001
+doc_reset`, not attached, no admission kept): first without locks, again as
+the `precondition` of `admitPageRuntime`, and once more after a provisional
+room loaded, seeded or adopted its document, because that happens in a later
+transaction. A declared join is writable only in a room whose `docEpoch`
+equals the declaration. A stale heap the join finds is retired first and the
+join restarts once; a frozen page gets no epoch decision. The empty-document
+marker `expectedDocEmpty=1` (an unpinned client whose `Y.Doc` holds nothing; a
+first join) names no epoch: it is never a mismatch, goes through the same
+points, and its writable join is `lineageVerified` like a declared one. The
+marker together with `expectedDocEpoch`, or any other marker value, is
+malformed. The server cannot check the claim; it grants nothing a writer does
+not already have, and exists so that joins that send neither parameter (old
+bundles, partially synced tabs) stay unverified. An undeclared join is admitted
+and never `lineageVerified`. The fenced final step that asserts the current
+epoch in the transaction that writes `writable_admission` is #2035, not this
+change. Do not reintroduce an in-place replacement of the row, a process-wide
+reset flag or a
+pre-commit freeze. Details: `docs/architecture/12-realtime-collaboration.md`.
+
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
 failure so a later intentional retry remains possible. The button, editor

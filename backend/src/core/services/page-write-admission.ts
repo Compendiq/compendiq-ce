@@ -1385,6 +1385,21 @@ export async function withPageWriteTransaction<T>(
 }
 
 /**
+ * Read under the page lifecycle lock without admitting a write: no runtime,
+ * editability or pending-intent check. For decisions that must be serialized
+ * with every writer of the page but change nothing themselves.
+ */
+export async function withPageLifecycleRead<T>(
+  pageId: number,
+  read: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  return inTransaction(async (client) => {
+    await lockPageLifecycle(client, [pageId]);
+    return read(client);
+  });
+}
+
+/**
  * Plan an exact hierarchy component before taking any page lifecycle locks.
  * The callback must then reserve or lock every affected page on this client;
  * the hierarchy fence alone does not authorize a content mutation.
@@ -1935,11 +1950,21 @@ export async function advancePageWriteIntent<T>(
   }
 }
 
+export type PageRuntimeAdmissionOptions = {
+  /**
+   * Runs inside the admission transaction, after its locks and before the
+   * admission row is inserted. A throw rolls the admission back, so no
+   * admission exists afterwards.
+   */
+  precondition?: (client: PoolClient) => Promise<void>;
+};
+
 export async function admitPageRuntime(
   pageId: number,
   actorId: string,
   purpose: PageRuntimeAdmissionPurpose,
   runtimeId?: string,
+  options: PageRuntimeAdmissionOptions = {},
 ): Promise<PageRuntimeAdmission> {
   beginLocalOperation(false);
   try {
@@ -1951,6 +1976,7 @@ export async function admitPageRuntime(
       // a request admission (another Save) does (#1763).
       await lockPageWrites(client, [pageId], purpose === 'collab_room' ? { ownCollabCommit: 'proceed' } : {});
       const rows = await loadPageStates(client, [pageId]);
+      await options.precondition?.(client);
       const admissionId = randomUUID();
       const lifecycleRevision = String(rows[0]!.lifecycle_revision);
       await client.query(
