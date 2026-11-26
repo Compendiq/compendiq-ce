@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { PageWriterQuiesceBlockedSchema } from '@compendiq/contracts';
 import Fastify, { type FastifyInstance, type LightMyRequestResponse } from 'fastify';
 import { ZodError } from 'zod';
 import { getPool, query } from '../../core/db/postgres.js';
@@ -321,5 +322,89 @@ describe.skipIf(!available)('page writer recovery administration', () => {
       acknowledgmentId: null,
       fencedAt: null,
     });
+  });
+
+  it('answers quiescence blocked by its own unknown collaborative Save with a definite 409 body (#1934)', async () => {
+    // Quiescence closes the process gate for good: run it on fresh module
+    // instances (own runtime, pool and gate) so no other test sees it.
+    vi.stubEnv('PAGE_WRITER_QUIESCE_OWN_COMMIT_WAIT_MS', '200');
+    vi.resetModules();
+    const pg = await import('../../core/db/postgres.js');
+    const admission = await import('../../core/services/page-write-admission.js');
+    const routes = await import('./page-write-recovery.js');
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    const replicaApp = Fastify({ logger: false });
+    replicaApp.decorate('requireAdmin', async (request: { userId: string; userRole: string }) => {
+      request.userId = actorId;
+      request.userRole = 'admin';
+    });
+    replicaApp.setErrorHandler((error, _request, reply) => {
+      reply.status(error instanceof ZodError ? 400 : error.statusCode ?? 500).send({
+        error: error.message,
+        reason: 'reason' in error ? error.reason : undefined,
+      });
+    });
+    await replicaApp.register(routes.pageWriteRecoveryRoutes, { prefix: '/api' });
+    await replicaApp.ready();
+    try {
+      const page = await query<{ id: number }>(
+        `INSERT INTO pages (source, title, body_html, body_text, created_by_user_id, visibility)
+         VALUES ('standalone', 'Unknown collaborative Save', '<p>Body</p>', 'Body', $1, 'shared') RETURNING id`,
+        [actorId],
+      );
+      const pageId = page.rows[0]!.id;
+      await admission.admitPageRuntime(pageId, actorId, 'collab_room');
+      const intent = await admission.reservePageWriteIntent({
+        pageIds: [pageId],
+        kind: 'collab.commit.confluence',
+        actorId,
+        effect: {
+          effectClass: 'remote', pageId, confluenceId: 'cf-route', expectedRemoteVersion: '4',
+          intendedStateDigest: 'a'.repeat(64), operatorPrivateNote: 'do-not-publish-this',
+        },
+      });
+      await expect(admission.runPageWriteIntentEffect(
+        intent,
+        { kind: 'remote', completesRemoteWork: true },
+        async () => { throw new Error('Confluence answered 503 after dispatch'); },
+      )).rejects.toThrow('after dispatch');
+      const runtimeId = await admission.getPageWriterRuntimeId();
+      const quiesce = () => replicaApp.inject({
+        method: 'POST',
+        url: '/api/admin/page-write-recovery/runtime/quiesce',
+        payload: { expectedRuntimeId: runtimeId, reason: 'Retire the runtime that owns the unknown Save' },
+      });
+
+      // An unauthorized request sees no ids and leaves the gate open.
+      await query("UPDATE users SET role = 'user' WHERE id = $1", [actorId]);
+      const refused = await quiesce();
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [actorId]);
+      expect(refused.statusCode, refused.body).toBe(403);
+      expect(refused.body).not.toContain(intent.id);
+      await expect(admission.withPageWriterOperation(async () => 'gate open')).resolves.toBe('gate open');
+
+      const blocked = await quiesce();
+      expect(blocked.statusCode, blocked.body).toBe(409);
+      expect(PageWriterQuiesceBlockedSchema.parse(blocked.json())).toEqual({
+        error: 'PageWriteError',
+        reason: 'runtime_quiesce_blocked_by_collab_commit',
+        code: 'runtime_quiesce_blocked_by_collab_commit',
+        message: expect.stringContaining('verified_local_termination'),
+        blockingIntents: [{ intentId: intent.id, kind: 'collab.commit.confluence', pageIds: [pageId] }],
+        runbook: 'docs/runbooks/immutable-page-baselines.md',
+      });
+      expect(blocked.body).not.toContain('do-not-publish-this');
+      await expect(admission.withPageWriterOperation(async () => 'gate open'))
+        .rejects.toMatchObject({ statusCode: 409, reason: 'runtime_quiescing' });
+      const runtime = await query<{ quiescence_ack: string | null }>(
+        'SELECT quiescence_ack FROM page_writer_runtimes WHERE runtime_id = $1',
+        [runtimeId],
+      );
+      expect(runtime.rows[0]!.quiescence_ack).toBeNull();
+    } finally {
+      await replicaApp.close();
+      await pg.closePool();
+    }
   });
 });
