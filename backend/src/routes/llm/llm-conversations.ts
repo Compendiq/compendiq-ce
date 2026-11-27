@@ -30,7 +30,6 @@ import {
   type ConvertedImproveOutput,
   type ImproveSuggestionProvenance,
 } from '../../core/services/content-converter.js';
-import { CARRIER_RECONCILE_MAX_UNITS } from '../../core/services/confluence-carrier-reconcile.js';
 import {
   assertCarrierRecoveryEligible,
   carrierKindsStorageMayCarry,
@@ -39,6 +38,7 @@ import {
   lockstepStoredBody,
   logStoredCarriers,
   reconcileStoredCarriers,
+  withinCarrierBound,
   type CarrierRow,
   type StoredCarrierResult,
 } from '../../core/services/confluence-carrier-recovery.js';
@@ -576,10 +576,10 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       space_key: existingPage.space_key,
       has_collab_doc: existingPage.hasCollabDoc,
     };
+    // §3.6 stage 0: L and S are checked before the gate parses L (lockstepStoredBody does it first itself).
     const carrierGate = writeStaysLocal ? null : lockstepStoredBody(carrierRow);
-    const recoverable = carrierGate !== null && carrierGate.applicable && carrierGate.excluded === null
-      && existingPage.body_html!.length <= CARRIER_RECONCILE_MAX_UNITS
-      && existingPage.bodyStorage!.length <= CARRIER_RECONCILE_MAX_UNITS;
+    const storedWithinBound = withinCarrierBound(existingPage.body_html, existingPage.bodyStorage);
+    const recoverable = carrierGate !== null && carrierGate.applicable && carrierGate.excluded === null && storedWithinBound;
     const wantWitnesses = recoverable
       && carrierKindsStorageMayCarry(existingPage.bodyStorage).includes('macro.code');
     let finalized: ConvertedImproveOutput;
@@ -610,15 +610,19 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // #1953-2 (§3.7 steps 2–5): on the remote exit of a lockstep row, the carriers of a page synced before
     // v0.10.0 are recovered into the finalized HTML, code only through #1958's witnesses (always passed, possibly
     // empty), checked against the operations it reports and admitted by #1958 before anything is derived from it.
-    // An excluded row only discloses its reason; a string past the bound gets nothing of #1953.
+    // The length of the string finalizeCodeMetadata returned is checked first (Z6, r2 CW-6): past the bound
+    // nothing of #1953 runs, an exclusion included. An excluded row then only discloses its reason, from the gate
+    // computed above (never a second parse).
     let carriers: StoredCarrierResult | null = null;
-    if (carrierGate?.applicable && carrierGate.excluded !== null) {
-      carriers = reconcileStoredCarriers({ row: carrierRow, targetHtml: finalized.html });
-    } else if (recoverable && finalized.html.length <= CARRIER_RECONCILE_MAX_UNITS) {
+    const finalizedWithinBound = storedWithinBound && withinCarrierBound(finalized.html);
+    if (finalizedWithinBound && carrierGate?.applicable && carrierGate.excluded !== null) {
+      carriers = reconcileStoredCarriers({ row: carrierRow, targetHtml: finalized.html, gate: carrierGate });
+    } else if (finalizedWithinBound && recoverable) {
       carriers = reconcileStoredCarriers({
         row: carrierRow,
         targetHtml: finalized.html,
         codeWitnesses: finalized.witnesses,
+        gate: carrierGate,
       });
       const ops = carriers.report.codeOps;
       let admitted = true;

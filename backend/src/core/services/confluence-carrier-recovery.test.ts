@@ -81,6 +81,23 @@ describe('lockstepStoredBody', () => {
     expect(lockstepStoredBody(row({ body_html: huge }))).toEqual({ applicable: true, excluded: null });
     expect(reconcileStoredCarriers({ row: row({ body_html: huge }), targetHtml: huge }).report.outcome).toBe('bound');
   });
+
+  it('CW-6: a small wrapper-bearing body with oversized storage or target is bound, never excluded, parsed or scanned', () => {
+    const wrapped = `${F.ac1.legacyHtml}<div class="confluence-drawio"></div>`;
+    const hugeStorage = `${F.ac1.storage}<p>${'x'.repeat(CARRIER_RECONCILE_MAX_UNITS)}</p>`;
+    const hugeTarget = `${wrapped}<p>${'x'.repeat(CARRIER_RECONCILE_MAX_UNITS)}</p>`;
+    expect(lockstepStoredBody(row({ body_html: wrapped, body_storage: hugeStorage }))).toEqual({ applicable: true, excluded: null });
+    for (const [input, target] of [
+      [row({ body_html: wrapped, body_storage: hugeStorage }), wrapped],
+      [row({ body_html: wrapped }), hugeTarget],
+      // An exclusion read from the row's columns waits for the bound too: no storage scan names its kinds.
+      [row({ body_html: wrapped, local_modified_at: new Date() }), hugeTarget],
+    ] as const) {
+      const result = reconcileStoredCarriers({ row: input, targetHtml: target });
+      expect(result).toMatchObject({ html: target, changed: false, applicable: true, excluded: null, kinds: [], report: { outcome: 'bound' } });
+      expect(seededCarrierKinds(result)).toBeNull();
+    }
+  });
 });
 
 describe('reconcileStoredCarriers', () => {

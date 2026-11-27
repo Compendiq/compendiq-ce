@@ -27,6 +27,7 @@ import {
 import { applyHtmlToYDoc, collabSeededCarrierKinds, yDocToHtml } from './collab-schema.js';
 import { confluenceToHtml } from './content-converter.js';
 import { LEGACY_CARRIER_FIXTURES as LEGACY } from './__fixtures__/confluence-carrier-legacy.js';
+import { CARRIER_RECONCILE_MAX_UNITS } from './confluence-carrier-reconcile.js';
 import { logger } from '../utils/logger.js';
 import {
   admitPageRuntime,
@@ -657,6 +658,26 @@ describe.skipIf(!canRun)('seed of a page synced before v0.10.0 (#1953, Z5, Z6)',
       expect(yDocToHtml(doc)).toBe(documentOf(fixture.legacyHtml).html);
       expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
     } finally {
+      doc.destroy();
+    }
+  });
+
+  it('CW-6: a wrapper-bearing body whose storage is past the bound seeds the ordinary HTML, logs bound and writes no key', async () => {
+    const owner = await insertUser('carrier_seed_bound_drawio');
+    const fixture = {
+      storage: `${LEGACY.ac1.storage}<p>${'x'.repeat(CARRIER_RECONCILE_MAX_UNITS)}</p>`,
+      legacyHtml: `${LEGACY.ac1.legacyHtml}<div class="confluence-drawio" data-diagram-name="A"></div>`,
+    };
+    const pageId = await insertLegacyPage(owner, fixture);
+    const doc = new Y.Doc();
+    const info = vi.spyOn(logger, 'info');
+    try {
+      await writableLoad(pageId, owner, doc);
+      expect(yDocToHtml(doc)).toBe(documentOf(fixture.legacyHtml).html);
+      expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
+      expect(carrierLines(info)).toEqual([{ pageId, writer: 'collab_seed', outcome: 'bound' }]);
+    } finally {
+      info.mockRestore();
       doc.destroy();
     }
   });

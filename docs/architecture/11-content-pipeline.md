@@ -1834,11 +1834,14 @@ network or the database.
 The writers (#1953-2, `confluence-carrier-recovery.ts`) run it only while the
 row is in lockstep: a Confluence row with storage and HTML, no
 `local_modified_at`, no collaborative document, and no draw.io wrapper in L.
-The wrapper test is structural: L (within the length bound) is parsed and
-excluded when an element's class list holds `confluence-drawio`, the selector
-`htmlToConfluence` and the draw.io preview writer use, so an entity-spelled
-class is a wrapper and prose naming the class is not. Otherwise the row is
-excluded and T is written unchanged.
+Every length is checked first (§3.6 stage 0): when L, S or T is past
+2,097,152 UTF-16 units nothing is parsed or scanned and no exclusion is
+reported; PUT, draft publish and the seed log `bound`, and an Apply with any of
+them past the bound (T being its finalized HTML) runs nothing of #1953. Within the bound the
+wrapper test is structural: L is parsed once and excluded when an element's
+class list holds `confluence-drawio`, the selector `htmlToConfluence` and the
+draw.io preview writer use, so an entity-spelled class is a wrapper and prose
+naming the class is not. An excluded row writes T unchanged.
 
 | Writer | When | Eligibility at reservation |
 | --- | --- | --- |

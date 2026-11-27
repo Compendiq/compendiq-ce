@@ -68,18 +68,26 @@ const EMPTY_REPORT: CarrierReport = Object.freeze({
   work: { nodes: 0, passes: 0, projectedUnits: 0, keyUnits: 0, spliceUnits: 0, containment: 0 },
 }) as CarrierReport;
 
+/** A writer's lockstep gate on its row (§3.1 condition 1); computed once and passed on, never re-parsed. */
+export type CarrierGate = { applicable: false } | { applicable: true; excluded: CarrierExclusion | null };
+
+/** §3.6 stage 0: every given string is within the reconcile bound (a missing one counts as empty). */
+export function withinCarrierBound(...values: ReadonlyArray<string | null>): boolean {
+  return values.every((value) => (value?.length ?? 0) <= CARRIER_RECONCILE_MAX_UNITS);
+}
+
 /**
  * Whether a row may recover (§3.1 condition 1): not applicable without a Confluence source, storage and a stored
- * body; otherwise the first failing condition is the excluded reason. A gate, not a proof.
+ * body; otherwise the first failing condition is the excluded reason. A gate, not a proof. A stored body or storage
+ * past the bound is checked first (§3.6 stage 0, which precedes the draw.io probe): nothing is parsed and no reason
+ * is given, since the matcher answers `bound` for that row.
  */
-export function lockstepStoredBody(row: CarrierRow): { applicable: false } | { applicable: true; excluded: CarrierExclusion | null } {
+export function lockstepStoredBody(row: CarrierRow): CarrierGate {
   if (row.source !== 'confluence' || !row.body_storage || !row.body_html) return { applicable: false };
+  if (!withinCarrierBound(row.body_html, row.body_storage)) return { applicable: true, excluded: null };
   if (row.local_modified_at !== null) return { applicable: true, excluded: 'local_modified' };
   if (row.has_collab_doc) return { applicable: true, excluded: 'collab_document' };
-  // Behind the length bound: the probe never parses an over-bound body (§3.6 stage 0).
-  if (row.body_html.length <= CARRIER_RECONCILE_MAX_UNITS && holdsDrawioWrapper(row.body_html)) {
-    return { applicable: true, excluded: 'drawio' };
-  }
+  if (holdsDrawioWrapper(row.body_html)) return { applicable: true, excluded: 'drawio' };
   return { applicable: true, excluded: null };
 }
 
@@ -101,19 +109,26 @@ export function carrierKindsStorageMayCarry(storage: string | null): CarrierKind
 
 /**
  * Prepare the HTML a writer means to write (§3.7). Draws the marker, logs nothing. `codeWitnesses` is passed on
- * the Improve writer only, always (possibly empty), so code text is never compared raw there.
+ * the Improve writer only, always (possibly empty), so code text is never compared raw there. `gate` is the
+ * writer's own {@link lockstepStoredBody} of this row when it already has one. Every length (stored body, storage
+ * and target) is checked before the gate, an exclusion's storage scan or any parse: past the bound the result is
+ * the matcher's `bound`, which it answers before any work (§3.6 stage 0).
  */
 export function reconcileStoredCarriers(input: {
   row: CarrierRow;
   targetHtml: string;
   codeWitnesses?: ReadonlyArray<LexerCodeText | null>;
+  gate?: CarrierGate;
 }): StoredCarrierResult {
   const { row, targetHtml } = input;
-  const gate = lockstepStoredBody(row);
   const unchanged = (applicable: boolean, excluded: CarrierExclusion | null, kinds: readonly CarrierKindId[]): StoredCarrierResult =>
     ({ html: targetHtml, changed: false, report: EMPTY_REPORT, applicable, excluded, kinds });
-  if (!gate.applicable) return unchanged(false, null, []);
-  if (gate.excluded) return unchanged(true, gate.excluded, carrierKindsStorageMayCarry(row.body_storage));
+  if (row.source !== 'confluence' || !row.body_storage || !row.body_html) return unchanged(false, null, []);
+  if (withinCarrierBound(row.body_html, row.body_storage, targetHtml)) {
+    const gate = input.gate ?? lockstepStoredBody(row);
+    if (!gate.applicable) return unchanged(false, null, []);
+    if (gate.excluded) return unchanged(true, gate.excluded, carrierKindsStorageMayCarry(row.body_storage));
+  }
   const result = reconcileConfluenceCarriers(row.body_html, row.body_storage, targetHtml, {
     marker: `data-cq-${randomBytes(16).toString('hex')}`,
     confluenceId: row.confluence_id ?? undefined,
