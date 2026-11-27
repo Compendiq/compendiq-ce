@@ -348,18 +348,314 @@ function confluenceToHtmlWith(
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
   witness?: EmittedLinkWitness,
+  carriers?: CarrierMarkState,
 ): string {
   assertStorageDerivationFeatures(features);
   let input = storageXhtml;
   while (true) {
-    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, input === storageXhtml, witness);
+    // #1953: a marked conversion stops between passes at its pass count; nothing here bounds one pass.
+    if (carriers) {
+      if (carriers.passes >= carriers.limits.passes) throw new CarrierMarkStop('bound');
+      carriers.passes += 1;
+    }
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, input === storageXhtml, witness, carriers);
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
       throw new Error(
         `Confluence macro conversion made no progress (${pass.macrosBefore} raw macros remain)`,
       );
     }
+    if (carriers && pass.html.length > carriers.limits.html) throw new CarrierMarkStop('bound');
     input = pass.html;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// #1953: carrier marks for the recovery of pages synced before v0.10.0
+// ---------------------------------------------------------------------------
+
+/** The carrier kinds whose builders mark what they build from a proven storage source (#1953). */
+export type CarrierMarkKind = 'macro.code' | 'macro.status' | 'macro.toc' | 'emoticon' | 'link';
+
+/**
+ * What a builder writes, as JSON, into the marker attribute of the element it built from a proven source (#1953).
+ * `n` is the source's index among the elements of the storage reader's tree, in document order. A code block
+ * also records its `language` parameter; a link the `<a>` the converter before #1748 wrote for it: its `href`
+ * (`null`: no attribute), its text (`null` for a rich body, which stays markup) and its body element.
+ */
+export type CarrierMark =
+  | { k: 'macro.code'; n: number; l: string }
+  | { k: 'macro.status' | 'macro.toc' | 'emoticon'; n: number }
+  | { k: 'link'; n: number; h: string | null; x: string | null; b: 'none' | 'plain' | 'rich' };
+
+/** Limits of a marked conversion, each checked before the work it bounds (#1953). */
+export interface CarrierConversionLimits {
+  /** The most proven sources (stamps, and so marks). */
+  readonly marks: number;
+  /** The most conversion passes. */
+  readonly passes: number;
+  /** The longest HTML one pass hands to the next. */
+  readonly html: number;
+  /** The most events the reading agreement and the builders' source checks compare. */
+  readonly work: number;
+}
+
+/** The result of {@link confluenceToHtmlWithCarrierMarks}: numbers and the marked HTML, never storage content. */
+export type CarrierMarkedConversion =
+  | {
+    readonly ok: true;
+    /** The forward conversion's HTML with the marks of every proven source a builder took a value from. */
+    readonly html: string;
+    /** How many attributes link builders could not carry (they log nothing here). */
+    readonly droppedLinkAttributes: number;
+    /** Per kind, the proven sources a builder rejected because an earlier step changed their subtree (AA3). */
+    readonly unsupported: Readonly<Record<CarrierMarkKind, number>>;
+    readonly passes: number;
+    readonly work: number;
+  }
+  | { readonly ok: false; readonly reason: 'storage_reading_differs' | 'bound'; readonly passes: number; readonly work: number };
+
+interface CarrierSource {
+  readonly element: StorageElement;
+  /** The number of events of its subtree, itself included. */
+  readonly events: number;
+}
+
+interface CarrierMarkState {
+  readonly marker: string;
+  readonly root: StorageElement;
+  readonly limits: CarrierConversionLimits;
+  readonly sources: Map<number, CarrierSource>;
+  readonly unsupported: Record<CarrierMarkKind, number>;
+  work: number;
+  passes: number;
+  dropped: number;
+}
+
+/** A marked conversion stopped: the two readings differ, or a limit was reached. Caught by its entry point. */
+class CarrierMarkStop extends Error {
+  constructor(readonly reason: 'storage_reading_differs' | 'bound') {
+    super(reason);
+    this.name = 'CarrierMarkStop';
+  }
+}
+
+function chargeCarrierWork(state: CarrierMarkState, units: number): void {
+  state.work += units;
+  if (state.work > state.limits.work) throw new CarrierMarkStop('bound');
+}
+
+const CARRIER_TEXT_NODE = 3;
+
+/** A start event: the name as written (as the HTML parser keeps it) and the attributes, name-sorted. */
+function carrierStartEvent(name: string, attributes: Iterable<{ name: string; value: string }>, skip: string | null): string {
+  const pairs: Array<[string, string]> = [];
+  for (const { name: attr, value } of attributes) if (attr !== skip) pairs.push([attr, value]);
+  pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+  return `s${name}\u0000${JSON.stringify(pairs)}`;
+}
+
+/**
+ * The events of the storage reader's reading of `children`: a start, the events of the children and an end per
+ * element, and one text event per text between two tag events. The element of each start event comes with it.
+ */
+function* storageCarrierEvents(children: ReadonlyArray<StorageElement | string>): Generator<readonly [string, StorageElement | null]> {
+  let text = '';
+  for (const child of children) {
+    if (typeof child === 'string') {
+      text += child;
+      continue;
+    }
+    if (text !== '') yield [`t${text}`, null];
+    text = '';
+    yield [carrierStartEvent(child.name, child.attributes, null), child];
+    yield* storageCarrierEvents(child.children);
+    yield [`e${child.name}`, null];
+  }
+  if (text !== '') yield [`t${text}`, null];
+}
+
+/**
+ * The same events of the forward pass's HTML reading of `parent`'s children. Comments (and the processing
+ * instructions the HTML parser reads as comments) are skipped and do not split a text. The attribute `skip` (an
+ * unconsumed source stamp) is no attribute.
+ */
+function* domCarrierEvents(parent: ParentNode, skip: string | null): Generator<readonly [string, Element | null]> {
+  let text = '';
+  for (const child of parent.childNodes) {
+    if (child.nodeType === CARRIER_TEXT_NODE) {
+      text += (child as Text).data;
+      continue;
+    }
+    if (child.nodeType !== ELEMENT_NODE) continue;
+    const element = child as Element;
+    if (text !== '') yield [`t${text}`, null];
+    text = '';
+    yield [carrierStartEvent(element.localName, element.attributes, skip), element];
+    yield* domCarrierEvents(element, skip);
+    yield [`e${element.localName}`, null];
+  }
+  if (text !== '') yield [`t${text}`, null];
+}
+
+/** Whether a storage element is a source a carrier builder may take values from (#1953 §3.3 item 2). */
+function isCarrierSource(el: StorageElement): boolean {
+  if (isStorageName(el, 'ac', 'emoticon') || isStorageName(el, 'ac', 'link')) return true;
+  if (!isStorageName(el, 'ac', 'structured-macro')) return false;
+  const names = el.attributes.filter((attr) => isStorageName(attr, 'ac', 'name'));
+  return names.length === 1
+    && ['code', 'status', 'toc'].includes(names[0]!.value)
+    && !el.attributes.some((attr) => attr.name === 'data-macro-name');
+}
+
+/** The event count of every element's subtree, itself included, in one walk. */
+function carrierSubtreeEvents(root: StorageElement, into: Map<StorageElement, number>): number {
+  let events = 0;
+  let text = false;
+  for (const child of root.children) {
+    if (typeof child === 'string') {
+      text = true;
+      continue;
+    }
+    if (text) events += 1;
+    text = false;
+    const own = carrierSubtreeEvents(child, into) + 2;
+    into.set(child, own);
+    events += own;
+  }
+  return text ? events + 1 : events;
+}
+
+/**
+ * #1953 §3.3 items 1–2, at the start of the first pass, before any step changes the parsed document: the HTML
+ * reading of the whole body and the storage reader's tree must give the same events, start, end and text, from the
+ * first to the last; any difference and the page recovers nothing. Then every source is stamped with the marker
+ * and its index, after the mark cap was charged.
+ */
+function stampCarrierSources(body: Element, state: CarrierMarkState): void {
+  const xml = storageCarrierEvents(state.root.children);
+  const html = domCarrierEvents(body, null);
+  const pairs: Array<readonly [Element, StorageElement, number]> = [];
+  let index = 0;
+  while (true) {
+    const a = xml.next();
+    const b = html.next();
+    if (a.done || b.done) {
+      if (a.done && b.done) break;
+      throw new CarrierMarkStop('storage_reading_differs');
+    }
+    chargeCarrierWork(state, 1);
+    if (a.value[0] !== b.value[0]) throw new CarrierMarkStop('storage_reading_differs');
+    const element = a.value[1];
+    if (!element) continue;
+    if (isCarrierSource(element)) pairs.push([b.value[1]!, element, index]);
+    index += 1;
+  }
+  if (pairs.length > state.limits.marks) throw new CarrierMarkStop('bound');
+  if (pairs.length === 0) return;
+  const events = new Map<StorageElement, number>();
+  chargeCarrierWork(state, carrierSubtreeEvents(state.root, events));
+  for (const [element, source, n] of pairs) {
+    element.setAttribute(state.marker, String(n));
+    state.sources.set(n, { element: source, events: events.get(source)! });
+  }
+}
+
+/**
+ * #1953 §3.3 item 3: a builder that selected `el` takes its stamp first, before it reads anything else, so no
+ * value it builds can hold a stamp. A stamped element is a source only while its subtree is still the one the
+ * reader read (unconsumed stamps below it are no attributes); otherwise an earlier step changed a value the
+ * builder would read, nothing is marked and the kind counts one rejection. Returns the source's index, else null.
+ */
+function takeCarrierSource(el: Element, state: CarrierMarkState | undefined, kind: CarrierMarkKind): number | null {
+  if (!state) return null;
+  const raw = el.getAttribute(state.marker);
+  if (raw === null) return null;
+  el.removeAttribute(state.marker);
+  const source = /^\d+$/.test(raw) ? state.sources.get(Number(raw)) : undefined;
+  if (!source) return null;
+  chargeCarrierWork(state, source.events);
+  const xml = storageCarrierEvents([source.element]);
+  const dom = (function* own(): Generator<readonly [string, Element | null]> {
+    yield [carrierStartEvent(el.localName, el.attributes, state.marker), el];
+    yield* domCarrierEvents(el, state.marker);
+    yield [`e${el.localName}`, null];
+  })();
+  let seen = 0;
+  while (true) {
+    const a = xml.next();
+    const b = dom.next();
+    if (a.done && b.done) return Number(raw);
+    seen += 1;
+    if (a.done || b.done || seen > source.events || a.value[0] !== b.value[0]) {
+      state.unsupported[kind] += 1;
+      return null;
+    }
+  }
+}
+
+function markCarrier(el: Element, state: CarrierMarkState, mark: CarrierMark): void {
+  el.setAttribute(state.marker, JSON.stringify(mark));
+}
+
+/**
+ * The `<a>` the converter before #1748 wrote for an `<ac:link>` (`0944ced5^:content-converter.ts:433-463`): the
+ * first descendant `ri:page`, else `ri:attachment`, else no href; a rich body as markup (`x` null), else the plain
+ * body's text, else the title, the filename or nothing. Pure; read before the link builder moves the body.
+ */
+function legacyLinkShape(link: Element): { h: string | null; x: string | null; b: 'none' | 'plain' | 'rich' } {
+  const pageRef = byTag(link, 'ri:page')[0];
+  const attachRef = byTag(link, 'ri:attachment')[0];
+  const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
+  const rich = bodyEl?.tagName.toLowerCase() === 'ac:link-body';
+  const b = !bodyEl ? 'none' : rich ? 'rich' : 'plain';
+  if (pageRef) {
+    const title = pageRef.getAttribute('ri:content-title') ?? '';
+    return { h: `#confluence-page:${title}`, x: rich ? null : bodyEl?.textContent ?? title, b };
+  }
+  if (attachRef) {
+    const filename = attachRef.getAttribute('ri:filename') ?? '';
+    return { h: `#confluence-attachment:${filename}`, x: rich ? null : bodyEl?.textContent ?? filename, b };
+  }
+  return { h: null, x: rich ? null : bodyEl?.textContent ?? '', b };
+}
+
+/**
+ * The forward conversion of `storage` with carrier marks (#1953 §3.3), for the carrier recovery of pages synced
+ * before v0.10.0 only. `tree` is the storage reader's reading of the same string; `marker` the caller's attribute
+ * name (`data-cq-` and 32 hexadecimal digits), which `storage` does not spell. With every feature, like
+ * {@link confluenceToHtml}, which does none of this and whose output is unchanged. Throws what the ordinary
+ * conversion throws (a conversion that makes no progress).
+ */
+export function confluenceToHtmlWithCarrierMarks(
+  storage: string,
+  pageId: string | undefined,
+  spaceKey: string | undefined,
+  options: { tree: StorageTree; marker: string; limits: CarrierConversionLimits },
+): CarrierMarkedConversion {
+  const state: CarrierMarkState = {
+    marker: options.marker,
+    root: options.tree.root,
+    limits: options.limits,
+    sources: new Map(),
+    unsupported: { 'macro.code': 0, 'macro.status': 0, 'macro.toc': 0, emoticon: 0, link: 0 },
+    work: 0,
+    passes: 0,
+    dropped: 0,
+  };
+  try {
+    const html = confluenceToHtmlWith(storage, pageId, spaceKey, ALL_STORAGE_DERIVATION_FEATURES, undefined, state);
+    return {
+      ok: true,
+      html,
+      droppedLinkAttributes: state.dropped,
+      unsupported: { ...state.unsupported },
+      passes: state.passes,
+      work: state.work,
+    };
+  } catch (error) {
+    if (error instanceof CarrierMarkStop) return { ok: false, reason: error.reason, passes: state.passes, work: state.work };
+    throw error;
   }
 }
 
@@ -652,6 +948,7 @@ function confluenceToHtmlPass(
   features: StorageDerivationFeatures,
   firstPass: boolean,
   witness: EmittedLinkWitness | undefined,
+  carriers?: CarrierMarkState,
 ): ConfluenceConversionPass {
   // #1955 (reviews r2 R12, r4 R21): with `link-kinds`, a link of a #1955 kind is read with the values XML reads.
   // Only the storage itself is spelled so; a later pass reads this pass's HTML, whose values were read here.
@@ -663,6 +960,8 @@ function confluenceToHtmlPass(
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   forwardDerivationStepForTest?.(doc, features);
+  // #1953: a marked conversion proves its sources on the first parse, before any step below changes it.
+  if (carriers && firstPass) stampCarrierSources(doc.body, carriers);
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
   const macrosBefore = countRawStructuredMacros(doc.body);
 
@@ -676,6 +975,7 @@ function confluenceToHtmlPass(
   // empty `language`/`title` stays carried: the #1227 rule for expand titles.
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'code') continue;
+    const source = takeCarrierSource(macro, carriers, 'macro.code');
     const language = getParamValue(macro, 'language') ?? '';
     const title = getParamValue(macro, 'title') ?? '';
     const params = collectDirectTextParams(macro);
@@ -698,6 +998,7 @@ function confluenceToHtmlPass(
     codeEl.textContent = code;
     pre.appendChild(codeEl);
     macro.replaceWith(pre);
+    if (source !== null) markCarrier(pre, carriers!, { k: 'macro.code', n: source, l: language });
   }
 
   // Process task lists: ac:task-list -> <ul data-type="taskList">. The task's
@@ -814,6 +1115,8 @@ function confluenceToHtmlPass(
 
   // Process Confluence links: ac:link -> <a>
   for (const link of byTag(doc, 'ac:link')) {
+    // #1953: the stamp is taken before anything of the link is read.
+    const source = takeCarrierSource(link, carriers, 'link');
     // PR #314 finding #2: `<ac:link><ri:user .../></ac:link>` is the canonical
     // Confluence on-disk shape for a user mention — AND it is the shape
     // produced by our own `htmlToConfluence` reverse path. If we process this
@@ -831,9 +1134,13 @@ function confluenceToHtmlPass(
     // a space, a shortcut, a content entity or a URL becomes an <a> that
     // carries the whole link (confluence-link.ts), since the editor keeps no
     // data-* attribute of a link.
-    const replacement = confluenceLinkAnchor(link, features);
+    const legacy = source !== null ? legacyLinkShape(link) : null;
+    const replacement = carriers
+      ? confluenceLinkAnchor(link, features, (count) => { carriers.dropped += count; })
+      : confluenceLinkAnchor(link, features);
     if (replacement) {
       if (witness) witnessEmittedLink(witness, link, replacement[0] as Element);
+      if (legacy) markCarrier(replacement[0] as Element, carriers!, { k: 'link', n: source!, ...legacy });
       link.replaceWith(...replacement);
       continue;
     }
@@ -929,6 +1236,7 @@ function confluenceToHtmlPass(
   // Process status macros: ac:structured-macro[name=status] -> <span class="confluence-status">
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'status') continue;
+    const source = takeCarrierSource(macro, carriers, 'macro.status');
     const colour = (getParamValue(macro, 'colour') ?? 'Grey').toLowerCase();
     const title = getParamValue(macro, 'title') ?? '';
     const span = doc.createElement('span');
@@ -944,6 +1252,7 @@ function confluenceToHtmlPass(
     }
     span.textContent = title;
     macro.replaceWith(span);
+    if (source !== null) markCarrier(span, carriers!, { k: 'macro.status', n: source });
   }
 
   // Process table of contents macro -> placeholder, preserving key params
@@ -955,6 +1264,7 @@ function confluenceToHtmlPass(
   const tocParamNames = ['maxLevel', 'minLevel', 'outline', 'style', 'type', 'printable', 'absoluteUrl'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'toc') continue;
+    const source = takeCarrierSource(macro, carriers, 'macro.toc');
     const div = doc.createElement('div');
     div.className = 'confluence-toc';
     div.textContent = '[Table of Contents]';
@@ -970,6 +1280,7 @@ function confluenceToHtmlPass(
       div.setAttribute('data-macro-params', JSON.stringify(params));
     }
     macro.replaceWith(div);
+    if (source !== null) markCarrier(div, carriers!, { k: 'macro.toc', n: source });
   }
 
   // Process JIRA issue macro -> link placeholder (#300). Preserves the
@@ -1174,7 +1485,11 @@ function confluenceToHtmlPass(
   // open element and swallowed the content after it; that content moves back
   // out behind the placeholder instead of being deleted with the element.
   for (const el of byTag(doc, 'ac:emoticon')) {
-    el.replaceWith(emoticonPlaceholder(el), ...el.childNodes);
+    // #1953: the stamp is taken before emoticonPlaceholder copies the element's attributes.
+    const source = takeCarrierSource(el, carriers, 'emoticon');
+    const span = emoticonPlaceholder(el);
+    if (source !== null) markCarrier(span, carriers!, { k: 'emoticon', n: source });
+    el.replaceWith(span, ...el.childNodes);
   }
 
   const html = doc.body.innerHTML;
