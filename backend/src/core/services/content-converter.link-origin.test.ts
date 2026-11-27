@@ -453,6 +453,26 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
         }
       },
     );
+
+    // Review r5, R23: an ordinary stored anchor is held to the same rule as a link.
+    it.each([['the entity name', 'Ops&lang;guide'], ['the character the editor shows', 'Ops\u27E8guide']])(
+      'writes the paragraph left, pointing at the URL, as text beside an ordinary anchor labelled with %s, on both Saves (R23)',
+      (_name, label) => {
+        const anchor = `<a href="https://example.com/ops">${label}</a>`;
+        for (const storage of [`<p>${GUIDE}</p><p>${anchor}</p>`, `<p>${anchor}</p><p>${GUIDE}</p>`]) {
+          expect(yDocToHtml(htmlToYDoc(confluenceToHtml(storage))))
+            .toBe(yDocToHtml(htmlToYDoc(confluenceToHtml(storage.replace(label, 'Ops\u27E8guide')))));
+          const left = '<p><a href="#confluence-url:%2Fguide?body=plain">Ops\u27E8guide</a></p>';
+          const first = htmlToConfluence(left, { previousStorage: storage });
+          expect(first).toBe('<p>Ops\u27E8guide</p>');
+          expect(htmlToConfluence(left, { linkOrigin: first })).toBe(first);
+        }
+        // The unchanged page keeps its link beside the anchor.
+        const storage = `<p>${GUIDE}</p><p>${anchor}</p>`;
+        const html = '<p><a href="#confluence-url:%2Fguide?body=plain">Ops\u27E8guide</a></p><p><a href="https://example.com/ops">Ops\u27E8guide</a></p>';
+        expect(oracleUrlLinks(htmlToConfluence(html, { previousStorage: storage }))).toHaveLength(1);
+      },
+    );
   });
 
   // Review r4, R22: no attribute of the input stands for a decision of the converter.
