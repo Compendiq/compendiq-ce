@@ -996,23 +996,27 @@ describe('C7 / M7 / Y6 / Z4: bounds before the work they bound', () => {
 });
 
 /**
- * Review r1 invariant: a recovery is reported only when it is in the returned HTML. Counts the carriers each kind
- * writes in the target and in the result; the difference must equal the reported count, kind by kind.
+ * Review r1/r2 invariant: a recovery is reported only when it is in the returned HTML and was absent before. Per
+ * kind, counts the carriers the result holds that the target did not (a multiset difference); the count must equal
+ * the reported one. A link is identified by the target the reverse pass writes for it (kind, value and every
+ * parameter, an href's spelling and its legacy form ignored), so an equivalent respelling adds nothing.
  */
-function carriersByKind(html: string): Record<string, number> {
+function carriersByKind(html: string): Record<string, string[]> {
   const body = new JSDOM(`<body>${html}</body>`).window.document.body;
-  const carriedLinks = [...body.querySelectorAll('a')].filter((a) => {
+  const links = [...body.querySelectorAll('a')].flatMap((a) => {
     const carrier = confluenceLinkCarrierOf(a);
     const link = carrier === null ? null : parseConfluenceLinkHref(carrier);
-    return link !== null && !link.legacy
-      && (link.kind === 'anchor' || link.link.length + link.resource.length > 0 || link.container !== null || link.body !== null);
+    if (!link) return [];
+    const target = [link.kind, link.value, link.link, link.resource, link.container, link.body];
+    return [JSON.stringify([target, a.getAttribute('data-confluence-link'), a.textContent])];
   });
+  const outer = (selector: string) => [...body.querySelectorAll(selector)].map((el) => el.outerHTML);
   return {
-    'macro.code': body.querySelectorAll('pre[data-title], pre[data-macro-params]').length,
-    'macro.status': body.querySelectorAll('span.confluence-status[data-macro-params]').length,
-    'macro.toc': body.querySelectorAll('div.confluence-toc[data-macro-params]').length,
-    link: carriedLinks.length,
-    emoticon: body.querySelectorAll('span.confluence-emoticon').length,
+    'macro.code': outer('pre[data-title], pre[data-macro-params]'),
+    'macro.status': outer('span.confluence-status[data-macro-params]'),
+    'macro.toc': outer('div.confluence-toc[data-macro-params]'),
+    link: links,
+    emoticon: [...body.querySelectorAll('span.confluence-emoticon')].map((_span, index) => `${index}`),
   };
 }
 
@@ -1020,7 +1024,14 @@ function expectRecoveriesPresent(target: string, result: { html: string; report:
   const before = carriersByKind(target);
   const after = carriersByKind(result.html);
   for (const kind of Object.keys(before)) {
-    expect({ kind, added: after[kind]! - before[kind]! }).toEqual({ kind, added: result.report.recovered[kind as keyof CarrierReport['recovered']] ?? 0 });
+    const remaining = [...before[kind]!];
+    let added = 0;
+    for (const item of after[kind]!) {
+      const at = remaining.indexOf(item);
+      if (at >= 0) remaining.splice(at, 1);
+      else added += 1;
+    }
+    expect({ kind, added }).toEqual({ kind, added: result.report.recovered[kind as keyof CarrierReport['recovered']] ?? 0 });
   }
 }
 
@@ -1114,5 +1125,82 @@ describe('review r1', () => {
       }
     }
     expect(checked).toBe(3 * Object.keys(F).length);
+  });
+});
+
+describe('review r2', () => {
+  /** T with the two links of a two-link paragraph swapped. */
+  function swapLinks(html: string): string {
+    const doc = new JSDOM(`<body>${html}</body>`).window.document;
+    const [first, second] = [...doc.querySelectorAll('a')];
+    const marker = doc.createElement('i');
+    first!.replaceWith(marker);
+    second!.replaceWith(first!);
+    marker.replaceWith(second!);
+    return doc.body.innerHTML;
+  }
+
+  const spaces = (storage: string) => oracleElements(storage, 'ri', 'page').map((page) => page.getAttribute('ri:space-key'));
+
+  it('CAR-8: links that differ only in a spelling the keys fold abstain, swapped or not, and no space is published', () => {
+    for (const fixture of [F.linksEquivalentBold, F.linksEquivalentSpan, F.linksIdenticalBold]) {
+      for (const target of [fixture.legacyHtml, swapLinks(fixture.legacyHtml)]) {
+        const result = reconcile(fixture, target);
+        expect(result).toMatchObject({ html: target, report: { outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 2 } } } });
+        expect(spaces(writeBack(result.html, fixture))).toEqual([null, null]);
+      }
+    }
+  });
+
+  it('CAR-8: links the keys tell apart still recover in place, and a swap of them is a change', () => {
+    const { html, report } = reconcile(F.linksDistinct);
+    expect(report).toMatchObject({ outcome: 'recovered', recovered: { link: 2 }, skipped: {} });
+    expect(spaces(writeBack(html, F.linksDistinct))).toEqual(['A', 'B']);
+    const swapped = swapLinks(F.linksDistinct.legacyHtml);
+    expect(reconcile(F.linksDistinct, swapped)).toMatchObject({ html: swapped, report: { skipped: { link: { changed: 2 } } } });
+  });
+
+  it('CAR-9: a parameterless link whose legacy href only spells its value differently recovers nothing', () => {
+    for (const fixture of [F.pageLinkSpaced, F.pageLinkSpacedBody, F.attachmentSpaced]) {
+      expect(reconcile(fixture)).toMatchObject({ html: fixture.legacyHtml, report: { outcome: 'none', recovered: {}, skipped: {} } });
+      const current = confluenceToHtml(fixture.storage);
+      const next = writeBack(current, fixture);
+      expect(reconcileConfluenceCarriers(current, next, current, { marker: MARKER })).toMatchObject({ html: current, report: { outcome: 'none', recovered: {} } });
+    }
+  });
+
+  it('CAR-9: a legacy href that decodes to another value is still recovered', () => {
+    const { html, report } = reconcile(F.pageLinkPercentTitle);
+    expect(report.recovered).toEqual({ link: 1 });
+    const title = (storage: string) => oracleElements(storage, 'ri', 'page')[0]!.getAttribute('ri:content-title');
+    expect(title(writeBack(F.pageLinkPercentTitle.legacyHtml, F.pageLinkPercentTitle))).toBe('a b');
+    expect(title(writeBack(html, F.pageLinkPercentTitle))).toBe('a%20b');
+  });
+
+  it('CAR-9: the next stored row of every fixture recovers nothing', () => {
+    let checked = 0;
+    for (const fixture of Object.values(F)) {
+      const first = reconcile(fixture);
+      let storage: string;
+      try {
+        storage = writeBack(first.html, fixture);
+      } catch {
+        continue;
+      }
+      for (const stored of [first.html, confluenceToHtml(storage)]) {
+        const next = reconcileConfluenceCarriers(stored, storage, stored, { marker: MARKER });
+        expect({ fixture: Object.keys(F).find((name) => F[name as keyof typeof F] === fixture), recovered: next.report.recovered })
+          .toEqual({ fixture: Object.keys(F).find((name) => F[name as keyof typeof F] === fixture), recovered: {} });
+        expect(next.html).toBe(stored);
+      }
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(80);
+  });
+
+  it('CAR-10: start tags with no rewritten run cost no containment work; a mixed run costs one search', () => {
+    expect(reconcile(F.statusRun32).report).toMatchObject({ recovered: { 'macro.status': 32 }, work: { containment: 0 } });
+    // One run region and one start tag: ⌈log2(1 + 1)⌉ = 1 step each.
+    expect(reconcile(F.statusThenEmoticon).report).toMatchObject({ recovered: { 'macro.status': 1, emoticon: 1 }, work: { containment: 2 } });
   });
 });

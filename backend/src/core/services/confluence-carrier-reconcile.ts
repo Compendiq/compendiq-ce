@@ -86,6 +86,8 @@ export interface CarrierWork {
   keyUnits: number;
   /** Work charged for splices. */
   spliceUnits: number;
+  /** Work charged for finding the run that contains a rewritten start tag (zero when no run is rewritten). */
+  containment: number;
 }
 
 /**
@@ -305,9 +307,14 @@ const LINK_KIND: CarrierKind = {
     if (!CONFLUENCE_LINK_KINDS_1748.includes(link.kind)) return null;
     const own = confluenceLinkHrefAttributes(carrier);
     if (!own || own.href !== marked.getAttribute('href') || own.className !== marked.getAttribute('class')) return 'unsupported';
-    // A link whose carried shape is its legacy shape carries nothing to recover.
+    // A link whose carried shape is its legacy shape carries nothing to recover. The legacy href is compared as the
+    // grammar reads it (kind and decoded value), so `My Page` and today's `My%20Page` are the same link (review r2
+    // CAR-9); a legacy href that decodes to another value (a title spelled `a%20b`) still differs.
     const sameText = payload.b === 'rich' || (marked.children.length === 0 && marked.textContent === payload.x);
-    if (payload.h === own.href && own.className === null && sameText) return null;
+    const legacy = payload.h === null ? null : parseConfluenceLinkHref(payload.h, { kinds: CONFLUENCE_LINK_KINDS_1748 });
+    const sameTarget = payload.h === own.href
+      || (legacy !== null && legacy.kind === link.kind && legacy.value === link.value && !hasLinkParameter(link));
+    if (sameTarget && own.className === null && sameText) return null;
     const label = payload.b === 'none' && payload.x !== confluenceLinkDisplayText(link)
       ? confluenceLinkDisplayText(link)
       : null;
@@ -524,6 +531,8 @@ interface RunInfo {
   /** Canonical token index → the atom element there. */
   readonly atoms: ReadonlyMap<number, Element>;
   readonly emoticons: number;
+  /** The canonical tokens the run's key is built from. */
+  readonly tokens: readonly string[];
 }
 
 interface DocUnits {
@@ -782,7 +791,7 @@ function collectUnits(doc: Document, side: 'C' | 'L' | 'T', ctx: Ctx): DocUnits 
       } catch (error) {
         if (!(error instanceof UnitUnsupported)) throw error;
         info = {
-          parent, nodes: item.nodes, key: null, raw: [], rawKey: '', ranges: new Map(), anchors: new Map(), atoms: new Map(), emoticons: 0,
+          parent, nodes: item.nodes, key: null, raw: [], rawKey: '', ranges: new Map(), anchors: new Map(), atoms: new Map(), emoticons: 0, tokens: [],
         };
       }
       for (const node of item.nodes) units.runOfNode.set(node, info);
@@ -1038,7 +1047,7 @@ function emptyReport(): CarrierReport {
     skipped: {},
     codeOps: [],
     droppedLinkAttributes: 0,
-    work: { nodes: 0, passes: 0, projectedUnits: 0, keyUnits: 0, spliceUnits: 0 },
+    work: { nodes: 0, passes: 0, projectedUnits: 0, keyUnits: 0, spliceUnits: 0, containment: 0 },
   };
 }
 
@@ -1221,20 +1230,29 @@ function reconcileMarked(
   const unique = (key: string): boolean =>
     cUnits.counts.get(key) === 1 && lUnits.counts.get(key) === 1 && tUnits.counts.get(key) === 1;
 
-  // Ambiguity index (§3.5; review r1 CAR-4): each status or link record's legacy shape is serialized once, charged
-  // before, and grouped per run, so planning a run of n records is linear in n.
+  // Ambiguity index (§3.5; review r1 CAR-4, r2 CAR-8). A record is told apart from another of its run only by the
+  // canonical identity the pairing proves: its own canonical tag and attributes and the run tokens over its range
+  // (formatting tags folded, attributes name-sorted, white space collapsed). Two records with the same identity and
+  // different carried values could have been swapped without changing any key, so both abstain. Each record is
+  // indexed once, charged before, so planning a run of n records is linear in n.
   const shapes = new Map<RunInfo, Map<string, Set<string>>>();
   const shapeOf = new Map<ProjectedRecord, string>();
   for (const record of records) {
     if (!record.element || (record.mark.k !== 'macro.status' && record.mark.k !== 'link')) continue;
     const run = runOf(cUnits, record.element);
-    if (!run) continue;
-    let size = (record.element.textContent ?? '').length + 16;
+    const range = run?.ranges.get(record.element);
+    if (!run || !range) continue;
+    let size = range.t1 - range.t0 + 16;
     for (const { name, value } of record.element.attributes) size += name.length + value.length + 4;
-    work.charge(size);
-    const shape = `${record.kind.id}\u0000${record.element.outerHTML}`;
     const value = JSON.stringify([record.record.attributes, record.record.label]);
-    work.charge(value.length);
+    work.charge(size + value.length);
+    const tag = MARK_TAG[record.element.localName] ?? record.element.localName;
+    const own = JSON.stringify([tag, attributePairs(record.element, ctx, tag === 'a')]);
+    // A range opens before the collapsed space that precedes its first character is flushed: that space is the
+    // run's, not the record's, so leading space tokens are left out.
+    let t0 = range.t0;
+    while (t0 < range.t1 && run.tokens[t0]!.endsWith('| ')) t0 += 1;
+    const shape = `${record.kind.id}\u0000${own}\u0000${run.tokens.slice(t0, range.t1).join('\u0001')}`;
     shapeOf.set(record, shape);
     const groups = shapes.get(run) ?? new Map<string, Set<string>>();
     shapes.set(run, groups);
@@ -1631,6 +1649,13 @@ function reconcileMarked(
     interface Region { start: number; end: number; run: boolean; plans: Planned[]; serialize: () => string }
     const runRegions = new Map<Node, Region>();
     const tagRegions: Region[] = [];
+    // A recovery is reported only for a carrier that was absent and is added (review r2 CAR-9): an attribute
+    // operation whose values the target already holds is no operation.
+    planned = planned.filter((plan) => {
+      const noop = !plan.inline && plan.attributes.every(([name, value]) => plan.element!.getAttribute(name) === value);
+      if (noop) skip(report, plan.record.kind.id, 'carried');
+      return !noop;
+    });
     for (const plan of planned) {
       if (plan.inline) {
         const { parent, first, last } = plan.inline.target;
@@ -1683,14 +1708,33 @@ function reconcileMarked(
       }
       tagRegions.push({ start, end: stop, run: false, plans: [plan], serialize: () => serializeStartTag(el) });
     }
-    // A start tag inside a rewritten run is written by that run's serialization.
-    const ordered = [...runRegions.values()];
+    // A start tag inside a rewritten run is written by that run's serialization (review r1 CAR-1). Only run regions
+    // can contain one (review r2 CAR-10): the disjoint runs are sorted once and each start tag binary-searches them,
+    // every step charged before it is taken; with no run region nothing is compared.
+    const runs = [...runRegions.values()];
+    const ordered: Region[] = [...runs];
+    if (runs.length > 0) {
+      const steps = Math.ceil(Math.log2(runs.length + 1));
+      work.charge(runs.length * steps + tagRegions.length * steps);
+      report.work.containment += runs.length * steps + tagRegions.length * steps;
+      runs.sort((a, b) => a.start - b.start);
+    }
     for (const region of tagRegions) {
-      work.charge(ordered.length);
-      const host = ordered.find((outer) => outer.run && outer.start <= region.start && region.end <= outer.end);
+      let host: Region | undefined;
+      for (let low = 0, high = runs.length - 1; low <= high;) {
+        const middle = (low + high) >> 1;
+        const run = runs[middle]!;
+        if (run.end < region.end) low = middle + 1;
+        else if (run.start > region.start) high = middle - 1;
+        else {
+          host = run;
+          break;
+        }
+      }
       if (host) host.plans.push(...region.plans);
       else ordered.push(region);
     }
+    work.charge(ordered.length * Math.ceil(Math.log2(ordered.length + 1)));
     ordered.sort((a, b) => a.start - b.start);
     for (let index = 1; index < ordered.length; index += 1) {
       if (ordered[index]!.start < ordered[index - 1]!.end) throw new Error('overlapping carrier splices');

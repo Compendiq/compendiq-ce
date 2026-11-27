@@ -388,6 +388,38 @@ export const LEGACY_CARRIER_FIXTURES = {
     storage: `<p>${Array.from({ length: 32 }, (_, i) => status(`S${i}`)).join(' ')}</p>`,
     legacyHtml: `<p>${Array.from({ length: 32 }, (_, i) => `<span class="confluence-status" data-color="green">S${i}</span>`).join(' ')}</p>`,
   },
+  linksEquivalentBold: {
+    storage: '<p><ac:link><ri:page ri:content-title="X" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and <ac:link><ri:page ri:content-title="X" ri:space-key="B" /><ac:link-body><strong>X</strong></ac:link-body></ac:link></p>',
+    legacyHtml: '<p><a href="#confluence-page:X" data-confluence-link="page"><b>X</b></a> and <a href="#confluence-page:X" data-confluence-link="page"><strong>X</strong></a></p>',
+  },
+  linksEquivalentSpan: {
+    storage: '<p><ac:link><ri:page ri:content-title="X" ri:space-key="A" /><ac:link-body><span title="x" lang="en">X</span></ac:link-body></ac:link> and <ac:link><ri:page ri:content-title="X" ri:space-key="B" /><ac:link-body><span lang="en" title="x">X</span></ac:link-body></ac:link></p>',
+    legacyHtml: '<p><a href="#confluence-page:X" data-confluence-link="page"><span title="x" lang="en">X</span></a> and <a href="#confluence-page:X" data-confluence-link="page"><span lang="en" title="x">X</span></a></p>',
+  },
+  linksIdenticalBold: {
+    storage: '<p><ac:link><ri:page ri:content-title="X" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and <ac:link><ri:page ri:content-title="X" ri:space-key="B" /><ac:link-body><b>X</b></ac:link-body></ac:link></p>',
+    legacyHtml: '<p><a href="#confluence-page:X" data-confluence-link="page"><b>X</b></a> and <a href="#confluence-page:X" data-confluence-link="page"><b>X</b></a></p>',
+  },
+  linksDistinct: {
+    storage: '<p><ac:link><ri:page ri:content-title="X" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and <ac:link><ri:page ri:content-title="X" ri:space-key="B" /><ac:link-body><b>Y</b></ac:link-body></ac:link></p>',
+    legacyHtml: '<p><a href="#confluence-page:X" data-confluence-link="page"><b>X</b></a> and <a href="#confluence-page:X" data-confluence-link="page"><b>Y</b></a></p>',
+  },
+  pageLinkSpaced: {
+    storage: '<p>See <ac:link><ri:page ri:content-title="My Page" /></ac:link>.</p>',
+    legacyHtml: '<p>See <a href="#confluence-page:My Page" data-confluence-link="page">My Page</a>.</p>',
+  },
+  pageLinkSpacedBody: {
+    storage: '<p>See <ac:link><ri:page ri:content-title="My Page" /><ac:plain-text-link-body><![CDATA[there]]></ac:plain-text-link-body></ac:link>.</p>',
+    legacyHtml: '<p>See <a href="#confluence-page:My Page" data-confluence-link="page">there</a>.</p>',
+  },
+  attachmentSpaced: {
+    storage: '<p>See <ac:link><ri:attachment ri:filename="My File" /></ac:link>.</p>',
+    legacyHtml: '<p>See <a href="#confluence-attachment:My File" data-confluence-link="attachment">My File</a>.</p>',
+  },
+  pageLinkPercentTitle: {
+    storage: '<p>See <ac:link><ri:page ri:content-title="a%20b" /></ac:link>.</p>',
+    legacyHtml: '<p>See <a href="#confluence-page:a%20b" data-confluence-link="page">a%20b</a>.</p>',
+  },
   markerSpelled: {
     storage: '<p>data-cq-0123456789abcdef0123456789abcdef <ac:emoticon ac:name="tick" /> b</p>',
     legacyHtml: '<p>data-cq-0123456789abcdef0123456789abcdef  b</p>',
