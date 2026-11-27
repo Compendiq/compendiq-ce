@@ -3702,14 +3702,18 @@ export class ImproveSuggestionFormatError extends Error {
 }
 
 /**
- * D25 1(a): a placement of a frozen code entry stands where the generator writes one: outside `pre`/`code`, and as
- * a run of its own (a wrapped `<p>TOKEN</p>`, or a text run that holds nothing but this page's placeholder spellings
- * and white space up to the next tag: protectMedia writes ` TOKEN ` for every protected node, so neighbouring
- * placeholders share a run). A spelling inside prose or code is no evidence.
+ * D25 1(a): a placement of a frozen code entry is evidence when it stands outside `pre`/`code` and could only have
+ * come from the generator. A release before #1958 never wrote `CQ_CODE_PLACEHOLDER_<k>`, so a spelling of a token
+ * the page itself never writes (not `literal`) is generator output wherever it stands as content: protectMedia
+ * writes ` TOKEN ` in the frozen block's place, which shares a text run with text next to that block (`<td>Run:
+ * TOKEN</td>`, `- Run: TOKEN`). A token the page spells itself counts only as a run of its own (a wrapped
+ * `<p>TOKEN</p>`, or a text run that holds nothing but this page's placeholder spellings and white space).
  */
-function isStandalonePlacement(html: string, placement: MediaTokenPlacement, flags: ContextFlags, spellings: RegExp): boolean {
+function isPlaceholderEvidence(
+  html: string, placement: MediaTokenPlacement, entry: ProtectedMedia, flags: ContextFlags, spellings: RegExp,
+): boolean {
   if (flags.code) return false;
-  if (placement.wrapped) return true;
+  if (!entry.literal || placement.wrapped) return true;
   const before = html.lastIndexOf('>', placement.start - 1);
   const after = html.indexOf('<', placement.end);
   return html.slice(before + 1, after === -1 ? html.length : after).replace(spellings, '').trim() === '';
@@ -3719,7 +3723,7 @@ function isStandalonePlacement(html: string, placement: MediaTokenPlacement, fla
  * #1958: re-inject protected media and frozen code blocks. First the Accept
  * is classified from structural evidence only (D25 item 1, never a
  * substring): a CODE-META line the generator would write (markdownToHtml), or
- * a frozen code entry's token standing alone outside code → `meta`; neither
+ * a frozen code entry's token outside code (isPlaceholderEvidence) → `meta`; neither
  * and no frozen code on the page → `base`; neither but frozen code →
  * ImproveSuggestionFormatError (422).
  *
@@ -3751,9 +3755,10 @@ export function replayProtectedMedia(
   const flagsOf = placements.map((placement) => contextFlags(placement.context, cache));
   const spellings = new RegExp(entries.flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
     .map((spelling) => `${escapeRegExp(spelling)}(?![0-9])`).join('|') || '(?!)', 'g');
-  const placeholderEvidence = placements.some((placement, index) =>
-    entryOf.get(placement.token)! >= entries.length - codeMeta.frozenCode
-    && isStandalonePlacement(html, placement, flagsOf[index]!, spellings));
+  const placeholderEvidence = placements.some((placement, index) => {
+    const k = entryOf.get(placement.token)!;
+    return k >= entries.length - codeMeta.frozenCode && isPlaceholderEvidence(html, placement, entries[k]!, flagsOf[index]!, spellings);
+  });
   if (codeMeta.codeMetaEvidence || placeholderEvidence) codeMeta.mode = 'meta';
   else if (codeMeta.frozenCode > 0) throw new ImproveSuggestionFormatError();
   else codeMeta.mode = 'base';

@@ -1107,13 +1107,28 @@ describe('#1958 r2 (D25 item 1): one structural rule for suggestions across the 
     expect(codeMeta.mode).toBe('meta');
   });
 
-  it('(a) takes a frozen code placeholder only as a run of placeholders outside code', async () => {
+  it('(a) takes a frozen code placeholder outside code; one the page spells itself only as a run of its own', async () => {
     const page = `<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table>${IMG('d')}`;
-    for (const markdown of ['`CQ_CODE_PLACEHOLDER_0`', 'See CQ\\_CODE\\_PLACEHOLDER\\_0 here', '```\nCQ_CODE_PLACEHOLDER_0\n```']) {
+    for (const markdown of ['`CQ_CODE_PLACEHOLDER_0`', '```\nCQ_CODE_PLACEHOLDER_0\n```']) {
       await expect(improveChain(page, () => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`), markdown).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
     }
-    const chain = await improveChain(page, () => 'CQ\\_CODE\\_PLACEHOLDER\\_0 CQ\\_MEDIA\\_PLACEHOLDER\\_0');
-    expect(codeMacros(chain.storage).map((macro) => macro.title)).toEqual(['Startup.cs']);
+    for (const markdown of ['CQ\\_CODE\\_PLACEHOLDER\\_0 CQ\\_MEDIA\\_PLACEHOLDER\\_0', 'See CQ\\_CODE\\_PLACEHOLDER\\_0 here\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0']) {
+      const chain = await improveChain(page, () => markdown);
+      expect(codeMacros(chain.storage).map((macro) => macro.title), markdown).toEqual(['Startup.cs']);
+    }
+    // Faithful echoes where the generator writes the token beside text (a cell, a list item) are on the #1958 path.
+    for (const adjacent of [
+      `<table><tbody><tr><td>Run:${pre('x()', TITLED)}</td></tr></tbody></table>`,
+      `<ul><li>Run:${pre('\n', TITLED)}</li></ul>`,
+    ]) {
+      const chain = await improveChain(adjacent);
+      expect(chain.report.appended, adjacent).toBe(0);
+    }
+    // A token the page writes itself is no evidence beside text.
+    const literal = `<p>Write CQ_CODE_PLACEHOLDER_0 here</p>${page}`;
+    expect(protectMedia(literal).frozenCode[0]).toMatchObject({ literal: true });
+    await expect(improveChain(literal, () => 'Write CQ\\_CODE\\_PLACEHOLDER\\_0 here\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0'))
+      .rejects.toBeInstanceOf(ImproveSuggestionFormatError);
   });
 });
 
