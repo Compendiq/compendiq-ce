@@ -236,16 +236,22 @@ one DOM call, not constant time, since JSDOM walks the moved node's
 ancestors). A task list that is not in a task body (placed directly in a list,
 in a wrapper, or in a task but outside its body) is not Confluence's nesting
 and stays flat in source order, exactly as before. Nesting applies only within
-`MAX_TASK_LIST_NESTING` (32) levels, decided before any conversion work: the
-forward pass scans the storage as written (`storageTaskNesting`, every task
-list inside another, CDATA as text) and write-back counts the hierarchy it is
-about to write (editor lists and raw `ac:task-list` alike). A page nested
-deeper converts exactly as before #1957 on both passes — the pre-#1957 forward
-loop and write-back's pre-#1957 read of the stored tasks — so nothing is
+`MAX_TASK_LIST_NESTING` (32) levels, decided once per document before anything
+is restructured, by one walk of the tree the pass already parses, counting
+only what reaches the output: the forward pass uses `convertTaskLists`' own
+index (`indexTaskLists`; only kept subtask lists add a level, comments and
+CDATA are text) and write-back (`writeBackProfile`, shared by `assignTaskIds`
+so every writer gives the same ids) counts editor lists and raw
+`ac:task-list` alike, skipping the figure and table indexes it removes. A page
+nested deeper converts exactly as before #1957 on both passes — the pre-#1957
+forward loop and write-back's pre-#1957 read of the stored tasks — so nothing is
 refused, but such a page keeps the duplicated pre-#1957 shape: the defect is
 not fixed for it. The bound is the reverse pass, which re-serialises once per
 level (about 0.2 s at 32 levels, 1.5 s at 64, 5–10 s at 100 with a macro in
-every task); both schemas stay fast far beyond.
+every task); both schemas stay fast far beyond. Known limit, inherited and
+unchanged: the JSDOM parse every conversion already starts with costs more
+than linear time in the nesting depth (its per-insert ancestor walk), and the
+decision is taken on that parsed tree, not before it.
 Both TipTap schemas parse a task item's content from TipTap's
 `label` + `div` only when the `li` has exactly that shape (write-back's
 `taskItemContent` rule; the `task-item-content` blocks of `collab-schema.ts`

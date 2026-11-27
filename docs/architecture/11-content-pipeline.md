@@ -428,12 +428,17 @@ any change to the existing conflict policy.
   is one DOM call, not constant time: JSDOM still walks the moved node's
   ancestors. Lists in a list but not in a task body stay flat in source order,
   as before. Nesting applies only within `MAX_TASK_LIST_NESTING` = 32, decided
-  before any conversion work and as a pure function of the input, so a
-  recorded restore derivation still reproduces its bytes: the forward pass
-  scans the storage string (`storageTaskNesting`: every `ac:task-list` inside
-  another, CDATA as text, one look per tag), write-back counts the hierarchy it
-  writes (editor lists and raw `ac:task-list` a pre-#1957 body still holds).
-  Deeper, the page converts exactly as before #1957 on both passes (the
+  once per document, before anything is restructured, as a pure function of
+  the input, so a recorded restore derivation still reproduces its bytes. It
+  counts only the hierarchy that reaches the output, by one walk of the tree
+  the pass already parses (no second parse, no string scan): the forward pass
+  uses `convertTaskLists`' own index (`indexTaskLists`: only kept subtask
+  lists add a level; comments and CDATA are text), and write-back counts the
+  editor lists and raw `ac:task-list` a pre-#1957 body still holds, skipping
+  the figure and table indexes it removes. Write-back's decision
+  (`writeBackProfile`) is shared by `assignTaskIds`, so draft publish,
+  collaborative Save, PUT and a direct `htmlToConfluence` give a page the same
+  ids. Deeper, the page converts exactly as before #1957 on both passes (the
   pre-#1957 forward loop; write-back reads the stored tasks with it too):
   nothing is refused, sync, history, Save, draft publish and restore behave as
   before, and such a page keeps the duplicated pre-#1957 shape — #1957 is not
@@ -441,6 +446,10 @@ any change to the existing conflict policy.
   re-parse makes it superlinear: with a status and a toc macro in every task
   it writes 32 levels in about 0.2 s, 64 in 1.5 s and 100 in 5–10 s, while
   both TipTap schemas and the collaborative document stay under 0.2 s at 100.
+  Known limit, inherited and unchanged: the JSDOM parse every conversion
+  already starts with costs more than linear time in the nesting depth (an
+  ancestor walk per inserted node), and the limit is decided on that parsed
+  tree, not before it.
   The editor schemas read a task item's content the way write-back does
   (`taskItemContent`): from TipTap's `label` + `div` only when the `li` is
   exactly that, else from the `li`. TaskItem's stock `querySelector('div')`
