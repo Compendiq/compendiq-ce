@@ -25,7 +25,7 @@ import {
   refuseConfluenceStorage,
   storedLinkKeepsTarget,
 } from './confluence-link.js';
-import type { ConfluenceStorageRefusal } from './confluence-storage-reader.js';
+import { isStorageLimitStop, type StorageElement, type StorageReadFailure } from './confluence-storage-reader.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   assertStorageDerivationFeatures,
@@ -336,11 +336,12 @@ function confluenceToHtmlWith(
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
+  witness?: EmittedLinkWitness,
 ): string {
   assertStorageDerivationFeatures(features);
   let input = storageXhtml;
   while (true) {
-    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, input === storageXhtml);
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, input === storageXhtml, witness);
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
       throw new Error(
@@ -639,13 +640,15 @@ function confluenceToHtmlPass(
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
   firstPass: boolean,
+  witness: EmittedLinkWitness | undefined,
 ): ConfluenceConversionPass {
   // #1955 (reviews r2 R12, r4 R21): with `link-kinds`, a link of a #1955 kind is read with the values XML reads.
   // Only the storage itself is spelled so; a later pass reads this pass's HTML, whose values were read here.
+  // A witness (D20) has each stored link's start tag marked with its index in what the reader read.
   const cdataAsText = stripCdata(storageXhtml);
-  const preprocessed = expandSelfClosingXhtmlTags(
-    firstPass && derivationHas(features, 'link-kinds') ? keepXmlLinkValues(cdataAsText).storage : cdataAsText,
-  );
+  const kept = firstPass && derivationHas(features, 'link-kinds') ? keepXmlLinkValues(cdataAsText, witness?.marker) : null;
+  if (kept && witness) witness.links = kept.links;
+  const preprocessed = expandSelfClosingXhtmlTags(kept ? kept.storage : cdataAsText);
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   forwardDerivationStepForTest?.(doc, features);
@@ -819,6 +822,7 @@ function confluenceToHtmlPass(
     // data-* attribute of a link.
     const replacement = confluenceLinkAnchor(link, features);
     if (replacement) {
+      if (witness) witnessEmittedLink(witness, link);
       link.replaceWith(...replacement);
       continue;
     }
@@ -1713,18 +1717,18 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     ? 'a[href^="#confluence-"], a[href][class^="#confluence-url:"]'
     : 'a[href^="#confluence-"]';
   const linkOrigin = options.linkOrigin === undefined ? options.previousStorage : options.linkOrigin;
-  let refusalOf: ((carrier: string) => ConfluenceStorageRefusal | null) | undefined;
+  let checkCarrier: ((carrier: string) => void) | undefined;
   for (const a of doc.querySelectorAll(linkAnchors)) {
     const acLink = confluenceLinkElement(a, options.derivationFeatures);
     if (!acLink) continue;
-    // Owner decision D19 (#1955, review r5 R24): a link of a #1955 kind that carries a stored link's carrier is
-    // written with that link's XML target, or the write is refused here, before any effect.
+    // Owner decision D19, coordinator decision D20 (#1955, reviews r5 R24, r6 R25/R26): a link of a #1955 kind
+    // that carries a carrier the forward pass emitted from a stored link is written with that link's XML target,
+    // or the write is refused here, before any effect.
     const carrier = linkKinds && linkOrigin ? confluenceLinkCarrierOf(a) : null;
     const kind = carrier === null ? undefined : parseConfluenceLinkHref(carrier)?.kind;
     if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) {
-      refusalOf ??= storedLinkRefusals(linkOrigin!);
-      const reason = refusalOf(carrier);
-      if (reason) refuseConfluenceStorage(reason);
+      checkCarrier ??= emittedStoredLinks(linkOrigin!, writeBackFeatures(options));
+      checkCarrier(carrier);
     }
     a.replaceWith(acLink);
   }
@@ -1788,37 +1792,52 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
 }
 
 /**
- * Owner decision D19 (#1955, review r5 R24): which carriers an outgoing link
- * may not carry, given the page's stored storage, and why. A link of the five
- * kinds that carries the forward carrier of a stored link is that stored
- * link; it is refused (`changed-link-target`) when writing it back would give
- * it another XML target than the stored one (`storedLinkKeepsTarget`). Which
- * stored link an HTML element is comes from a mark the storage reader's own
- * tag ranges put on it (`keepXmlLinkValues`), with a name nobody can have
- * written. Stored storage that is well-formed as far as read but past the
- * reader's limits has no XML target to keep: every carrier read from it is
- * refused with the limit as the reason. Storage that is not well-formed, and
- * the three #1748 kinds, are not checked.
+ * Coordinator decision D20 (#1955, review r6 R25/R26): what the forward pass emitted for the stored links of the
+ * five #1955 kinds, recorded at the point it emits each carrier. `links` is what the storage reader read; each
+ * stored link's start tag carries the attribute `marker` with its index there, under a random name.
  */
-function storedLinkRefusals(storage: string): (carrier: string) => ConfluenceStorageRefusal | null {
-  const marker = `data-cq-stored-link-${randomBytes(8).toString('hex')}`;
-  const { storage: marked, links } = keepXmlLinkValues(stripCdata(storage), marker);
-  if (links === 'not-well-formed' || (typeof links !== 'string' && links.length === 0)) return () => null;
-  const stored = new JSDOM(`<body>${expandSelfClosingXhtmlTags(marked)}</body>`, { contentType: 'text/html' }).window.document;
-  const refused = new Set<string>();
-  for (const element of byTag(stored, 'ac:link')) {
-    const built = confluenceLinkCarrier(element);
-    if (!built || CONFLUENCE_LINK_KINDS_1748.includes(built.kind)) continue;
-    if (typeof links === 'string') {
-      refused.add(built.carrier);
-      continue;
-    }
-    const index = element.getAttribute(marker);
-    const link = index === null ? undefined : links[Number(index)];
-    if (link && !storedLinkKeepsTarget(link, built)) refused.add(built.carrier);
-  }
-  const reason: ConfluenceStorageRefusal = typeof links === 'string' ? links : 'changed-link-target';
-  return (carrier) => (refused.has(carrier) ? reason : null);
+interface EmittedLinkWitness {
+  readonly marker: string;
+  links: readonly StorageElement[] | StorageReadFailure;
+  /** carrier → whether a link emitted with it keeps its stored XML target, and whether one does not. */
+  readonly emitted: Map<string, { faithful: boolean; unfaithful: boolean }>;
+}
+
+/**
+ * Record the carrier the forward pass is about to emit for `acLink` (D20): faithful when the stored link the
+ * reader read at that tag is written back by it with its XML target (`storedLinkKeepsTarget`), else unfaithful —
+ * an element the reader did not read as a link, and every link of storage the reader stopped reading at a limit,
+ * has no XML target to keep. Storage known not to be well-formed, and the three #1748 kinds, are not recorded.
+ */
+function witnessEmittedLink(witness: EmittedLinkWitness, acLink: Element): void {
+  const { links } = witness;
+  if (typeof links === 'string' && !isStorageLimitStop(links)) return;
+  const built = confluenceLinkCarrier(acLink);
+  if (!built || CONFLUENCE_LINK_KINDS_1748.includes(built.kind)) return;
+  const index = acLink.getAttribute(witness.marker);
+  const stored = typeof links === 'string' || index === null ? undefined : links[Number(index)];
+  const verdict = witness.emitted.get(built.carrier) ?? { faithful: false, unfaithful: false };
+  if (stored !== undefined && storedLinkKeepsTarget(stored, built)) verdict.faithful = true;
+  else verdict.unfaithful = true;
+  witness.emitted.set(built.carrier, verdict);
+}
+
+/**
+ * Owner decision D19, coordinator decision D20 (#1955): run the forward pass itself over the page's stored storage,
+ * with the features of this write-back and a witness, and give the check of an outgoing carrier. A carrier the
+ * pass emitted only from links that keep their XML target, or never emitted (a new link, or a candidate the pass
+ * discarded), passes. One emitted from a link that would change its target is refused (`changed-link-target`, or
+ * the limit the reader stopped at); when a faithful link emitted the same carrier, which of them the outgoing link
+ * is cannot be told, and it is refused alike, logged `ambiguous`.
+ */
+function emittedStoredLinks(storage: string, features: StorageDerivationFeatures): (carrier: string) => void {
+  const witness: EmittedLinkWitness = { marker: `data-cq-stored-link-${randomBytes(8).toString('hex')}`, links: [], emitted: new Map() };
+  confluenceToHtmlWith(storage, undefined, undefined, features, witness);
+  const reason = typeof witness.links === 'string' ? witness.links : 'changed-link-target';
+  return (carrier) => {
+    const verdict = witness.emitted.get(carrier);
+    if (verdict?.unfaithful) refuseConfluenceStorage(reason, verdict.faithful ? 'ambiguous' : undefined);
+  };
 }
 
 /**

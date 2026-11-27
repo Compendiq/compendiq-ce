@@ -403,8 +403,9 @@ export interface XmlLinkValues {
  * commit read with the HTML values. A string the reader cannot read (not
  * XML, or past a limit) is returned as it came. With `marker`, each such
  * link's start tag also gets the attribute `marker` holding its index in
- * `links`, right after its name (owner decision D19: a write-back tells which
- * stored link an HTML element is).
+ * `links`, right after its name (owner decision D19, coordinator decision
+ * D20: the forward pass a write-back runs over the stored storage tells, where
+ * it emits a carrier, which stored link that carrier is read from).
  */
 export function keepXmlLinkValues(storage: string, marker?: string): XmlLinkValues {
   if (!NON_FILE_RESOURCE_TAG.test(storage)) return { storage, links: [] };
@@ -465,9 +466,12 @@ export function storedLinkKeepsTarget(stored: StorageElement, built: ConfluenceL
   return written === targetRecord(resource.name.toLowerCase(), own(stored, 'ac:'), own(resource, 'ri:'));
 }
 
-/** Refuse a storage before dispatch (#1955): logged here, once, with its reason only; `app.ts` answers 422. */
-export function refuseConfluenceStorage(reason: ConfluenceStorageRefusal): never {
-  logger.warn({ reason }, 'Confluence storage refused before dispatch (#1955)');
+/**
+ * Refuse a storage before dispatch (#1955): logged here, once, with its reason only, and with `detail` when a
+ * D19 refusal is for a carrier a faithful stored link also has (`ambiguous`); `app.ts` answers 422.
+ */
+export function refuseConfluenceStorage(reason: ConfluenceStorageRefusal, detail?: 'ambiguous'): never {
+  logger.warn(detail ? { reason, detail } : { reason }, 'Confluence storage refused before dispatch (#1955)');
   throw new ConfluenceStorageRefusedError(reason);
 }
 

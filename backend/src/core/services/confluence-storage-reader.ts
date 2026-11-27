@@ -92,7 +92,19 @@ export interface StorageReaderLimits {
 /** A page body is far below every one of these; past one the string is not read further. */
 export const STORAGE_READER_LIMITS: StorageReaderLimits = { length: 8_388_608, depth: 1_024, nodes: 1_000_000 };
 
-export type StorageReadFailure = 'not-well-formed' | 'too-large' | 'too-deep' | 'too-many-nodes';
+/**
+ * The reader stopped at one of its limits (coordinator decision D20): what it read before the stop was well-formed
+ * (for `too-large`, nothing was read); the rest was not read, so it is not certified well-formed.
+ */
+export type StorageLimitStop = 'too-large' | 'too-deep' | 'too-many-nodes';
+
+/** Why a string was not read: `not-well-formed` is known malformed; a {@link StorageLimitStop} is unread past a limit. */
+export type StorageReadFailure = 'not-well-formed' | StorageLimitStop;
+
+/** Whether a read failure is a stop at a limit rather than known malformed input. */
+export function isStorageLimitStop(reason: StorageReadFailure): reason is StorageLimitStop {
+  return reason !== 'not-well-formed';
+}
 
 export type StorageReadResult = { ok: true; tree: StorageTree } | { ok: false; reason: StorageReadFailure };
 

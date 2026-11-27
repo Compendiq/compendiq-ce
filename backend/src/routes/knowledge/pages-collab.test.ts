@@ -71,7 +71,7 @@ import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { confluenceToHtml } from '../../core/services/content-converter.js';
-import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { oracleElements, oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { __internal as sync } from '../../domains/confluence/services/sync-service.js';
@@ -2973,12 +2973,12 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       + '<ac:plain-text-link-body><![CDATA[example]]></ac:plain-text-link-body></ac:link>';
     const STORAGE = `<p>See ${STORED_LINK} first.</p><p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3)}</p><p>Web ${WEB_LINK}.</p>`;
 
-    async function seedLinkPage(bodyHtml: string): Promise<{ token: string; pageId: number; confluenceId: string }> {
+    async function seedLinkPage(bodyHtml: string, storage = STORAGE): Promise<{ token: string; pageId: number; confluenceId: string }> {
       const { token, userId } = await createUser(`collab_link_${pageIdEntropy()}`);
       const spaceKey = `LK${pageIdEntropy().slice(0, 6).toUpperCase()}`;
       const confluenceId = `cf-${pageIdEntropy()}`;
       const pageId = await insertConfluencePage({ spaceKey, confluenceId, version: 4, bodyHtml });
-      await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, STORAGE]);
+      await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, storage]);
       await grantSpaceRead(userId, spaceKey);
       await seedConfluenceCredentials(userId);
       await enableCollabFlag();
@@ -3069,6 +3069,40 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       expect((await query('SELECT version, body_html, body_storage FROM pages WHERE id = $1', [pageId])).rows).toEqual(before.rows);
       // The room is still there, with its content.
       expect(getDefaultCollabRuntime()!.getRoom(pageId)).toBeDefined();
+      editor.ws.close();
+    });
+
+    // Review r6, R25 and coordinator decision D20: an info panel re-parses its body before its links are read, so
+    // the carrier the room holds has LF where the stored blog title has CR. That Save is refused before any effect;
+    // the same link in a paragraph is dispatched with the CR XML reads, on both Saves.
+    const releaseLink = '<ac:link><ri:blog-post ri:content-title="Release&#13;notes" ri:space-key="OPS" /></ac:link>';
+    it.each([
+      ['an info panel', `<ac:structured-macro ac:name="info"><ac:rich-text-body><p>see ${releaseLink} now</p></ac:rich-text-body></ac:structured-macro>`, 422],
+      ['a paragraph', `<p>see ${releaseLink} now</p>`, 200],
+    ])('dispatches a stored blog title with a CR in %s as XML reads it, or refuses the Save, twice (R25)', async (_where, storage, status) => {
+      const { token, pageId, confluenceId } = await seedLinkPage(confluenceToHtml(storage), storage);
+      const editor = await joinEditor(pageId, token);
+      const provider = mockProvider(confluenceId);
+      const before = await query('SELECT version, body_html, body_storage FROM pages WHERE id = $1', [pageId]);
+
+      for (const label of ['Save 1', 'Save 2']) {
+        const response = await save(pageId, token, commitPayload(editor.ws, label, Y.snapshot(editor.doc)));
+        expect(response.statusCode, response.body).toBe(status);
+        if (status === 422) expect(JSON.parse(response.body)).toMatchObject({ reason: 'changed-link-target' });
+      }
+
+      if (status === 422) {
+        expect(provider.storages).toEqual([]);
+        expect((await query('SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [pageId])).rowCount).toBe(0);
+        expect((await query('SELECT version, body_html, body_storage FROM pages WHERE id = $1', [pageId])).rows).toEqual(before.rows);
+        expect(getDefaultCollabRuntime()!.getRoom(pageId)).toBeDefined();
+      } else {
+        // Each provider payload, read by the independent oracle, holds the title XML reads from the stored page.
+        expect(provider.storages).toHaveLength(2);
+        for (const dispatched of provider.storages) {
+          expect(oracleElements(dispatched, 'ri', 'blog-post').map((el) => el.getAttribute('ri:content-title'))).toEqual(['Release\rnotes']);
+        }
+      }
       editor.ws.close();
     });
   });

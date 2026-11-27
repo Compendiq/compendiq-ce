@@ -462,6 +462,68 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       const malformed = `${link}<p>unclosed`;
       expect(refusal(() => htmlToConfluence(confluenceToHtml(malformed), { previousStorage: malformed }))).toBeNull();
     });
+
+    // Review r6, R25 and coordinator decision D20: the verdict is the real forward pass's, made where it emits the
+    // carrier. An info panel re-parses its body as HTML before its links are read, so a CR in a stored title is an
+    // LF in the carrier the editor gets; a paragraph and an expand keep the CR.
+    const release = '<ac:link><ri:blog-post ri:content-title="Release&#13;notes" ri:space-key="OPS" /></ac:link>';
+    const inPanel = (name: string): string =>
+      `<ac:structured-macro ac:name="${name}"><ac:rich-text-body><p>see ${release} now</p></ac:rich-text-body></ac:structured-macro>`;
+    it.each([
+      ['a paragraph', `<p>see ${release} now</p>`, '%0D', null],
+      ['an expand', inPanel('expand'), '%0D', null],
+      ['an info panel', inPanel('info'), '%0A', 'changed-link-target'],
+    ])('saves an unchanged page with a CR in a blog title in %s: written as XML reads it, or refused, on both Saves (R25)', (_where, storage, emitted, reason) => {
+      const projected = yDocToHtml(htmlToYDoc(confluenceToHtml(storage)));
+      expect(projected).toContain(`Release${emitted}notes`);
+      const save = (): string => htmlToConfluence(projected, { previousStorage: storage });
+      expect(refusal(save)).toBe(reason);
+      if (reason !== null) {
+        expect(refusal(save)).toBe(reason);
+        return;
+      }
+      const first = save();
+      expect(values(first)).toEqual(values(storage));
+      expect(htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(first))), { previousStorage: first })).toBe(first);
+    });
+
+    it('refuses a link the forward pass emitted from well-formed storage past the limits, in a panel too, and nothing else (R25)', () => {
+      const deep = `${'<div>'.repeat(1_100)}x${'</div>'.repeat(1_100)}`;
+      for (const where of [`<p>see ${release} now</p>`, inPanel('info')]) {
+        const storage = `${where}${deep}`;
+        const projected = yDocToHtml(htmlToYDoc(confluenceToHtml(storage)));
+        expect(refusal(() => htmlToConfluence(projected, { previousStorage: storage }))).toBe('too-deep');
+        // The link removed, or a distinct new one, is written.
+        expect(refusal(() => htmlToConfluence('<p>see now</p>', { previousStorage: storage }))).toBeNull();
+        const fresh = confluenceToHtml('<p><ac:link><ri:blog-post ri:content-title="Other" ri:space-key="OPS" /></ac:link></p>');
+        expect(refusal(() => htmlToConfluence(fresh, { previousStorage: storage }))).toBeNull();
+      }
+    });
+
+    // Review r6, R26: an occurrence is a link the forward pass emitted, not a carrier string found anywhere.
+    const guide = '<ac:link><ri:blog-post ri:content-title="Guide" ri:space-key="OPS" /></ac:link>';
+    const folded = '<ac:link><ri:blog-post ri:content-title="Guide" ri:CONTENT-TITLE="Other" ri:space-key="OPS" /></ac:link>';
+    const guideHtml = confluenceToHtml(`<p>${guide}</p>`);
+
+    it('refuses no new link whose carrier only a discarded code-macro parameter held (R26)', () => {
+      const storage = `<ac:structured-macro ac:name="code"><ac:parameter ac:name="title">${folded}</ac:parameter>`
+        + '<ac:plain-text-body><![CDATA[echo hello]]></ac:plain-text-body></ac:structured-macro>';
+      const shown = confluenceToHtml(storage);
+      expect(shown).not.toContain('confluence-blog-post');
+      expect(refusal(() => htmlToConfluence(`${shown}${guideHtml}`, { previousStorage: storage }))).toBeNull();
+    });
+
+    it('refuses a carrier a faithful and an unfaithful emitted link share as ambiguous; the faithful link alone is written (R26)', () => {
+      const both = `<p>one ${guide}</p><p>two ${folded}</p>`;
+      const warn = vi.spyOn(logger, 'warn');
+      expect(refusal(() => htmlToConfluence(guideHtml, { previousStorage: both }))).toBe('changed-link-target');
+      expect(warn).toHaveBeenCalledWith({ reason: 'changed-link-target', detail: 'ambiguous' }, expect.any(String));
+      warn.mockClear();
+      expect(refusal(() => htmlToConfluence(confluenceToHtml(`<p>${folded}</p>`), { previousStorage: `<p>${folded}</p>` })))
+        .toBe('changed-link-target');
+      expect(warn).toHaveBeenCalledWith({ reason: 'changed-link-target' }, expect.any(String));
+      expect(refusal(() => htmlToConfluence(guideHtml, { previousStorage: `<p>${guide}</p>` }))).toBeNull();
+    });
   });
 
   // Review r3, R16: the writer and its second Save give a page link's title and an explicit body showing the same
