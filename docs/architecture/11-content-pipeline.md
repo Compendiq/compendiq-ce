@@ -1520,9 +1520,8 @@ On `POST /llm/improvements/apply` the route:
    `select`, SVG or MathML, a subtree the tree builder moved or an element
    holding a start tag it ignored. Every placement is screened before
    anything is counted (each context element evaluated once): a spelling
-   inside `pre`/`code`, of an entry the page itself spells (`literal`), or of
-   a frozen code entry inside a longer identifier (`CQ_CODE_PLACEHOLDER_0_COUNT`)
-   stays as written; one inside a container the reverse pass drops
+   inside `pre`/`code`, or of a code-carrying entry inside a longer identifier
+   (`…_0_COUNT`), stays as written; one inside a container the reverse pass drops
    (`isDroppingContext`: `div.figure-index`, `div.table-index`, `summary`,
    `template`, the atomic macro placeholders, draw.io, a plain item of a task
    list) is removed; for an entry holding an annotated code block (`code`),
@@ -1538,7 +1537,7 @@ On `POST /llm/improvements/apply` the route:
    replacement string is built (`2 × Σ originals + 65,536` UTF-16 units,
    else **422**; on the base path the upper bound of every placement plus
    every entry without one, before the expansion). With no screened
-   placement, no literal or code-carrying entry and every entry placed, the
+   placement, no code-carrying entry and every entry placed, the
    result is byte-identical to the former `restoreMedia` + drop guard.
 4. Calls `finalizeCodeMetadata` (#1958, see "AI Improve code-block metadata"),
    then derives `body_text`; the local exit judges the publication
@@ -1596,17 +1595,17 @@ within the bounds, no placeholder spelling, and a lossless projection (the
 fence lexes back to exactly one fenced code token of that language; no CR).
 `frozen`: any other annotated block, and every token block past the first
 1,000. A frozen block travels as a **code entry** in its own namespace,
-`CQ_CODE_PLACEHOLDER_<N>` with its own ordinals (`frozenCode`); the media
-entries keep exactly the tokens, ordinals and HTML the release before #1958
-wrote (`media`), and a frozen-class block that holds a media node is not
-frozen (its medium keeps its ordinal; the block loses its metadata as
-before). `protectMedia` also reports per entry `code` (its subtree holds an
-annotated `pre`), `literal` (the page's authored text spells its token
-anywhere: in one text node, or across text nodes joined, so a spelling split
-by an inline element or a comment, or written inside a longer identifier,
-counts; only the ordinal's digits bound it, and the placeholders protectMedia
-inserted never count; a literal entry never places, so a code-carrying one
-refuses the Accept)
+`CQ_CODE_PLACEHOLDER_<nonce>_<N>` with its own ordinals (`frozenCode`); a media
+entry that holds annotated code (a code-carrying macro wrapper) is spelled
+`CQ_MEDIA_PLACEHOLDER_<nonce>_<N>` at its media ordinal. The `<nonce>` is 64
+random bits the generator makes per suggestion and stores on its row
+(coordinator decision D28): only a token spelled with the bound row's nonce
+can place a protected block, so nothing the page writes itself and nothing
+another generation wrote can. Every other media entry keeps exactly the
+token, ordinal and HTML the release before #1958 wrote (`media`), and a
+frozen-class block that holds a media node is not frozen (its medium keeps
+its ordinal; the block loses its metadata as before). `protectMedia` also
+reports per entry `code` (its subtree holds an annotated `pre`)
 and `lineEndForm` (below), and `carried` (the stored body holds an annotated
 `pre` anywhere). A panel or task item that opens with a token block writes the
 token on its own line after the panel label or task marker, so it stays
@@ -1695,18 +1694,23 @@ dispatched or stored.
 
 **Suggestions across the release.** A suggestion is Markdown the model
 returned, and nothing in it is evidence of which converter produced it
-(coordinator decisions D26, D27). The Improve generator records its protocol
+(coordinator decisions D26, D27, D28). The Improve generator records its protocol
 on the row it stores (`llm_improvements.improve_protocol`, migration 161;
-`1` = CODE-META lines and `CQ_CODE_PLACEHOLDER_<N>` tokens). The Apply
+`1` = CODE-META lines and nonce-bound placeholders) and its code nonce
+(`improve_code_nonce`). The Apply
 request names the improvement the user selected (`improvementId`); the
 route binds provenance and the `applied` status to that row only, once it
 is the caller's, for this page and `completed`. The text is never matched
 against stored rows. The Accept is classified once, from that row:
 
-- **#1958 path:** a row with protocol `1`, or no bound row (no id, as from a
-  manual Apply or an older client, or a row that fails the checks; no row then
-  changes status). Everything above applies; only CODE-META lines by the
-  exact grammar, standing alone directly above a fence, bind metadata.
+- **#1958 path:** a row with protocol `1`, whose nonce places the protected
+  blocks; or no bound row (no id, as from a manual Apply or an older client,
+  or a row that fails the checks; no row then changes status) on a page
+  without protected code. Everything above applies; only CODE-META lines by
+  the exact grammar, standing alone directly above a fence, bind metadata.
+- **Refused (422,** "not an AI Improve suggestion stored for this page"): no
+  bound #1958 row with a nonce on a page with protected code (frozen blocks
+  or a code-carrying macro): nothing in the text can be told for them.
 - **Refused (422,** "made before an update … run AI Improve again"): a row
   without a protocol (generated before #1958) for a page that holds annotated
   code anywhere (`data-title`/`data-macro-params`, frozen blocks included).
@@ -1722,24 +1726,28 @@ against stored rows. The Accept is classified once, from that row:
   macro markup is refused (**422** `unapproved-code-macro`), the storage rules
   and R7/R8 apply.
 
-Byte parity with the previous release is promised only on the base path. On
-the #1958 path a page whose own text spells the placeholder of one of its
-frozen blocks cannot take a suggestion (the placement is authored, so it never
-places the block): change that text, or edit the page directly. After a
-rollback to a release before #1958, a suggestion generated by #1958 shows its
-`[[[CODE-META …]]]` and `CQ_CODE_PLACEHOLDER_<N>` lines as text and loses
-frozen blocks on Accept: regenerate suggestions after a rollback.
+Byte parity with the previous release is promised only on the base path. A
+placeholder the page writes itself (`CQ_CODE_PLACEHOLDER_0`, split by markup
+or not) is plain text on every path. After a rollback to a release before
+#1958, a suggestion generated by #1958 shows its `[[[CODE-META …]]]` and
+placeholder lines as text and loses frozen blocks on Accept: regenerate
+suggestions after a rollback.
 
-The generator never caches an output its Accept would refuse:
+**Improve cache.** The generator caches only an output its Accept would take:
 `canAcceptImproveOutput` runs `convertImproveOutput` (the conversion half the
 Apply route runs: protectMedia, layout skeleton, `beginCodeMetaAccept`,
 `markdownToHtml`, `replayProtectedMedia`, `finalizeCodeMetadata`) on the
-generator's input page as a #1958 suggestion, then both exits' storage judges
-without a stored storage. Any refusal (a missing, repeated, bold or
-code-enclosed frozen placeholder, a dropped code-carrying macro, a lost
-layout) leaves the output uncached, so "run AI Improve again" reaches the
-provider. Not foreseen: what the page's body or stored storage at Apply time
-adds (the page changed, #1955 link origins, R3).
+generator's input page as that generation's #1958 suggestion, then both
+exits' storage judges without a stored storage. The key also names the
+source HTML's SHA-256 and `IMPROVE_CONVERTER_VERSION`, so an entry another
+source with the same prompt, or another release's converter, wrote is never
+found; a hit is re-checked with `canAcceptImproveOutput` against the
+requesting page after its policy readmission and regenerated when the Accept
+would refuse it (a policy refusal stays a refusal). A page with protected
+code has a fresh nonce in every prompt, so its outputs are never cached.
+Not foreseen: what the page's state at Apply time adds (a changed body, its
+stored storage, #1955 link origins, R3), and nothing promises the provider
+returns a usable output.
 
 **#1953-2 interface.** The remote Apply's authorization point (above) precedes
 every evidence read; #1953-2 reads recovery evidence only after it.
@@ -1766,8 +1774,9 @@ outside the writer's shape cannot Accept. R4: on the #1958 path a frozen or
 code-carrying original without exactly one viable placement refuses the
 Accept (422), never appended or copied; a pre-#1958 suggestion for a page
 with annotated code refuses (see "Suggestions across the release").
-R5: a placeholder in `pre`/`code` is never replaced, and one the page itself
-spells is never placed (a medium is appended, a code block refuses). R6: an original that does
+R5: a placeholder in `pre`/`code` is never replaced; a protected block is placed only at its generation's nonce
+token; an ordinary medium's token the page itself spells is replaced like any other, as before #1958 (D28 removed
+the authored-literal rules). R6: an original that does
 not verify refuses. R7 (Q8): a standalone Accept is refused when either
 projection is unreadable, with or without code: such a page cannot Accept an
 Improve result until it is edited. R8: on the remote exit a result whose
