@@ -407,8 +407,10 @@ tables, aligned or not; no table becomes a media token), pinned byte for byte, M
 and applied HTML, against the slice base for aligned and unaligned inputs
 (`__fixtures__/table-align-improve-base.json`); a suggestion generated before the change
 applies exactly as before. **Known limits:** through AI Improve, alignment survives as far
-as the stock GFM table rule expresses it, i.e. per column from the header row; a body cell
-aligned differently from its column header takes the header's alignment on Accept;
+as the stock GFM table rule expresses it, i.e. per column from the header row; when the
+stock rule emits a GFM table, a body cell aligned differently from its column header takes
+the header's alignment on Accept (when it keeps the table as raw HTML, e.g. an editor table
+with a `colgroup`, the cell keeps its own alignment on an unchanged echo);
 whatever the stock rule mangled before this change (a pipe inside a cell, a table inside a
 panel) it still mangles. Every other `htmlToMarkdown` caller (embedding text, tagging,
 chat context, sub-page context) is byte-identical to before; they keep stock turndown's

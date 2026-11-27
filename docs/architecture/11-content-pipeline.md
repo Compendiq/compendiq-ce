@@ -734,9 +734,11 @@ than a lower-case `!important`, a bracket, brace or unbalanced parenthesis, over
 characters) means no alignment and is never rewritten. #1956 makes no change to the AI
 Improve chain (decision D15; pinned against the slice base for aligned and unaligned
 tables). Through AI Improve, alignment survives as far as the stock GFM table rule
-expresses it, i.e. per column from the header row; a body cell aligned differently from
-its column header takes the header's alignment on Accept; whatever the stock rule mangled
-before this change (a pipe inside a cell, a table inside a panel) it still mangles.
+expresses it, i.e. per column from the header row; when the stock rule emits a GFM table, a
+body cell aligned differently from its column header takes the header's alignment on Accept
+(when it keeps the table as raw HTML, the cell keeps its own alignment on an unchanged
+echo); whatever the stock rule mangled before this change (a pipe inside a cell, a table
+inside a panel) it still mangles.
 Markdown → HTML → Markdown keeps the column alignment.
 
 **Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
