@@ -11,7 +11,7 @@ import {
   restoreDerivationStackAvailable,
   describeRestoreDerivationFeature,
   useRestoreDerivationHarness,
-} from './test-restore-derivation-contract.js';
+} from './__fixtures__/test-restore-derivation-contract.js';
 
 // #1956: feature `cell-align`. A version restore derives the storage it sends from a historical body_html and
 // derives it again when it publishes, so an intent reserved before the feature (a raw `align` on a historical
