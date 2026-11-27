@@ -550,9 +550,9 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       expect(oracleReads(storage)).toBe(true);
       const projected = yDocToHtml(htmlToYDoc(confluenceToHtml(storage)));
       expect(projected).toBe(yDocToHtml(htmlToYDoc(confluenceToHtml(`<p>]]&gt;</p>${inPanel('info')}`))));
-      for (const _save of [1, 2]) {
-        expect(refusal(() => htmlToConfluence(projected, { previousStorage: storage }))).toBe('changed-link-target');
-      }
+      // Nothing changed, so the next Save meets the same stored page and is refused alike.
+      expect(refusal(() => htmlToConfluence(projected, { previousStorage: storage }))).toBe('changed-link-target');
+      expect(refusal(() => htmlToConfluence(projected, { previousStorage: storage }))).toBe('changed-link-target');
     });
 
     it('takes the reader\'s length limit on the stored string, not on its CDATA turned into text (R28)', () => {
