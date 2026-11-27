@@ -8,7 +8,7 @@
  * independent XML reading of it (`__fixtures__/storage-oracle.ts`).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
+import { _setForwardDerivationStepForTest, confluenceToHtml, htmlToConfluence } from './content-converter.js';
 import { JSDOM } from 'jsdom';
 import { confluenceLinkAnchor, confluenceLinkCarrier, encodeConfluenceLinkValue } from './confluence-link.js';
 import { ConfluenceStorageRefusedError, STORAGE_READER_LIMITS } from './confluence-storage-reader.js';
@@ -808,8 +808,16 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       const depth = 400;
       const nested = `${'<ac:link><ri:url ri:value="/r"></ri:url><ac:link-body>'.repeat(depth)}${'x'.repeat(25_000)}${'</ac:link-body></ac:link>'.repeat(depth)}`;
       expect(refusal(`<p>${nested}</p>`)).toBe('too-many-nodes');
-      // The stored storage is evidence or the write is refused: it is never silently no evidence.
-      expect(refusal(`<p>${carrier()}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('too-many-nodes');
+      // The stored storage is evidence or the write is refused: it is never silently no evidence. The refusal is
+      // decided before any forward pass over that storage (W5: a refusal for work is cheap): no pass runs at all.
+      let passes = 0;
+      _setForwardDerivationStepForTest(() => { passes += 1; });
+      try {
+        expect(refusal(`<p>${carrier()}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('too-many-nodes');
+      } finally {
+        _setForwardDerivationStepForTest(undefined);
+      }
+      expect(passes).toBe(0);
       expect(refusal(`<p>${raw('https://example.com/')}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('written');
     });
   });
