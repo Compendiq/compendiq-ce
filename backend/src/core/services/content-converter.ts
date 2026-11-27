@@ -16,6 +16,7 @@ import {
   confluenceLinkElement,
   enforceConfluenceUrlLinkOrigin,
   escapeConfluenceLinkAttributes,
+  keepXhtmlLinkReferences,
   materializeConfluenceUrlLinks,
 } from './confluence-link.js';
 import {
@@ -631,7 +632,11 @@ function confluenceToHtmlPass(
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
 ): ConfluenceConversionPass {
-  const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
+  // #1955 (review r2 R12): with `link-kinds`, a link of a #1955 kind keeps the target XML reads from it.
+  const cdataAsText = stripCdata(storageXhtml);
+  const preprocessed = expandSelfClosingXhtmlTags(
+    derivationHas(features, 'link-kinds') ? keepXhtmlLinkReferences(cdataAsText) : cdataAsText,
+  );
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   forwardDerivationStepForTest?.(doc, features);

@@ -357,6 +357,81 @@ export function isConfluenceLinkTargetWithoutFile(el: Element): boolean {
   return [...parent.children].find((child) => child.tagName.toLowerCase().startsWith('ri:')) === el;
 }
 
+/** The two entity names whose XHTML 1.0 value (Confluence storage) is not their HTML5 value, as XHTML references. */
+const XHTML_REFERENCE: Readonly<Record<string, string>> = { '&lang;': '&#9001;', '&rang;': '&#9002;' };
+const DISPUTED_REFERENCE = /&(?:lang|rang);/g;
+
+/** A comment, or a tag as storage writes it: `[whole, '/' of an end tag, name, attributes, '/' of an empty tag]`. */
+const STORAGE_MARKUP = /<!--[\s\S]*?(?:-->|$)|<(\/?)([A-Za-z][^\s/>]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?)*)\s*(\/?)>/g;
+
+/** Elements whose text the HTML parser reads raw: a link spelled inside one is text to the forward pass. */
+const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
+  'script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext',
+]);
+/** HTML void elements: a start tag of one encloses nothing. */
+const VOID_ELEMENTS: ReadonlySet<string> = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
+]);
+
+/**
+ * `storage` (CDATA already turned into text) with `&lang;` and `&rang;`
+ * spelled as the references of their XHTML 1.0 characters (U+2329, U+232A)
+ * in the start tags of every link to a blog post, a space, a shortcut, a
+ * content entity or a URL: the `ac:link` and its resource (#1955, review r2
+ * R12). An HTML parser reads the names as U+27E8 and U+27E9, so the forward
+ * pass would otherwise carry, and write back, a different target. XML reads
+ * the two spellings alike, so the storage means what it meant. Nothing else
+ * is touched: text, a body, comments, raw text, other elements, and the three
+ * #1748 kinds, which the base commit already read with the HTML values. One
+ * pass; a string without either name is returned as it came.
+ */
+export function keepXhtmlLinkReferences(storage: string): string {
+  if (!/&(?:lang|rang);/.test(storage)) return storage;
+  const tags: Array<readonly [number, number]> = [];
+  const markup = new RegExp(STORAGE_MARKUP);
+  // The open link whose resource is not found yet, and how deep the scan is below it.
+  let link: readonly [number, number] | null = null;
+  let depth = 0;
+  for (let match = markup.exec(storage); match; match = markup.exec(storage)) {
+    const [whole, close, written, , empty] = match;
+    if (written === undefined) continue;
+    const name = written.toLowerCase();
+    const range = [match.index, match.index + whole.length] as const;
+    if (!close && RAW_TEXT_ELEMENTS.has(name)) {
+      const end = new RegExp(`</${name}`, 'gi');
+      end.lastIndex = range[1];
+      markup.lastIndex = end.exec(storage)?.index ?? storage.length;
+      link = null;
+      continue;
+    }
+    if (!close && name === 'ac:link') {
+      link = empty ? null : range;
+      depth = 0;
+      continue;
+    }
+    if (!link) continue;
+    if (close) {
+      if (depth === 0) link = null;
+      else depth -= 1;
+      continue;
+    }
+    // The link's resource is its first `ri:*` child, as {@link confluenceLinkAnchor} reads it.
+    if (depth === 0 && name.startsWith('ri:')) {
+      if (NON_FILE_RESOURCES.has(name)) tags.push(link, range);
+      link = null;
+      continue;
+    }
+    if (!empty && !VOID_ELEMENTS.has(name)) depth += 1;
+  }
+  let out = '';
+  let at = 0;
+  for (const [start, end] of tags) {
+    out += storage.slice(at, start) + storage.slice(start, end).replace(DISPUTED_REFERENCE, (reference) => XHTML_REFERENCE[reference]!);
+    at = end;
+  }
+  return out + storage.slice(at);
+}
+
 /** The string every `ri:url` carrier starts with. */
 const URL_CARRIER_PREFIX = '#confluence-url:';
 

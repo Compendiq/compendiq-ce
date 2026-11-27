@@ -319,6 +319,68 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
     });
   });
 
+  // Review r2, R11: a link of another kind shows text in body_html too, and competes with what it shows.
+  describe('a link of another kind showing the same text (R11)', () => {
+    const URL_LINK = '<ac:link><ri:url ri:value="/docs"></ri:url></ac:link>';
+    const PAGE_LINK = '<ac:link><ri:page ri:content-title="/docs"></ri:page></ac:link>';
+
+    it.each([
+      ['the URL link first', `<p>${URL_LINK}</p><p>${PAGE_LINK}</p>`],
+      ['the page link first', `<p>${PAGE_LINK}</p><p>${URL_LINK}</p>`],
+    ])('writes the one paragraph left, pointing at the URL, as text, %s, on both Saves', (_order, storage) => {
+      const html = confluenceToHtml(storage);
+      // The forward pass shows the same text for both links.
+      expect(html.match(/>\/docs<\/a>/g)).toHaveLength(2);
+      expect(htmlToConfluence(html, { previousStorage: storage })).toBe(storage);
+      // One paragraph deleted, the other pointed at the URL: which one is left cannot be told.
+      const left = '<p><a href="#confluence-url:%2Fdocs">/docs</a></p>';
+      const first = htmlToConfluence(left, { previousStorage: storage });
+      expect(first).toBe('<p>/docs</p>');
+      expect(htmlToConfluence(left, { linkOrigin: first })).toBe(first);
+    });
+  });
+
+  // Review r2, R12: the HTML parser reads `&lang;` and `&rang;` as U+27E8/U+27E9, XML as U+2329/U+232A. A link
+  // of a #1955 kind is written back with the value XML reads from the stored storage, however it is spelled.
+  describe('a stored target keeps the value XML reads from it (R12)', () => {
+    const SPELLINGS = [
+      ['the entity names', '&lang;', '&rang;'],
+      ['decimal references', '&#9001;', '&#9002;'],
+      ['the XHTML characters', '\u2329', '\u232A'],
+      ['the HTML5 characters', '\u27E8', '\u27E9'],
+    ] as const;
+    const TARGETS: ReadonlyArray<readonly [string, (l: string, r: string) => string]> = [
+      ['a space key', (l, r) => `<ac:link><ri:space ri:space-key="K${l}1${r}" /></ac:link>`],
+      ['a navigable URL', (l, r) => `<ac:link><ri:url ri:value="https://example.com/a${l}b${r}" /></ac:link>`],
+      ['a relative URL', (l, r) => `<ac:link><ri:url ri:value="/a${l}b${r}" /><ac:plain-text-link-body><![CDATA[docs]]></ac:plain-text-link-body></ac:link>`],
+      ['a blog post and its anchor', (l, r) => `<ac:link ac:anchor="s${r}"><ri:blog-post ri:content-title="Q${l}3" ri:space-key="ENG" /></ac:link>`],
+    ];
+    /** Every link and resource element with its attributes as XML reads them, in document order. */
+    const values = (storage: string): string[] => [...oracleElements(storage, 'ac', 'link'), ...oracleElements(storage, 'ri', '*')]
+      .map((element) => `${element.tagName} ${[...element.attributes].map((attribute) => `${attribute.name}=${attribute.value}`).join(' ')}`);
+
+    const cases = TARGETS.flatMap(([target, build]) => SPELLINGS.map(([spelling, l, r]) => [target, spelling, build(l, r)] as const));
+    it.each(cases)('writes %s spelled with %s back with its value, on both Saves', (_target, _spelling, link) => {
+      const storage = `<p>see ${link} now</p>`;
+      const first = htmlToConfluence(confluenceToHtml(storage), { previousStorage: storage });
+      expect(values(first)).toEqual(values(storage));
+      expect(htmlToConfluence(confluenceToHtml(first), { previousStorage: first })).toBe(first);
+    });
+
+    it('reads the references in the link\'s tags only: a plain body keeps its text as written', () => {
+      const storage = '<p><ac:link><ri:space ri:space-key="K&lang;" /><ac:plain-text-link-body><![CDATA[a &lang; b]]></ac:plain-text-link-body></ac:link></p>';
+      const first = htmlToConfluence(confluenceToHtml(storage), { previousStorage: storage });
+      expect(first).toContain('<![CDATA[a &lang; b]]>');
+      expect(values(first)).toEqual(values(storage));
+    });
+
+    it('leaves the #1748 kinds and text as the base commit reads them (pre-existing, not rebuilt here)', () => {
+      const storage = '<p>t&lang;x <ac:link><ri:page ri:content-title="A&lang;B" /></ac:link></p>';
+      // The base commit bff6d4ec writes U+27E8 here too: the HTML parser's value, for a link #1955 does not rebuild.
+      expect(confluenceToHtml(storage)).toBe('<p>t\u27E8x <a href="#confluence-page:A%E2%9F%A8B" data-confluence-link="page">A\u27E8B</a></p>');
+    });
+  });
+
   describe('what a link held when it is taken away (R3)', () => {
     it('keeps the text of a plain body as the text an XML reader reads from it', () => {
       const html = '<p>a <ac:link><ri:url ri:value="/r"></ri:url><ac:plain-text-link-body>use <b>bold</b> &amp; more</ac:plain-text-link-body></ac:link> z</p>';
