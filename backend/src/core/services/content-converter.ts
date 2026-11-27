@@ -2826,16 +2826,11 @@ export interface HtmlToMarkdownOptions {
  * Turndown puts the node's flanking white space around the replacement, so the
  * text is trimmed here and each boundary is written once.
  *
- * On the Improve chain (`references`) a punctuation character is a decimal
- * character reference instead of a backslash escape: marked passes a
- * reference through, so the HTML text never spells a media placeholder
- * (`CQ_MEDIA_PLACEHOLDER_0` arrives as `CQ&#95;MEDIA…`) or a layout token,
- * and `restoreMedia` leaves the label alone; the parser reads the characters
- * back at Accept. Elsewhere the backslash form keeps the Markdown readable.
+ * Plain Markdown only (D24): the AI Improve chain (`layoutTokens`) writes such
+ * code exactly as before #1954, so an Accept behaves as it did.
  */
-function escapeLinkedCodeText(text: string, references: boolean): string {
-  return text.trim().replace(/\r\n|\r|\n/g, ' ')
-    .replace(/[!-/:-@[-`{-~]/g, (character) => (references ? `&#${character.charCodeAt(0)};` : `\\${character}`));
+function escapeLinkedCodeText(text: string): string {
+  return text.trim().replace(/\r\n|\r|\n/g, ' ').replace(/[!-/:-@[-`{-~]/g, '\\$&');
 }
 
 /** #1954: inline code that a link holds and that itself holds a backtick (escapeLinkedCodeText). */
@@ -2875,11 +2870,13 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     },
   });
 
-  // #1954: inline code inside a link that holds a backtick (escapeLinkedCodeText).
-  turndownService.addRule('linkedCodeWithBacktick', {
-    filter: (node) => isLinkedBacktickCode(node),
-    replacement: (_content, node) => escapeLinkedCodeText((node as HTMLElement).textContent ?? '', layoutTokens),
-  });
+  // #1954: inline code inside a link that holds a backtick (escapeLinkedCodeText); not on the Improve chain (D24).
+  if (!layoutTokens) {
+    turndownService.addRule('linkedCodeWithBacktick', {
+      filter: (node) => isLinkedBacktickCode(node),
+      replacement: (_content, node) => escapeLinkedCodeText((node as HTMLElement).textContent ?? ''),
+    });
+  }
 
   if (layoutTokens) {
     // #1955: Markdown keeps only a link's destination, so a navigable ri:url

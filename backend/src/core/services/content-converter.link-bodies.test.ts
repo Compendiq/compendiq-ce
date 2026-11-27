@@ -20,7 +20,7 @@ import {
   protectMedia,
   restoreMedia,
 } from './content-converter.js';
-import { materializeConfluenceUrlLinks } from './confluence-link.js';
+import { IMPROVE_PARITY_AT_A, IMPROVE_PARITY_STORAGE } from './__fixtures__/improve-parity-1954-a.js';
 
 /** What a collaborative Save writes: the room's HTML, written back with the stored storage as origin. */
 function save(storage: string): string {
@@ -273,7 +273,7 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
     });
 
     // Review B2: literal code characters stay data. marked 15 cannot read a code span holding a backtick inside a
-    // link label, so such code is written as escaped link text.
+    // link label, so plain Markdown (not the Improve chain, D24) writes such code as escaped link text.
     const HOSTILE = [
       'a`b <em>literal</em>',
       'x` &amp; &#60;tag&#62; &lt;b&gt;',
@@ -287,19 +287,17 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
     const escapeHtml = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
     it.each([
-      ['a page link', '#confluence-page:Runbook', '#confluence-page:Runbook', null],
-      ['a web ri:url link', 'https://example.com/z', 'https://example.com/z', '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich'],
-    ])('writes linked code holding a backtick as escaped link text in %s: the text, the destination and nothing else', async (_case, href, outHref, className) => {
+      ['a page link', '#confluence-page:Runbook'],
+      ['a web link', 'https://example.com/z'],
+    ])('writes linked code holding a backtick as escaped link text in plain Markdown, in %s: the text, the destination and nothing else', async (_case, href) => {
       for (const text of HOSTILE) {
-        const attrs = `href="${href}"${className ? ` class="${className}"` : ''}`;
-        const markdown = htmlToMarkdown(`<p>See <a ${attrs}><code>${escapeHtml(text)}</code></a> here.</p>`, { layoutTokens: true });
+        const markdown = htmlToMarkdown(`<p>See <a href="${href}"><code>${escapeHtml(text)}</code></a> here.</p>`);
         const doc = new JSDOM(await markdownToHtml(markdown)).window.document;
         expect([...doc.body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase())).toEqual(['p', 'a']);
         const anchor = doc.querySelector('a')!;
         expect(anchor.textContent).toBe(text);
-        expect(anchor.getAttribute('href')).toBe(outHref);
-        expect(anchor.getAttributeNames().sort()).toEqual(className ? ['class', 'href'] : ['href']);
-        if (className) expect(anchor.getAttribute('class')).toBe(className);
+        expect(anchor.getAttribute('href')).toBe(href);
+        expect(anchor.getAttributeNames()).toEqual(['href']);
         expect(doc.body.textContent!.trim()).toBe(`See ${text} here.`);
       }
     });
@@ -313,89 +311,31 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
       }
     });
 
-    // Review C4 under coordinator decision D22 (reviews B-R2-B1, B-R2-M1): on Improve, linked code holding a
-    // backtick travels as link text whose punctuation is written as character references, so its HTML never spells
-    // a media placeholder. An unchanged Accept brings back its characters (not its code mark) and the link's
-    // destination, with the exact text around it, even when the label spells the page's real media ordinal;
-    // media ordinals are those of images only.
-    const LABEL_CODE = '<code>a`b CQ_MEDIA_PLACEHOLDER_0 &lt;em&gt;x&lt;/em&gt; [y](z)</code>';
-    const LABEL_TEXT = 'pkg.a`b CQ_MEDIA_PLACEHOLDER_0 <em>x</em> [y](z)()';
-    const IMAGE_PARAGRAPH = '<p>Diagram: <ac:image><ri:attachment ri:filename="z.png" /></ac:image></p>';
-    const PROSE = '<p>Type CQ_MEDIA_PLACEHOLDER_7 here.</p>';
-    const PAGE_HREF = '#confluence-page:Runbook?ri:space-key=OPS';
-    const WEB_CLASS = '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich';
-    it.each([
-      ['a page link', PAGE, false, PAGE_HREF, null,
-        `<ac:link>${PAGE_OUT}<ac:plain-text-link-body><![CDATA[${LABEL_TEXT}]]></ac:plain-text-link-body></ac:link>`],
-      ['a page link beside a genuine image', PAGE, true, PAGE_HREF, null,
-        `<ac:link>${PAGE_OUT}<ac:plain-text-link-body><![CDATA[${LABEL_TEXT}]]></ac:plain-text-link-body></ac:link>`],
-      ['a web ri:url link (class carrier)', WEB, false, 'https://example.com/z', WEB_CLASS,
-        `<ac:link>${WEB_OUT}<ac:link-body>pkg.a\`b CQ_MEDIA_PLACEHOLDER_0 &lt;em&gt;x&lt;/em&gt; [y](z)()</ac:link-body></ac:link>`],
-      ['a web ri:url link beside a genuine image', WEB, true, 'https://example.com/z', WEB_CLASS,
-        `<ac:link>${WEB_OUT}<ac:link-body>pkg.a\`b CQ_MEDIA_PLACEHOLDER_0 &lt;em&gt;x&lt;/em&gt; [y](z)()</ac:link-body></ac:link>`],
-    ])('keeps the literal label and the destination of linked code holding a backtick through an unchanged Accept: %s',
-      async (_case, resource, withImage, href, className, linkOut) => {
-        const storage = `${withImage ? IMAGE_PARAGRAPH : ''}<p>Use <ac:link>${resource}<ac:link-body>pkg.${LABEL_CODE}()</ac:link-body></ac:link> now.</p>${PROSE}`;
-        const room = yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55')));
-        // Only images are media: the ordinals of Markdown issued before #1954 keep their meaning.
-        expect(protectMedia(room).media.map((entry) => entry.html.slice(0, 4))).toEqual(withImage ? ['<img'] : []);
-        const result = await improveAccept(room, storage);
-
-        const doc = new JSDOM(result.html).window.document;
-        const anchor = doc.querySelector('a')!;
-        expect(anchor.getAttribute('href')).toBe(href);
-        expect(anchor.getAttribute('class')).toBe(className);
-        expect(anchor.textContent).toBe(LABEL_TEXT);
-        expect(anchor.children).toHaveLength(0);
-        expect(anchor.parentElement!.textContent).toBe(`Use ${LABEL_TEXT} now.`);
-        // The genuine image once, in its own place, never in the link.
-        expect([...doc.querySelectorAll('img')].map((img) => [img.getAttribute('src'), img.previousElementSibling?.textContent]))
-          .toEqual(withImage ? [['/api/attachments/55/z.png', 'Diagram:']] : []);
-        expect(doc.body.textContent).toContain('Type CQ_MEDIA_PLACEHOLDER_7 here.');
-        expect(result.storage).toBe(
-          (withImage ? '<p>Diagram:</p>\n<ac:image><ri:attachment ri:filename="z.png"></ri:attachment></ac:image>\n' : '')
-          + `<p>Use ${linkOut} now.</p>\n<p>Type CQ_MEDIA_PLACEHOLDER_7 here.</p>\n`,
-        );
-      });
-
-    // Review B-R2-M1: turndown puts the code's flanking white space around the replacement; it is written once.
-    it.each([
-      ['a page link', PAGE, PAGE_HREF, null],
-      ['a web ri:url link (class carrier)', WEB, 'https://example.com/z', WEB_CLASS],
-    ])('keeps each white-space boundary of linked code holding a backtick once through an unchanged Accept: %s',
-      async (_case, resource, href, className) => {
-        for (const code of [' a`b ', '\u00a0a`b\u00a0', 'a`b\u00a0', ' a`b\u00a0']) {
-          const storage = `${IMAGE_PARAGRAPH}<p>Use <ac:link>${resource}<ac:link-body>pkg.<code>${code}</code>()</ac:link-body></ac:link> now.</p>`;
-          const result = await improveAccept(yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55'))), storage);
-          const anchor = new JSDOM(result.html).window.document.querySelector('a')!;
-          expect([anchor.getAttribute('href'), anchor.getAttribute('class'), anchor.textContent], JSON.stringify(code))
-            .toEqual([href, className, `pkg.${code}()`]);
-          const written = resource === PAGE
-            ? `<ac:plain-text-link-body><![CDATA[pkg.${code}()]]></ac:plain-text-link-body>`
-            : `<ac:link-body>pkg.${code.replace(/\u00a0/g, '&nbsp;')}()</ac:link-body>`;
-          expect(result.storage, JSON.stringify(code)).toContain(written);
-        }
-      });
-
     it('writes each white-space boundary of linked code holding a backtick once in plain Markdown', () => {
       expect(htmlToMarkdown('<p><a href="#confluence-page:R">pkg.<code> a`b </code>()</a></p>')).toBe('[pkg. a\\`b ()](#confluence-page:R)');
       expect(htmlToMarkdown('<p><a href="#confluence-page:R">pkg.<code>a`b\u00a0</code>()</a></p>')).toBe('[pkg.a\\`b\u00a0()](#confluence-page:R)');
     });
 
-    it('replaces only the start tags of materialised ri:url anchors, so character references elsewhere stay as written', () => {
-      const carrier = '#confluence-url:https%3A%2F%2Fexample.com%2Fz';
-      const real = `<a href="https://example.com/z" class="${carrier}">`;
-      expect(materializeConfluenceUrlLinks(`<p>CQ&#95;MEDIA <a href="${carrier}">x</a> &amp;<br/></p>`))
-        .toBe(`<p>CQ&#95;MEDIA ${real}x</a> &amp;<br/></p>`);
-      // A formatting element the tree builder reconstructed has no tag of its own: the whole string is serialised.
-      expect(materializeConfluenceUrlLinks(`<p><b><a href="${carrier}">x</b>y</a></p>`))
-        .toBe(`<p><b>${real}x</a></b>${real}y</a></p>`);
+    it('takes only the characters of linked code holding a backtick in plain Markdown, never its attributes or inner markup', async () => {
+      const html = '<p><a href="#confluence-page:Runbook"><code data-note="from-storage">a`<u>b</u></code></a></p>';
+      const back = new JSDOM(await markdownToHtml(htmlToMarkdown(html))).window.document;
+      expect(back.querySelector('a')!.outerHTML).toBe('<a href="#confluence-page:Runbook">a`b</a>');
     });
 
-    it('takes only the characters of linked code holding a backtick, never its attributes or inner markup', async () => {
-      const html = '<p><a href="#confluence-page:Runbook"><code data-note="from-storage">a`<u>b</u></code></a></p>';
-      const back = new JSDOM(await markdownToHtml(htmlToMarkdown(html, { layoutTokens: true }))).window.document;
-      expect(back.querySelector('a')!.outerHTML).toBe('<a href="#confluence-page:Runbook">a`b</a>');
+    // Coordinator decision D24 (C4 by parity): slice B changes nothing on the AI Improve chain. For linked code with
+    // and without a backtick, with a media-placeholder spelling, in a table, with NBSP at its edges, in a page link
+    // and a class-carried web link, with and without a real image, the Markdown and the applied HTML are exactly
+    // slice A's (captured at 42e07553 by backend/scripts/capture-improve-parity-1954.ts). A placeholder spelling
+    // there is the pre-existing restoreMedia collision (#723), as for any text on the page: a recorded limit.
+    it.each(Object.keys(IMPROVE_PARITY_AT_A))('runs the Improve chain exactly as slice A for %s', async (name) => {
+      const expected = IMPROVE_PARITY_AT_A[name]!;
+      const html = confluenceToHtml(IMPROVE_PARITY_STORAGE[name]!, '55');
+      expect(html).toBe(expected.html);
+      const { html: protectedHtml, media } = protectMedia(html);
+      const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      expect(markdown).toBe(expected.markdown);
+      const back = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media });
+      expect(restoreMedia(back, media)).toBe(expected.applied);
     });
   });
 });
