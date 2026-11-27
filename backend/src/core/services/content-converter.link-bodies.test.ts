@@ -312,29 +312,49 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
       }
     });
 
-    // Review C4: on Improve the code holding a backtick is frozen whole, so a placeholder spelling inside it is never
-    // replayed, while the page's genuine frozen image is restored once.
+    // Review C4 under coordinator decision D22: on Improve, linked code holding a backtick travels as the same
+    // escaped link text as in plain Markdown. An unchanged Accept brings back its characters (not its code mark)
+    // and the link's destination, with the exact text around it; media ordinals are those of images only.
+    const LABEL_CODE = '<code>a`b &lt;em&gt;x&lt;/em&gt; [y](z)</code>';
+    const LABEL_TEXT = 'pkg.a`b <em>x</em> [y](z)()';
+    const IMAGE_PARAGRAPH = '<p>Diagram: <ac:image><ri:attachment ri:filename="z.png" /></ac:image></p>';
+    const PROSE = '<p>Type CQ_MEDIA_PLACEHOLDER_7 here.</p>';
     it.each([
-      ['a page link', PAGE, PAGE_OUT, '#confluence-page:Runbook?ri:space-key=OPS', null],
-      ['a web ri:url link (class carrier)', WEB, WEB_OUT, 'https://example.com/z', '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich'],
-    ])('keeps a literal media placeholder inside linked code holding a backtick through an unchanged Accept, in %s', async (_case, resource, resourceOut, href, className) => {
-      const code = '<code>CQ_MEDIA_PLACEHOLDER_0 a`b &lt;em&gt;x&lt;/em&gt;</code>';
-      const storage = `<p><ac:image><ri:attachment ri:filename="z.png" /></ac:image></p>${storageOf(resource, `run ${code} now`)}`;
-      const result = await improveAccept(yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55'))), storage);
+      ['a page link', PAGE, false, '#confluence-page:Runbook?ri:space-key=OPS', null,
+        `<ac:link>${PAGE_OUT}<ac:plain-text-link-body><![CDATA[${LABEL_TEXT}]]></ac:plain-text-link-body></ac:link>`],
+      ['a page link beside a genuine image', PAGE, true, '#confluence-page:Runbook?ri:space-key=OPS', null,
+        `<ac:link>${PAGE_OUT}<ac:plain-text-link-body><![CDATA[${LABEL_TEXT}]]></ac:plain-text-link-body></ac:link>`],
+      ['a web ri:url link (class carrier)', WEB, false, 'https://example.com/z', '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich',
+        `<ac:link>${WEB_OUT}<ac:link-body>pkg.a\`b &lt;em&gt;x&lt;/em&gt; [y](z)()</ac:link-body></ac:link>`],
+      ['a web ri:url link beside a genuine image', WEB, true, 'https://example.com/z', '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich',
+        `<ac:link>${WEB_OUT}<ac:link-body>pkg.a\`b &lt;em&gt;x&lt;/em&gt; [y](z)()</ac:link-body></ac:link>`],
+    ])('keeps the literal label and the destination of linked code holding a backtick through an unchanged Accept: %s',
+      async (_case, resource, withImage, href, className, linkOut) => {
+        const storage = `${withImage ? IMAGE_PARAGRAPH : ''}<p>Use <ac:link>${resource}<ac:link-body>pkg.${LABEL_CODE}()</ac:link-body></ac:link> now.</p>${PROSE}`;
+        const room = yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55')));
+        // Only images are media: the ordinals of Markdown issued before #1954 keep their meaning.
+        expect(protectMedia(room).media.map((entry) => entry.html.slice(0, 4))).toEqual(withImage ? ['<img'] : []);
+        const result = await improveAccept(room, storage);
 
-      expect(result.markdown).not.toContain('a`b');
-      const doc = new JSDOM(result.html).window.document;
-      // The genuine image, once, outside the link.
-      expect([...doc.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual(['/api/attachments/55/z.png']);
-      const anchor = doc.querySelector('a')!;
-      expect(anchor.getAttribute('href')).toBe(href);
-      expect(anchor.getAttribute('class')).toBe(className);
-      // The label: its text and its one original code element, nothing new inside.
-      expect(anchor.innerHTML).toBe(`run ${code} now`);
-      expect(result.storage).toBe(
-        '<ac:image><ri:attachment ri:filename="z.png"></ri:attachment></ac:image>\n'
-        + `<p>See <ac:link>${resourceOut}<ac:link-body>run ${code} now</ac:link-body></ac:link> here.</p>\n`,
-      );
+        const doc = new JSDOM(result.html).window.document;
+        const anchor = doc.querySelector('a')!;
+        expect(anchor.getAttribute('href')).toBe(href);
+        expect(anchor.getAttribute('class')).toBe(className);
+        expect(anchor.textContent).toBe(LABEL_TEXT);
+        expect(anchor.children).toHaveLength(0);
+        expect(anchor.parentElement!.textContent).toBe(`Use ${LABEL_TEXT} now.`);
+        expect([...doc.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual(withImage ? ['/api/attachments/55/z.png'] : []);
+        expect(doc.body.textContent).toContain('Type CQ_MEDIA_PLACEHOLDER_7 here.');
+        expect(result.storage).toBe(
+          (withImage ? '<p>Diagram:</p>\n<ac:image><ri:attachment ri:filename="z.png"></ri:attachment></ac:image>\n' : '')
+          + `<p>Use ${linkOut} now.</p>\n<p>Type CQ_MEDIA_PLACEHOLDER_7 here.</p>\n`,
+        );
+      });
+
+    it('takes only the characters of linked code holding a backtick, never its attributes or inner markup', async () => {
+      const html = '<p><a href="#confluence-page:Runbook"><code data-note="from-storage">a`<u>b</u></code></a></p>';
+      const back = new JSDOM(await markdownToHtml(htmlToMarkdown(html, { layoutTokens: true }))).window.document;
+      expect(back.querySelector('a')!.outerHTML).toBe('<a href="#confluence-page:Runbook">a`b</a>');
     });
   });
 });

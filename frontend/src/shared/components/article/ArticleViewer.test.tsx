@@ -1204,4 +1204,16 @@ describe('ArticleViewer: links around inline code (#1954)', () => {
       ['#confluence-page:Runbook', 'run deploy() now', 'deploy()'],
     ]);
   });
+
+  it('mounts inline code that excludes only itself, as the editor and the collab schema do', async () => {
+    const { container } = render(<ArticleViewer content="<p>x</p>" />);
+    await waitFor(() => {
+      expect(container.querySelector('.ProseMirror')).toBeTruthy();
+    });
+    const view = container.querySelector('.ProseMirror') as HTMLElement & { editor: TipTapEditor };
+    const { code, link } = view.editor.schema.marks;
+    expect(code!.spec.excludes).toBe('code');
+    expect(code!.excludes(code!)).toBe(true);
+    expect(code!.excludes(link!)).toBe(false);
+  });
 });

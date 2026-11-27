@@ -289,16 +289,13 @@ describe('collab schema parity (#1445)', () => {
     expect(viewer).not.toMatch(/\bImage\.configure\(/);
   });
 
-  it('gives inline code the same exclusion in the editor, read mode and the collab schema: only itself (#1954)', () => {
-    // A link sits on code text; a code mark that excluded nothing would be stored under a hashed Yjs key.
-    expect(getCollabSchema().marks.code!.spec.excludes).toBe('code');
-    const article = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');
-    expect(article).toMatch(/export const LinkableCode = Code\.extend\(\{ excludes: 'code' \}\);/);
-    for (const file of ['Editor.tsx', 'ArticleViewer.tsx']) {
-      const source = readFileSync(join(articleDir, file), 'utf8');
-      expect(source, file).toMatch(/StarterKit\.configure\(\{[^}]*\bcode: false,/);
-      expect(source, file).toMatch(/^\s+LinkableCode,$/m);
-    }
+  it('gives inline code an exclusion of only itself in the collab schema, so it keeps the Yjs key "code" (#1954)', () => {
+    // A link sits on code text; a code mark that excluded nothing would be stored under a hashed Yjs key. The
+    // editor's and read mode's mounted schemas are checked the same way in Editor.test.tsx / ArticleViewer.test.tsx.
+    const code = getCollabSchema().marks.code!;
+    expect(code.spec.excludes).toBe('code');
+    expect(code.excludes(code)).toBe(true);
+    expect(code.excludes(getCollabSchema().marks.link!)).toBe(false);
   });
 
   it('round-trips golden HTML including draw.io and comment (structure, not bytes)', () => {

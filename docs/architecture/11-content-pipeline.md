@@ -100,7 +100,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
-| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); `ri:user` is a mention; any other resource stays its text | `[text](href)` (the href is a valid link destination); an image body is `[![alt](src)](href)`, on Improve `[CQ_MEDIA_PLACEHOLDER_n](href)` with the image frozen (#1954); inline code is `` [`code`](href) ``, code holding a backtick escaped link text, on Improve frozen (#1954) |
+| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); `ri:user` is a mention; any other resource stays its text | `[text](href)` (the href is a valid link destination); an image body is `[![alt](src)](href)`, on Improve `[CQ_MEDIA_PLACEHOLDER_n](href)` with the image frozen (#1954); inline code is `` [`code`](href) ``, code holding a backtick escaped link text, also on Improve (its code mark is lost there) (#1954) |
 | `ac:link` (`ri:space` / `ri:blog-post` / `ri:shortcut` / `ri:content-entity` / `ri:url`) | `<a href="#confluence-space:<key>[?…]" data-confluence-link="space">` / `#confluence-blog-post:<title>[?…]` / `#confluence-shortcut:<key>[?…]` / `#confluence-content-entity:<id>[?…]` / `#confluence-url:<value>[?…]`; a `ri:url` whose value is a lowercase `http:`, `https:` or `mailto:` URL is `<a href="<value>" class="#confluence-url:<value>[?…]" data-confluence-link="url">` (#1955, below) | `[text](href)`; on Improve a `ri:url` link is `[text](#confluence-url:…)` |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
@@ -248,17 +248,18 @@ any change to the existing conflict policy.
   included. Inline code is `LinkableCode` in all three schemas (#1954): a Code
   mark that excludes only itself, so the Link mark stays on code text and a
   link whose text mixes code and prose is one link; its Yjs key stays `code`.
-  Code holding a backtick inside a link is escaped link text in Markdown and
-  frozen whole on AI Improve. A line break inside a link survives a
-  collaborative save: `yDocToHtml` gives a run of unmarked hard breaks between
-  two text nodes with equal Link marks (all attributes) that mark again, so the
-  HTML has one `<a>` and write-back one `ac:link`; a break at either end of a
-  link body stays outside it, and two separate same-target links around a
-  break become one after a collaborative session (documented limit). Deferred,
-  unchanged since before #1748 (the converters and Improve keep all of these
-  but the mention): on a collaborative save, a mention, status or emoticon
-  inside a link is left out of it, splitting the link around it (Yjs keeps
-  marks on text only). A mention
+  Code holding a backtick inside a link is escaped link text in Markdown, AI
+  Improve included (code mark lost for that span, D22). A line break inside a
+  link survives a collaborative save: `yDocToHtml` gives a run of unmarked hard
+  breaks between two text nodes with equal Link marks (all attributes) that
+  mark again, so the HTML has
+  one `<a>` and write-back one `ac:link`; a break at either end of a link body
+  stays outside it, and two separate same-target links around a break become
+  one after a collaborative session (documented limit). Deferred, unchanged
+  since before #1748 (the converters and Improve keep all of these but the
+  mention): on a collaborative save, a mention, status or emoticon inside a
+  link is left out of it, splitting the link around it (Yjs keeps marks on text
+  only). A mention
   inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
   replacing the whole outer link, text included, with the mention (#314);
   Confluence never writes that nesting.
