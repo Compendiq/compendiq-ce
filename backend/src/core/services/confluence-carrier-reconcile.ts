@@ -154,7 +154,10 @@ export interface CarrierRecord {
 /** One carrier kind of the registry (D8): a gate, a veto and the closed reading of a marked element. */
 export interface CarrierKind {
   readonly id: CarrierKindId;
-  /** Substring test, no parse: whether storage may hold a source of this kind. */
+  /**
+   * Substring test, no parse: whether storage may hold a source of this kind. A false answer must prove absence,
+   * so it tests an element name, which XML spells literally (no reference can stand in it), never a value.
+   */
   storageMayCarry(storage: string): boolean;
   /** Page-level gate: the stored body already holds a carrier of this kind, so the kind is not legacy here. */
   storedHoldsCarrier(stored: Document): boolean;
@@ -228,9 +231,17 @@ function macroParamsRecord(marked: Element, kind: CarrierKindId): CarrierRecord 
   return { kind, attributes: [['data-macro-params', params]], label: null };
 }
 
+/**
+ * A source is recognised only as `ac:structured-macro`, `ac:emoticon` or `ac:link` in Confluence's namespace with
+ * the conventional prefix (`isStorageName`): those characters appear literally in any storage holding one. A
+ * macro name is an attribute value and may be spelled with references (`statu&#115;`), so it is never the gate
+ * (review r1 CAR-5).
+ */
+const MACRO_ELEMENT = '<ac:structured-macro';
+
 const CODE_KIND: CarrierKind = {
   id: 'macro.code',
-  storageMayCarry: (storage) => storage.includes('structured-macro') && storage.includes('code'),
+  storageMayCarry: (storage) => storage.includes(MACRO_ELEMENT),
   storedHoldsCarrier: (stored) => stored.querySelector('pre[data-title], pre[data-macro-params]') !== null,
   targetHoldsCarrier: (el) => el.localName === 'pre' && (el.hasAttribute('data-title') || el.hasAttribute('data-macro-params')),
   record(marked, payload) {
@@ -254,7 +265,7 @@ const CODE_KIND: CarrierKind = {
 
 const STATUS_KIND: CarrierKind = {
   id: 'macro.status',
-  storageMayCarry: (storage) => storage.includes('structured-macro') && storage.includes('status'),
+  storageMayCarry: (storage) => storage.includes(MACRO_ELEMENT),
   storedHoldsCarrier: (stored) => stored.querySelector('span.confluence-status[data-macro-params]') !== null,
   targetHoldsCarrier: (el) => el.localName === 'span' && hasClass(el, 'confluence-status') && el.hasAttribute('data-macro-params'),
   record: (marked, payload) => (payload.k === 'macro.status' && marked.localName === 'span' && hasClass(marked, 'confluence-status')
@@ -264,7 +275,7 @@ const STATUS_KIND: CarrierKind = {
 
 const TOC_KIND: CarrierKind = {
   id: 'macro.toc',
-  storageMayCarry: (storage) => storage.includes('structured-macro') && storage.includes('toc'),
+  storageMayCarry: (storage) => storage.includes(MACRO_ELEMENT),
   storedHoldsCarrier: (stored) => stored.querySelector('div.confluence-toc[data-macro-params]') !== null,
   targetHoldsCarrier: (el) => el.localName === 'div' && hasClass(el, 'confluence-toc') && el.hasAttribute('data-macro-params'),
   record: (marked, payload) => (payload.k === 'macro.toc' && marked.localName === 'div' && hasClass(marked, 'confluence-toc')
@@ -274,7 +285,7 @@ const TOC_KIND: CarrierKind = {
 
 const LINK_KIND: CarrierKind = {
   id: 'link',
-  storageMayCarry: (storage) => storage.includes('link'),
+  storageMayCarry: (storage) => storage.includes('<ac:link'),
   storedHoldsCarrier: (stored) => {
     for (const a of stored.querySelectorAll('a')) {
       const carrier = confluenceLinkCarrierOf(a);
@@ -321,7 +332,7 @@ function isEmoticonCarrier(raw: string | null): boolean {
 
 const EMOTICON_KIND: CarrierKind = {
   id: 'emoticon',
-  storageMayCarry: (storage) => storage.includes('emoticon'),
+  storageMayCarry: (storage) => storage.includes('<ac:emoticon'),
   storedHoldsCarrier: (stored) => stored.querySelector('span.confluence-emoticon') !== null,
   targetHoldsCarrier: (el) => el.querySelector('span.confluence-emoticon') !== null,
   record(marked, payload) {
@@ -974,6 +985,18 @@ interface InlineTarget {
   readonly last: ChildNode | null;
 }
 
+/**
+ * The nodes a run's inline operation rewrites, in the parent that actually holds them (review r1 CAR-2): a task
+ * item's runs live in its content `div`, not in the `li` its child sequence is read from. A run whose ends do not
+ * share one parent is not located.
+ */
+function runTarget(run: RunInfo): InlineTarget | null {
+  const first = run.nodes[0]!;
+  const last = run.nodes[run.nodes.length - 1]!;
+  const parent = first.parentNode;
+  return parent && last.parentNode === parent ? { parent, first, last } : null;
+}
+
 function serializeNodes(doc: Document, nodes: readonly Node[]): string {
   const holder = doc.createElement('div');
   for (const node of nodes) holder.appendChild(node.cloneNode(true));
@@ -1198,11 +1221,50 @@ function reconcileMarked(
   const unique = (key: string): boolean =>
     cUnits.counts.get(key) === 1 && lUnits.counts.get(key) === 1 && tUnits.counts.get(key) === 1;
 
-  // Step 10: pairing, veto, plan.
+  // Ambiguity index (§3.5; review r1 CAR-4): each status or link record's legacy shape is serialized once, charged
+  // before, and grouped per run, so planning a run of n records is linear in n.
+  const shapes = new Map<RunInfo, Map<string, Set<string>>>();
+  const shapeOf = new Map<ProjectedRecord, string>();
+  for (const record of records) {
+    if (!record.element || (record.mark.k !== 'macro.status' && record.mark.k !== 'link')) continue;
+    const run = runOf(cUnits, record.element);
+    if (!run) continue;
+    let size = (record.element.textContent ?? '').length + 16;
+    for (const { name, value } of record.element.attributes) size += name.length + value.length + 4;
+    work.charge(size);
+    const shape = `${record.kind.id}\u0000${record.element.outerHTML}`;
+    const value = JSON.stringify([record.record.attributes, record.record.label]);
+    work.charge(value.length);
+    shapeOf.set(record, shape);
+    const groups = shapes.get(run) ?? new Map<string, Set<string>>();
+    shapes.set(run, groups);
+    const values = groups.get(shape) ?? new Set<string>();
+    groups.set(shape, values);
+    values.add(value);
+  }
+  // Twin index (§3.5, Improve only): language class and rendered text of every effective code block of T.
+  const twins = new Map<string, number>();
+  if (options.codeWitnesses !== undefined) {
+    for (const pre of tDoc.body.querySelectorAll('pre')) {
+      const code = pre.querySelector('code');
+      if (!code) continue;
+      const key = `${code.getAttribute('class') ?? ''}\u0000${code.textContent ?? ''}`;
+      work.charge(key.length);
+      twins.set(key, (twins.get(key) ?? 0) + 1);
+    }
+  }
+
+  // Step 10: pairing, veto, plan, kind by kind in registry order.
   const plans: Planned[] = [];
   const byKind = new Map<CarrierKindId, ProjectedRecord[]>();
-  for (const record of records) byKind.set(record.kind.id, [...(byKind.get(record.kind.id) ?? []), record]);
-  for (const [kindId, kindRecords] of byKind) {
+  for (const record of records) {
+    const list = byKind.get(record.kind.id);
+    if (list) list.push(record);
+    else byKind.set(record.kind.id, [record]);
+  }
+  for (const { id: kindId } of registry) {
+    const kindRecords = byKind.get(kindId);
+    if (!kindRecords) continue;
     const kindPlans: Planned[] = [];
     const kindSkips: Array<readonly [CarrierSkipReason, number]> = [];
     try {
@@ -1288,24 +1350,14 @@ function reconcileMarked(
    * both are ambiguous. Emoticons have no legacy shape; their stored offset is their identity.
    */
   function ambiguousIn(record: ProjectedRecord, run: RunInfo): boolean {
-    const shape = record.element!.outerHTML;
-    return records.some((other) => other !== record
-      && other.kind === record.kind
-      && other.element !== null
-      && run.ranges.has(other.element)
-      && other.element.outerHTML === shape
-      && JSON.stringify([other.record.attributes, other.record.label]) !== JSON.stringify([record.record.attributes, record.record.label]));
+    const shape = shapeOf.get(record);
+    return shape !== undefined && (shapes.get(run)?.get(shape)?.size ?? 0) > 1;
   }
 
+  /** Another effective code block of T has the target's language class and rendered text (twin index above). */
   function hasTwin(target: Element): boolean {
     const code = target.querySelector('code');
-    const key = [code?.getAttribute('class') ?? '', code?.textContent ?? ''].join('\u0000');
-    for (const pre of tDoc.body.querySelectorAll('pre')) {
-      if (pre === target) continue;
-      const other = pre.querySelector('code');
-      if (other && [other.getAttribute('class') ?? '', other.textContent ?? ''].join('\u0000') === key) return true;
-    }
-    return false;
+    return (twins.get(`${code?.getAttribute('class') ?? ''}\u0000${code?.textContent ?? ''}`) ?? 0) > 1;
   }
 
   /** An emoticon at raw offset `r` of `cRun`, inserted at the same raw offset of `tRun` (§3.5). */
@@ -1333,12 +1385,14 @@ function reconcileMarked(
       return 'boundary';
     }
     const values = record.record.attributes;
+    const target = runTarget(tRun);
+    if (!target) return 'unlocatable';
     return {
       record,
       element: null,
       attributes: values,
       inline: {
-        target: { parent: tRun.parent, first: tRun.nodes[0]!, last: tRun.nodes[tRun.nodes.length - 1]! },
+        target,
         position: position.r,
         apply: () => {
           const right = text.splitText(offset);
@@ -1396,16 +1450,20 @@ function reconcileMarked(
         apply: () => {
           const span = tDoc.createElement('span');
           for (const [name, value] of values) span.setAttribute(name, value);
+          // A span already inserted at this offset (a later record) stays after this one: insert before it.
           let remaining = offset;
           for (const child of [...target.childNodes]) {
-            if (child.nodeType !== TEXT_NODE) continue;
-            const length = (child as Text).data.length;
-            if (remaining <= length) {
-              const right = (child as Text).splitText(remaining);
-              target.insertBefore(span, right);
+            if (child.nodeType === TEXT_NODE) {
+              const length = (child as Text).data.length;
+              if (remaining <= length) {
+                target.insertBefore(span, (child as Text).splitText(remaining));
+                return;
+              }
+              remaining -= length;
+            } else if (remaining === 0) {
+              target.insertBefore(span, child);
               return;
             }
-            remaining -= length;
           }
           target.appendChild(span);
         },
@@ -1445,12 +1503,15 @@ function reconcileMarked(
     const cRange = cRun.ranges.get(record.element!);
     if (!cRange) return 'unsupported';
     const { record: values } = record;
-    const anchorsOver = (run: RunInfo, range: InlineRange): Array<[Element, InlineRange]> =>
-      [...run.ranges].filter(([el, other]) => el.localName === 'a'
+    const anchorsOver = (run: RunInfo, range: InlineRange): Array<[Element, InlineRange]> => {
+      work.charge(run.ranges.size);
+      return [...run.ranges].filter(([el, other]) => el.localName === 'a'
         && (range.t0 === range.t1
           ? other.t0 === range.t0 && other.t1 === range.t1
           : other.t0 < range.t1 && other.t1 > range.t0));
+    };
     const tAnchors = anchorsOver(tRun, cRange);
+    const lAnchors = anchorsOver(lRun, cRange);
     if (ambiguousIn(record, cRun)) return 'ambiguous';
 
     if (mark.h !== null) {
@@ -1459,6 +1520,12 @@ function reconcileMarked(
       const [tEl, tRange] = tAnchors[0]!;
       if (tRange.t0 !== cRange.t0 || tRange.t1 !== cRange.t1 || tRange.attributeless) return 'range';
       if (record.kind.targetHoldsCarrier(tEl)) return 'carried';
+      // Only the proven legacy `href` is replaced (§3.5). Any other attribute the operation writes that T already
+      // holds must be the stored body's own value at that link, unedited (review r1 CAR-6); else T changed it.
+      const lEl = lAnchors.length === 1 && lAnchors[0]![1].t0 === cRange.t0 && lAnchors[0]![1].t1 === cRange.t1 ? lAnchors[0]![0] : null;
+      const edited = values.attributes.some(([name]) => name !== 'href' && tEl.hasAttribute(name)
+        && tEl.getAttribute(name) !== lEl?.getAttribute(name));
+      if (edited) return 'changed';
       const linkRaw = [tRange.r0, tRange.r1] as const;
       if (values.label === null) {
         return { record, element: tEl, attributes: values.attributes, inline: null, linkRaw, run: tRun, codeOrdinal: null };
@@ -1473,7 +1540,6 @@ function reconcileMarked(
     }
 
     // Text only: no href in the legacy shape.
-    const lAnchors = anchorsOver(lRun, cRange);
     if (mark.x === '' && mark.b === 'none') {
       // Body-less: only where L and T each hold exactly one empty <a> without attributes at the position.
       const single = (anchors: Array<[Element, InlineRange]>): Element | null =>
@@ -1527,16 +1593,10 @@ function reconcileMarked(
     });
   }
 
-  function inlineLink(record: ProjectedRecord, tRun: RunInfo, position: number, linkRaw: readonly [number, number], apply: () => void): Planned {
-    return {
-      record,
-      element: null,
-      attributes: record.record.attributes,
-      inline: { target: { parent: tRun.parent, first: tRun.nodes[0]!, last: tRun.nodes[tRun.nodes.length - 1]! }, position, apply },
-      linkRaw,
-      run: tRun,
-      codeOrdinal: null,
-    };
+  function inlineLink(record: ProjectedRecord, tRun: RunInfo, position: number, linkRaw: readonly [number, number], apply: () => void): Planned | CarrierSkipReason {
+    const target = runTarget(tRun);
+    if (!target) return 'unlocatable';
+    return { record, element: null, attributes: record.record.attributes, inline: { target, position, apply }, linkRaw, run: tRun, codeOrdinal: null };
   }
 
   // An emoticon never goes to the edge of (or into) a link operation of its run.
@@ -1565,13 +1625,16 @@ function reconcileMarked(
         return null;
       }
     };
-    // Ranges first, before anything changes: a missing range skips its unit (`unlocatable`).
+    // Ranges first, before anything changes: a missing range skips its unit (`unlocatable`). A run and a start tag
+    // are different regions even when the run starts with that element (review r1 CAR-1); containment is resolved
+    // below, before anything is applied.
     interface Region { start: number; end: number; run: boolean; plans: Planned[]; serialize: () => string }
-    const regions = new Map<Node, Region>();
+    const runRegions = new Map<Node, Region>();
+    const tagRegions: Region[] = [];
     for (const plan of planned) {
       if (plan.inline) {
         const { parent, first, last } = plan.inline.target;
-        let region = regions.get(first ?? parent);
+        let region = runRegions.get(first ?? parent);
         if (!region) {
           let range: readonly [number, number] | null;
           if (first && last) {
@@ -1584,7 +1647,7 @@ function reconcileMarked(
             skip(report, plan.record.kind.id, 'unlocatable');
             continue;
           }
-          // Everything between the run's outer neighbours, as it stands after the changes.
+          // Everything between the run's outer neighbours in its actual parent, as it stands after the changes.
           const before = first ? first.previousSibling : null;
           const after = last ? last.nextSibling : null;
           region = {
@@ -1600,7 +1663,7 @@ function reconcileMarked(
               return serializeNodes(tDoc, nodes);
             },
           };
-          regions.set(first ?? parent, region);
+          runRegions.set(first ?? parent, region);
         }
         region.plans.push(plan);
         continue;
@@ -1618,19 +1681,17 @@ function reconcileMarked(
         skip(report, plan.record.kind.id, 'unlocatable');
         continue;
       }
-      regions.set(el, { start, end: stop, run: false, plans: [plan], serialize: () => serializeStartTag(el) });
+      tagRegions.push({ start, end: stop, run: false, plans: [plan], serialize: () => serializeStartTag(el) });
     }
     // A start tag inside a rewritten run is written by that run's serialization.
-    const runs = [...regions.values()].filter((region) => region.run);
-    for (const [key, region] of [...regions]) {
-      if (region.run) continue;
-      const host = runs.find((outer) => outer.start <= region.start && region.end <= outer.end);
-      if (host) {
-        host.plans.push(...region.plans);
-        regions.delete(key);
-      }
+    const ordered = [...runRegions.values()];
+    for (const region of tagRegions) {
+      work.charge(ordered.length);
+      const host = ordered.find((outer) => outer.run && outer.start <= region.start && region.end <= outer.end);
+      if (host) host.plans.push(...region.plans);
+      else ordered.push(region);
     }
-    const ordered = [...regions.values()].sort((a, b) => a.start - b.start);
+    ordered.sort((a, b) => a.start - b.start);
     for (let index = 1; index < ordered.length; index += 1) {
       if (ordered[index]!.start < ordered[index - 1]!.end) throw new Error('overlapping carrier splices');
     }
@@ -1656,6 +1717,12 @@ function reconcileMarked(
       cursor = region.end;
     }
     html += targetHtml.slice(cursor);
+    // Invariant (review r1): every change made in the DOM is in the returned HTML. Read back, the result must be
+    // exactly the changed document; otherwise nothing is reported and T is returned (`failed`).
+    work.charge(html.length);
+    if (parseHtml(html).window.document.body.innerHTML !== tDoc.body.innerHTML) {
+      throw new Error('carrier splice does not reproduce the changed document');
+    }
     for (const region of ordered) {
       for (const plan of region.plans) {
         const kind = plan.record.kind.id;

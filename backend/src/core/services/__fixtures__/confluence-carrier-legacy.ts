@@ -6,7 +6,7 @@
  * (f85c32a18f3974db0e10235adf0c72e317809d02), before #1748/#1749/#1750 gave links, macro parameters and emoticons
  * their carriers. For `composite` and `ac1` the output at 62950a8b (the last commit before #1942/#1949/#1950/#1952)
  * is the same string (epic evidence `legacy-shapes-probe.txt`). Today's converter is only ever the oracle side of a
- * test; never regenerate a literal from it. A few long entries (`codeLong*`, `codeManyParams`, `longMarkAttribute`) are
+ * test; never regenerate a literal from it. A few long entries (`codeLong*`, `codeManyParams`, `longMarkAttribute`, `statusRun32`) are
  * written as expressions; each evaluates to the storage that was converted and to that converter's output.
  *
  * `composite` is the historical composite fixture, kept whole as an AC8 negative (design review r7 AA2): its final
@@ -16,6 +16,9 @@
 
 const code = (title: string, body: string, language = 'java', extra = ''): string =>
   `<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">${language}</ac:parameter><ac:parameter ac:name="title">${title}</ac:parameter>${extra}<ac:plain-text-body><![CDATA[${body}]]></ac:plain-text-body></ac:structured-macro>`;
+
+const status = (title: string): string =>
+  `<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">${title}</ac:parameter><ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro>`;
 
 export interface LegacyCarrierFixture {
   /** `pages.body_storage`: what Confluence holds. */
@@ -348,6 +351,42 @@ export const LEGACY_CARRIER_FIXTURES = {
   longMarkAttribute: {
     storage: Array.from({ length: 20 }, (_, i) => `<p><strong title="${'t'.repeat(1000)}">bold</strong> <ac:emoticon ac:name="tick" /> n${i}</p>`).join(''),
     legacyHtml: Array.from({ length: 20 }, (_, i) => `<p><strong title="${'t'.repeat(1000)}">bold</strong>  n${i}</p>`).join(''),
+  },
+  statusThenEmoticon: {
+    storage: '<p><ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">OK</ac:parameter><ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro> a <ac:emoticon ac:name="tick" /> b</p>',
+    legacyHtml: '<p><span class="confluence-status" data-color="green">OK</span> a  b</p>',
+  },
+  linkThenEmoticon: {
+    storage: '<p><ac:link ac:anchor="sec"><ri:page ri:content-title="My Page" ri:space-key="ENG" /><ac:plain-text-link-body><![CDATA[the page]]></ac:plain-text-link-body></ac:link> a <ac:emoticon ac:name="tick" /> b</p>',
+    legacyHtml: '<p><a href="#confluence-page:My Page" data-confluence-link="page">the page</a> a  b</p>',
+  },
+  emoticonGridAdjacent: {
+    storage: '<table><tbody><tr><th>Name</th><th>State</th></tr><tr><td>alpha</td><td><ac:emoticon ac:name="tick" /><ac:emoticon ac:name="wink" /></td></tr><tr><td>beta</td><td><ac:emoticon ac:name="cross" /></td></tr></tbody></table>',
+    legacyHtml: '<table><tbody><tr><th>Name</th><th>State</th></tr><tr><td>alpha</td><td></td></tr><tr><td>beta</td><td></td></tr></tbody></table>',
+  },
+  taskLeadingRun: {
+    storage: '<ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>lead <ac:emoticon ac:name="tick" /> x<p>after</p></ac:task-body></ac:task></ac:task-list>',
+    legacyHtml: '<ul data-type="taskList"><li data-type="taskItem" data-checked="false">lead  x<p>after</p></li></ul>',
+  },
+  encodedStatus: {
+    storage: '<p><ac:structured-macro ac:name="statu&#115;"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">OK</ac:parameter><ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro></p>',
+    legacyHtml: '<p><span class="confluence-status" data-color="green">OK</span></p>',
+  },
+  encodedStatusNeutral: {
+    storage: '<p>status</p><p><ac:structured-macro ac:name="statu&#115;"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">OK</ac:parameter><ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro></p>',
+    legacyHtml: '<p>status</p><p><span class="confluence-status" data-color="green">OK</span></p>',
+  },
+  encodedCode: {
+    storage: '<p>Intro</p><ac:structured-macro ac:name="&#99;ode"><ac:parameter ac:name="language">java</ac:parameter><ac:parameter ac:name="title">Main</ac:parameter><ac:plain-text-body><![CDATA[x]]></ac:plain-text-body></ac:structured-macro>',
+    legacyHtml: '<p>Intro</p><pre><code class="language-java">x</code></pre>',
+  },
+  encodedToc: {
+    storage: '<ac:structured-macro ac:name="t&#111;c"><ac:parameter ac:name="exclude">Intro</ac:parameter></ac:structured-macro><p>after</p>',
+    legacyHtml: '<div class="confluence-toc">[Table of Contents]</div><p>after</p>',
+  },
+  statusRun32: {
+    storage: `<p>${Array.from({ length: 32 }, (_, i) => status(`S${i}`)).join(' ')}</p>`,
+    legacyHtml: `<p>${Array.from({ length: 32 }, (_, i) => `<span class="confluence-status" data-color="green">S${i}</span>`).join(' ')}</p>`,
   },
   markerSpelled: {
     storage: '<p>data-cq-0123456789abcdef0123456789abcdef <ac:emoticon ac:name="tick" /> b</p>',

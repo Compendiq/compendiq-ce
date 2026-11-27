@@ -3,6 +3,7 @@
  * function is pure. Legacy bodies are literal output of the v0.9.2 converter (`__fixtures__/confluence-carrier-legacy.ts`);
  * today's converter appears only as the oracle side, and the written storage is read with #1955's independent oracle.
  */
+import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
@@ -27,6 +28,7 @@ import {
   type LexerCodeText,
 } from './content-converter.js';
 import { htmlToYDoc, yDocToHtml } from './collab-schema.js';
+import { confluenceLinkCarrierOf, parseConfluenceLinkHref } from './confluence-link.js';
 import { readConfluenceStorage } from './confluence-storage-reader.js';
 import { LEGACY_CARRIER_FIXTURES as F, type LegacyCarrierFixture } from './__fixtures__/confluence-carrier-legacy.js';
 import { oracleElements } from './__fixtures__/storage-oracle.js';
@@ -359,7 +361,8 @@ describe('Y5 / Z1: sources are elements both readings agree on, over the whole b
 
   it('copies nothing from an upper-case, aliased or legacy ac:macro element', () => {
     expect(reconcile(F.upperCaseMacro)).toMatchObject({ html: F.upperCaseMacro.legacyHtml, report: { recovered: {} } });
-    expect(reconcile(F.aliasedMacro)).toMatchObject({ html: F.aliasedMacro.legacyHtml, report: { outcome: 'storage_reading_differs' } });
+    // An aliased prefix is not `ac:`: no source can exist, so the element-name gate answers before any reading.
+    expect(reconcile(F.aliasedMacro)).toMatchObject({ html: F.aliasedMacro.legacyHtml, report: { outcome: 'none', recovered: {} } });
     expect(reconcile(F.legacyMacroElement)).toMatchObject({ html: F.legacyMacroElement.legacyHtml, report: { recovered: {} } });
   });
 
@@ -927,8 +930,9 @@ describe('C7 / M7 / Y6 / Z4: bounds before the work they bound', () => {
   });
 
   it('charges a long attribute once, not per character of every run that carries it', () => {
-    // Twenty runs share one 1,000-character mark signature on three sides: charged per run it exceeds this budget.
-    expect(reconcile(F.longMarkAttribute, F.longMarkAttribute.legacyHtml, { budget: { workFactor: 0.6 } }).report.recovered).toEqual({ emoticon: 20 });
+    // Twenty runs share one 1,000-character mark signature on three sides: charged per run, the signature alone
+    // (60,000 units) exceeds this budget (0.8 × the summed lengths, about 53,000 units).
+    expect(reconcile(F.longMarkAttribute, F.longMarkAttribute.legacyHtml, { budget: { workFactor: 0.8 } }).report.recovered).toEqual({ emoticon: 20 });
   });
 
   it('uses the one marker it was given and returns bound when the storage spells it', () => {
@@ -988,5 +992,127 @@ describe('C7 / M7 / Y6 / Z4: bounds before the work they bound', () => {
       recovered: { 'macro.toc': 1 },
       skipped: { 'macro.status': { error: 1 } },
     });
+  });
+});
+
+/**
+ * Review r1 invariant: a recovery is reported only when it is in the returned HTML. Counts the carriers each kind
+ * writes in the target and in the result; the difference must equal the reported count, kind by kind.
+ */
+function carriersByKind(html: string): Record<string, number> {
+  const body = new JSDOM(`<body>${html}</body>`).window.document.body;
+  const carriedLinks = [...body.querySelectorAll('a')].filter((a) => {
+    const carrier = confluenceLinkCarrierOf(a);
+    const link = carrier === null ? null : parseConfluenceLinkHref(carrier);
+    return link !== null && !link.legacy
+      && (link.kind === 'anchor' || link.link.length + link.resource.length > 0 || link.container !== null || link.body !== null);
+  });
+  return {
+    'macro.code': body.querySelectorAll('pre[data-title], pre[data-macro-params]').length,
+    'macro.status': body.querySelectorAll('span.confluence-status[data-macro-params]').length,
+    'macro.toc': body.querySelectorAll('div.confluence-toc[data-macro-params]').length,
+    link: carriedLinks.length,
+    emoticon: body.querySelectorAll('span.confluence-emoticon').length,
+  };
+}
+
+function expectRecoveriesPresent(target: string, result: { html: string; report: CarrierReport }): void {
+  const before = carriersByKind(target);
+  const after = carriersByKind(result.html);
+  for (const kind of Object.keys(before)) {
+    expect({ kind, added: after[kind]! - before[kind]! }).toEqual({ kind, added: result.report.recovered[kind as keyof CarrierReport['recovered']] ?? 0 });
+  }
+}
+
+/** TipTap's task item: the checkbox chrome, then the content div that holds the stored task body. */
+function tiptapTasks(html: string): string {
+  return html.replace(/(<li data-type="taskItem"[^>]*>)([\s\S]*?)(<\/li>)/g, '$1<label><input type="checkbox"></label><div>$2</div>$3');
+}
+
+describe('review r1', () => {
+  it('CAR-1: a recovered status or link that starts a run and an emoticon later in the run are both in the returned HTML, in either plan order', () => {
+    for (const registry of [CARRIER_KINDS, [...CARRIER_KINDS].reverse()]) {
+      for (const [fixture, kind] of [[F.statusThenEmoticon, 'macro.status'], [F.linkThenEmoticon, 'link']] as const) {
+        const result = reconcile(fixture, fixture.legacyHtml, { registry });
+        expect(result.html).toBe(confluenceToHtml(fixture.storage));
+        expect(result.report.recovered).toEqual({ [kind]: 1, emoticon: 1 });
+        expect(result.report.skipped).toEqual({});
+        expect(oracleElements(writeBack(result.html, fixture), 'ac', 'emoticon')).toHaveLength(1);
+      }
+    }
+    expect(reconcile(F.statusThenEmoticon).html).toBe(
+      `<p><span class="confluence-status" data-color="green" data-macro-params="{&quot;subtle&quot;:&quot;true&quot;}">OK</span> a ${TICK} b</p>`,
+    );
+    expect(reconcile(F.linkThenEmoticon).html).toBe(
+      `<p><a href="#confluence-page:My%20Page?ac:anchor=sec&amp;ri:space-key=ENG" data-confluence-link="page">the page</a> a ${TICK} b</p>`,
+    );
+  });
+
+  it('CAR-2: recovering a task-body emoticon in TipTap\'s task item changes only that run, never copying the checkbox into the body', () => {
+    const target = tiptapTasks(F.sourcesInContainers.legacyHtml);
+    expect(target).toContain('<li data-type="taskItem" data-checked="false"><label><input type="checkbox"></label><div>task  body</div></li>');
+    const { html, report } = reconcile(F.sourcesInContainers, target);
+    expect(report.recovered).toEqual({ emoticon: 4 });
+    expect(html).toContain(`<li data-type="taskItem" data-checked="false"><label><input type="checkbox"></label><div>task ${EMOTICON('wink', '😉')} body</div></li></ul>`);
+    const [taskBody] = oracleElements(writeBack(html, F.sourcesInContainers), 'ac', 'task-body');
+    expect([...taskBody!.childNodes].map((node) => node.nodeName)).toEqual(['#text', 'ac:emoticon', '#text']);
+
+    const leading = tiptapTasks(F.taskLeadingRun.legacyHtml);
+    const result = reconcile(F.taskLeadingRun, leading);
+    expect(result.report.recovered).toEqual({ emoticon: 1 });
+    expect(result.html).toBe(`<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><label><input type="checkbox"></label><div>lead ${TICK} x<p>after</p></div></li></ul>`);
+  });
+
+  it('CAR-3: adjacent emoticons keep their stored order in an empty cell and in a text gap', () => {
+    const { html, report } = reconcile(F.emoticonGridAdjacent);
+    expect(report.recovered).toEqual({ emoticon: 3 });
+    expect(html).toContain(`<td>alpha</td><td>${TICK}${EMOTICON('wink', '😉')}</td>`);
+    const order = (storage: string) => oracleElements(storage, 'ac', 'emoticon').map((el) => el.getAttribute('ac:name'));
+    expect(order(writeBack(html, F.emoticonGridAdjacent))).toEqual(order(F.emoticonGridAdjacent.storage));
+    expect(order(writeBack(reconcile(F.emoticonsInOneGap).html, F.emoticonsInOneGap))).toEqual(['tick', 'cross']);
+  });
+
+  it('CAR-4: planning serializes each record a bounded number of times, linear in the records of a run', () => {
+    const require = createRequire(import.meta.url);
+    const { implementation: ElementImpl } = require('jsdom/lib/jsdom/living/nodes/Element-impl.js') as { implementation: { prototype: object } };
+    const serializations = vi.spyOn(ElementImpl.prototype as { outerHTML: string }, 'outerHTML', 'get');
+    const { report } = reconcile(F.statusRun32);
+    expect(report.recovered).toEqual({ 'macro.status': 32 });
+    expect(serializations.mock.calls.length).toBeLessThanOrEqual(32);
+  });
+
+  it('CAR-5: an entity-spelled macro name is a source like the literal one, whatever else the page holds', () => {
+    for (const fixture of [F.encodedStatus, F.encodedStatusNeutral]) {
+      expect(reconcile(fixture).report).toMatchObject({ outcome: 'recovered', recovered: { 'macro.status': 1 } });
+    }
+    expect(reconcile(F.encodedCode).report.recovered).toEqual({ 'macro.code': 1 });
+    expect(reconcile(F.encodedToc).report.recovered).toEqual({ 'macro.toc': 1 });
+    for (const fixture of [F.encodedStatus, F.encodedCode, F.encodedToc]) {
+      expect(CARRIER_KINDS.filter((kind) => kind.storageMayCarry(fixture.storage)).map((kind) => kind.id)).toEqual(expect.arrayContaining(
+        [fixture === F.encodedStatus ? 'macro.status' : fixture === F.encodedCode ? 'macro.code' : 'macro.toc'],
+      ));
+    }
+  });
+
+  it('CAR-6: an edited data-confluence-link is never overwritten; an unchanged legacy or absent one is', () => {
+    const edited = F.pageLink.legacyHtml.replace('data-confluence-link="page"', 'data-confluence-link="attachment"');
+    expect(reconcile(F.pageLink, edited)).toMatchObject({ html: edited, report: { outcome: 'evaluated', skipped: { link: { changed: 1 } } } });
+    expect(reconcile(F.pageLink).html).toContain('data-confluence-link="page"');
+    expect(reconcile(F.attachmentOwned).html).toContain('data-confluence-link="attachment">a.pdf</a>');
+    expect(reconcile(F.pageLink, '<p>See <a href="#confluence-page:My Page">the page</a>.</p>').html)
+      .toBe('<p>See <a href="#confluence-page:My%20Page?ac:anchor=sec&amp;ri:space-key=ENG" data-confluence-link="page">the page</a>.</p>');
+  });
+
+  it('invariant: every reported recovery is in the returned HTML, over the whole corpus and its editor and TipTap targets', () => {
+    let checked = 0;
+    for (const fixture of Object.values(F)) {
+      for (const target of [fixture.legacyHtml, editorProjection(fixture.legacyHtml), tiptapTasks(fixture.legacyHtml)]) {
+        const result = reconcile(fixture, target);
+        expectRecoveriesPresent(target, result);
+        if (result.report.outcome !== 'recovered') expect(result.html).toBe(target);
+        checked += 1;
+      }
+    }
+    expect(checked).toBe(3 * Object.keys(F).length);
   });
 });
