@@ -175,8 +175,8 @@ export const STORAGE_ENTITIES: ReadonlyMap<string, string> = new Map(
 /** How much of the string the parser takes before the reader looks whether to go on. */
 const READ_CHUNK = 65_536;
 
-/** The longest tag name the lexical scan compares; a longer one is not the name it looks for. */
-const MAX_SCANNED_NAME = 256;
+/** Thrown inside a parser event to stop the parser where it is; never leaves {@link readConfluenceStorage}. */
+const READ_ABORTED = Symbol('storage read aborted');
 
 interface MutableElement extends StorageName {
   attributes: StorageAttribute[];
@@ -210,8 +210,10 @@ export function readConfluenceStorage(
   let depth = 0;
   let nodes = 0;
   let failure: StorageReadFailure | null = null;
-  const fail = (reason: StorageReadFailure): void => {
+  // The first refusal ends the read: the parser gets no further input and hands over no further event.
+  const fail = (reason: StorageReadFailure): never => {
     failure ??= reason;
+    throw READ_ABORTED;
   };
 
   try {
@@ -232,18 +234,19 @@ export function readConfluenceStorage(
     parser.on('doctype', () => fail('not-well-formed'));
     parser.on('xmldecl', () => fail('not-well-formed'));
     parser.on('opentag', (tag) => {
-      if (failure) return;
-      if (++depth > limits.depth) return fail('too-deep');
+      if (++depth > limits.depth) fail('too-deep');
+      // The element and every attribute the tag was written with, declarations included, before any is kept.
+      const written = Object.values(tag.attributes);
+      nodes += 1 + written.length;
+      if (nodes > limits.nodes) fail('too-many-nodes');
       const attributes: StorageAttribute[] = [];
-      for (const attribute of Object.values(tag.attributes)) {
+      for (const attribute of written) {
         // A namespace declaration binds names; it is not an attribute of the element.
         if (attribute.prefix === 'xmlns' || attribute.name === 'xmlns') continue;
         attributes.push({
           name: attribute.name, prefix: attribute.prefix, local: attribute.local, uri: attribute.uri, value: attribute.value,
         });
       }
-      nodes += 1 + Object.keys(tag.attributes).length;
-      if (nodes > limits.nodes) return fail('too-many-nodes');
       const element: MutableElement = {
         name: tag.name, prefix: tag.prefix, local: tag.local, uri: tag.uri, attributes, parent: current, children: [],
       };
@@ -251,30 +254,27 @@ export function readConfluenceStorage(
       current = element;
     });
     parser.on('closetag', () => {
-      if (failure) return;
       depth -= 1;
       current = current.parent ?? root;
     });
     const text = (data: string): void => {
-      if (failure || data === '') return;
+      if (data === '') return;
       const last = current.children.length - 1;
       const previous = current.children[last];
       if (typeof previous === 'string') {
         current.children[last] = previous + data;
         return;
       }
-      if (++nodes > limits.nodes) return fail('too-many-nodes');
+      if (++nodes > limits.nodes) fail('too-many-nodes');
       current.children.push(data);
     };
     parser.on('text', text);
     parser.on('cdata', text);
 
-    for (let at = 0; at < storage.length && !failure; at += READ_CHUNK) {
-      parser.write(storage.slice(at, at + READ_CHUNK));
-    }
-    if (!failure) parser.close();
-  } catch {
-    fail('not-well-formed');
+    for (let at = 0; at < storage.length; at += READ_CHUNK) parser.write(storage.slice(at, at + READ_CHUNK));
+    parser.close();
+  } catch (error) {
+    if (error !== READ_ABORTED) failure ??= 'not-well-formed';
   }
   return failure ? { ok: false, reason: failure } : { ok: true, tree: { root, nodes } };
 }
@@ -327,63 +327,90 @@ export function storageText(element: StorageElement): string {
   return text;
 }
 
+/** What ends a tag name in any reading of a string: XML white space, form feed, `/`, `>`, or the next `<`. */
+const TAG_NAME_END = /[ \t\r\n\f/><]/g;
+const NOT_XML_SPACE = /[^ \t\r\n]/g;
+const ATTRIBUTE_NAME_END = /[ \t\r\n=<>/"']/g;
+
 /**
- * Whether `storage` holds a start tag whose local name is `local` (lower
- * case), by XML's lexical rules alone, for a string the reader could not
- * read. `no` is sound for any reading: every start tag found outside a
- * comment, a CDATA section, a processing instruction and a quoted attribute
- * value was looked at, and none has that name. `indeterminate` means the
- * lexical structure itself is broken (something opened is never closed), so
- * what is markup cannot be told. This never approves anything: a caller may
- * only use `no` to leave a string it cannot read as it was, and must refuse on
- * the other two.
+ * Whether `storage` holds a start tag whose name ends in `local` (lower case)
+ * after its last colon, for a string the reader could not read. Lexical only,
+ * and bounded: one pass, no step repeated, and a string past the reader's
+ * length limit is not scanned at all.
+ *
+ * `no` is proof of absence: the whole string was accounted for as comments,
+ * CDATA sections, processing instructions, end tags and start tags with
+ * quoted attribute values, and no start tag has that name, whatever its
+ * length and whatever characters its prefix holds. `yes` is a start tag of
+ * that name. `indeterminate` is everything else: something opened is never
+ * closed, a `<` opens no tag, a tag is not written as XML writes one, or the
+ * string is too long to scan. Then what is markup cannot be told and nothing
+ * may be concluded. This never approves anything: a caller may only use `no`
+ * to leave a string it cannot read as it was, and must refuse on the other
+ * two.
  */
 export function scanStorageForStartTag(storage: string, local: string): 'no' | 'yes' | 'indeterminate' {
-  const nameEnd = /[\s/>]/g;
-  const tagPunctuation = /["'>]/g;
-  let indeterminate = false;
+  if (storage.length > STORAGE_READER_LIMITS.length) return 'indeterminate';
+  /** The index of the first character at or after `from` that `pattern` matches, or the end of the string. */
+  const find = (pattern: RegExp, from: number): number => {
+    pattern.lastIndex = from;
+    return pattern.exec(storage)?.index ?? storage.length;
+  };
   let at = 0;
   for (;;) {
     const open = storage.indexOf('<', at);
-    if (open < 0) break;
+    if (open < 0) return 'no';
     const closes = (opener: string, closer: string): number | null => {
       if (!storage.startsWith(opener, open)) return null;
       const end = storage.indexOf(closer, open + opener.length);
       return end < 0 ? -1 : end + closer.length;
     };
-    const skipped = closes('<!--', '-->') ?? closes('<![CDATA[', ']]>') ?? closes('<?', '?>') ?? closes('</', '>');
+    const skipped = closes('<!--', '-->') ?? closes('<![CDATA[', ']]>') ?? closes('<?', '?>');
     if (skipped !== null) {
       if (skipped < 0) return 'indeterminate';
       at = skipped;
       continue;
     }
-    if (storage.startsWith('<!', open)) {
-      // A declaration (`<!DOCTYPE`, `<!ENTITY`): what follows it depends on a reading this scan does not make.
-      indeterminate = true;
-      at = open + 2;
+    // A declaration (`<!DOCTYPE`, `<!ENTITY`): what follows it depends on a reading this scan does not make.
+    if (storage.startsWith('<!', open)) return 'indeterminate';
+    if (storage.startsWith('</', open)) {
+      const end = storage.indexOf('>', open + 2);
+      const next = storage.indexOf('<', open + 2);
+      if (end < 0 || (next >= 0 && next < end)) return 'indeterminate';
+      at = end + 1;
       continue;
     }
-    nameEnd.lastIndex = open + 1;
-    const end = nameEnd.exec(storage);
-    const name = end && end.index - open - 1 <= MAX_SCANNED_NAME ? storage.slice(open + 1, end.index) : '';
-    if (name === '' || /[<"'=]/.test(name)) {
-      // A `<` that opens no tag (`a < b`): text.
-      at = open + 1;
-      continue;
-    }
-    if (name.slice(name.indexOf(':') + 1).toLowerCase() === local) return 'yes';
-    // The rest of the tag: a quoted value may hold `<` and `>`.
-    at = open + 1 + name.length;
+    const nameEnd = find(TAG_NAME_END, open + 1);
+    // No name (`a < b`), or a name the string or another `<` cuts short: not a tag XML writes.
+    if (nameEnd === open + 1 || nameEnd === storage.length || storage[nameEnd] === '<') return 'indeterminate';
+    // The name's last `local.length` characters, when they are the whole name or follow a colon. (No
+    // character but an ASCII letter lower-cases to one of `a`-`z` other than U+212A to `k`, so a local
+    // name that lower-cases to `local` has its length.)
+    const localStart = nameEnd - local.length;
+    if (
+      (localStart === open + 1 || (localStart > open + 1 && storage[localStart - 1] === ':'))
+      && storage.slice(localStart, nameEnd).toLowerCase() === local
+    ) return 'yes';
+    // The rest of the tag, as XML writes it: `name="value"` or `name='value'`, then `>` or `/>`.
+    at = nameEnd;
     for (;;) {
-      tagPunctuation.lastIndex = at;
-      const next = tagPunctuation.exec(storage);
-      if (!next) return 'indeterminate';
-      at = next.index + 1;
-      if (next[0] === '>') break;
-      const quoteEnd = storage.indexOf(next[0], at);
-      if (quoteEnd < 0) return 'indeterminate';
-      at = quoteEnd + 1;
+      at = find(NOT_XML_SPACE, at);
+      if (storage[at] === '>') break;
+      if (storage[at] === '/') {
+        if (storage[at + 1] !== '>') return 'indeterminate';
+        at += 1;
+        break;
+      }
+      const attributeEnd = find(ATTRIBUTE_NAME_END, at);
+      if (attributeEnd === at) return 'indeterminate';
+      const equals = find(NOT_XML_SPACE, attributeEnd);
+      if (storage[equals] !== '=') return 'indeterminate';
+      const quote = find(NOT_XML_SPACE, equals + 1);
+      if (storage[quote] !== '"' && storage[quote] !== "'") return 'indeterminate';
+      const valueEnd = storage.indexOf(storage[quote]!, quote + 1);
+      if (valueEnd < 0) return 'indeterminate';
+      at = valueEnd + 1;
     }
+    at += 1;
   }
-  return indeterminate ? 'indeterminate' : 'no';
 }

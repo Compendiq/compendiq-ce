@@ -237,7 +237,7 @@ describe('confluence-storage-reader: bounded work (W5)', () => {
 
 describe('confluence-storage-reader: the lexical scan of a string it could not read (W2)', () => {
   it.each([
-    ['prose that mentions the name', '<p title="a<b">field:url value, a &lt;url&gt; and 1 < url > 0</p>', 'no'],
+    ['prose that mentions the name', '<p title="a<b">field:url value, a &lt;url&gt; and 1 &lt; url &gt; 0</p>', 'no'],
     ['the name in a comment', '<p title="a<b">x</p><!-- <ri:url ri:value="/a"/> -->', 'no'],
     ['the name in a CDATA section', '<p title="a<b">x</p><ac:plain-text-body><![CDATA[<ri:url ri:value="/a"/>]]></ac:plain-text-body>', 'no'],
     ['the name in a quoted attribute value', '<p title="a<b" data-x="<ri:url ri:value=\'/a\'/>">x</p>', 'no'],
@@ -267,6 +267,53 @@ describe('confluence-storage-reader: the lexical scan of a string it could not r
       const elements = [...storageElements(read(storage))].filter((element) => resemblesStorageName(element, 'url')).length;
       expect(scanStorageForStartTag(storage, 'url')).toBe(elements > 0 ? 'yes' : 'no');
     }
+  });
+});
+
+// Review r1, R1: a `no` lets a caller send a string nobody read, so it must hold for every start tag the
+// reader could read and for every lexical context the scan did not account for.
+describe('confluence-storage-reader: a negative scan is proof of absence (R1)', () => {
+  // Neutral name: what the reader reads as an element named `record`, the scan never denies.
+  it.each([
+    ['a conventional prefix', '<x:record a="1" />'],
+    ['a prefix of 300 characters', `<${'p'.repeat(300)}:record a="1" />`],
+    ['a prefix of 70,000 characters', `<${'p'.repeat(70_000)}:record />`],
+    ['a prefix holding U+1680, a name character JavaScript calls white space', '<a\u1680b:record a="1" />'],
+    ['a prefix holding U+FEFF', '<a\uFEFFb:record />'],
+    ['upper case before a tab', '<X:RECORD\ta="1"></X:RECORD>'],
+    ['no prefix, after a quoted value holding the name', '<p title="record &gt;">t</p><record/>'],
+  ])('answers yes for %s, which the reader reads', (_name, storage) => {
+    expect([...storageElements(read(storage))].filter((element) => resemblesStorageName(element, 'record'))).toHaveLength(1);
+    expect(scanStorageForStartTag(storage, 'record')).toBe('yes');
+  });
+
+  it.each([
+    ['a name with two colons', '<a:b:record />', 'yes'],
+    ['a name with a quote in it', '<a"b:record />', 'yes'],
+    ['a `<` that opens no tag', '<p>1 < record > 0</p><x:other/>', 'indeterminate'],
+    ['a `<` at the end', '<p>x</p><', 'indeterminate'],
+    ['an attribute without a value', '<p hidden>x</p>', 'indeterminate'],
+    ['an unquoted value', '<p a=b>x</p>', 'indeterminate'],
+    ['a quote that opens no value', '<p a"b>x</p>', 'indeterminate'],
+    ['a `<` in a start tag', '<p <x:other/>>y</p>', 'indeterminate'],
+    ['a `<` in an end tag', '<p>x</p <y>', 'indeterminate'],
+    ['a slash that ends no tag', '<p / a="1">x</p>', 'indeterminate'],
+    ['a start tag the string ends in', '<p>x</p><x:other', 'indeterminate'],
+  ])('accounts for every tag or says so: %s', (_name, storage, verdict) => {
+    expect(readConfluenceStorage(storage).ok).toBe(false);
+    expect(scanStorageForStartTag(storage, 'record')).toBe(verdict);
+  });
+
+  it('does not scan a string the reader refuses for its length', () => {
+    const storage = `<p>${'x'.repeat(STORAGE_READER_LIMITS.length)}</p>`;
+    expect(reason(storage)).toBe('too-large');
+    expect(scanStorageForStartTag(storage, 'record')).toBe('indeterminate');
+  });
+
+  it('takes a number of steps that grows with the string, not with its square', () => {
+    // 200,000 `<` with no name end after any of them: one step each, then the first anomaly ends the scan.
+    expect(scanStorageForStartTag('<'.repeat(200_000), 'record')).toBe('indeterminate');
+    expect(scanStorageForStartTag(`${'<a b="c">'.repeat(200_000)}`, 'record')).toBe('no');
   });
 });
 
