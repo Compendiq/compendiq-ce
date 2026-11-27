@@ -410,10 +410,12 @@ protocol → 422 on a page with any annotated code, else the pre-#1958 replay
 byte for byte (`restoreMedia` + `includes` guard, no CODE-META analysis) with
 the trust boundary kept (foreign `pre` metadata stripped, code-named markup
 refused, storage rules). Never infer provenance from CODE-META lines or
-placeholder spellings. `literal` is read per authored text node, with the
-replay's boundaries, never from the flattened body text. The generator never
-caches an output that cannot place every frozen block
-(`placesFrozenCodeTokens`).
+placeholder spellings. `literal`: the page's authored text spells the token
+anywhere (each text node and all of them joined, so inline elements, comments
+and identifiers do not hide it; inserted placeholders never count); a literal
+entry never places. The Apply route runs `convertImproveOutput`; the generator
+caches only output `canAcceptImproveOutput` (that same conversion plus both
+storage judges) accepts. Never replace either with a token count.
 Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
 "AI Improve code-block metadata". #1953-2 consumes `witnesses`,
 `codeBlockElements` and `admitLegacyCodeMetadata` (once per allowance) after
