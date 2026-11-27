@@ -636,5 +636,73 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(html).not.toContain('confluence-layout');
       expect(html).toContain('Hallucinated structure around real prose.');
     });
+
+    describe('code-block title and options on a standalone page (#1958)', () => {
+      const TITLED = '<pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;}">'
+        + '<code class="language-js">const a = 1;</code></pre>';
+      const MERMAID = '<pre data-title="Flow"><code class="language-mermaid">graph TD\n  A --&gt; B</code></pre>';
+
+      it('keeps the stored title and options of an unchanged block and a mermaid block, and strips a raw model pre', async () => {
+        const original = `<p>Intro</p>${TITLED}${MERMAID}`;
+        const pageId = await seedPage(original);
+        const echo = faithfulEcho(original).replace('Intro', 'Introduction')
+          + '\n\n<pre data-title="Forged" data-macro-params="{&quot;evil&quot;:&quot;x&quot;}"><code>raw()</code></pre>\n';
+
+        const response = await apply(pageId, echo);
+
+        expect(response.statusCode, response.body).toBe(200);
+        const saved = await readPage(pageId);
+        expect(saved.body_html).toBe(
+          `<p>Introduction</p>\n${TITLED}\n${MERMAID}\n<pre><code>raw()</code></pre>\n`,
+        );
+        expect(saved.body_text).not.toMatch(/CODE-META|Forged|data-cq-/);
+        expect(saved.version).toBe(6);
+      });
+
+      it('saves an edited block as written, without its metadata', async () => {
+        const pageId = await seedPage(`<p>Intro</p>${TITLED}`);
+
+        const response = await apply(pageId, faithfulEcho(`<p>Intro</p>${TITLED}`).replace('const a = 1;', 'const a = 2;'));
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect((await readPage(pageId)).body_html).toBe('<p>Intro</p>\n<pre><code class="language-js">const a = 2;\n</code></pre>\n');
+      });
+
+      it('refuses a result whose publication projection is not readable, with no code on the page (R7)', async () => {
+        const original = '<p>Old</p>';
+        const pageId = await seedPage(original);
+
+        const response = await apply(pageId, 'New\n\n<p title="a<b">t</p>\n');
+
+        expect(response.statusCode, response.body).toBe(422);
+        expect(response.json()).toMatchObject({ reason: 'not-well-formed' });
+        await expectUnchanged(pageId, original);
+      });
+
+      it.each([
+        ['a code-named placeholder', '<div class="confluence-macro-unknown" data-macro-name="code" data-macro-params="{&quot;title&quot;:&quot;x&quot;}">x</div>'],
+        ['raw macro markup in a raw-text element', '<div><style><ac:structured-macro ac:name="code"><ac:plain-text-body>x</ac:plain-text-body></ac:structured-macro></style></div>'],
+      ])('refuses %s before the write and leaves the row unchanged', async (_name, markup) => {
+        const original = `<p>Intro</p>${TITLED}`;
+        const pageId = await seedPage(original);
+
+        const response = await apply(pageId, `${faithfulEcho(original)}\n\n${markup}\n`);
+
+        expect(response.statusCode, response.body).toBe(422);
+        expect(response.json()).toMatchObject({ reason: 'unapproved-code-macro' });
+        await expectUnchanged(pageId, original);
+      });
+
+      it('refuses a replay plan over budget with 422 and no write', async () => {
+        const original = `<p>Intro</p><img src="/api/attachments/1/a.png" alt="${'a'.repeat(40_000)}">`;
+        const pageId = await seedPage(original);
+        const echo = faithfulEcho(original);
+
+        const response = await apply(pageId, `${echo}\n\n${`${echo}\n\n`.repeat(4)}`);
+
+        expect(response.statusCode, response.body).toBe(422);
+        await expectUnchanged(pageId, original);
+      });
+    });
   },
 );

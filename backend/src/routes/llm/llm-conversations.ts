@@ -12,7 +12,23 @@ import {
   type TitleSource,
   UpdateConversationSchema,
 } from '@compendiq/contracts';
-import { htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
+import {
+  assertCodeMacroStorage,
+  assertLocalCodeMacroProjections,
+  beginCodeMetaAccept,
+  extractLayoutSkeleton,
+  finalizeCodeMetadata,
+  htmlToConfluence,
+  htmlToText,
+  ImproveReplayBudgetError,
+  ImproveReplayError,
+  LayoutRecoveryError,
+  markdownToHtml,
+  protectMedia,
+  replayProtectedMedia,
+  type FinalizedCodeMetadata,
+} from '../../core/services/content-converter.js';
+import { ConfluenceStorageRefusedError } from '../../core/services/confluence-storage-reader.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
@@ -449,11 +465,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     //
     // The Improve-time token set (derived from the editor `content`) and this
     // Accept-time token set (derived from `body_html`) are decoupled, so they
-    // can diverge — the LLM may also drop tokens entirely. The drop-guard below
-    // is the backstop: any media original not present after restoreMedia
-    // (including the worst case where restoreMedia was a complete no-op because
-    // no tokens survived) is re-appended, so media is never silently lost.
-    const { html: protectedCurrentHtml, media } = protectMedia(existingPage.body_html ?? '');
+    // can diverge — the LLM may also drop tokens entirely. #1958: the replay
+    // below plans by screened placement, so an original with no placement it
+    // can take (none, or only in code, a discarded container or an unsafe
+    // place for a code block) is appended once and never silently lost.
+    const protectedBody = protectMedia(existingPage.body_html ?? '');
+    const { html: protectedCurrentHtml, media } = protectedBody;
 
     // #781: derive the expected layout-token skeleton and let markdownToHtml
     // align the LLM's — possibly mangled — boundary tokens against it. When the
@@ -470,11 +487,14 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // protected form agrees with what the model was shown. Pinned by
     // apply-improvement-media.test.ts.
     const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
+    // #1958: code-block title and options travel as CODE-META echo tokens and
+    // are re-attached from this stored body only on exact identity.
+    const codeMeta = beginCodeMetaAccept(protectedBody);
     let bodyHtml: string;
     try {
       // #1752: `protectedMedia` names the tokens restoreMedia turns back into
       // block HTML below, so a task item holding one stays a plain item.
-      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: media });
+      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: media, codeMeta });
     } catch (err) {
       if (err instanceof LayoutRecoveryError) {
         fastify.log.warn(
@@ -489,13 +509,59 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       }
       throw err;
     }
-    bodyHtml = restoreMedia(bodyHtml, media);
-    const dropped = media.filter((m) => !bodyHtml.includes(m.html));
-    if (dropped.length > 0) {
-      bodyHtml += dropped.map((m) => m.html).join('\n');
+
+    // #1958 (Y3): on the remote exit, page-level access is validated before a
+    // new content-dependent refusal is answered; the final authorization
+    // fence inside the admitted transaction stays as it is.
+    const assertRemoteApplyAccess = async (): Promise<void> => {
+      const actor = await query('SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL', [userId]);
+      if (actor.rowCount !== 1) {
+        throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+      }
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (
+        !existingPage.space_key ||
+        !accessibleSpaces.includes(existingPage.space_key) ||
+        !(await userCanAccessPage(userId, existingPage.id))
+      ) {
+        throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+      }
+    };
+    // A #1958 refusal: nothing is reserved, dispatched or stored.
+    const refuseImproveResult = async (error: unknown): Promise<never> => {
+      const reason = error instanceof ConfluenceStorageRefusedError ? error.reason
+        : error instanceof ImproveReplayBudgetError ? 'replay-budget'
+          : error instanceof ImproveReplayError ? 'replay-integrity' : null;
+      if (reason === null) throw error;
+      if (!writeStaysLocal) await assertRemoteApplyAccess();
       fastify.log.warn(
-        { pageId, dropped: dropped.length, total: media.length },
-        '#723: re-appended media dropped during AI Improve',
+        { pageId: existingPage.id, reason, exit: writeStaysLocal ? 'local' : 'remote' },
+        '#1958: AI Improve result refused before write',
+      );
+      if (error instanceof ConfluenceStorageRefusedError) throw error;
+      throw fastify.httpErrors.unprocessableEntity((error as Error).message);
+    };
+
+    let finalized: FinalizedCodeMetadata;
+    try {
+      const replay = replayProtectedMedia(bodyHtml, media, codeMeta);
+      if (replay.dropped > 0) {
+        fastify.log.warn(
+          { pageId, dropped: replay.dropped, total: media.length },
+          '#723: re-appended media dropped during AI Improve',
+        );
+      }
+      finalized = finalizeCodeMetadata(replay.html, codeMeta);
+    } catch (error) {
+      return refuseImproveResult(error);
+    }
+    bodyHtml = finalized.html;
+    const { report } = finalized;
+    if (Object.values(report).some((count) => count > 0)) {
+      const lossy = report.screened + report.stripped + report.forged + report.twins + report.appended > 0;
+      fastify.log[lossy ? 'warn' : 'info'](
+        { pageId: existingPage.id, codeMeta: report },
+        '#1958: AI Improve code-block metadata',
       );
     }
     const bodyText = htmlToText(bodyHtml);
@@ -506,6 +572,13 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // #1623 — a standalone page and a synced page while Confluence is off use
     // the same local-only fenced transaction. No upstream call is made.
     if (writeStaysLocal) {
+      // #1958 (X2, Q8 as ruled): the stored HTML's publication projections
+      // are read and judged before the write, whatever they spell.
+      try {
+        assertLocalCodeMacroProjections(bodyHtml, finalized.allowance, { body_storage: existingPage.bodyStorage });
+      } catch (error) {
+        return refuseImproveResult(error);
+      }
       newVersion = await withPageWriteTransaction([existingPage.id], async (client) => {
         const fresh = await client.query<PageRow>(
           `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
@@ -521,7 +594,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         if (actor.rowCount !== 1 || !(await canWritePageLocally(existingPage.id, client))) {
           throw fastify.httpErrors.notFound('Page not found');
         }
-        if (page.version !== currentVersion || page.body_html !== existingPage.body_html) {
+        // #1958: the stored storage the projections were judged with is evidence too.
+        if (
+          page.version !== currentVersion ||
+          page.body_html !== existingPage.body_html ||
+          page.bodyStorage !== existingPage.bodyStorage
+        ) {
           throw fastify.httpErrors.conflict(
             'Page has been modified since you loaded it. Please refresh and try again.',
           );
@@ -573,6 +651,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
       const confluenceId = existingPage.confluence_id;
       const storageBody = htmlToConfluence(bodyHtml, { previousStorage: existingPage.bodyStorage });
+      // #1958: the exact string updatePage receives, after #1955's link stage.
+      try {
+        assertCodeMacroStorage(storageBody, finalized.allowance, { previousStorage: existingPage.bodyStorage });
+      } catch (error) {
+        return refuseImproveResult(error);
+      }
       const remoteVersion = existingPage.remote_version ?? currentVersion;
       const publication = describeConfluencePagePut({
         kind: 'page.ai_apply',

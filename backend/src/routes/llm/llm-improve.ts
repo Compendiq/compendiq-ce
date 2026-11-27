@@ -2,7 +2,7 @@ import { assembleDirectArticleContext } from './_article-transport.js';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import {
-  SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION, contentToText,
+  SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION, CODE_META_PRESERVATION_INSTRUCTION, contentToText,
   type ChatContentPart, type ChatMessage,
 } from '../../domains/llm/services/prompts.js';
 import { resolveDirectArticleChat } from './_article-resolution.js';
@@ -166,9 +166,15 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // #765: when the markdown carries layout boundary tokens or media
     // placeholders, instruct the model to keep them verbatim. (Deterministic
     // per content, so it composes safely with the cache key below.)
-    const inputHasLayoutTokens = /\[\[\[/.test(markdown);
+    // #1958: CODE-META echo tokens are not layout tokens: they get their own
+    // instruction, and a page whose only `[[[` is one keeps the layout
+    // instruction, the cache rule and `layoutTokensLost` it had before.
+    const inputHasLayoutTokens = /\[\[\[(?!CODE-META[ \]])/.test(markdown);
     if (inputHasLayoutTokens || /CQ\\?_MEDIA\\?_PLACEHOLDER/.test(markdown)) {
       systemPrompt += `\n\n${STRUCTURE_PRESERVATION_INSTRUCTION}`;
+    }
+    if (/\[\[\[CODE-META[ \]]/.test(markdown)) {
+      systemPrompt += `\n\n${CODE_META_PRESERVATION_INSTRUCTION}`;
     }
     if (sanitizedInstruction) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;

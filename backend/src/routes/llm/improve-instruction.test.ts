@@ -3,7 +3,7 @@ import { isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { ArticleRouteFixture, sseEvents } from './article-route-test-fixture.js';
 import { llmImproveRoutes } from './llm-improve.js';
-import { STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
+import { CODE_META_PRESERVATION_INSTRUCTION, STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
 import { confluenceToHtml, htmlToMarkdown } from '../../core/services/content-converter.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
@@ -91,6 +91,21 @@ describe.skipIf(!available)('POST /api/llm/improve - instructions with real arti
     expect((await post()).statusCode).toBe(200);
     expect(system()).not.toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
     expect(system()).not.toContain('structural placeholder tokens');
+  });
+  it('keeps code-block metadata tokens with their own instruction, not the layout one (#1958)', async () => {
+    const content = '<p>Prose</p><pre data-title="Startup.cs"><code class="language-js">x()</code></pre>';
+    expect((await post({ content })).statusCode).toBe(200);
+    expect(system()).toContain(CODE_META_PRESERVATION_INSTRUCTION);
+    expect(system()).not.toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
+    expect(fixture.requests[0]!.messages.find((m) => m.role === 'user')!.content).toContain('[[[CODE-META n=0 title=Startup%2Ecs]]]');
+  });
+  it('adds both instructions when layout tokens and code-block metadata are present (#1958)', async () => {
+    const content = confluenceToHtml('<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell><p>Prose</p>'
+      + '<ac:structured-macro ac:name="code"><ac:parameter ac:name="title">T</ac:parameter><ac:plain-text-body><![CDATA[x()]]></ac:plain-text-body></ac:structured-macro>'
+      + '</ac:layout-cell></ac:layout-section></ac:layout>');
+    expect((await post({ content })).statusCode).toBe(200);
+    expect(system()).toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
+    expect(system()).toContain(CODE_META_PRESERVATION_INSTRUCTION);
   });
   it('requests layout boundary tokens for main-page conversion', async () => {
     expect((await post()).statusCode).toBe(200);

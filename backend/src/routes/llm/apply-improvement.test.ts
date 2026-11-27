@@ -4,8 +4,8 @@ import type * as Undici from 'undici';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { getPool, query } from '../../core/db/postgres.js';
-import { confluenceToHtml, htmlToConfluence, htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
-import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { confluenceToHtml, htmlToConfluence, htmlToMarkdown, htmlToText, protectMedia } from '../../core/services/content-converter.js';
+import { oracleElements, oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import {
   lockPageLifecycle,
   reconcilePageWriteIntent,
@@ -1215,6 +1215,183 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
             WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
           [pageId],
         )).rows).toEqual([{ status: 'cancelled' }]);
+      });
+    });
+
+    describe('code-block title and options through Apply (#1958)', () => {
+      const CODE = '<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">js</ac:parameter>'
+        + '<ac:parameter ac:name="title">Startup.cs</ac:parameter><ac:parameter ac:name="linenumbers">true</ac:parameter>'
+        + '<ac:plain-text-body><![CDATA[const a = "x" & 1;]]></ac:plain-text-body></ac:structured-macro>';
+      const MERMAID = '<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">mermaid</ac:parameter>'
+        + '<ac:parameter ac:name="title">Flow</ac:parameter><ac:parameter ac:name="theme">dark</ac:parameter>'
+        + '<ac:plain-text-body><![CDATA[graph TD\n  A --> B]]></ac:plain-text-body></ac:structured-macro>';
+      const STORAGE = `<p>Intro</p>${CODE}<p>Mid</p>${MERMAID}`;
+
+      async function seed(confluenceId = 'page-code-meta'): Promise<{ pageId: number; markdown: string; bodyHtml: string }> {
+        const pageId = await insertConfluencePage(confluenceId, 'Code article', 'OPS');
+        const bodyHtml = confluenceToHtml(STORAGE, confluenceId, 'OPS');
+        await setPageContent(pageId, bodyHtml, 7, STORAGE);
+        await enableConfluence(true);
+        return { pageId, bodyHtml, markdown: htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true }) };
+      }
+
+      const sentStorage = (): string =>
+        (JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } }).body.storage.value;
+
+      /** [language, title, other parameters, code] of every code macro, read by the independent XML oracle. */
+      const codeMacros = (storage: string): unknown[] => oracleElements(storage, 'ac', 'structured-macro')
+        .filter((macro) => macro.getAttribute('ac:name') === 'code')
+        .map((macro) => {
+          const parameters = Array.from(macro.children).filter((child) => child.localName === 'parameter')
+            .map((child) => [child.getAttribute('ac:name'), child.textContent]);
+          const code = Array.from(macro.children).find((child) => child.localName === 'plain-text-body')?.textContent;
+          return [parameters, code];
+        });
+
+      async function expectNothingDispatched(pageId: number, before: unknown): Promise<void> {
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect(await readPage(pageId)).toEqual(before);
+        expect((await query("SELECT 1 FROM page_write_intents WHERE kind = 'page.ai_apply'")).rowCount).toBe(0);
+      }
+
+      it('keeps title and options of a code and a mermaid block on an unchanged echo (criteria 1, 4)', async () => {
+        const { pageId, markdown } = await seed();
+        expect(markdown).toContain('[[[CODE-META n=0 title=Startup%2Ecs params=%7B%22linenumbers%22%3A%22true%22%7D]]]');
+        acceptNextConfluenceUpdate();
+
+        const response = await apply({ pageId: 'page-code-meta', improvedMarkdown: markdown.replace('Intro', 'Introduction'), version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())).toEqual([
+          [[['language', 'js'], ['title', 'Startup.cs'], ['linenumbers', 'true']], 'const a = "x" & 1;'],
+          [[['language', 'mermaid'], ['title', 'Flow'], ['theme', 'dark']], 'graph TD\n  A --> B'],
+        ]);
+        expect(sentStorage()).not.toMatch(/CODE-META|data-cq-/);
+        const saved = await readPage(pageId);
+        expect(saved.body_html).toBe(confluenceToHtml(sentStorage(), 'page-code-meta', 'OPS'));
+        expect(saved.body_text).toBe(htmlToText(saved.body_html));
+      });
+
+      it('attaches nothing to an edited block and nothing for an invented token', async () => {
+        const { markdown } = await seed();
+        acceptNextConfluenceUpdate();
+        // An invented ordinal binds nothing (a copied `n=1` would instead void both, G0).
+        const improved = markdown.replace('const a = "x" & 1;', 'const a = 2;') + '\n\n[[[CODE-META n=5 title=Flow]]]\n```js\nnew()\n```\n';
+
+        const response = await apply({ pageId: 'page-code-meta', improvedMarkdown: improved, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())).toEqual([
+          [[['language', 'js']], 'const a = 2;\n'],
+          [[['language', 'mermaid'], ['title', 'Flow'], ['theme', 'dark']], 'graph TD\n  A --> B'],
+          [[['language', 'js']], 'new()\n'],
+        ]);
+      });
+
+      it('refuses a model code placeholder with a large parameter object before its values reach the serializer (Y2)', async () => {
+        const { pageId, markdown } = await seed();
+        const before = await readPage(pageId);
+        const params = JSON.stringify(Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`p${i}`, 'v'.repeat(40)])));
+        const parse = vi.spyOn(JSON, 'parse');
+        const improved = `${markdown}\n\n<div class="confluence-macro-unknown" data-macro-name="code" data-macro-params="${params.replace(/"/g, '&quot;')}">x</div>\n`;
+
+        const response = await apply({ pageId: 'page-code-meta', improvedMarkdown: improved, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(422);
+        expect(response.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'unapproved-code-macro' });
+        expect(parse.mock.calls.some(([value]) => value === params)).toBe(false);
+        parse.mockRestore();
+        await expectNothingDispatched(pageId, before);
+      });
+
+      it.each([
+        ['canonical bare raw macro markup', '<div><ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[x]]></ac:plain-text-body></ac:structured-macro></div>'],
+        ['macro markup inside a raw-text element', '<div><xmp><ac:structured-macro ac:name="code"><ac:parameter ac:name="title">T</ac:parameter><ac:plain-text-body>x</ac:plain-text-body></ac:structured-macro></xmp></div>'],
+      ])('refuses %s before any effect (R2)', async (_name, markup) => {
+        const { pageId, markdown } = await seed();
+        const before = await readPage(pageId);
+
+        const response = await apply({ pageId: 'page-code-meta', improvedMarkdown: `${markdown}\n\n${markup}\n`, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(422);
+        expect(response.json()).toMatchObject({ reason: 'unapproved-code-macro' });
+        await expectNothingDispatched(pageId, before);
+      });
+
+      it('keeps a fence that shows macro syntax as code text', async () => {
+        const { markdown } = await seed();
+        acceptNextConfluenceUpdate();
+        const sample = '<ac:structured-macro ac:name="code"><ac:parameter ac:name="title">T</ac:parameter></ac:structured-macro>';
+
+        const response = await apply({ pageId: 'page-code-meta', improvedMarkdown: `${markdown}\n\n\`\`\`xml\n${sample}\n\`\`\`\n`, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())[2]).toEqual([[['language', 'xml']], `${sample}\n`]);
+      });
+
+      it('answers a caller without page access before a content-dependent refusal (Y3)', async () => {
+        const { pageId, markdown } = await seed();
+        const before = await readPage(pageId);
+        userId = otherUserId;
+        await setIntegration(otherUserId, true);
+
+        const response = await apply({
+          pageId: 'page-code-meta', improvedMarkdown: `${markdown}\n\n<div class="panel-info" data-macro-name="code">x</div>\n`, version: 7,
+        });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toMatchObject({ reason: 'not_authorized' });
+        await expectNothingDispatched(pageId, before);
+      });
+
+      describe('the local write of a synced page while the integration is off', () => {
+        it('judges the projections with the stored storage and keeps the metadata', async () => {
+          const { pageId, markdown } = await seed('page-code-local');
+          await setIntegration(userId, false);
+
+          const response = await apply({ pageId: String(pageId), improvedMarkdown: markdown, version: 7 });
+
+          expect(response.statusCode, response.body).toBe(200);
+          const saved = await readPage(pageId);
+          expect(saved.body_storage).toBe(STORAGE);
+          expect(codeMacros(htmlToConfluence(saved.body_html, { previousStorage: STORAGE }))).toEqual(codeMacros(STORAGE));
+          expect(mockHttpRequest).not.toHaveBeenCalled();
+        });
+
+        it('refuses an unreadable projection before the write transaction', async () => {
+          const { pageId, markdown } = await seed('page-code-local-bad');
+          await setIntegration(userId, false);
+          const before = await readPage(pageId);
+
+          const response = await apply({ pageId: String(pageId), improvedMarkdown: `${markdown}\n\n<p title="a<b">t</p>\n`, version: 7 });
+
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.json()).toMatchObject({ reason: 'not-well-formed' });
+          expect(await readPage(pageId)).toEqual(before);
+        });
+
+        it('answers 409 when the stored storage the projections were judged with changed while it waited', async () => {
+          const { pageId, markdown } = await seed('page-code-local-race');
+          await setIntegration(userId, false);
+          const blocker = await getPool().connect();
+          await blocker.query('BEGIN');
+          await lockPageLifecycle(blocker, [pageId]);
+          try {
+            const pending = apply({ pageId: String(pageId), improvedMarkdown: markdown, version: 7 });
+            await waitForBlockedLifecycleLock();
+            await blocker.query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, '<p>re-synced</p>']);
+            await blocker.query('COMMIT');
+
+            const response = await pending;
+            expect(response.statusCode).toBe(409);
+          } catch (error) {
+            await blocker.query('ROLLBACK').catch(() => undefined);
+            throw error;
+          } finally {
+            blocker.release();
+          }
+          expect(await readPage(pageId)).toMatchObject({ version: 7, body_storage: '<p>re-synced</p>', local_modified_by: null });
+        });
       });
     });
 

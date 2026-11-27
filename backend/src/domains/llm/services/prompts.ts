@@ -84,6 +84,12 @@ The right text, improved.
 The collapsible text, improved. Note that title=Rollback%20runbook was copied character for character.
 [[[/EXPAND]]]`;
 
+// #1958: appended to improve prompts when the markdown carries a CODE-META
+// echo token. The token gives a code block's title and options back on
+// Accept, but only to a block whose code the model left exactly as it was;
+// an edited block is saved as written, without them.
+export const CODE_META_PRESERVATION_INSTRUCTION = `Some code blocks are preceded by a metadata token: a standalone line like [[[CODE-META n=0 title=Startup%2Ecs params=%7B%22linenumbers%22%3A%22true%22%7D]]] directly above the opening \`\`\` fence. It carries the code block's title and options. Keep every such line EXACTLY as written, character for character, on its own line directly above the same code block, with no blank line in between. Never decode, edit, copy, move or invent one, and never put one inside a code block. If you change a code block's code, keep its token line above it anyway.`;
+
 const SYSTEM_PROMPTS = {
   improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 

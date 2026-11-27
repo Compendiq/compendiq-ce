@@ -10,10 +10,18 @@
 import { describe, it, expect } from 'vitest';
 import { rewriteAttachmentRefs, parentKeyFor } from './page-relocate-service.js';
 import {
+  assertLocalCodeMacroProjections,
+  beginCodeMetaAccept,
+  extractLayoutSkeleton,
+  finalizeCodeMetadata,
   htmlToConfluence,
+  htmlToMarkdown,
   confluenceToHtml,
   markdownToHtml,
+  protectMedia,
+  replayProtectedMedia,
 } from '../../../core/services/content-converter.js';
+import { oracleElements } from '../../../core/services/__fixtures__/storage-oracle.js';
 
 /** Storage for an image borrowed from another page — ordinary Confluence markup. */
 const CROSS_PAGE_STORAGE =
@@ -300,6 +308,30 @@ describe('parentKeyFor (#1123)', () => {
     // Defensive: a Confluence-sourced row mid-relocate has already had its
     // confluence_id cleared, and children of it key on the numeric id.
     expect(parentKeyFor('confluence', 42, null)).toBe('42');
+  });
+});
+
+describe('a stored AI Improve result published later by relocation (#1958)', () => {
+  it('keeps a bound block\'s title and options when relocation rewrites the image and link beside it', async () => {
+    // A standalone page: the Accept stores HTML; relocation later re-keys its attachments and converts it.
+    const stored = '<p>See <a href="/api/local-attachments/7/spec.pdf">the spec</a> &quot;now&quot;.</p>'
+      + '<pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;}"><code class="language-js">const a = 1;</code></pre>'
+      + '<p><img src="/api/local-attachments/7/chart.png" alt="chart"></p>';
+    const protectedBody = protectMedia(stored);
+    const codeMeta = beginCodeMetaAccept(protectedBody);
+    const rebuilt = await markdownToHtml(htmlToMarkdown(protectedBody.html, { layoutTokens: true }), {
+      layoutSkeleton: extractLayoutSkeleton(protectedBody.html), protectedMedia: protectedBody.media, codeMeta,
+    });
+    const accepted = finalizeCodeMetadata(replayProtectedMedia(rebuilt, protectedBody.media, codeMeta).html, codeMeta);
+    expect(() => assertLocalCodeMacroProjections(accepted.html, accepted.allowance, { body_storage: null })).not.toThrow();
+
+    const { html: relocated, refs } = rewriteAttachmentRefs(accepted.html, ['/api/local-attachments/7/'], '/api/attachments/900001/', true);
+    expect(refs.map((ref) => ref.local)).toContain('chart.png');
+    const published = htmlToConfluence(relocated);
+    const macros = oracleElements(published, 'ac', 'structured-macro').filter((macro) => macro.getAttribute('ac:name') === 'code');
+    expect(macros.map((macro) => Array.from(macro.children).map((child) => [child.getAttribute('ac:name'), child.textContent])))
+      .toEqual([[['language', 'js'], ['title', 'Startup.cs'], ['linenumbers', 'true'], [null, 'const a = 1;']]]);
+    expect(oracleElements(published, 'ri', 'attachment').map((el) => el.getAttribute('ri:filename'))).toContain('chart.png');
   });
 });
 
