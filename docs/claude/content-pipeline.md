@@ -364,9 +364,12 @@ unchanged table grid, and the #1955 link
 kinds; the editor's table projection (`colgroup`, cell paragraphs) and its
 white-space collapse therefore lose a table's carriers and a doubled-space
 emoticon. A link target is recovered only when no other link of any kind in
-the stored body, the storage or the target shows the same visible label, so a
-page with two links labelled alike recovers neither. Re-sync stays the remedy.
-The writers and the room seed call it in #1953-2.
+the stored body, the storage (with the label it shows there) or the target
+shows the same visible label or goes to the same page, attachment or anchor,
+and only when the link's own anchor is still in the target. So a page with two
+links labelled alike or to one destination recovers neither, and a link the
+editor dropped or the user unlinked is not republished. Re-sync stays the
+remedy. The writers and the room seed call it in #1953-2.
 
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can

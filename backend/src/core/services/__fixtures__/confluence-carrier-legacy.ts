@@ -448,6 +448,22 @@ export const LEGACY_CARRIER_FIXTURES = {
     storage: '<p><ac:structured-macro ac:name="status"><ac:parameter ac:name="title">OK</ac:parameter><ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro> and <em><ac:structured-macro ac:name="status"><ac:parameter ac:name="title">OK</ac:parameter><ac:parameter ac:name="subtle">false</ac:parameter></ac:structured-macro></em></p>',
     legacyHtml: '<p><span class="confluence-status" data-color="grey">OK</span> and <em><span class="confluence-status" data-color="grey">OK</span></em></p>',
   },
+  attachmentOwnedLabelRival: {
+    storage: '<p>File <ac:link><ri:attachment ri:filename="a.pdf"><ri:page ri:content-title="Other" /></ri:attachment></ac:link> here</p><p>See <a href="https://example.org/">a.pdf</a>.</p>',
+    legacyHtml: '<p>File <a href="#confluence-page:Other" data-confluence-link="page">Other</a> here</p><p>See <a href="https://example.org/">a.pdf</a>.</p>',
+  },
+  attachmentOwnedLabelInText: {
+    storage: '<p>File <ac:link><ri:attachment ri:filename="a.pdf"><ri:page ri:content-title="Other" /></ri:attachment></ac:link> here</p><p>See a.pdf.</p>',
+    legacyHtml: '<p>File <a href="#confluence-page:Other" data-confluence-link="page">Other</a> here</p><p>See a.pdf.</p>',
+  },
+  anchorLinkBesideText: {
+    storage: '<p>Jump <ac:link ac:anchor="top"><ac:plain-text-link-body><![CDATA[to top]]></ac:plain-text-link-body></ac:link> now</p><p>Next to top.</p>',
+    legacyHtml: '<p>Jump <a>to top</a> now</p><p>Next to top.</p>',
+  },
+  samePageTwoLabels: {
+    storage: '<p><ac:link><ri:page ri:content-title="P" ri:space-key="A" /><ac:plain-text-link-body><![CDATA[one]]></ac:plain-text-link-body></ac:link></p><p><ac:link><ri:page ri:content-title="P" ri:space-key="A" /><ac:plain-text-link-body><![CDATA[two]]></ac:plain-text-link-body></ac:link></p>',
+    legacyHtml: '<p><a href="#confluence-page:P" data-confluence-link="page">one</a></p><p><a href="#confluence-page:P" data-confluence-link="page">two</a></p>',
+  },
   markerSpelled: {
     storage: '<p>data-cq-0123456789abcdef0123456789abcdef <ac:emoticon ac:name="tick" /> b</p>',
     legacyHtml: '<p>data-cq-0123456789abcdef0123456789abcdef  b</p>',

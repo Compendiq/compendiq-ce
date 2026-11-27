@@ -94,11 +94,12 @@ describe('reconcileConfluenceCarriers: general', () => {
 
   it('writes back the code, toc, status and link carriers of the AC1-only fixture through the editor schema, and loses what AA2 records', () => {
     // The backend editor schema collapses the doubled space beside the paragraph emoticon and gives the table a
-    // colgroup and cell paragraphs: neither emoticon is recovered (design.md §8, "AC2 is not met in full").
+    // colgroup and cell paragraphs: neither emoticon is recovered (design.md §8, "AC2 is not met in full"). It also
+    // drops the attribute-less text-only link: with its anchor gone from T it is not republished (review r4 ruling).
     const target = editorProjection(F.ac1.legacyHtml);
     const { html, report } = reconcile(F.ac1, target);
-    expect(report.recovered).toEqual({ 'macro.code': 1, 'macro.toc': 1, 'macro.status': 1, link: 3 });
-    expect(report.skipped).toEqual({ emoticon: { boundary: 1, container: 1 } });
+    expect(report.recovered).toEqual({ 'macro.code': 1, 'macro.toc': 1, 'macro.status': 1, link: 2 });
+    expect(report.skipped).toEqual({ emoticon: { boundary: 1, container: 1 }, link: { no_element: 1 } });
     expect(writeBack(html, F.ac1)).toBe(
       '<p>Done now</p><table style="min-width: 50px;"><colgroup><col style="min-width: 25px;" /><col style="min-width: 25px;" /></colgroup>'
       + '<tbody><tr><td colspan="1" rowspan="1"><p></p></td><td colspan="1" rowspan="1"><p>x</p></td></tr></tbody></table>'
@@ -109,7 +110,7 @@ describe('reconcileConfluenceCarriers: general', () => {
       + '<ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro></p>'
       + '<p>See <ac:link ac:anchor="sec"><ri:page ri:content-title="My Page" ri:space-key="ENG"></ri:page><ac:plain-text-link-body><![CDATA[the page]]></ac:plain-text-link-body></ac:link>.</p>'
       + '<p><ac:link><ri:attachment ri:filename="a.pdf"><ri:page ri:content-title="Other"></ri:page></ri:attachment></ac:link></p>'
-      + '<p>Jump <ac:link ac:anchor="top"><ac:plain-text-link-body><![CDATA[to top]]></ac:plain-text-link-body></ac:link> now</p>',
+      + '<p>Jump to top now</p>',
     );
   });
 
@@ -570,8 +571,9 @@ describe('Y4 / Z2: positional identity under unchanged child sequences', () => {
     expect(reconcile(F.pageLink, classed)).toMatchObject({ html: classed, report: { skipped: { link: { changed: 1 } } } });
   });
 
-  it('still wraps a text-only link the editor dropped (control)', () => {
-    expect(reconcile(F.anchorLink, '<p>Jump to top now</p>').html).toBe('<p>Jump <a href="#confluence-anchor:top" data-confluence-link="anchor">to top</a> now</p>');
+  it('does not republish a text-only link whose anchor the editor dropped (review r4 ruling)', () => {
+    const target = '<p>Jump to top now</p>';
+    expect(reconcile(F.anchorLink, target)).toMatchObject({ html: target, report: { outcome: 'evaluated', skipped: { link: { no_element: 1 } } } });
   });
 
   it('does not insert an emoticon when whitespace changed elsewhere in its run', () => {
@@ -828,14 +830,16 @@ describe('links', () => {
   });
 
   it('a recovered page link is written back as the stored resource; a copy of it in the target is not', () => {
-    // The copy has another label: a copy with the same label makes the link abstain (review r3 ruling).
-    const copy = '<a href="#confluence-page:My Page" data-confluence-link="page">a copy</a>';
+    // The copy goes elsewhere and shows another label: a copy to the same destination or with the same label makes
+    // the link abstain (review r3/r4 rulings).
+    const copy = '<a href="#confluence-page:Elsewhere" data-confluence-link="page">a copy</a>';
     const target = F.pageLinkWithNeighbour.legacyHtml.replace('<p>Other text</p>', `<p>Other text ${copy}</p>`);
     const { html, report } = reconcile(F.pageLinkWithNeighbour, target);
     expect(report.recovered).toEqual({ link: 1 });
     const pages = oracleElements(writeBack(html, F.pageLinkWithNeighbour), 'ri', 'page');
     expect(pages.map((page) => page.getAttribute('ri:space-key'))).toEqual(['ENG', null]);
     expect(oracleElements(writeBack(html, F.pageLinkWithNeighbour), 'ac', 'link').map((link) => link.getAttribute('ac:anchor'))).toEqual(['sec', null]);
+    expect(pages.map((page) => page.getAttribute('ri:content-title'))).toEqual(['My Page', 'Elsewhere']);
   });
 });
 
@@ -1153,12 +1157,12 @@ describe('review r2', () => {
     }
   });
 
-  it('CAR-8: links the keys tell apart still recover in place, and a swap of them is a change', () => {
-    const { html, report } = reconcile(F.linksDistinct);
-    expect(report).toMatchObject({ outcome: 'recovered', recovered: { link: 2 }, skipped: {} });
-    expect(spaces(writeBack(html, F.linksDistinct))).toEqual(['A', 'B']);
-    const swapped = swapLinks(F.linksDistinct.legacyHtml);
-    expect(reconcile(F.linksDistinct, swapped)).toMatchObject({ html: swapped, report: { skipped: { link: { changed: 2 } } } });
+  it('CAR-8: links to one page with labels the keys tell apart abstain too (review r4 destination rule), swapped or not', () => {
+    for (const target of [F.linksDistinct.legacyHtml, swapLinks(F.linksDistinct.legacyHtml)]) {
+      const result = reconcile(F.linksDistinct, target);
+      expect(result).toMatchObject({ html: target, report: { outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 2 } } } });
+      expect(spaces(writeBack(result.html, F.linksDistinct))).toEqual([null, null]);
+    }
   });
 
   it('CAR-9: a parameterless link whose legacy href only spells its value differently recovers nothing', () => {
@@ -1253,7 +1257,51 @@ describe('review r3', () => {
     // Only in the target: an external link the user added with the same label.
     const target = `${F.pageLink.legacyHtml}<p><a href="https://example.com/"><em>the page</em></a></p>`;
     expect(reconcile(F.pageLink, target)).toMatchObject({ html: target, report: { skipped: { link: { ambiguous: 1 } } } });
-    // Different labels keep recovering.
-    expect(reconcile(F.linksDistinct).report).toMatchObject({ recovered: { link: 2 }, skipped: {} });
+    // Different labels and destinations keep recovering.
+    expect(reconcile(F.ac1).report).toMatchObject({ recovered: { link: 3 }, skipped: {} });
+  });
+});
+
+describe('review r4', () => {
+  const links = (storage: string) => oracleElements(storage, 'ac', 'link');
+  const skippedTotal = (report: CarrierReport) => Object.values(report.skipped.link ?? {}).reduce((sum, n) => sum + (n ?? 0), 0);
+
+  it('CAR-15: a link whose storage label another link shows abstains, though the stored body shows another label', () => {
+    const result = reconcile(F.attachmentOwnedLabelRival);
+    expect(result).toMatchObject({ html: F.attachmentOwnedLabelRival.legacyHtml, report: { outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 1 } } } });
+    expect(oracleElements(writeBack(result.html, F.attachmentOwnedLabelRival), 'ri', 'attachment')).toHaveLength(0);
+  });
+
+  it('CAR-15: the unopposed page-owned attachment still recovers its filename and container', () => {
+    const { html, report } = reconcile(F.attachmentOwnedLabelInText);
+    expect(report).toMatchObject({ outcome: 'recovered', recovered: { link: 1 }, skipped: {} });
+    expect(html).toBe('<p>File <a href="#confluence-attachment:a.pdf?page.ri:content-title=Other" data-confluence-link="attachment">a.pdf</a> here</p><p>See a.pdf.</p>');
+  });
+
+  it('CAR-16: a link whose own anchor is gone from the target is not republished, whatever else links there', () => {
+    const external = '<p>Jump to top now</p><p>Next <a href="https://example.org/">to top</a>.</p>';
+    const anchored = '<p>Jump to top now</p><p>Next <a href="#confluence-anchor:top" data-confluence-link="anchor">to top</a>.</p>';
+    const bare = '<p>Jump to top now</p><p>Next to top.</p>';
+    for (const target of [external, anchored, bare]) {
+      const result = reconcile(F.anchorLinkBesideText, target);
+      expect(result.html).toBe(target);
+      expect(result.report.recovered).toEqual({});
+      expect(skippedTotal(result.report)).toBe(1);
+      const written = links(writeBack(result.html, F.anchorLinkBesideText)).map((link) => link.getAttribute('ac:anchor'));
+      expect(written).toEqual(links(writeBack(target, F.anchorLinkBesideText)).map((link) => link.getAttribute('ac:anchor')));
+    }
+    expect(links(writeBack(anchored, F.anchorLinkBesideText)).map((link) => link.getAttribute('ac:anchor'))).toEqual(['top']);
+  });
+
+  it('CAR-16: two links to one destination abstain page-wide, whatever their labels', () => {
+    const result = reconcile(F.samePageTwoLabels);
+    expect(result).toMatchObject({ html: F.samePageTwoLabels.legacyHtml, report: { outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 2 } } } });
+    expect(oracleElements(writeBack(result.html, F.samePageTwoLabels), 'ri', 'page').map((page) => page.getAttribute('ri:space-key'))).toEqual([null, null]);
+  });
+
+  it('unopposed links whose anchor survives in the target still recover', () => {
+    expect(reconcile(F.anchorLink).report).toMatchObject({ recovered: { link: 1 }, skipped: {} });
+    expect(reconcile(F.pageLink).report).toMatchObject({ recovered: { link: 1 }, skipped: {} });
+    expect(reconcile(F.attachmentOwned).report).toMatchObject({ recovered: { link: 1 }, skipped: {} });
   });
 });

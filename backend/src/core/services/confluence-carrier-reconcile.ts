@@ -505,9 +505,8 @@ interface InlineRange {
 interface RawItem {
   readonly key: string;
   readonly whitespace: boolean;
-  /** The mark set id and whether it holds an `a`. */
+  /** The mark set id. */
   readonly marks: number;
-  readonly underLink: boolean;
   readonly node: Node;
   /** The code unit offset of the character in its text node (-1 for an atom). */
   readonly offset: number;
@@ -612,7 +611,6 @@ function tokenizeRun(nodes: readonly ChildNode[], ctx: Ctx): Omit<RunInfo, 'key'
   let pending: number | null = null;
   let emoticons = 0;
   const stack: number[] = [];
-  const linkDepth: boolean[] = [];
   let marksId = intern(ctx, '[]');
   const setMarks = (): void => {
     marksId = intern(ctx, JSON.stringify(stack));
@@ -628,12 +626,11 @@ function tokenizeRun(nodes: readonly ChildNode[], ctx: Ctx): Omit<RunInfo, 'key'
       if (ctx.anchors.has(text)) anchors.set(text, { t: tokens.length, r: raw.length, marks: marksId });
       const data = text.data;
       ctx.work.charge(data.length);
-      const underLink = linkDepth.includes(true);
       for (let offset = 0; offset < data.length;) {
         const point = data.codePointAt(offset)!;
         const char = String.fromCodePoint(point);
         const whitespace = WHITESPACE.test(char);
-        raw.push({ key: `${marksId}|${char}`, whitespace, marks: marksId, underLink, node: text, offset, length: char.length });
+        raw.push({ key: `${marksId}|${char}`, whitespace, marks: marksId, node: text, offset, length: char.length });
         if (whitespace) {
           if (pending === null) pending = marksId;
         } else {
@@ -660,16 +657,14 @@ function tokenizeRun(nodes: readonly ChildNode[], ctx: Ctx): Omit<RunInfo, 'key'
       range.t0 = tokens.length;
       atoms.set(tokens.length, el);
       tokens.push(`${marksId}#${id}`);
-      raw.push({ key: `${marksId}#${id}`, whitespace: false, marks: marksId, underLink: linkDepth.includes(true), node: el, offset: -1, length: 0 });
+      raw.push({ key: `${marksId}#${id}`, whitespace: false, marks: marksId, node: el, offset: -1, length: 0 });
       if (el.localName === 'span' && hasClass(el, 'confluence-emoticon')) emoticons += 1;
     } else {
       const tag = MARK_TAG[el.localName] ?? el.localName;
       stack.push(intern(ctx, JSON.stringify([tag, attributePairs(el, ctx, tag === 'a')])));
-      linkDepth.push(tag === 'a');
       setMarks();
       for (const child of el.childNodes) visit(child, depth + 1);
       stack.pop();
-      linkDepth.pop();
       setMarks();
     }
     range.t1 = tokens.length;
@@ -904,6 +899,39 @@ interface ProjectedRecord {
   /** An emoticon's position in π(C): an empty text node where it stood. */
   readonly anchor: Text | null;
   readonly order: number;
+  /** A link record's visible label and destination in S as the forward conversion shows it, before π. */
+  readonly source: { readonly label: string; readonly destination: string | null } | null;
+}
+
+/** What a link shows: its text with white space collapsed and the ends trimmed. */
+function visibleLabel(el: Element): string {
+  return (el.textContent ?? '').replace(/[\t\n\f\r ]+/g, ' ').trim();
+}
+
+/** Where a link goes, as the grammar reads its carrier: kind and value (legacy and current spellings alike). */
+function linkDestination(el: Element): string | null {
+  const carrier = confluenceLinkCarrierOf(el);
+  const link = carrier === null ? null : parseConfluenceLinkHref(carrier);
+  return link ? `${link.kind}\u0000${link.value}` : null;
+}
+
+interface LinkIndex {
+  readonly labels: ReadonlyMap<string, number>;
+  readonly destinations: ReadonlyMap<string, number>;
+}
+
+/** Every `<a>` of a document by visible label and by destination, charged before each is read. */
+function indexLinks(doc: Document, work: Work): LinkIndex {
+  const labels = new Map<string, number>();
+  const destinations = new Map<string, number>();
+  for (const a of doc.body.querySelectorAll('a')) {
+    work.charge((a.textContent ?? '').length + (a.getAttribute('href') ?? '').length + (a.getAttribute('class') ?? '').length + 1);
+    const label = visibleLabel(a);
+    labels.set(label, (labels.get(label) ?? 0) + 1);
+    const destination = linkDestination(a);
+    if (destination !== null) destinations.set(destination, (destinations.get(destination) ?? 0) + 1);
+  }
+  return { labels, destinations };
 }
 
 function parseMark(raw: string): CarrierMark | null {
@@ -1146,6 +1174,10 @@ function reconcileMarked(
   const legacy = new Map<CarrierKindId, CarrierKind>();
   for (const kind of registry) if (!kind.storedHoldsCarrier(lDoc)) legacy.set(kind.id, kind);
 
+  const work = new Work(budget.workFactor * (stored.length + markedHtml.length + targetHtml.length));
+  // Link rivals in S as the forward conversion shows it (review r4 CAR-15): indexed before π replaces any label.
+  const sLinks = indexLinks(cDoc, work);
+
   // Step 9 (first half): records of legacy kinds, π applied in place on C's document.
   const markedElements = [...cDoc.body.querySelectorAll(`[${marker}]`)];
   const payloads = markedElements.map((el) => parseMark(el.getAttribute(marker) ?? ''));
@@ -1179,8 +1211,9 @@ function reconcileMarked(
       skip(report, kind.id, 'unsupported');
       return;
     }
+    const source = mark.k === 'link' ? { label: visibleLabel(el), destination: linkDestination(el) } : null;
     const projected = project(el, mark);
-    records.push({ kind, record, mark, element: projected.element, anchor: projected.anchor, order: records.length });
+    records.push({ kind, record, mark, element: projected.element, anchor: projected.anchor, order: records.length, source });
   });
   // AA3: a source a builder rejected before marking is counted for its legacy kind, so a kind whose only
   // candidate was rejected is evaluated with a skip, never `none` and never fully evaluated.
@@ -1194,7 +1227,6 @@ function reconcileMarked(
   if (evaluated.size === 0) return end('none');
   if (records.length === 0) return end('evaluated');
 
-  const work = new Work(budget.workFactor * (stored.length + markedHtml.length + targetHtml.length));
   const ctx: Ctx = {
     marker,
     budget,
@@ -1252,23 +1284,32 @@ function reconcileMarked(
     groups.set(shape, values);
     values.add(value);
   }
-  // Link ambiguity (review r3 CAR-12/13, coordinator ruling on link identity). A link target is recovered only when
-  // its visible label is shown by no other link of any kind in L, in S (as the forward conversion shows it) or in T,
-  // whatever the marks, wrappers or positions; otherwise the record abstains page-wide. No finer identity proof is
-  // attempted: a link that needs no change is a rival as much as one that does.
-  const linkLabels = [lDoc, cDoc, tDoc].map((doc) => {
-    const counts = new Map<string, number>();
-    for (const a of doc.body.querySelectorAll('a')) {
-      const text = a.textContent ?? '';
-      work.charge(text.length + 1);
-      const label = text.replace(/[\t\n\f\r ]+/g, ' ').trim();
-      counts.set(label, (counts.get(label) ?? 0) + 1);
+  // Link rivals (coordinator rulings on link identity after reviews r3 and r4). A link target is recovered only when
+  // no other link of any kind in L, in S as the forward conversion shows it, or in T shows its visible label (the
+  // stored legacy label, or the source's own label where π replaced it) or goes to its destination (kind and value),
+  // whatever the marks, wrappers or positions; otherwise the record abstains page-wide. Only an occurrence
+  // established to be the record's own is not a rival: its legacy link in L, its source in S, and in T only the
+  // element proven to be its recipient. No finer identity proof is attempted.
+  const lLinks = indexLinks(lDoc, work);
+  const tLinks = indexLinks(tDoc, work);
+  const linkRivals = (record: ProjectedRecord, tOwn: Element | null | undefined): boolean => {
+    const legacyLabel = visibleLabel(record.element!);
+    const { label: sourceLabel, destination } = record.source!;
+    const labels = sourceLabel === legacyLabel ? [legacyLabel] : [legacyLabel, sourceLabel];
+    const shown = (index: LinkIndex): number => labels.reduce((sum, label) => sum + (index.labels.get(label) ?? 0), 0);
+    if (shown(lLinks) > 1 || shown(sLinks) > 1) return true;
+    const legacyDestination = linkDestination(record.element!);
+    if (destination !== null) {
+      const lOwn = legacyDestination === destination ? 1 : 0;
+      if ((lLinks.destinations.get(destination) ?? 0) - lOwn > 0 || (sLinks.destinations.get(destination) ?? 0) > 1) return true;
     }
-    return counts;
-  });
-  const labelShared = (el: Element): boolean => {
-    const label = (el.textContent ?? '').replace(/[\t\n\f\r ]+/g, ' ').trim();
-    return linkLabels.some((counts) => (counts.get(label) ?? 0) > 1);
+    // Before the recipient is known, T may hold the record's own link at most once.
+    if (tOwn === undefined) return shown(tLinks) > 1 || (destination !== null && (tLinks.destinations.get(destination) ?? 0) > 1);
+    const tOwnLabel = tOwn !== null && labels.includes(visibleLabel(tOwn)) ? 1 : 0;
+    if (shown(tLinks) - tOwnLabel > 0) return true;
+    if (destination === null) return false;
+    const tOwnDestination = tOwn !== null && linkDestination(tOwn) === destination ? 1 : 0;
+    return (tLinks.destinations.get(destination) ?? 0) - tOwnDestination > 0;
   };
   // Twin index (§3.5, Improve only): language class and rendered text of every effective code block of T.
   const twins = new Map<string, number>();
@@ -1312,7 +1353,7 @@ function reconcileMarked(
 
   function planRecord(record: ProjectedRecord): Planned | CarrierSkipReason {
     const { kind, mark } = record;
-    if (mark.k === 'link' && labelShared(record.element!)) return 'ambiguous';
+    if (mark.k === 'link' && linkRivals(record, undefined)) return 'ambiguous';
     if (mark.k === 'macro.code' || mark.k === 'macro.toc') {
       const el = record.element!;
       const pair = corr.elements.get(el);
@@ -1548,6 +1589,7 @@ function reconcileMarked(
       const [tEl, tRange] = tAnchors[0]!;
       if (tRange.t0 !== cRange.t0 || tRange.t1 !== cRange.t1 || tRange.attributeless) return 'range';
       if (record.kind.targetHoldsCarrier(tEl)) return 'carried';
+      if (linkRivals(record, tEl)) return 'ambiguous';
       // Only the proven legacy `href` is replaced (§3.5). Any other attribute the operation writes that T already
       // holds must be the stored body's own value at that link, unedited (review r1 CAR-6); else T changed it.
       const lEl = lAnchors.length === 1 && lAnchors[0]![1].t0 === cRange.t0 && lAnchors[0]![1].t1 === cRange.t1 ? lAnchors[0]![0] : null;
@@ -1574,6 +1616,7 @@ function reconcileMarked(
         (anchors.length === 1 && anchors[0]![1].attributeless && anchors[0]![0].childNodes.length === 0 ? anchors[0]![0] : null);
       const tEl = single(tAnchors);
       if (!single(lAnchors) || !tEl) return 'no_element';
+      if (linkRivals(record, tEl)) return 'ambiguous';
       if (!rawEqual) return 'boundary';
       const label = values.label ?? '';
       return inlineLink(record, tRun, tRun.ranges.get(tEl)!.r0, [tRun.ranges.get(tEl)!.r0, tRun.ranges.get(tEl)!.r1], () => {
@@ -1587,6 +1630,7 @@ function reconcileMarked(
       const lMatch = lAnchors.length === 1 && lAnchors[0]![1].attributeless
         && lAnchors[0]![1].t0 === cRange.t0 && lAnchors[0]![1].t1 === cRange.t1;
       if (!tRange.attributeless || tRange.t0 !== cRange.t0 || tRange.t1 !== cRange.t1 || !lMatch) return 'range';
+      if (linkRivals(record, tEl)) return 'ambiguous';
       const linkRaw = [tRange.r0, tRange.r1] as const;
       if (values.label !== null) {
         if (!rawEqual) return 'boundary';
@@ -1598,27 +1642,9 @@ function reconcileMarked(
       return { record, element: tEl, attributes: values.attributes, inline: null, linkRaw, run: tRun, codeOrdinal: null };
     }
     if (tAnchors.length > 0) return 'range';
-    // The editor dropped the <a>: wrap the stored range, which must lie in one text node outside any link.
-    if (!rawEqual) return 'boundary';
-    const first = tRun.raw[cRange.r0];
-    const last = tRun.raw[cRange.r1 - 1];
-    if (!first || !last || first.offset < 0 || first.node !== last.node) return 'range';
-    for (let index = cRange.r0; index < cRange.r1; index += 1) {
-      const item = tRun.raw[index]!;
-      if (item.node !== first.node || item.underLink) return 'range';
-    }
-    const text = first.node as Text;
-    const start = first.offset;
-    const stop = last.offset + last.length;
-    return inlineLink(record, tRun, cRange.r0, [cRange.r0, cRange.r1], () => {
-      text.splitText(stop);
-      const middle = text.splitText(start);
-      const a = tDoc.createElement('a');
-      for (const [name, value] of values.attributes) a.setAttribute(name, value);
-      middle.parentNode!.insertBefore(a, middle);
-      a.appendChild(middle);
-      if (values.label !== null) a.textContent = values.label;
-    });
+    // The link's own anchor is gone from T (the editor dropped it, or the user unlinked the text): nothing in T is
+    // proven to be its recipient, so it is not republished (coordinator ruling after review r4, CAR-16).
+    return 'no_element';
   }
 
   function inlineLink(record: ProjectedRecord, tRun: RunInfo, position: number, linkRaw: readonly [number, number], apply: () => void): Planned | CarrierSkipReason {
