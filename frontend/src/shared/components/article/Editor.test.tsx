@@ -34,7 +34,10 @@ vi.mock('sonner', () => ({
   },
 }));
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Editor } from './Editor';
+import { ArticleViewer } from './ArticleViewer';
 import { clearDraft, readDraft } from '../../lib/editor-drafts';
 import { useAuthStore } from '../../../stores/auth-store';
 import type { Editor as EditorType } from '@tiptap/react';
@@ -43,6 +46,12 @@ import { CellSelection, cellAround } from '@tiptap/pm/tables';
 import { handleTableCellClick, handleTableCellTripleClick } from './table-cell-selection';
 import { useUiStore } from '../../../stores/ui-store';
 import { containsStructuredInline } from './block-menu-nodes';
+
+/** The editor HTML of a linked image copied out of read mode and pasted (#1954); the backend writes it back. */
+const LINKED_IMAGE_COPY = readFileSync(
+  resolve(import.meta.dirname, '../../../../../backend/src/core/services/__fixtures__/linked-image-copy.html'),
+  'utf8',
+).trim();
 
 /**
  * The toolbar's long tail lives behind the Insert menu now. Radix menus open on
@@ -400,6 +409,129 @@ describe('Editor', () => {
       expect(hrefs.filter((href) => !href?.startsWith('#'))).toEqual([]);
       expect(saved.body.innerHTML).not.toMatch(/href="\s*javascript:/i);
       expect(saved.body.textContent).toContain('script carried');
+    });
+  });
+
+  // #1954: a Confluence link whose body is an image. The image is a block node, so the link rides on the
+  // node (`href`, and the class carrier of a navigable ri:url) and comes back as the wrapper `<a>`.
+  describe('linked images (#1954)', () => {
+    const IMG = '<img src="/api/attachments/55/a.png" alt="a.png" data-confluence-image-source="attachment" data-confluence-filename="a.png">';
+    const WEB_CARRIER = '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich';
+
+    async function mounted(content: string): Promise<EditorType> {
+      let editor: EditorType | null = null;
+      render(<Editor content={content} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it('keeps the link of a linked image in getHTML() and renders no anchor in edit mode', async () => {
+      mockFetchAuthenticatedBlob.mockResolvedValue(null);
+      const editor = await mounted(
+        `<p>Intro</p><p><a href="#confluence-page:Runbook" data-confluence-link="page">${IMG}</a></p>`
+        + `<p><a href="https://example.com/z" class="${WEB_CARRIER}" data-confluence-link="url">${IMG.replaceAll('a.png', 'b.png')}</a></p>`,
+      );
+
+      expect(editor.getHTML()).toBe(
+        '<p>Intro</p><p></p>'
+        + `<a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook">${IMG}</a><p></p>`
+        + `<a target="_blank" rel="noopener noreferrer nofollow" class="${WEB_CARRIER}" href="https://example.com/z">`
+        + `${IMG.replaceAll('a.png', 'b.png')}</a><p></p>`,
+      );
+      // The editor shows the images, never their links, and puts no link attribute on an <img>.
+      const dom = editor.view.dom;
+      expect(dom.querySelectorAll('img')).toHaveLength(2);
+      expect(dom.querySelector('img')?.closest('a')).toBeNull();
+      for (const img of dom.querySelectorAll('img')) {
+        expect(img.hasAttribute('href')).toBe(false);
+        expect(img.hasAttribute('linkclass')).toBe(false);
+      }
+      // A node-view update (another attribute of a linked image changes) still writes no link attribute.
+      let imagePos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'image') imagePos = pos;
+      });
+      act(() => {
+        editor.chain().setNodeSelection(imagePos).updateAttributes('image', { alt: 'b2' }).run();
+      });
+      expect(dom.querySelector('img[alt="b2"]')).not.toBeNull();
+      for (const img of dom.querySelectorAll('img')) {
+        expect(img.hasAttribute('href')).toBe(false);
+        expect(img.hasAttribute('linkclass')).toBe(false);
+      }
+      expect(editor.getHTML()).toContain(`class="${WEB_CARRIER}" href="https://example.com/z"><img src="/api/attachments/55/b.png" alt="b2"`);
+    });
+
+    it.each([
+      ['a script address', 'javascript:alert(1)'],
+      ['an obfuscated script address', ' java&#9;script:alert(1)'],
+      ['a data URI', 'data:text/html,x'],
+    ])('drops the link of %s around an image', async (_case, href) => {
+      const editor = await mounted(`<p>Intro</p><p><a href="${href}">${IMG}</a></p>`);
+      const saved = new DOMParser().parseFromString(editor.getHTML(), 'text/html');
+      expect(saved.querySelector('img')).not.toBeNull();
+      expect(saved.querySelector('a')).toBeNull();
+    });
+
+    it('keeps a class on an image link only when it is the carrier of the image\'s own web address', async () => {
+      const other = '#confluence-url:https%3A%2F%2Fexample.com%2Fother';
+      const editor = await mounted(`<p>Intro</p><p><a href="https://example.com/z" class="${other}">${IMG}</a></p>`);
+      const anchor = new DOMParser().parseFromString(editor.getHTML(), 'text/html').querySelector('a');
+      expect(anchor?.getAttribute('href')).toBe('https://example.com/z');
+      expect(anchor?.hasAttribute('class')).toBe(false);
+    });
+
+    it('renders the same <a> start tag for an image link and a text link to the same web address', async () => {
+      const editor = await mounted(
+        `<p><a href="https://example.com/z" class="${WEB_CARRIER}">text</a></p>`
+        + `<p><a href="https://example.com/z" class="${WEB_CARRIER}">${IMG}</a></p>`,
+      );
+      const tags = editor.getHTML().match(/<a [^>]*>/g)!;
+      expect(tags).toHaveLength(2);
+      expect(tags[1]).toBe(tags[0]);
+    });
+
+    // M9: a copy out of read mode is serialized with the viewer's schema. Pasted into the editor and saved, it must
+    // still name the same image resources. The editor's HTML is the fixture the backend writes back
+    // (content-converter.link-bodies.test.ts, page-update.test.ts).
+    it('keeps the image markers and the link of a linked image copied out of read mode and pasted', async () => {
+      const READ_HTML = '<p>Owner</p><p><a href="#confluence-page:Runbook" data-confluence-link="page">'
+        + '<img src="/api/attachments/55/o.xref-fd220de896a5.png" alt="o.png" data-confluence-image-source="attachment"'
+        + ' data-confluence-filename="o.png" data-confluence-owner-page-title="Shared Assets" data-confluence-owner-space-key="ENG"></a></p>'
+        + '<p>Web</p><p><a href="https://example.com/doc" class="#confluence-url:https%3A%2F%2Fexample.com%2Fdoc?body=rich"'
+        + ' data-confluence-link="url"><img src="/api/attachments/55/external-24111e21c3de.png" data-confluence-image-source="external-url"'
+        + ' data-confluence-url="https://cdn.example.com/x.png" alt="x.png"></a></p>';
+      mockFetchAuthenticatedBlob.mockResolvedValue(null);
+      const viewer = render(<ArticleViewer content={READ_HTML} />);
+      await waitFor(() => {
+        expect(viewer.container.querySelectorAll('.ProseMirror img')).toHaveLength(2);
+      });
+      const readView = viewer.container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      readView.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(readView, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+      expect(copied).toContain('data-confluence-owner-page-title="Shared Assets"');
+
+      const editor = await mounted('<p></p>');
+      act(() => {
+        editor.commands.focus();
+        fireEvent.paste(editor.view.dom, {
+          clipboardData: { items: [], types: ['text/html'], getData: (type: string) => (type === 'text/html' ? copied : '') },
+        });
+      });
+
+      expect(editor.getHTML()).toBe(LINKED_IMAGE_COPY);
     });
   });
 

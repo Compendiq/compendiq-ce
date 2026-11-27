@@ -155,14 +155,14 @@ describe('content-converter: #1748 Confluence links survive write-back', () => {
       );
     });
 
-    it('loses an image-bodied link in the editor, as before #1748: the image is a block node (deferred, decisions.md item 9)', () => {
-      // Pins today's editor behaviour (orchestrator decision on critique C2):
-      // the converters keep the link (test above), the editor schema lifts the
-      // block image out of the paragraph and the link is gone.
+    it('keeps an image-bodied link through the collab schema: one ac:link around the block image (#1954)', () => {
+      // The image is still a block node, so it leaves the paragraph as before;
+      // the link now rides on the image node (`href`) and comes back around it.
       const storage = '<p>See <ac:link><ri:page ri:content-title="Shared Assets" />'
         + '<ac:link-body><ac:image><ri:attachment ri:filename="thumbnail.png" /></ac:image></ac:link-body></ac:link> here.</p>';
       expect(htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55'))))).toBe(
-        '<p>See</p><ac:image><ri:attachment ri:filename="thumbnail.png"></ri:attachment></ac:image><p> here.</p>',
+        '<p>See</p><ac:link><ri:page ri:content-title="Shared Assets"></ri:page><ac:link-body><ac:image>'
+        + '<ri:attachment ri:filename="thumbnail.png"></ri:attachment></ac:image></ac:link-body></ac:link><p> here.</p>',
       );
     });
 

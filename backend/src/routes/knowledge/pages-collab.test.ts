@@ -3139,6 +3139,77 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     });
   });
 
+  describe('links whose body is an image on a collaborative Save (#1954)', () => {
+    const image = (filename: string): string => `<ac:image><ri:attachment ri:filename="${filename}" /></ac:image>`;
+    const imageOut = (filename: string): string => `<ac:image><ri:attachment ri:filename="${filename}"></ri:attachment></ac:image>`;
+    const STORAGE = '<p>Intro</p>'
+      + `<p><ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>${image('page.png')}</ac:link-body></ac:link></p>`
+      + `<p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3)}</p>`
+      + `<p><ac:link><ri:url ri:value="/docs/guide" /><ac:link-body>${image('relative.png')}</ac:link-body></ac:link></p>`
+      + `<p>${'More unrelated prose between the two links. '.repeat(3)}</p>`
+      + `<p><ac:link><ri:url ri:value="https://example.com/doc" /><ac:link-body>${image('web.png')}</ac:link-body></ac:link></p>`;
+
+    it('writes every image-bodied link as one ac:link around its image, and the same bytes on a second Save', async () => {
+      const { token, userId } = await createUser(`collab_imglink_${pageIdEntropy()}`);
+      const spaceKey = `IL${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+      const confluenceId = `cf-${pageIdEntropy()}`;
+      const pageId = await insertConfluencePage({ spaceKey, confluenceId, version: 4, bodyHtml: confluenceToHtml(STORAGE, '55') });
+      await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, STORAGE]);
+      await grantSpaceRead(userId, spaceKey);
+      await seedConfluenceCredentials(userId);
+      await enableCollabFlag();
+
+      const ws = await openWritableWhatwg(pageId, token);
+      const doc = new Y.Doc();
+      ws.addEventListener('message', (ev) => {
+        if (ev.data instanceof ArrayBuffer && !decodeControl(new Uint8Array(ev.data))) applySyncFrame(doc, new Uint8Array(ev.data));
+      });
+      await exchangeSyncStep1(ws, doc);
+
+      const storages: string[] = [];
+      let remoteVersion = 4;
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => ({
+        id: confluenceId, title: 'Conf page', status: 'current', type: 'page',
+        version: { number: remoteVersion, when: '2026-11-12T00:00:00Z' },
+      }) as never);
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage, version) => {
+        storages.push(storage);
+        remoteVersion = version + 1;
+        return {
+          id: confluenceId, title, status: 'current', type: 'page',
+          version: { number: remoteVersion, when: '2026-11-12T00:00:01Z' },
+          body: { storage: { value: storage } },
+        } as never;
+      });
+      const save = (label: string) => app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: commitPayload(ws, label, Y.snapshot(doc)),
+      });
+
+      // The room holds each image on its node with its link: one wrapper per image, the carrier of the web link in `class`.
+      const room = yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc);
+      expect(room).toContain('href="#confluence-page:Runbook?ri:space-key=OPS"><img src="/api/attachments/55/page.png"');
+      expect(room).toContain('class="#confluence-url:https%3A%2F%2Fexample.com%2Fdoc?body=rich" href="https://example.com/doc"><img');
+
+      const first = await save('Save 1');
+      expect(first.statusCode, first.body).toBe(200);
+      expect(storages[0]).toBe(
+        '<p>Intro</p><p></p>'
+        + `<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page><ac:link-body>${imageOut('page.png')}</ac:link-body></ac:link>`
+        + `<p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3).trimEnd()}</p><p></p>`
+        + `<ac:link><ri:url ri:value="/docs/guide"></ri:url><ac:link-body>${imageOut('relative.png')}</ac:link-body></ac:link>`
+        + `<p>${'More unrelated prose between the two links. '.repeat(3).trimEnd()}</p><p></p>`
+        + `<ac:link><ri:url ri:value="https://example.com/doc"></ri:url><ac:link-body>${imageOut('web.png')}</ac:link-body></ac:link>`,
+      );
+      const second = await save('Save 2');
+      expect(second.statusCode, second.body).toBe(200);
+      expect(storages[1]).toBe(storages[0]);
+      ws.close();
+    });
+  });
+
   describe('task ids after a collaborative Save (#1751)', () => {
     type TaskEditor = { ws: WebSocket; doc: Y.Doc; controls: string[] };
 

@@ -111,7 +111,7 @@ function parseCreateBlocks(src: string): Spec[] {
 }
 
 function parseNamedExtend(src: string, extendOf: string, name: string, kind: 'node' | 'mark'): Spec | null {
-  const re = new RegExp(`${extendOf}\\.extend\\(\\s*\\{`);
+  const re = new RegExp(`\\b${extendOf}\\.extend(?:<[^>]+>)?\\(\\s*\\{`);
   const m = re.exec(src);
   if (!m) return null;
   const open = src.indexOf('{', m.index);
@@ -132,7 +132,6 @@ function parseNamedExtend(src: string, extendOf: string, name: string, kind: 'no
 function frontendDocumentSpecs(): Spec[] {
   const article = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');
   const comment = readFileSync(join(articleDir, 'comment-extension.ts'), 'utf8');
-  const editor = readFileSync(join(articleDir, 'Editor.tsx'), 'utf8');
   const titled = readFileSync(join(articleDir, 'TitledCodeBlock.ts'), 'utf8');
   const lucide = readFileSync(join(articleDir, 'inline-lucide-icon.ts'), 'utf8');
   const mermaid = readFileSync(join(articleDir, 'MermaidBlockExtension.tsx'), 'utf8');
@@ -143,7 +142,8 @@ function frontendDocumentSpecs(): Spec[] {
     ...parseCreateBlocks(lucide),
     ...parseCreateBlocks(mermaid),
   ];
-  const image = parseNamedExtend(editor, 'Image', 'image', 'node');
+  // #1954: the image node's schema (markers and link) is shared by the editor and read mode.
+  const image = parseNamedExtend(article, 'Image', 'image', 'node');
   const table = parseNamedExtend(article, 'Table', 'table', 'node');
   const code = parseNamedExtend(titled, 'CodeBlockLowlight', 'codeBlock', 'node');
   const highlight = parseNamedExtend(article, 'Highlight', 'highlight', 'mark');
@@ -272,6 +272,21 @@ describe('collab schema parity (#1445)', () => {
       }
       expect(pmAttrs).not.toContain('pngDataUri');
     }
+  });
+
+  it('gives the image node the same markers and link attributes in the editor, read mode and the collab schema (#1954)', () => {
+    const image = frontendDocumentSpecs().find((spec) => spec.name === 'image');
+    expect(image?.attrs).toEqual(expect.arrayContaining([
+      'data-confluence-image-source', 'data-confluence-filename', 'data-confluence-owner-page-title',
+      'data-confluence-owner-space-key', 'data-confluence-url', 'data-import-failed', 'href', 'linkClass',
+    ]));
+    expect(Object.keys(getCollabSchema().nodes.image!.spec.attrs ?? {})).toEqual(expect.arrayContaining(image!.attrs));
+    // The editor adds only its node view; read mode registers the shared schema, never a plain Image.
+    const editor = readFileSync(join(articleDir, 'Editor.tsx'), 'utf8');
+    const viewer = readFileSync(join(articleDir, 'ArticleViewer.tsx'), 'utf8');
+    expect(editor).toMatch(/\bConfluenceImage = ConfluenceImageSchema\.extend\(/);
+    expect(viewer).toMatch(/\bConfluenceImageSchema\.configure\(/);
+    expect(viewer).not.toMatch(/\bImage\.configure\(/);
   });
 
   it('round-trips golden HTML including draw.io and comment (structure, not bytes)', () => {

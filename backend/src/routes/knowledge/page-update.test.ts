@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
@@ -871,6 +871,31 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       expect(providerCalls).toEqual([]);
       expect((await pageRow(pageId)).body_html).toBe(bodyHtml);
     });
+  });
+
+  // #1954 (M9): the HTML an editor holds after a linked image is copied out of read mode and pasted
+  // (pinned by Editor.test.tsx) is sent to Confluence with each image's resource and link intact.
+  it('sends a pasted linked image with its owner page, its external source and its link (#1954)', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    const bodyHtml = (await readFile(
+      new URL('../../core/services/__fixtures__/linked-image-copy.html', import.meta.url),
+      'utf8',
+    )).trim();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Original', version: 7, bodyHtml },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(confluenceRequests).toHaveLength(1);
+    expect(confluenceRequests[0]!.body.body.storage.value).toBe(
+      '<p>Owner</p><p></p><ac:link><ri:page ri:content-title="Runbook"></ri:page><ac:link-body><ac:image>'
+      + '<ri:attachment ri:filename="o.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG"></ri:page>'
+      + '</ri:attachment></ac:image></ac:link-body></ac:link><p>Web</p><p></p><ac:link><ri:url ri:value="https://example.com/doc"></ri:url>'
+      + '<ac:link-body><ac:image><ri:url ri:value="https://cdn.example.com/x.png"></ri:url></ac:image></ac:link-body></ac:link><p></p>',
+    );
   });
 
   it('recovers a compact acknowledged PUT after readback fails without replaying the mutation', async () => {

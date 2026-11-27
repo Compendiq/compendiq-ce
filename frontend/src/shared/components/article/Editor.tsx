@@ -3,7 +3,6 @@ import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList } from '@tiptap/extension-list';
-import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
 import TextAlign from '@tiptap/extension-text-align';
@@ -22,6 +21,7 @@ import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { useUiStore } from '../../../stores/ui-store';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
+  ConfluenceImageSchema,
   ConfluenceLayout,
   ConfluenceLayoutSection,
   ConfluenceLayoutCell,
@@ -154,60 +154,15 @@ export function EditorContextToolbars({
 import { EditorToolbar, EmojiPicker } from './EditorToolbar';
 export { EditorToolbar, EmojiPicker };
 
-const ConfluenceImage = Image.extend({
-  addAttributes() {
-    return {
-      ...this.parent?.(),
-      'data-confluence-image-source': {
-        default: null,
-        parseHTML: (element) => element.getAttribute('data-confluence-image-source'),
-        renderHTML: (attributes) => attributes['data-confluence-image-source']
-          ? { 'data-confluence-image-source': attributes['data-confluence-image-source'] }
-          : {},
-      },
-      'data-confluence-filename': {
-        default: null,
-        parseHTML: (element) => element.getAttribute('data-confluence-filename'),
-        renderHTML: (attributes) => attributes['data-confluence-filename']
-          ? { 'data-confluence-filename': attributes['data-confluence-filename'] }
-          : {},
-      },
-      'data-confluence-owner-page-title': {
-        default: null,
-        parseHTML: (element) => element.getAttribute('data-confluence-owner-page-title'),
-        renderHTML: (attributes) => attributes['data-confluence-owner-page-title']
-          ? { 'data-confluence-owner-page-title': attributes['data-confluence-owner-page-title'] }
-          : {},
-      },
-      'data-confluence-owner-space-key': {
-        default: null,
-        parseHTML: (element) => element.getAttribute('data-confluence-owner-space-key'),
-        renderHTML: (attributes) => attributes['data-confluence-owner-space-key']
-          ? { 'data-confluence-owner-space-key': attributes['data-confluence-owner-space-key'] }
-          : {},
-      },
-      'data-confluence-url': {
-        default: null,
-        parseHTML: (element) => element.getAttribute('data-confluence-url'),
-        renderHTML: (attributes) => attributes['data-confluence-url']
-          ? { 'data-confluence-url': attributes['data-confluence-url'] }
-          : {},
-      },
-      // Set by the HTML-paste handler (#683) when an inline `<img src=…>` in
-      // pasted HTML can't be auto-imported (relative path, fetch failure,
-      // unsupported type). The CSS placeholder targets this attribute to
-      // render the broken-image affordance instead of letting the browser
-      // show its native 404 icon.
-      'data-import-failed': {
-        default: null,
-        parseHTML: (element) => element.getAttribute('data-import-failed'),
-        renderHTML: (attributes) => attributes['data-import-failed']
-          ? { 'data-import-failed': attributes['data-import-failed'] }
-          : {},
-      },
-    };
-  },
+/** The image node's link attributes (#1954): rendered as the wrapper `<a>`, never onto the `<img>`. */
+const IMAGE_LINK_ATTRIBUTES: ReadonlySet<string> = new Set(['href', 'linkClass']);
 
+/**
+ * The image node of the editor: the shared schema (markers and link, #1954)
+ * plus the node view below. The node view never renders the image's link: an
+ * image is selected and dragged in the editor, never followed.
+ */
+const ConfluenceImage = ConfluenceImageSchema.extend({
   // Browser `img` tags cannot send Authorization headers, so the JWT-gated
   // `/api/attachments/...` endpoint returns 401 for every direct image load —
   // both for pasted uploads and for Confluence-synced attachments. The
@@ -279,7 +234,8 @@ const ConfluenceImage = Image.extend({
         // Apply present attrs and track the keys we touched.
         const seen = new Set<string>();
         for (const [key, value] of Object.entries(attrs)) {
-          if (key === 'src' || value == null) continue;
+          // The image's link (#1954) is the wrapper `<a>` of the saved HTML, never an attribute of the `<img>`.
+          if (key === 'src' || IMAGE_LINK_ATTRIBUTES.has(key) || value == null) continue;
           dom.setAttribute(key, String(value));
           writtenAttrKeys.add(key);
           seen.add(key);
