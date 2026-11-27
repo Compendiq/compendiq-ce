@@ -373,10 +373,14 @@ unchanged pages). A save before that still drops them.
 an annotated `pre` that can travel (one `code` child without elements, not in
 a table cell, not draw.io, non-blank, bounded valid metadata, a lossless
 projection) is written as its fence with `[[[CODE-META n=<ordinal> title=…
-params=…]]]` on the line directly above; every other annotated block is frozen
-by `protectMedia` (as are token blocks past 1,000). On Accept the route runs
+params=…]]]` on the line directly above (also when it opens a panel or task
+item); every other annotated block is frozen by `protectMedia` (as are token
+blocks past 1,000) as a `CQ_CODE_PLACEHOLDER_<N>` code entry. **Media tokens
+and ordinals stay exactly those of the release before #1958**; never put
+frozen code into the `CQ_MEDIA_PLACEHOLDER` ordinal space. On Accept the
+remote exit authorizes the actor and the page first, then the route runs
 `beginCodeMetaAccept` → `markdownToHtml(…, { codeMeta })` →
-`replayProtectedMedia` → `finalizeCodeMetadata` → (local)
+`replayProtectedMedia(html, codeMeta)` → `finalizeCodeMetadata` → (local)
 `assertLocalCodeMacroProjections` or (remote) `htmlToConfluence` +
 `assertCodeMacroStorage`. Metadata returns only to a fence whose language and
 exact lexer text equal the pre-Improve block's, in per-key groups equal element
@@ -386,12 +390,17 @@ identical metadata (R1). The written storage (standalone: both publication
 projections, read whatever they spell) is read as XML: every code macro must be
 the writer's exact shape and accounted for by the page, else 422
 `unapproved-code-macro` (or the read reason) before any intent or write.
-Model-written code markup that is not a fence or a plain `pre` is refused (R2).
-A placeholder spelled in `pre`/`code`, or one the page itself spells, stays
-text; a code-carrying original without exactly one viable placement is
-appended once. Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
+Model-written code markup that is not a fence or a plain `pre` is refused (R2;
+`data-macro-name="code"` counts only on a placeholder the writer names a macro
+from). A replayed original must come back exactly (only CR → LF in its code
+text is allowed). A placeholder spelled in `pre`/`code`, or one the page itself
+spells, stays text; a code-carrying original without exactly one viable
+placement is appended once. A suggestion holding no code carrier for a page
+with frozen code (one generated before #1958) is refused with 422.
+Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
 "AI Improve code-block metadata". #1953-2 consumes `witnesses`,
-`codeBlockElements` and `admitLegacyCodeMetadata`.
+`codeBlockElements` and `admitLegacyCodeMetadata` (once per allowance) after
+the remote authorization point.
 
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without

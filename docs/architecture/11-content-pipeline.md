@@ -1505,32 +1505,40 @@ On `POST /llm/improvements/apply` the route:
    unrecoverable layout throws and the apply is rejected with **422** —
    nothing is saved or pushed. `codeMeta` (#1958) is the Accept's code
    metadata state from `beginCodeMetaAccept(protectMedia(body_html))`.
-3. Calls `replayProtectedMedia(html, media, codeMeta)` (#1958; it replaced
-   `restoreMedia` plus the `includes` drop guard). The tokens (and their
-   turndown-escaped variants `CQ\_MEDIA\_PLACEHOLDER\_N`) are located once
+3. Calls `replayProtectedMedia(html, codeMeta)` (#1958; it replaced
+   `restoreMedia` plus the `includes` drop guard). The tokens of the media
+   entries and of the frozen code entries (and their turndown-escaped
+   variants `CQ\_MEDIA\_PLACEHOLDER\_N`) are located once
    (`locateMediaTokens`, #1955): a token is a placement only where it stands
    as content, never inside an attribute value, a comment, raw text, a
    `select`, SVG or MathML, a subtree the tree builder moved or an element
    holding a start tag it ignored. Every placement is screened before
-   anything is counted: a spelling inside `pre`/`code`, or of an entry the
-   page itself spells (`literal`), stays as written; one inside a container
-   the reverse pass drops (`isDroppingContext`: `div.figure-index`,
-   `div.table-index`, `summary`, `template`, the atomic macro placeholders,
-   draw.io, a plain item of a task list) is removed; for an entry holding an
-   annotated code block (`code`), one in a context that does not keep a
-   spliced block intact (outside `p div li ul ol blockquote table thead tbody
-   tfoot tr td th details section article span h1–h6`) is removed too. An
-   entry without code goes to every viable placement; a code-carrying entry
-   to its single viable placement, marked; any entry left without a viable
-   placement is **appended once** at the end (logged `#723: re-appended media
-   dropped during AI Improve`). The plan is budgeted before anything is built
-   (`2 × Σ originals + 65,536` UTF-16 units, else **422**). With no screened
-   placement, no literal or code-carrying entry and every entry placed, the
-   result is byte-identical to the former `restoreMedia` + drop guard.
+   anything is counted (each context element evaluated once): a spelling
+   inside `pre`/`code`, or of an entry the page itself spells (`literal`),
+   stays as written; one inside a container the reverse pass drops
+   (`isDroppingContext`: `div.figure-index`, `div.table-index`, `summary`,
+   `template`, the atomic macro placeholders, draw.io, a plain item of a task
+   list) is removed; for an entry holding an annotated code block (`code`),
+   one in a context that does not keep a spliced block intact (outside `p div
+   li ul ol blockquote table thead tbody tfoot tr td th details section
+   article span h1–h6`) is removed too. An entry without code goes to every
+   viable placement; a code-carrying entry to its single viable placement,
+   marked; any entry left without a viable placement is **appended once** at
+   the end (logged `#723: re-appended media dropped during AI Improve`). The
+   plan is budgeted before anything is built (`2 × Σ originals + 65,536`
+   UTF-16 units, else **422**). With no screened placement, no literal or
+   code-carrying entry and every entry placed, the result is byte-identical
+   to the former `restoreMedia` + drop guard. A page with frozen code blocks
+   whose suggestion holds no code carrier at all (no `CQ_CODE_PLACEHOLDER`,
+   no CODE-META spelling) is refused with **422** before anything is built:
+   see "Suggestions across the release".
 4. Calls `finalizeCodeMetadata` (#1958, see "AI Improve code-block metadata"),
    then derives `body_text`; the local exit judges the publication
    projections before the write transaction, the remote exit judges the
-   storage `htmlToConfluence` returned before the intent is reserved.
+   storage `htmlToConfluence` returned before the intent is reserved. On the
+   remote exit the active actor and the page/space authority are validated
+   right after the page is resolved, before step 1 reads any stored-body
+   evidence (#1958 review r1; the final fence before dispatch stays).
 
 ### Lossless confluence-drawio turndown rule
 
@@ -1573,10 +1581,17 @@ not in `td`/`th`, not `drawio`, code not blank (`/^\s*$/`), title and options
 within the bounds, no placeholder spelling, and a lossless projection (the
 fence lexes back to exactly one fenced code token of that language; no CR).
 `frozen`: any other annotated block, and every token block past the first
-1,000, travels as a media entry. `protectMedia` also reports per entry `code`
-(its subtree holds an annotated `pre`) and `literal` (the page's text spells
-its token more than once), and `carried` (the stored body holds an annotated
-`pre` anywhere).
+1,000. A frozen block travels as a **code entry** in its own namespace,
+`CQ_CODE_PLACEHOLDER_<N>` with its own ordinals (`frozenCode`); the media
+entries keep exactly the tokens, ordinals and HTML the release before #1958
+wrote (`media`), and a frozen-class block that holds a media node is not
+frozen (its medium keeps its ordinal; the block loses its metadata as
+before). `protectMedia` also reports per entry `code` (its subtree holds an
+annotated `pre`), `literal` (the page's text spells its token more than once)
+and `lineEndForm` (below), and `carried` (the stored body holds an annotated
+`pre` anywhere). A panel or task item that opens with a token block writes the
+token on its own line after the panel label or task marker, so it stays
+directly above its fence; every other panel and task item is written as before.
 
 **Bounds (both ways).** Title ≤ 1,024 characters; options a plain JSON object
 of ≤ 16 own keys (`^[A-Za-z][A-Za-z0-9_.-]{0,63}$`, not `constructor` /
@@ -1595,26 +1610,37 @@ projection of the block's text) the echoed fences take their tokens only when
 their sequence of valid ordinals equals the stored blocks' sequence element
 for element (G1–G3). A bound fence renders the **stored** code text; the
 stored values are set on it later, never the echoed ones. Token lines and
-three-bracket lookalikes are removed, also from inside a line of prose; a page's
-own escaped spelling stays text.
+three-bracket lookalikes are removed, also from inside a line of prose, a
+heading (a heading that is only a token is removed whole and binds nothing)
+and a table cell; a page's own escaped spelling and a code span stay text.
+The analysis records each fence's position once and filters each token list
+once (linear in the tokens).
 
 **HTML stage (`finalizeCodeMetadata`).** Markers (`data-cq-code-fence`,
 `data-cq-code-replay`, value `<nonce>-<index>`, the nonce 128 random bits made
 at Accept) are authentic when they name a fence or a replayed entry of this
 Accept and occur once. Each replayed code-carrying original must come back
-intact (else **422**, never downgraded). Then: model-owned markup naming a
-code macro (`data-macro-name="code"` anywhere, raw `*:structured-macro` /
-`*:macro` markup with a name-like attribute `code`) refuses the Accept with
-`unapproved-code-macro` before conversion; every other `pre` outside a
-verified original loses `data-title`/`data-macro-params`; forged `data-cq-*`
-attributes are removed; a marked fence still in marked's exact shape, outside
-every dropping container, gets the stored values. **Twin rule:** effective
-code blocks (every `pre` with a `code` descendant) with one key (the language
-the writer emits, the class or else a carried `language`, and the code text
-with XML line ends) keep metadata only when all carry identical metadata;
-otherwise every member loses it (content kept), verified originals included.
-After one re-serialisation every fact is read from the document the returned
-string parses to; the markers are removed by exact text.
+exactly as written; the one allowed difference is that CR / CR LF in the text
+of its `code` elements reads as LF (one HTML parse does that; `lineEndForm`).
+Anything else (a line feed before the `code` of a `pre`, a CR in an attribute
+value) refuses with **422**, never a downgrade. Then: model-owned markup
+naming a code macro (`data-macro-name="code"` on a placeholder the writer
+names a macro from, i.e. a panel, `details`, `div.confluence-children-macro`,
+`div.confluence-macro-unknown` or `div.confluence-include-macro`; raw
+`*:structured-macro` / `*:macro` markup with a name-like attribute `code`)
+refuses the Accept with `unapproved-code-macro` before conversion; the same
+attribute on any other element is an inert annotation and stays; every other
+`pre` outside a verified original loses `data-title`/`data-macro-params`;
+forged `data-cq-*` attributes are removed; a marked fence still in marked's
+exact shape, outside every dropping container, gets the stored values.
+**Twin rule:** effective code blocks (every `pre` with a `code` descendant)
+with one key (the language the writer emits, the class or else a carried
+`language`, and the code text with XML line ends) keep metadata only when all
+carry identical metadata; otherwise every member loses it (content kept),
+verified originals included. Index-block, dropping-container and trusted-root
+membership is read in one walk per document. After one re-serialisation every
+fact is read from the document the returned string parses to; the markers are
+removed in one pass over the string.
 
 **Storage rule.** For trusted units (each bound `pre` and each verified
 original, from #1953-2 on also each admitted legacy block) and
@@ -1629,8 +1655,9 @@ text only) and then one attribute-less text-only `ac:plain-text-body`; and
 every macro with one key (first `language` parameter, body) carries the same
 record, bare and annotated being different; (ii) the multiset of annotated
 records equals R's; (iii) no bare macro has the key of an approved record. A
-bounded walk charges every element, attribute and compared character to an
-8,000,000-unit budget. Remote exit (`assertCodeMacroStorage`): the exact
+bounded walk charges every element (its local name and every attribute's
+local name and value, before they are compared), every text character and
+every record built to an 8,000,000-unit budget. Remote exit (`assertCodeMacroStorage`): the exact
 string `updatePage` receives; a string that cannot hold a start tag ending in
 `macro` (any prefix, no assumption about its alphabet) is not read and passes
 exactly when the units carry no record; otherwise a read failure refuses.
@@ -1640,26 +1667,47 @@ restore converts) and `P2 = htmlToConfluence(reserialise(html))` (what
 relocation converts) are both read and judged, each with its own options; the
 write transaction re-checks the `body_storage` used. A refusal is **422**
 (`unapproved-code-macro` or the read reason); nothing is reserved, uploaded,
-dispatched or stored. On the remote exit page access is checked first, so a
-caller without it gets 403, not a content-dependent answer.
+dispatched or stored.
 
-**#1953-2 interface.** `beginCodeMetaAccept(…, { witnesses: true })` returns one
-witness per `codeBlockElements` element (every `pre` with a direct `code`
-child): the lexer text of an unchanged plain fence, else null.
-`admitLegacyCodeMetadata(allowance, ops)` admits an op only on an uncarried
+**Suggestions across the release.** A suggestion is Markdown the model
+returned; nothing records which converter produced it. The media ordinals are
+the previous release's, so a pending suggestion (an `llm_improvements` row or a
+direct Apply) generated before #1958 applies as it did for every page without
+a frozen code block: its fences are unbound, as they were. For a page with a
+frozen code block the previous release wrote that block as editable Markdown
+while this release writes `CQ_CODE_PLACEHOLDER_<N>`; a suggestion holding no
+code carrier at all is refused with **422** ("run AI Improve again"), because
+it cannot be told from one whose model dropped every carrier and appending the
+originals would duplicate the block. After a rollback to a release before
+#1958, a suggestion generated by #1958 shows its `[[[CODE-META …]]]` and
+`CQ_CODE_PLACEHOLDER_<N>` lines as text and loses frozen blocks on Accept:
+regenerate suggestions after a rollback.
+
+**#1953-2 interface.** The remote Apply's authorization point (above) precedes
+every evidence read; #1953-2 reads recovery evidence only after it.
+`beginCodeMetaAccept(…, { witnesses: true })` returns one witness per
+`codeBlockElements` element (every `pre` with a direct `code` child): the lexer
+text of an unchanged plain fence, else null. `admitLegacyCodeMetadata(allowance,
+ops)` runs once per finalized allowance and admits an op only on an uncarried
 page, for an in-range ordinal no earlier op named, string-or-null values (not
 both null), a witnessed, unannotated block with no twin; the storage rule then
-accounts for exactly the admitted units.
+accounts for exactly the admitted units. It does not verify which HTML element
+received an op: two ordinals whose storage is identical (an empty options
+object) cannot be told apart in storage, so #1953-2 checks the attributes it
+actually applied per ordinal itself.
 
 **Recorded limits.** R1: blocks that end with the same language and code keep
 title and options only when all carry identical ones (a frozen block with an
 editable twin included). R2: model-written code markup that is not a fence
-or a plain `pre` is refused (a code-named placeholder, raw macro markup, macro
-text in raw text, a template or a comment the CDATA pass opens); raw markup
-Markdown writes as text, a fence showing macro syntax and escaped prose are
-data. R3: a page whose own body yields a code macro outside the writer's shape
-cannot Accept. R4: a frozen code-carrying token without exactly one viable
-placement is appended once at the end with its metadata, no copy is made.
+or a plain `pre` is refused (a placeholder the writer names `code`, raw macro
+markup, macro text in raw text, a template or a comment the CDATA pass
+opens); raw markup Markdown writes as text, a fence showing macro syntax,
+escaped prose and `data-macro-name="code"` on an element the writer reads no
+macro name from are data. R3: a page whose own body yields a code macro
+outside the writer's shape cannot Accept. R4: a frozen code-carrying token
+without exactly one viable placement is appended once at the end with its
+metadata, no copy is made; when the suggestion holds no code carrier at all
+the Accept is refused instead (see "Suggestions across the release").
 R5: a placeholder in `pre`/`code` is never replaced, and one the page itself
 spells is never placed (its medium is appended). R6: an original that does
 not verify refuses. R7 (Q8): a standalone Accept is refused when either
@@ -1670,9 +1718,11 @@ storage may hold a macro start tag and is unreadable is refused. Q9
 so it would reject such storage too. Q14: identity is language and code, not
 position; a block dropped by a container `isDroppingContext` does not know
 while an identical macro is written elsewhere passes as a move, carrying
-exactly the stored metadata. Edited code loses its title and options; blocks
-in a panel lose them (the panel rule puts the token line in prose, where it is
-removed); there is no UI warning.
+exactly the stored metadata. Edited code loses its title and options; a
+heading made of a token binds nothing; there is no UI warning. R6 (review r1):
+a frozen original one HTML parse cannot give back (a line feed before the
+`code` of a `pre`, a CR outside code text) refuses every Accept of that page
+until it is edited.
 
 ## AI Improve layout preservation — boundary tokens (#765)
 
