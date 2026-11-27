@@ -667,7 +667,10 @@ compares its HTML with the HTML that schema produced. A room seeded before
 `body_html` without it); the link comes back when the page is re-derived from
 Confluence (Re-sync or Pull), not by a backfill. A browser still running the
 previous bundle does not know the attributes and drops them from an image it
-edits.
+edits. Inline code is a Code mark that excludes only itself (slice B), so a
+link stays on code text; y-prosemirror still stores it under the key `code` (a
+mark that excluded nothing would be stored under a hashed key `code--…`), and
+an old room's code runs read back unchanged.
 
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with
