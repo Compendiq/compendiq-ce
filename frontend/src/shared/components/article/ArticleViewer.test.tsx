@@ -1019,6 +1019,46 @@ describe('ArticleViewer', () => {
         .toEqual(['42', '7']);
     });
 
+    it('keeps script and event-handler canaries out of a nested task in read mode and its copy (#1957)', async () => {
+      // The same input as Editor.test.tsx and the backend's content-converter.nested-tasks.test.ts (#1957 M3).
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">parent'
+        + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="2">safe '
+        + '<img src="https://example.com/a.png" onerror="alert(1)"><script>alert(2)</script>'
+        + '<a href="javascript:alert(3)">link</a> <span onmouseover="alert(4)">hover</span>'
+        + '<div class="confluence-toc" data-maxlevel="2" onclick="alert(5)">[Table of Contents]</div></li></ul></li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      for (const [where, rendered] of [['read view', view.innerHTML], ['copy', copied]] as const) {
+        for (const canary of ['onerror', '<script', 'javascript:', 'onmouseover', 'onclick', 'alert(']) {
+          expect(rendered, `${where}: ${canary}`).not.toContain(canary);
+        }
+      }
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
+        .toEqual(['1', '2']);
+      const sub = clipboard.querySelector('li[data-task-id="1"] li[data-task-id="2"]')!;
+      expect(sub.textContent).toContain('safe');
+      expect(sub.textContent).toContain('link');
+      expect(sub.textContent).toContain('hover');
+      expect(sub.querySelector('.confluence-toc')).not.toBeNull();
+    });
+
     // #1957: a nested task list as confluenceToHtml writes it (the backend's
     // NESTED_TASK_LIST_HTML): the subtask holds a block macro, the stock
     // TaskItem rule took that macro for the whole parent task.

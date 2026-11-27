@@ -1793,6 +1793,33 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
       expect(saved.querySelector('li[data-task-id="1"] > div > .confluence-toc')).not.toBeNull();
     });
 
+    // #1957 M3: the backend's content-converter.nested-tasks.test.ts runs the
+    // same input through the collab schema and expects the same result.
+    const NESTED_CANARY_HTML = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">parent'
+      + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="2">safe '
+      + '<img src="https://example.com/a.png" onerror="alert(1)"><script>alert(2)</script>'
+      + '<a href="javascript:alert(3)">link</a> <span onmouseover="alert(4)">hover</span>'
+      + '<div class="confluence-toc" data-maxlevel="2" onclick="alert(5)">[Table of Contents]</div></li></ul></li></ul>';
+
+    it('keeps script and event-handler canaries out of a nested task, while its content and nesting stay (#1957)', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={NESTED_CANARY_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const html = editor!.getHTML();
+      for (const canary of ['onerror', '<script', 'javascript:', 'onmouseover', 'onclick', 'alert(']) {
+        expect(html, canary).not.toContain(canary);
+      }
+      expect(savedTasks(editor!).map(([id, checked, depth]) => [id, checked, depth])).toEqual([['1', 'false', 1], ['2', 'true', 2]]);
+      const sub = new DOMParser().parseFromString(html, 'text/html').querySelector('li[data-task-id="2"]')!;
+      expect(sub.textContent).toContain('safe');
+      expect(sub.textContent).toContain('link');
+      expect(sub.textContent).toContain('hover');
+      expect(sub.querySelector('.confluence-toc')).not.toBeNull();
+    });
+
     it('keeps 32 nested levels and every id, the nesting the converter writes at most (#1957)', async () => {
       let html = '';
       for (let level = 32; level >= 1; level -= 1) {
