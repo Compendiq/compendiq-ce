@@ -39,8 +39,13 @@ describe('collab schema: a room snapshot persisted before #1954', () => {
     expect(COLLAB_PRE_1954.capturedAtCommit).toBe('bff6d4ec9ec3ca08642e347d19eef51059a5a4bf');
   });
 
-  it('serialises the HTML the old schema produced for it', () => {
-    expect(yDocToHtml(loadFixture())).toBe(COLLAB_PRE_1954.htmlAtCapture);
+  it('serialises the HTML the old schema produced for it, except that a link split around a line break is one link again', () => {
+    // The old room kept the Link mark on both pieces of the text; only the break between lost it (slice C).
+    const href = 'href="#confluence-page:Runbook?ri:space-key=OPS"';
+    const anchor = `<a target="_blank" rel="noopener noreferrer nofollow" ${href}>`;
+    const split = `${anchor}line one</a><br>${anchor}line two</a>`;
+    expect(COLLAB_PRE_1954.htmlAtCapture).toContain(split);
+    expect(yDocToHtml(loadFixture())).toBe(COLLAB_PRE_1954.htmlAtCapture.replace(split, `${anchor}line one<br>line two</a>`));
   });
 
   it('holds what the old schema stored: no image link attribute, the code mark under its own key', () => {

@@ -338,3 +338,37 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
     });
   });
 });
+
+describe('content-converter: a Confluence link whose body holds a line break (#1954)', () => {
+  const PAGE_OUT = '<ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>';
+
+  it.each([
+    ['one break', 'line one<br />line two'],
+    ['bold on one half', '<strong>a</strong><br />b'],
+    ['two breaks', 'a<br /><br />b'],
+  ])('is one ac:link through a collaborative Save and an editor Save: %s', (_case, body) => {
+    const storage = `<p>See <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>${body}</ac:link-body></ac:link> here.</p>`;
+    const written = `<p>See <ac:link>${PAGE_OUT}<ac:link-body>${body}</ac:link-body></ac:link> here.</p>`;
+    expect(save(storage)).toBe(written);
+    expect(edit(storage)).toBe(written);
+  });
+
+  it('keeps a web ri:url link with a line break as one link, its class carrier on both halves joined', () => {
+    const storage = '<p><ac:link><ri:url ri:value="https://example.com/z" /><ac:link-body>a<br />b</ac:link-body></ac:link></p>';
+    expect(save(storage)).toBe('<p><ac:link><ri:url ri:value="https://example.com/z"></ri:url><ac:link-body>a<br />b</ac:link-body></ac:link></p>');
+  });
+
+  // Documented limitation: two separate links to the same target around a break cannot be told apart from one split
+  // link once a document has been through Yjs. The converter and an ordinary editor Save keep them apart.
+  it('two separate same-target links around a <br>: separate through the converter and the editor, one link after a collaborative session', () => {
+    const one = (text: string): string => '<ac:link><ri:page ri:content-title="Runbook" />'
+      + `<ac:plain-text-link-body><![CDATA[${text}]]></ac:plain-text-link-body></ac:link>`;
+    const oneOut = (text: string): string => '<ac:link><ri:page ri:content-title="Runbook"></ri:page>'
+      + `<ac:plain-text-link-body><![CDATA[${text}]]></ac:plain-text-link-body></ac:link>`;
+    const storage = `<p>${one('A')}<br />${one('B')}</p>`;
+    const separate = `<p>${oneOut('A')}<br />${oneOut('B')}</p>`;
+    expect(htmlToConfluence(confluenceToHtml(storage), { previousStorage: storage })).toBe(separate);
+    expect(edit(storage)).toBe(separate);
+    expect(save(storage)).toBe('<p><ac:link><ri:page ri:content-title="Runbook"></ri:page><ac:link-body>A<br />B</ac:link-body></ac:link></p>');
+  });
+});
