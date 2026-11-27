@@ -676,7 +676,9 @@ export function storageTaskNesting(storageXhtml: string): StorageTaskNesting {
 function htmlTaskNesting(doc: Document): number {
   const depthOf = new Map<Element, number>();
   let deepest = 0;
-  for (const el of byTag(doc.body, '*')) {
+  // A static NodeList: spreading the live `getElementsByTagName('*')` re-walks
+  // the tree per index, which a 6,000-task page turned into seconds.
+  for (const el of doc.body.querySelectorAll('*')) {
     const outer = (el.parentElement && depthOf.get(el.parentElement)) ?? 0;
     const isList = el.localName === 'ac:task-list'
       || (el.localName === 'ul' && el.getAttribute('data-type') === 'taskList');

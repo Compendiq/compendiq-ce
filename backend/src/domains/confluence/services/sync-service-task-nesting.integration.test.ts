@@ -139,7 +139,7 @@ async function lastSynced(): Promise<Date | null> {
 }
 
 describe.skipIf(!dbAvailable || !redisAvailable)(
-  '#1957 sync refuses a page whose task lists nest too deep — real PostgreSQL, Redis and HTTP',
+  '#1957 sync converts a page whose task lists nest past the limit as before — real PostgreSQL, Redis and HTTP',
   () => {
     beforeAll(async () => {
       await setupTestDb();
@@ -205,7 +205,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(deep?.version).toBe(2);
       expect(deep?.body_storage).toBe(nestedTasks(MAX_TASK_LIST_NESTING + 1));
       expect(sha256(deep!.body_html)).toBe(BASE_FORWARD_33);
-      expect(deep?.labels).toEqual(['nesting-check']);
+      // Sync may add the canonical AI-policy label beside it, depending on the ingestion policy.
+      expect(deep?.labels).toContain('nesting-check');
       expect(sha256((await row('nest-new-deep'))!.body_html)).toBe(BASE_FORWARD_33);
       expect((await row('nest-limit'))?.body_html.match(/data-type="taskItem"/g)).toHaveLength(MAX_TASK_LIST_NESTING);
       expect(await lastSynced()).not.toBeNull();
