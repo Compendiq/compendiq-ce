@@ -111,15 +111,18 @@ before #1955. Where the reading of a stored link of the five kinds still differs
 (a literal `/>` in a quoted value, folded attribute names, a panel re-parsing
 its body so CR becomes LF), a write that would publish it with another target
 than the stored XML one is refused before any effect (422 `changed-link-target`,
-owner decisions D19/D20). The verdict is the real forward pass's: the writer
-runs it over the stored storage with reader-found tags marked and records, where
-each carrier is emitted, whether it keeps that link's XML target; a carrier
-never emitted (new link, discarded macro parameter) passes, one emitted both
-faithfully and not is refused as `ambiguous` (logged detail). Links of stored
-storage the reader stopped at a limit (`isStorageLimitStop`; the unread rest
-is not certified) are refused with the limit as reason; known malformed
-storage is not checked. A stored rival of unknown text is released only by its
-target still standing in its own place.
+owner decisions D19/D21, coordinator decision D20). The verdict is the real
+forward pass's: the writer runs it over the stored storage with the tags the
+reader found in the stored string itself (before CDATA becomes text) marked,
+marks each `<a>` it emits with whether it keeps that link's XML target, and
+judges only the marked `<a>` left in the completed result; a carrier no
+surviving occurrence has (new link, macro parameter dropped later) passes, one
+carried both faithfully and not is refused as `ambiguous` (logged detail).
+Links of stored storage the reader stopped at a limit (`isStorageLimitStop`;
+the unread rest is not certified) are refused with the limit as reason; known
+malformed storage is not checked. A stored rival of unknown text is released
+only when it alone stood in its place and the one thing written there points
+to its target.
 `restoreMedia` replaces a token only where it stands as content
 (`locateMediaTokens`, parse5): never in an attribute, a comment or raw text,
 never under an element the tree builder moved (out of a table, or misnested

@@ -382,7 +382,8 @@ any change to the existing conflict policy.
   source holds the tag. It stays text and the drop-guard re-appends the media.
   The forward pass reads the start tag of every link of the five kinds, and
   of its resource, as XML does (`keepXmlLinkValues`): the storage reader
-  finds those tags by their ranges in the string (never a comment, a
+  reads the stored string itself, before its CDATA is turned into text, and
+  finds those tags by their ranges in it (never a comment, a
   processing instruction or raw text), and only they are spelled so that the
   HTML parser reads each value as XML reads it: `&lang;`/`&rang;` as the
   references of U+2329/U+232A, a C1 numeric reference as its own character
@@ -394,27 +395,31 @@ any change to the existing conflict policy.
   expansion takes for the end of the element, two attribute names HTML folds
   into one), and so can a later step of the forward pass (a panel serialises
   and re-parses its body before its links are read, so a CR in a title is an
-  LF in the carrier). So every writer checks at write time (owner decision
-  D19, coordinator decision D20): it runs the forward pass itself over the
+  LF in the carrier). So every writer checks at write time (owner decisions
+  D19/D21, coordinator decision D20): it runs the forward pass itself over the
   stored storage with a witness. The first pass marks each link start tag the
-  storage reader found with its index there (a random attribute name), and the
-  link loop records, at the point it emits a carrier of the five kinds,
-  whether that carrier gives back the reader's XML target of the same link
-  (resource, primary value, section and every carried attribute). An outgoing
-  link that carries a carrier emitted unfaithfully is refused before any effect
+  storage reader found in the stored string with its index there (a random
+  attribute name); the link loop marks each `<a>` it emits for a link of the
+  five kinds with whether that carrier gives back the reader's XML target of
+  the same link (resource, primary value, section and every carried
+  attribute). Only a marked `<a>` still in the completed result of every pass
+  is an occurrence (a macro that replaces its subtree afterwards, such as a
+  status, toc or jira macro, drops it), and it is faithful only if it still
+  carries the carrier it was emitted with. An outgoing link that carries the
+  carrier of an unfaithful occurrence is refused before any effect
   with `ConfluenceStorageRefusedError` `changed-link-target` (422, nothing
   sent, intent not reserved, draft kept; restore recovery fences it as a
-  changed target). A carrier the pass never emitted (a newly authored link, or
-  a candidate the pass discards, such as a code-macro parameter) is not
-  refused. When a faithful and an unfaithful stored link emitted the same
+  changed target). A carrier no occurrence has (a newly authored link, or
+  a candidate the pass discards, such as a macro parameter) is not
+  refused. When a faithful and an unfaithful occurrence carry the same
   carrier, which one the outgoing link is cannot be told: it is refused alike,
   logged with the detail `ambiguous` (a limit: the faithful one alone would be
   written). The storage reader tells a stop at a limit (`isStorageLimitStop`:
   well-formed as far as read, the rest unread and not certified) from known
-  malformed input: every link the pass emits from storage stopped at a limit
-  has no XML target to keep and is refused with the limit as the reason;
-  storage known not to be well-formed is read and written with the HTML
-  values, as before #1955, and is not checked. Text, bodies and the three
+  malformed input, both of the stored string itself: every occurrence from
+  storage stopped at a limit has no XML target to keep and is refused with the
+  limit as the reason; storage known not to be well-formed is read and written
+  with the HTML values, as before #1955, and is not checked. Text, bodies and the three
   #1748 kinds keep the HTML values, as the base commit read them
   (pre-existing; the `/>` case applies to them too and is left to a
   follow-up).
@@ -434,9 +439,10 @@ any change to the existing conflict policy.
   whose surroundings changed with the deletion, becomes text, since which one
   is left cannot be told; a page link whose title, or any link or ordinary
   anchor whose own body, holds U+2329, U+232A or a C1 control is such a rival of
-  unknown text, never the same body as another, and is still there only while
-  as many things point to its target from its own place (never by how many
-  point there elsewhere); schemes are matched in
+  unknown text, never the same body as another, and is still there only when
+  it alone stood in its place, one thing is written there and that one points
+  to its target (never by things pointing there elsewhere, nor from a place
+  of the same signature it shares); schemes are matched in
   lowercase only, so `HTTPS://…` is an inert carrier; a stored link with more
   attributes than the grammar carries is no
   origin; raw link markup that is not the exact shape and has no body is

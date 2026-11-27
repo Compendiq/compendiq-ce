@@ -390,7 +390,7 @@ export interface XmlLinkValues {
 }
 
 /**
- * `storage` (CDATA already turned into text) with the start tag of every link
+ * `storage` (the stored string itself, CDATA included: owner decision D21) with the start tag of every link
  * to a blog post, a space, a shortcut, a content entity or a URL, and of its
  * resource (its first `ri:*` child), spelled so that an HTML parser reads
  * each attribute value as XML reads it (#1955, reviews r2 R12, r4 R21):
