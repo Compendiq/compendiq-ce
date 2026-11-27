@@ -2815,7 +2815,8 @@ export interface HtmlToMarkdownOptions {
    * #1954: write inline code that a link holds and that itself holds a
    * backtick as escaped link text (escapeLinkedCodeText). Opt-in, set only by
    * callers whose Markdown never reaches an AI Improve prompt (quality score,
-   * auto-tagging, version-compare summaries, diagram context, document text).
+   * auto-tagging, version-compare summaries, diagram context). Extracted
+   * document text is not one of them: it can be Improve reference material.
    * Everything that can feed Improve (the page itself and its sub-page
    * context, built by assembleContextIfNeeded / assembleSubPageContext) keeps
    * the Markdown it had before #1954 (D24).

@@ -328,7 +328,7 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
     // Accept. For linked code with and without a backtick, with a media-placeholder spelling, in a table, with NBSP
     // at its edges, in a page link and a class-carried web link, with and without a real image, the parent's
     // Improve Markdown, the applied HTML and the plain Markdown of a sub-page are exactly slice A's (captured at
-    // 42e07553 by backend/scripts/capture-improve-parity-1954.ts). Slice A's limits stay: the chain can lose such a
+    // 42e07553; provenance in __fixtures__/improve-parity-1954-a.ts). Slice A's limits stay: the chain can lose such a
     // link, and a placeholder spelling that matches a real media entry is replaced (#723).
     it.each(Object.keys(IMPROVE_PARITY_AT_A))('runs the Improve chain exactly as slice A for %s', async (name) => {
       const expected = IMPROVE_PARITY_AT_A[name]!;

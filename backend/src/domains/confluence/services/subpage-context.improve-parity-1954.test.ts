@@ -2,7 +2,7 @@
  * #1954 (coordinator decision D24, review B-R4-B1): an AI Improve prompt with
  * sub-pages holds exactly the Markdown it held at slice A, for the parent (layout
  * tokens) and for every child (converted without options). Slice A's prompt was
- * captured over a real PostgreSQL by backend/scripts/capture-improve-parity-1954.ts.
+ * captured over a real PostgreSQL at 42e07553 (provenance in the fixture's header).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setupTestDb, teardownTestDb, truncateAllTables, isDbAvailable } from '../../../test-db-helper.js';

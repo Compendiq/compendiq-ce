@@ -1,6 +1,15 @@
 /**
- * What reached an AI Improve prompt, and what its Accept applied, at #1954 slice A (42e0755328abd4fe41edea7bc0a82cb6b71a21ca),
- * captured by backend/scripts/capture-improve-parity-1954.ts. Never regenerate from a later commit (D24).
+ * What reached an AI Improve prompt, and what its Accept applied, at #1954 slice A
+ * (42e0755328abd4fe41edea7bc0a82cb6b71a21ca). Data, captured once; never regenerate it from a later commit (D24).
+ *
+ * Provenance: a one-time script (not kept in the repository; its text is in the epic's evidence for #1954) ran on
+ * an unchanged detached checkout of that commit, refusing to run on any other HEAD or with tracked changes. For
+ * each storage below it recorded: `html` = confluenceToHtml(storage, '55'); `markdown` = htmlToMarkdown of
+ * protectMedia(html).html with layout tokens; `applied` = restoreMedia(markdownToHtml(markdown, { layoutSkeleton,
+ * protectedMedia }), media); `plain` = htmlToMarkdown(html) without options (a sub-page's Markdown). The assembled
+ * prompt is assembleContextIfNeeded(user, parent, parentHtml, true, { protectMedia: true, layoutTokens: true })
+ * over a PostgreSQL test database holding a standalone parent page and one child page per listed case, inserted in
+ * order and titled `Child NN <case>`.
  */
 export const IMPROVE_PARITY_COMMIT = '42e0755328abd4fe41edea7bc0a82cb6b71a21ca';
 
