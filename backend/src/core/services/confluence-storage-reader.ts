@@ -108,8 +108,16 @@ export function isStorageLimitStop(reason: StorageReadFailure): reason is Storag
 
 export type StorageReadResult = { ok: true; tree: StorageTree } | { ok: false; reason: StorageReadFailure };
 
-/** Why a storage string is not dispatched (#1955). #1958 adds its own reason. */
-export type ConfluenceStorageRefusal = StorageReadFailure | 'unapproved-link' | 'changed-link-target';
+/**
+ * Why a storage string is not dispatched (#1955). #1958 adds
+ * `unapproved-code-macro`: an AI Improve result whose code macros are not
+ * in the writer's shape or not accounted for by the page.
+ */
+export type ConfluenceStorageRefusal =
+  | StorageReadFailure
+  | 'unapproved-link'
+  | 'changed-link-target'
+  | 'unapproved-code-macro';
 
 const REFUSAL_MESSAGE: Readonly<Record<ConfluenceStorageRefusal, string>> = {
   'not-well-formed':
@@ -121,6 +129,8 @@ const REFUSAL_MESSAGE: Readonly<Record<ConfluenceStorageRefusal, string>> = {
     'This page cannot be saved to Confluence: its content holds a link to a non-web address in a place where it cannot be verified or removed. Nothing was changed.',
   'changed-link-target':
     'This page cannot be saved to Confluence: a link to a blog post, a space, a shortcut, a content entity or a web address would be saved with a different target than Confluence holds. Edit the link in Confluence, then sync the page. Nothing was changed.',
+  'unapproved-code-macro':
+    'This page cannot be saved to Confluence: the AI Improve result holds a code block whose title or options the page does not account for. Nothing was changed.',
 };
 
 /**

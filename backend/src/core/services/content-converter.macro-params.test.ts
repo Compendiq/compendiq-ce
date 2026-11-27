@@ -14,13 +14,15 @@ import { JSDOM } from 'jsdom';
 import * as Y from 'yjs';
 import { generateHTML, generateJSON } from '@tiptap/html';
 import {
+  beginCodeMetaAccept,
   confluenceToHtml,
   extractLayoutSkeleton,
+  finalizeCodeMetadata,
   htmlToConfluence,
   htmlToMarkdown,
   markdownToHtml,
   protectMedia,
-  restoreMedia,
+  replayProtectedMedia,
 } from './content-converter.js';
 import { collabExtensions, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { CODE_BLOCK_TITLED_PAGE } from './__fixtures__/confluence-xhtml.js';
@@ -276,16 +278,20 @@ describe('content-converter: #1749 dedicated macro parameters survive write-back
   });
 
   describe('AI Improve round trip', () => {
-    it('keeps the toc and status parameters and the code language', async () => {
-      // The Improve apply exactly (llm-conversations.ts:454-488): protect → markdown → rebuild → restore.
-      const { html: protectedHtml, media } = protectMedia(confluenceToHtml(PAGE));
-      const layoutSkeleton = extractLayoutSkeleton(protectedHtml);
-      const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
-      const xhtml = htmlToConfluence(restoreMedia(await markdownToHtml(markdown, { layoutSkeleton }), media));
+    it('keeps the toc and status parameters and the code macro\'s title and options (#1958)', async () => {
+      // The Improve apply exactly (llm-conversations.ts): protect → markdown → rebuild → replay → finalize.
+      const protectedBody = protectMedia(confluenceToHtml(PAGE));
+      const layoutSkeleton = extractLayoutSkeleton(protectedBody.html);
+      const markdown = htmlToMarkdown(protectedBody.html, { layoutTokens: true });
+      const codeMeta = beginCodeMetaAccept(protectedBody);
+      const rebuilt = await markdownToHtml(markdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
+      const finalized = finalizeCodeMetadata(replayProtectedMedia(rebuilt, protectedBody.media, codeMeta).html, codeMeta);
+      const xhtml = htmlToConfluence(finalized.html);
       expect(macroParams(xhtml, 'toc')).toEqual([TOC_FIXTURE_PARAMS]);
       expect(macroParams(xhtml, 'status')).toEqual([STATUS_FIXTURE_PARAMS]);
-      // <pre> extras (title, linenumbers, collapse) are out of scope here (#1749 PR); only the language is pinned.
-      expect(macroParams(xhtml, 'code')[0]).toContainEqual(['language', 'c#']);
+      expect(macroParams(xhtml, 'code')).toEqual([macroParams(htmlToConfluence(PAGE_HTML), 'code')[0]]);
+      expect(macroParams(xhtml, 'code')[0]).toContainEqual(['title', 'Startup.cs']);
+      expect(macroParams(xhtml, 'code')[0]).toContainEqual(['linenumbers', 'true']);
     });
   });
 });
