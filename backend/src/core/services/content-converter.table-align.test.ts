@@ -169,23 +169,58 @@ describe('table cell alignment: round trip (#1956)', () => {
   });
 });
 
-describe('table cell alignment: GFM tables on the Improve conversion (#1956)', () => {
-  it('turns an editor-serialised table into a GFM table with its alignment', () => {
-    expect(htmlToMarkdown(EDITOR_TABLE, IMPROVE).trim()).toBe('| a | b | c |\n| :-- | :-: | --- |\n| 1 | 2 | 3 |');
-  });
+/**
+ * An unchanged model echo through the persisting Improve path, as the routes run it: the Improve request converts
+ * protectMedia(body) with layout tokens (`_helpers.ts`); Accept re-protects the stored body, parses the echo with its
+ * layout skeleton and media, then restores the media (`llm-conversations.ts`).
+ */
+async function improveChain(body: string): Promise<{ markdown: string; applied: string }> {
+  const markdown = htmlToMarkdown(protectMedia(body).html, IMPROVE);
+  const { html: protectedBody, media } = protectMedia(body);
+  const applied = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedBody), protectedMedia: media });
+  return { markdown, applied: restoreMedia(applied, media) };
+}
 
-  it('writes left, center, right and unspecified markers, and the cell texts survive the round trip', async () => {
-    const md = htmlToMarkdown(
-      '<table><colgroup><col><col><col><col></colgroup><tbody><tr><th align="left"><p>a</p></th><th align="center"><p>b</p></th><th align="right"><p>c</p></th><th><p>d</p></th></tr>'
-      + '<tr><td align="left"><p>1</p></td><td align="center"><p>2</p></td><td align="right"><p>3</p></td><td><p>4</p></td></tr></tbody></table>',
-      IMPROVE,
-    );
-    expect(md.trim().split('\n')[1]).toBe('| :-- | :-: | --: | --- |');
-    const back = new JSDOM(`<body>${await markdownToHtml(md)}</body>`).window.document;
-    expect([...back.querySelectorAll('th')].map((c) => [c.textContent, c.getAttribute('align')]))
-      .toEqual([['a', 'left'], ['b', 'center'], ['c', 'right'], ['d', null]]);
-    expect([...back.querySelectorAll('td')].map((c) => [c.textContent, c.getAttribute('align')]))
-      .toEqual([['1', 'left'], ['2', 'center'], ['3', 'right'], ['4', null]]);
+function dom(html: string): Document {
+  return new JSDOM(`<body>${html}</body>`).window.document;
+}
+
+/** An editor-serialised, unresized two-column table: generated colgroup, one paragraph per cell, first column aligned. */
+function editorTable(align: string, header: readonly [string, string], body: readonly [string, string]): string {
+  const cell = (tag: string, html: string, aligned: boolean): string =>
+    `<${tag} colspan="1" rowspan="1"${aligned ? ` align="${align}"` : ''}><p>${html}</p></${tag}>`;
+  return '<table style="min-width: 50px;"><colgroup><col style="min-width: 25px;"><col style="min-width: 25px;"></colgroup><tbody>'
+    + `<tr>${cell('th', header[0], true)}${cell('th', header[1], false)}</tr><tr>${cell('td', body[0], true)}${cell('td', body[1], false)}</tr>`
+    + '</tbody></table>';
+}
+
+function serialized(html: string): string {
+  return dom(html).querySelector('table')!.outerHTML;
+}
+
+interface ImproveBaseCase { html: string; markdown: string; applied: string }
+
+/** Captured at the slice base bda4d1ed (decision D12; provenance in the fixture). */
+const IMPROVE_BASE: { cases: Record<string, ImproveBaseCase> } = JSON.parse(
+  readFileSync(join(here, '__fixtures__/table-align-improve-base.json'), 'utf8'),
+);
+
+describe('AI Improve: a table without alignment converts exactly as at the slice base (D12, #1956)', () => {
+  it.each(Object.entries(IMPROVE_BASE.cases))('%s: the same Markdown and the same applied HTML', async (_name, base) => {
+    const { markdown, applied } = await improveChain(base.html);
+    expect(markdown).toBe(base.markdown);
+    expect(applied).toBe(base.applied);
+  });
+});
+
+describe('AI Improve: an aligned table (D12, #1956)', () => {
+  it('converts through the stock GFM rule when its markers state every cell, and Apply brings the alignment back', async () => {
+    const { markdown, applied } = await improveChain(IMPROVE_BASE.cases.alignedStockTable!.html);
+    expect(markdown).toBe('| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |');
+    expect(cells(applied).map((c) => [c.nodeName, c.textContent, c.getAttribute('align')])).toEqual([
+      ['TH', 'a', 'left'], ['TH', 'b', 'center'], ['TH', 'c', 'right'], ['TH', 'd', null],
+      ['TD', '1', 'left'], ['TD', '2', 'center'], ['TD', '3', 'right'], ['TD', '4', null],
+    ]);
   });
 
   it('is stable over a Markdown → HTML → Markdown → HTML cycle', async () => {
@@ -195,173 +230,100 @@ describe('table cell alignment: GFM tables on the Improve conversion (#1956)', (
     expect(htmlToMarkdown(await markdownToHtml(once), IMPROVE).trim()).toBe(once);
   });
 
-  it('keeps inline formatting, links and images in a cell on one line, and escapes pipes', async () => {
-    const html = '<table><colgroup><col><col></colgroup><tbody><tr><th><p>a|b</p></th><th><p>c\\|d</p></th></tr>'
-      + '<tr><td><p><strong>x</strong> <a href="https://example.com/p">l</a> <code>y|z</code></p></td><td><p></p></td></tr></tbody></table>';
-    const md = htmlToMarkdown(html, IMPROVE);
-    expect(md).toContain('| a\\|b | c\\\\\\|d |');
-    expect(md).toContain('| **x** [l](https://example.com/p) `y\\|z` |  |');
-    const back = new JSDOM(`<body>${await markdownToHtml(md)}</body>`).window.document;
-    expect([...back.querySelectorAll('th')].map((c) => c.textContent)).toEqual(['a|b', 'c\\|d']);
-    expect(back.querySelector('td code')?.textContent).toBe('y|z');
+  it('freezes an editor-serialised table: the model sees one token, Apply replays the table verbatim', async () => {
+    const { markdown, applied } = await improveChain(`<p>before</p>${EDITOR_TABLE}<p>after</p>`);
+    expect(markdown).toBe('before\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nafter');
+    const doc = dom(applied);
+    expect([...doc.body.children].map((el) => el.nodeName)).toEqual(['P', 'TABLE', 'P']);
+    expect(doc.querySelector('table')!.outerHTML).toBe(EDITOR_TABLE);
   });
 
-  it('reads the alignment of legacy style-only cells', () => {
-    const md = htmlToMarkdown(
-      '<table class="wrapped"><colgroup><col /><col /></colgroup><tbody><tr><th class="confluenceTh" style="text-align: center;">H</th>'
-      + '<th class="confluenceTh" style="text-align: right">I</th></tr><tr><td class="confluenceTd" style="text-align: center;">x</td><td class="confluenceTd" style="text-align: right">y</td></tr></tbody></table>',
-      IMPROVE,
-    );
-    expect(md.trim()).toBe('| H | I |\n| :-: | --: |\n| x | y |');
-  });
-
-  it('keeps the tables stock turndown converted before as GFM', () => {
-    expect(htmlToMarkdown('<table><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>', IMPROVE).trim())
-      .toBe('| a | b |\n| --- | --- |\n| 1 | 2 |');
-    expect(htmlToMarkdown('<table>\n<thead>\n<tr>\n<th align="left">a</th>\n</tr>\n</thead>\n<tbody><tr>\n<td align="left">1</td>\n</tr>\n</tbody></table>\n', IMPROVE).trim())
-      .toBe('| a |\n| :-- |\n| 1 |');
-  });
-
-  const declined: Array<[string, string]> = [
-    ['a column span in a thead header', '<table><thead><tr><th colspan="2">name</th></tr></thead><tbody><tr><td>a</td><td>b</td></tr></tbody></table>'],
-    ['a row span', '<table><tbody><tr><th>a</th><th>b</th></tr><tr><td rowspan="2">1</td><td>2</td></tr><tr><td>3</td></tr></tbody></table>'],
-    ['an authored column width', '<table><colgroup><col style="width: 120px"><col></colgroup><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>'],
-    ['a resized cell', '<table style="width: 300px"><colgroup><col style="width: 100px"></colgroup><tbody><tr><th colwidth="100">a</th></tr><tr><td>1</td></tr></tbody></table>'],
-    ['a caption', '<table><caption>Revenue</caption><thead><tr><th>a</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>'],
-    ['a two-paragraph cell', '<table><tbody><tr><th><p>a</p><p>a2</p></th></tr><tr><td><p>1</p></td></tr></tbody></table>'],
-    ['a list in a cell', '<table><tbody><tr><th>a</th></tr><tr><td><ul><li>x</li></ul></td></tr></tbody></table>'],
-    ['a line break in a cell', '<table><tbody><tr><th>a</th></tr><tr><td>x<br>y</td></tr></tbody></table>'],
-    ['a nested table', '<table><tbody><tr><th>a</th></tr><tr><td><table><tbody><tr><td>n</td></tr></tbody></table></td></tr></tbody></table>'],
-    ['a highlighted cell', '<table><tbody><tr><th>a</th></tr><tr><td data-highlight-colour="red" style="background-color: rgb(255, 0, 0);">1</td></tr></tbody></table>'],
-    ['a cell with a semantic class', '<table><tbody><tr><th>a</th></tr><tr><td class="highlight-red">1</td></tr></tbody></table>'],
-    ['a paragraph with its own alignment', '<table><tbody><tr><th>a</th></tr><tr><td><p style="text-align: center">1</p></td></tr></tbody></table>'],
-    ['a body cell aligned differently from its header', '<table><tbody><tr><th align="left">a</th></tr><tr><td align="right">1</td></tr></tbody></table>'],
-    ['a table layout', '<table data-layout="full-width"><tbody><tr><th>a</th></tr><tr><td>1</td></tr></tbody></table>'],
-    ['a footer', '<table><thead><tr><th>a</th></tr></thead><tbody><tr><td>1</td></tr></tbody><tfoot><tr><td>t</td></tr></tfoot></table>'],
-    ['a header row that is not the first row', '<table><tbody><tr><td>1</td></tr><tr><th>a</th></tr></tbody></table>'],
-    ['a ragged row', '<table><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td></tr></tbody></table>'],
-    ['a table without a header row', '<table><colgroup><col></colgroup><tbody><tr><td>1</td></tr></tbody></table>'],
-    ['an invalid alignment value', '<table><tbody><tr><th align="justify">a</th></tr><tr><td>1</td></tr></tbody></table>'],
-    // Review T4: only TipTap's generated 25px-per-column sizing is not the author's.
-    ['an authored minimum width', '<table style="min-width: 540px;"><colgroup><col style="min-width: 540px;"></colgroup><tbody><tr><th>H</th></tr><tr><td>b</td></tr></tbody></table>'],
-    ['a colgroup with fewer columns than the rows', '<table style="min-width: 25px;"><colgroup><col style="min-width: 25px;"></colgroup><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>'],
-    ['a table minimum that is not the sum of its columns', '<table style="min-width: 75px;"><colgroup><col style="min-width: 25px;"><col style="min-width: 25px;"></colgroup><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>'],
-    ['a table minimum without a colgroup', '<table style="min-width: 25px;"><tbody><tr><th>a</th></tr><tr><td>1</td></tr></tbody></table>'],
-    // Review T1/T2: content GFM would read back differently.
-    ['literal markup in cell text', '<table><tbody><tr><th>a</th></tr><tr><td>The spelling &lt;em&gt;demo&lt;/em&gt;</td></tr></tbody></table>'],
-    ['a character reference spelled in cell text', '<table><tbody><tr><th>a</th></tr><tr><td>literal &amp;copy;</td></tr></tbody></table>'],
-    ['a backslash before a pipe in code', '<table><tbody><tr><th>a</th></tr><tr><td><code>left\\|right</code></td></tr></tbody></table>'],
-    ['highlight, underline and subscript', '<table><tbody><tr><th>a</th></tr><tr><td>H<sub>2</sub>O; <mark>Review</mark>; <u>due</u></td></tr></tbody></table>'],
-    ['a link with an id', '<table><tbody><tr><th>a</th></tr><tr><td><a href="https://example.com/p" id="anchor">l</a></td></tr></tbody></table>'],
-    ['a link with an authored rel', '<table><tbody><tr><th>a</th></tr><tr><td><a href="https://example.com/p" rel="noreferrer">l</a></td></tr></tbody></table>'],
-    ['an inline element with a class', '<table><tbody><tr><th>a</th></tr><tr><td><span class="term">t</span></td></tr></tbody></table>'],
-    ['a bare URL Markdown would turn into a link', '<table><tbody><tr><th>a</th></tr><tr><td>see https://example.com/p</td></tr></tbody></table>'],
+  const frozen: Array<[string, string]> = [
+    ['an editor table (generated colgroup)', EDITOR_TABLE],
+    ['a body cell aligned differently from its header', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="right">1</td></tr></tbody></table>'],
+    ['a body cell without its header\'s alignment', '<table><thead><tr><th align="center">a</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>'],
+    ['a header alignment the stock rule cannot read', '<table><thead><tr><th align=" Right ">a</th></tr></thead><tbody><tr><td align=" Right ">1</td></tr></tbody></table>'],
+    ['a style that decides against the attribute', '<table><thead><tr><th style="text-align: right" align="left">a</th></tr></thead><tbody><tr><td align="left">1</td></tr></tbody></table>'],
+    ['a column span', '<table><thead><tr><th colspan="2" align="center">name</th></tr></thead><tbody><tr><td align="center">a</td><td>b</td></tr></tbody></table>'],
+    ['a row span', '<table><tbody><tr><th align="left">a</th><th>b</th></tr><tr><td rowspan="2" align="left">1</td><td>2</td></tr><tr><td>3</td></tr></tbody></table>'],
+    ['a paragraph in a cell', '<table><thead><tr><th align="left"><p>a</p></th></tr></thead><tbody><tr><td align="left"><p>1</p></td></tr></tbody></table>'],
+    ['a line break in a cell', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left">x<br>y</td></tr></tbody></table>'],
+    ['a caption', '<table><caption>Revenue</caption><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left">1</td></tr></tbody></table>'],
+    ['a footer', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left">1</td></tr></tbody><tfoot><tr><td>t</td></tr></tfoot></table>'],
+    ['a comment between rows', '<table><tbody><tr><th align="left">a</th></tr><!-- c --><tr><td align="left">1</td></tr></tbody></table>'],
+    ['a header row that is not all th', '<table><tbody><tr><th align="left">a</th><td>b</td></tr><tr><td align="left">1</td><td>2</td></tr></tbody></table>'],
+    ['a nested table', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left"><table><tbody><tr><td>n</td></tr></tbody></table></td></tr></tbody></table>'],
   ];
 
-  it.each(declined)('keeps %s as its raw HTML, every attribute intact', (_label, html) => {
-    const md = htmlToMarkdown(html, IMPROVE).trim();
-    const original = new JSDOM(`<body>${html}</body>`).window.document.body.innerHTML;
-    expect(md).toBe(original);
-    expect(md).not.toMatch(/^\|/m);
+  it.each(frozen)('freezes %s and replays it verbatim', async (_label, html) => {
+    const { html: protectedHtml, media } = protectMedia(html);
+    expect(media.map((m) => m.html)).toEqual([serialized(html)]);
+    expect(protectedHtml).not.toContain('<table');
+    expect(serialized((await improveChain(html)).applied)).toBe(serialized(html));
   });
 
-  it('keeps a table with more cells than the bound as raw HTML', () => {
-    const row = `<tr>${'<td>x</td>'.repeat(100)}</tr>`;
-    const html = `<table><tbody><tr>${'<th>h</th>'.repeat(100)}</tr>${row.repeat(60)}</tbody></table>`;
-    expect(htmlToMarkdown(html, IMPROVE).trim().startsWith('<table>')).toBe(true);
+  it('freezes only the table that carries the alignment: an unaligned outer table keeps converting around it', async () => {
+    const html = `<table><tbody><tr><td>${EDITOR_TABLE}</td></tr></tbody></table>`;
+    const { html: protectedHtml, media } = protectMedia(html);
+    expect(media.map((m) => m.html)).toEqual([EDITOR_TABLE]);
+    expect(protectedHtml).toBe('<table><tbody><tr><td> CQ_MEDIA_PLACEHOLDER_0 </td></tr></tbody></table>');
+    const doc = dom((await improveChain(html)).applied);
+    expect(doc.querySelectorAll('table')).toHaveLength(2);
+    expect(doc.querySelector('td > table')!.outerHTML).toBe(EDITOR_TABLE);
   });
 
-  it('keeps a raw table next to GFM prose and tables in one document', () => {
-    const md = htmlToMarkdown(`<p>before</p>${EDITOR_TABLE}<p>mid</p>${declined[0]![1]}<p>after</p>`, IMPROVE);
-    expect(md).toContain('| a | b | c |');
-    expect(md).toContain('<table><thead><tr><th colspan="2">name</th></tr>');
-    expect(md).toMatch(/before\n\n\| a/);
-    expect(md).toMatch(/\|\n\nmid\n\n<table>/);
+  it('carries media inside a frozen table in the table, not as tokens of their own', () => {
+    const html = editorTable('center', ['H', 'I'], ['<img src="/attachments/x.png" alt="d">', '<span class="confluence-status" data-color="green">OK</span>']);
+    expect(protectMedia(html).media.map((m) => m.html)).toEqual([serialized(html)]);
   });
-});
 
-/**
- * An unchanged model echo through the persisting Improve path, as the routes run it: the Improve request converts
- * protectMedia(content) with layout tokens (`_helpers.ts`); Accept re-protects the stored body, parses the echo with
- * its layout skeleton and media, then restores the media (`llm-conversations.ts`).
- */
-async function applyUnchangedEcho(body: string): Promise<Document> {
-  const markdown = htmlToMarkdown(protectMedia(body).html, IMPROVE);
-  const { html: protectedBody, media } = protectMedia(body);
-  const applied = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedBody), protectedMedia: media });
-  return new JSDOM(`<body>${restoreMedia(applied, media)}</body>`).window.document;
-}
-
-/** An editor-serialised, unresized table: generated colgroup, one paragraph per cell, every column centred. */
-function editorTable(header: readonly string[], body: readonly string[]): string {
-  const cell = (tag: string, html: string): string => `<${tag} colspan="1" rowspan="1" align="center"><p>${html}</p></${tag}>`;
-  return `<table style="min-width: ${25 * header.length}px;"><colgroup>${'<col style="min-width: 25px;">'.repeat(header.length)}</colgroup>`
-    + `<tbody><tr>${header.map((h) => cell('th', h)).join('')}</tr><tr>${body.map((b) => cell('td', b)).join('')}</tr></tbody></table>`;
-}
-
-function firstTableHtml(html: string): string {
-  return new JSDOM(`<body>${html}</body>`).window.document.querySelector('table')!.outerHTML;
-}
-
-describe('table cell alignment: an unchanged Improve echo through Apply (#1956)', () => {
-  it('keeps an ordinary editor table as GFM and brings back its alignment and text', async () => {
-    expect(htmlToMarkdown(EDITOR_TABLE, IMPROVE).trim().startsWith('| a | b | c |')).toBe(true);
-    const doc = await applyUnchangedEcho(EDITOR_TABLE);
-    expect([...doc.querySelectorAll('th, td')].map((c) => [c.nodeName, c.textContent, c.getAttribute('align')])).toEqual([
-      ['TH', 'a', 'left'], ['TH', 'b', 'center'], ['TH', 'c', null], ['TD', '1', 'left'], ['TD', '2', 'center'], ['TD', '3', null],
+  // Review r2 A2-1 / A2-2: content and link attributes of an aligned table reach the page unchanged.
+  it('keeps literal markup, non-breaking spaces, code whitespace and link attributes, also in the storage write', async () => {
+    const html = editorTable(
+      'center',
+      ['This is &lt;EM &gt;demo&lt;/EM&gt;', '&nbsp;unit&nbsp;'],
+      ['<code>cmd   /help</code>', '<a target="_blank" rel="noopener noreferrer nofollow" href="https://example.com/guide">guide</a>'],
+    );
+    const { applied } = await improveChain(html);
+    expect(serialized(applied)).toBe(serialized(html));
+    const doc = dom(applied);
+    expect([...doc.querySelectorAll('th, td')].map((c) => c.textContent)).toEqual([
+      'This is <EM >demo</EM>', '\u00a0unit\u00a0', 'cmd   /help', 'guide',
     ]);
+    expect(doc.querySelector('td em, th em')).toBeNull();
+    const link = dom(htmlToConfluence(applied)).querySelector('a')!;
+    expect([link.getAttribute('href'), link.getAttribute('target'), link.getAttribute('rel')])
+      .toEqual(['https://example.com/guide', '_blank', 'noopener noreferrer nofollow']);
   });
 
-  it('keeps literal markup, a spelled character reference and a backslash before a pipe in code as they were', async () => {
-    const html = editorTable(['a', 'b', 'c'], ['The spelling &lt;em&gt;demo&lt;/em&gt;', 'literal &amp;copy;', '<code>left\\|right</code>']);
-    const doc = await applyUnchangedEcho(html);
-    const tds = [...doc.querySelectorAll('td')];
-    expect(tds.map((td) => td.textContent)).toEqual(['The spelling <em>demo</em>', 'literal &copy;', 'left\\|right']);
-    expect(doc.querySelector('td em')).toBeNull();
-    expect(tds[2]!.querySelector('code')!.textContent).toBe('left\\|right');
-    expect(doc.querySelector('table')!.outerHTML).toBe(firstTableHtml(html));
-  });
-
-  it('keeps highlight, underline, subscript, a link id and an inline class', async () => {
-    const html = editorTable(['a'], ['H<sub>2</sub>O; <mark>Review</mark>; <u>due</u> <a href="https://example.com/p" id="anchor">l</a> <span class="term">t</span>']);
-    const doc = await applyUnchangedEcho(html);
-    expect(doc.querySelector('table')!.outerHTML).toBe(firstTableHtml(html));
-    expect(['sub', 'mark', 'u', 'a#anchor', 'span.term'].map((selector) => doc.querySelector(`td ${selector}`) !== null))
-      .toEqual([true, true, true, true, true]);
-  });
-
-  it('sends a formatted link Markdown can state as GFM and brings back the same link', async () => {
-    const html = editorTable(['a'], ['<a target="_blank" rel="noopener noreferrer nofollow" href="https://example.com/p" title="T"><strong>bold</strong> link</a>']);
-    expect(htmlToMarkdown(html, IMPROVE)).toContain('| [**bold** link](https://example.com/p "T") |');
-    const link = (await applyUnchangedEcho(html)).querySelector('td a')!;
-    expect([link.getAttribute('href'), link.getAttribute('title'), link.textContent, link.querySelector('strong')?.textContent])
-      .toEqual(['https://example.com/p', 'T', 'bold link', 'bold']);
-    expect(link.attributes).toHaveLength(2);
-  });
-
-  it('carries a declined table with multi-line code, significant whitespace and media, between its neighbours', async () => {
-    const html = '<p>before</p><table><tbody><tr><th>a</th><th>b</th></tr>'
-      + '<tr><td><pre><code>one\n\n**literal**\n\nlast</code></pre></td><td style="white-space: pre-wrap">a   b</td></tr>'
-      + '<tr><td><img src="/attachments/x.png" alt="diagram"></td><td>z</td></tr></tbody></table><p>after</p>';
-    expect(htmlToMarkdown(protectMedia(html).html, IMPROVE).split('\n').filter((line) => line.includes('<table'))).toHaveLength(1);
-    const doc = await applyUnchangedEcho(html);
-    expect([...doc.body.children].map((el) => [el.nodeName, el.nodeName === 'P' ? el.textContent : ''])).toEqual([
-      ['P', 'before'], ['TABLE', ''], ['P', 'after'],
-    ]);
-    expect(doc.querySelector('td pre code')!.textContent).toBe('one\n\n**literal**\n\nlast');
-    expect(doc.querySelector('td strong, td p')).toBeNull();
-    const rows = doc.querySelectorAll('tr');
-    expect(rows[1]!.children[1]!.textContent).toBe('a   b');
-    expect(rows[1]!.children[1]!.getAttribute('style')).toBe('white-space: pre-wrap');
-    expect(rows[2]!.children[0]!.querySelector('img')?.outerHTML).toBe('<img src="/attachments/x.png" alt="diagram">');
-    expect(rows[2]!.children[1]!.textContent).toBe('z');
-  });
-
+  // Review r2 A2-3: a table in an existing (non-native) panel.
   it.each([
-    ['an authored minimum width', '<table style="min-width: 540px;"><colgroup><col style="min-width: 540px;"></colgroup><tbody><tr><th colspan="1" rowspan="1" align="center"><p>H</p></th></tr><tr><td colspan="1" rowspan="1" align="center"><p>b</p></td></tr></tbody></table>'],
-    ['a colgroup that does not match the columns', '<table style="min-width: 25px;"><colgroup><col style="min-width: 25px;"></colgroup><tbody><tr><th colspan="1" rowspan="1"><p>a</p></th><th colspan="1" rowspan="1"><p>b</p></th></tr><tr><td colspan="1" rowspan="1"><p>1</p></td><td colspan="1" rowspan="1"><p>2</p></td></tr></tbody></table>'],
-  ])('keeps %s through Apply', async (_label, html) => {
-    expect((await applyUnchangedEcho(html)).querySelector('table')!.outerHTML).toBe(firstTableHtml(html));
+    ['first in the panel', (t: string) => `<div class="panel-info">${t}</div><p>after</p>`],
+    ['after a paragraph, before multi-line code', (t: string) => `<div class="panel-info"><p>Note</p>${t}<pre><code>a\n\n**literal**</code></pre></div><p>after</p>`],
+  ])('keeps an aligned table %s: one table, its cells, contents and alignment', async (_label, wrap) => {
+    const table = editorTable('right', ['H', 'I'], ['b', '<img src="/attachments/x.png" alt="d">']);
+    const doc = dom((await improveChain(wrap(table))).applied);
+    expect(doc.querySelectorAll('table')).toHaveLength(1);
+    expect(doc.querySelector('table')!.outerHTML).toBe(table);
+    expect(cells(doc.body.innerHTML).map((c) => [c.textContent, c.getAttribute('align')]))
+      .toEqual([['H', 'right'], ['I', null], ['b', 'right'], ['', null]]);
+    expect(doc.querySelector('td img')!.getAttribute('src')).toBe('/attachments/x.png');
+  });
+
+  // Review r2 A2-4: layout tokens inside and around an aligned table.
+  it('keeps a literal layout token and a real layout inside the table, and one surrounding layout', async () => {
+    const inner = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">'
+      + '<div class="confluence-layout-cell"><p>inner</p></div></div></div>';
+    const table = editorTable('left', ['Literal [[[EXPAND]]] text', `<span title="[[[LAYOUT]]]">t</span>`], [inner, 'b']);
+    const page = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">'
+      + `<div class="confluence-layout-cell"><p>x</p>${table}</div></div></div>`;
+    const { applied } = await improveChain(page);
+    const doc = dom(applied);
+    expect(doc.querySelector('table')!.outerHTML).toBe(serialized(table));
+    expect(doc.querySelectorAll('div.confluence-layout')).toHaveLength(2);
+    expect(doc.querySelector('th')!.textContent).toBe('Literal [[[EXPAND]]] text');
+    expect(htmlToConfluence(applied).match(/<ac:layout>/g)).toHaveLength(2);
+    expect(htmlToConfluence(page).match(/<ac:layout>/g)).toHaveLength(2);
   });
 });
 
@@ -442,21 +404,14 @@ describe('the converter reads a cell as both schemas do (#1956)', () => {
     },
   );
 
-  // Markdown (the Improve table rule reads the original DOM through jsdom): a table is GFM only for the plain forms;
-  // for every ambiguous vector the cell is never read as aligned, whichever form the table takes.
-  it.each(CELL_ALIGN_VECTORS)('htmlToMarkdown never reads %s differently from the schemas', (label, attrs, expected) => {
-    const md = htmlToMarkdown(
-      `<table><colgroup><col></colgroup><tbody><tr><th ${attrs}>h</th></tr><tr><td ${attrs}>c</td></tr></tbody></table>`, IMPROVE,
-    ).trim();
-    const marker = md.startsWith('|') ? md.split('\n')[1] : 'raw';
-    const plain: Record<string, string> = {
-      'align attribute': '| :-: |',
-      'attribute case and whitespace': '| --: |',
-      'plain style': '| :-- |',
-      'style decides over the attribute': '| --: |',
-    };
-    if (plain[label]) expect(marker).toBe(plain[label]);
-    else expect(['raw', '| --- |']).toContain(marker);
-    if (expected === null) expect(marker).not.toMatch(/:/);
-  });
+  // AI Improve (D12): a table carrying `align` either converts through the stock rule because its markers state every
+  // cell, or is frozen; either way an unchanged echo gives every cell the alignment the schemas read before.
+  it.each(CELL_ALIGN_VECTORS.filter(([, attrs]) => /align="/i.test(attrs)))(
+    'AI Improve keeps the alignment the schemas read for %s',
+    async (_label, attrs, expected) => {
+      const html = `<table><thead><tr><th ${attrs}>h</th></tr></thead><tbody><tr><td ${attrs}>c</td></tr></tbody></table>`;
+      const { applied } = await improveChain(html);
+      expect(cells(yDocToHtml(htmlToYDoc(applied))).map((cell) => cell.getAttribute('align'))).toEqual([expected, expected]);
+    },
+  );
 });

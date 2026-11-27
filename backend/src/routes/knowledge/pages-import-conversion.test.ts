@@ -6,7 +6,9 @@ import type { JSONContent } from '@tiptap/core';
 import { generateJSON } from '@tiptap/html';
 import { z } from 'zod';
 import { collabExtensions, htmlToYDoc, yDocToHtml } from '../../core/services/collab-schema.js';
-import { htmlToConfluence, htmlToMarkdown, markdownToHtml } from '../../core/services/content-converter.js';
+import {
+  extractLayoutSkeleton, htmlToConfluence, htmlToMarkdown, markdownToHtml, protectMedia, restoreMedia,
+} from '../../core/services/content-converter.js';
 import { pagesImportRoutes } from './pages-import.js';
 
 // The import's real pipeline end to end — markdownToHtml, then the route's
@@ -139,19 +141,34 @@ describe('POST /api/pages/import/preview through the real converter (#1752)', ()
       expect(saved).not.toMatch(/<t[dh][^>]*style=/);
     });
 
-    it('reaches AI Improve as a GFM table with the same alignment, and back (editor serialisation in between)', async () => {
-      const editorHtml = yDocToHtml(htmlToYDoc(await preview(ALIGNED)));
-      expect(editorHtml).toContain('<colgroup>');
-      const md = htmlToMarkdown(editorHtml, { layoutTokens: true }).trim();
-      expect(md.split('\n')).toEqual([
+    // The persisting Improve chain on an unchanged echo (`_helpers.ts`, then Accept in `llm-conversations.ts`).
+    async function improveChain(body: string): Promise<{ markdown: string; applied: string }> {
+      const markdown = htmlToMarkdown(protectMedia(body).html, { layoutTokens: true }).trim();
+      const { html: protectedBody, media } = protectMedia(body);
+      const applied = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedBody), protectedMedia: media });
+      return { markdown, applied: restoreMedia(applied, media) };
+    }
+
+    it('reaches AI Improve as a GFM table with the same alignment, and back', async () => {
+      const { markdown, applied } = await improveChain(await preview(ALIGNED));
+      expect(markdown.split('\n')).toEqual([
         '| a | b | c | d |',
         '| :-- | :-: | --: | --- |',
         '| 1 | 2 | 3 | 4 |',
       ]);
-      const back = await markdownToHtml(md);
-      expect(aligns(back, 'th')).toEqual(['left', 'center', 'right', null]);
-      expect([...parse(back).querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['1', '2', '3', '4']);
-      expect(htmlToConfluence(back)).toContain('<th style="text-align: center;">b</th>');
+      expect(aligns(applied, 'th')).toEqual(['left', 'center', 'right', null]);
+      expect([...parse(applied).querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['1', '2', '3', '4']);
+      expect(htmlToConfluence(applied)).toContain('<th style="text-align: center;">b</th>');
+    });
+
+    it('keeps the alignment through AI Improve after an editor serialisation, which travels frozen', async () => {
+      const editorHtml = yDocToHtml(htmlToYDoc(await preview(ALIGNED)));
+      expect(editorHtml).toContain('<colgroup>');
+      const { markdown, applied } = await improveChain(editorHtml);
+      expect(markdown).toBe('CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+      expect(aligns(applied, 'th')).toEqual(['left', 'center', 'right', null]);
+      expect(aligns(applied, 'td')).toEqual(['left', 'center', 'right', null]);
+      expect(parse(applied).querySelector('table')!.outerHTML).toBe(parse(editorHtml).querySelector('table')!.outerHTML);
     });
 
     it('writes the imported alignment to Confluence as text-align styles after the collaborative load', async () => {
