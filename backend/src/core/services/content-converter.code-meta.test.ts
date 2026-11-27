@@ -32,6 +32,7 @@ import {
   htmlToMarkdown,
   htmlToText,
   ImproveCodePlacementError,
+  ImproveSuggestionUnboundError,
   ImproveReplayBudgetError,
   ImproveReplayError,
   ImproveSuggestionFormatError,
@@ -43,6 +44,7 @@ import {
   parseCodeMetaAttrs,
   projectSourceCodeText,
   canAcceptImproveOutput,
+  convertImproveOutput,
   protectMedia,
   readCodeMacroInventory,
   replayProtectedMedia,
@@ -98,6 +100,10 @@ const pre = (code: string, attrs = '', lang = 'js'): string =>
   `<pre${attrs}><code${lang ? ` class="language-${lang}"` : ''}>${code}</code></pre>`;
 /** A titled token block: a faithful echo keeps its CODE-META line, the structural evidence of the #1958 path (D25 1(a)). */
 const ANCHOR = pre('anchor()', ' data-title="Anchor"');
+/** D28: a generation's code nonce, another generation's, and the Markdown the generator writes with the first. */
+const NONCE = '0123456789abcdef';
+const OTHER_NONCE = 'fedcba9876543210';
+const generated = (page: string): string => htmlToMarkdown(protectMedia(page, { codeNonce: NONCE }).html, { layoutTokens: true });
 
 interface OracleMacro {
   language: string | null;
@@ -771,15 +777,12 @@ describe('#1958 media replay (V4, X4, X5)', () => {
     }
   });
 
-  it('never replaces a spelling the page itself writes, in code, prose or a link (literal)', async () => {
-    const html = `${IMAGE}${pre('use CQ_MEDIA_PLACEHOLDER_0 here', TITLED)}<p>see <code>CQ_MEDIA_PLACEHOLDER_0</code>, CQ_MEDIA_PLACEHOLDER_0 and <a href="https://x.test">CQ_MEDIA_PLACEHOLDER_0</a></p>`;
-    const protectedBody = protectMedia(html);
-    expect(protectedBody.media[0]).toMatchObject({ literal: true });
+  it('keeps a medium spelling inside code; elsewhere a medium token is the medium, as before #1958 (D28)', async () => {
+    const html = `${IMAGE}${pre('use CQ_MEDIA_PLACEHOLDER_0 here', TITLED)}<p>see <code>CQ_MEDIA_PLACEHOLDER_0</code> and CQ_MEDIA_PLACEHOLDER_0</p>`;
     const chain = await improveChain(html);
-    expect(chain.html.match(/<img/g)).toHaveLength(1);
-    expect(chain.html.trimEnd().endsWith(IMAGE.replace('>', '>'))).toBe(true);
     expect(chain.html).toContain('<code>CQ_MEDIA_PLACEHOLDER_0</code>');
-    expect(chain.html).toContain('<a href="https://x.test">CQ_MEDIA_PLACEHOLDER_0</a>');
+    // No authored-literal rule: every spelling outside code is the medium (#1955's restoreMedia did the same).
+    expect(chain.html.match(/<img/g)).toHaveLength(2);
     expect(codeMacros(chain.storage)[0]).toEqual({
       language: 'js', title: 'Startup.cs', params: { linenumbers: 'true' }, code: 'use CQ_MEDIA_PLACEHOLDER_0 here',
     });
@@ -1122,16 +1125,19 @@ describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never i
     const identifier = await improveChain(HISTORICAL.identifier.page, (markdown) => `${markdown}\n\nUse CQ_CODE_PLACEHOLDER_0_COUNT to size the buffer.`);
     expect(identifier.html).toContain('Use CQ_CODE_PLACEHOLDER_0_COUNT to size the buffer.');
     expect(codeMacros(identifier.storage).map((macro) => [macro.title, macro.params])).toEqual([['Sample', { linenumbers: 'true' }]]);
-    // A page whose own text writes the identifier marks the ordinal authored (r5 CM5-1): such a page refuses.
+    // The page may write the identifier itself: without the generation's nonce it is plain text (D28).
     const authored = `${HISTORICAL.identifier.page}<p>See CQ_CODE_PLACEHOLDER_0_COUNT</p>`;
-    expect(protectMedia(authored).frozenCode[0]!.literal).toBe(true);
-    await expect(improveChain(authored)).rejects.toBeInstanceOf(ImproveCodePlacementError);
+    const accepted = await convertImproveOutput(authored, generated(authored), { provenance: 'code-meta', codeNonce: NONCE });
+    expect(accepted.html).toContain('See CQ_CODE_PLACEHOLDER_0_COUNT');
+    expect(accepted.html.match(/data-title="Sample"/g)).toHaveLength(1);
   });
 
-  it('(a) a placement the page itself spells never authorizes replay: the collision is refused (CM3-2 control)', async () => {
+  it('(a) a placeholder the page writes is plain text: only the generation\'s nonce places a block (D28, CM3-2 control)', async () => {
     const { page } = HISTORICAL.bold;
-    expect(protectMedia(page).frozenCode[0]).toMatchObject({ literal: true });
-    await expect(improveChain(page)).rejects.toBeInstanceOf(ImproveCodePlacementError);
+    const accepted = await convertImproveOutput(page, generated(page), { provenance: 'code-meta', codeNonce: NONCE });
+    expect(accepted.html).toContain('<strong>CQ_CODE_PLACEHOLDER_0</strong>');
+    expect(accepted.html.match(/<pre/g)).toHaveLength(1);
+    expect(accepted.html).toMatch(/<td><pre data-title="Sample"/);
   });
 
   it('(a)/(c) bind only exact-grammar CODE-META lines standing alone directly above a fence', async () => {
@@ -1166,32 +1172,45 @@ describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never i
     expect(codeMacros((await improveChain(frozen, undefined, { replayBudget: original + marker })).storage)).toHaveLength(1);
   });
 
-  it('marks a placeholder the page\'s authored text spells anywhere as authored, whatever splits it (r4 CM4-2, r5 CM5-1)', () => {
+  it('places a protected code block only at its generation\'s nonce token, whatever the page or another generation spells (D28, r6 CM6-1)', async () => {
     const table = `<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table>`;
+    expect(protectMedia(table, { codeNonce: NONCE }).frozenCode[0]!.token).toBe(`CQ_CODE_PLACEHOLDER_${NONCE}_0`);
     for (const authored of [
       '<p>Syntax</p><p>CQ_CODE_PLACEHOLDER_0</p><p>End</p>',
-      '<p>CQ_CODE_<span>PLACEHOLDER_0</span></p>',
+      '<p>CQ_CODE_<span>PLACEHOLDER_0</span></p><p>1 example</p>',
       '<p>CQ_CODE_<!-- c -->PLACEHOLDER_0</p>',
-      '<p>Use CQ_CODE_PLACEHOLDER_0_COUNT</p>',
+      `<p>CQ_CODE_PLACEHOLDER_${OTHER_NONCE}_0</p>`,
     ]) {
-      expect(protectMedia(`${table}${authored}`).frozenCode[0], authored).toMatchObject({ literal: true });
+      const page = `${table}${authored}`;
+      // The model dropped the structural placeholder: what the page spells never places the block.
+      const dropped = generated(page).replace(/<td>[^<]*<\/td>/, '<td></td>');
+      await expect(convertImproveOutput(page, dropped, { provenance: 'code-meta', codeNonce: NONCE }), authored)
+        .rejects.toBeInstanceOf(ImproveCodePlacementError);
+      // A faithful echo places it once, in the table, and keeps the authored text.
+      const accepted = await convertImproveOutput(page, generated(page), { provenance: 'code-meta', codeNonce: NONCE });
+      expect(accepted.html.match(/<pre/g), authored).toHaveLength(1);
     }
-    // The placeholder protectMedia inserts is never the page's own spelling, and does not join authored text.
-    expect(protectMedia(`<p>Syntax</p>${table}<p>End</p>`).frozenCode[0]!.literal).toBeUndefined();
-    expect(protectMedia(`<p>CQ_CODE_PLACEHOLDER_</p>${table}<p>9</p>`).frozenCode[0]!.literal).toBeUndefined();
+    // Without a bound nonce a page with protected code refuses: nothing in the text can be told for its block.
+    await expect(convertImproveOutput(table, generated(table), { provenance: 'unmatched' })).rejects.toBeInstanceOf(ImproveSuggestionUnboundError);
+    // A code-carrying macro wrapper's token carries the nonce too; other media keep theirs.
+    const wrapper = `<div class="confluence-macro-unknown" data-macro-name="foo">${pre('w()', TITLED)}</div><img src="/a.png" alt="a">`;
+    expect(protectMedia(wrapper, { codeNonce: NONCE }).media.map((entry) => entry.token))
+      .toEqual([`CQ_MEDIA_PLACEHOLDER_${NONCE}_0`, 'CQ_MEDIA_PLACEHOLDER_1']);
   });
 
   it('tells the generator whether the Accept would take an output, by the Accept\'s own conversion (r5 CM5-2)', async () => {
     const frozenPage = `<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table><p>Prose</p>`;
-    const echo = htmlToMarkdown(protectMedia(frozenPage).html, { layoutTokens: true });
-    expect(await canAcceptImproveOutput(frozenPage, echo)).toBe(true);
-    for (const output of ['Prose only.', '**CQ_CODE_PLACEHOLDER_0**\n\nProse', `${echo}\n\nCQ\\_CODE\\_PLACEHOLDER\\_0`, '`CQ_CODE_PLACEHOLDER_0`']) {
-      expect(await canAcceptImproveOutput(frozenPage, output), output).toBe(false);
+    const echo = generated(frozenPage);
+    const token = `CQ_CODE_PLACEHOLDER_${NONCE}_0`;
+    expect(await canAcceptImproveOutput(frozenPage, echo, NONCE)).toBe(true);
+    expect(await canAcceptImproveOutput(frozenPage, echo)).toBe(false);
+    for (const output of ['Prose only.', `**${token}**\n\nProse`, `${echo}\n\n${token}`, `\`${token}\``]) {
+      expect(await canAcceptImproveOutput(frozenPage, output, NONCE), output).toBe(false);
     }
     // A code-carrying macro wrapper is a media entry: dropping its placeholder is a refusal too.
     const wrapperPage = `<div class="confluence-macro-unknown" data-macro-name="foo">${pre('w()', TITLED)}</div><p>Prose</p>`;
-    expect(await canAcceptImproveOutput(wrapperPage, 'Revised prose.')).toBe(false);
-    expect(await canAcceptImproveOutput(wrapperPage, htmlToMarkdown(protectMedia(wrapperPage).html, { layoutTokens: true }))).toBe(true);
+    expect(await canAcceptImproveOutput(wrapperPage, 'Revised prose.', NONCE)).toBe(false);
+    expect(await canAcceptImproveOutput(wrapperPage, generated(wrapperPage), NONCE)).toBe(true);
     expect(await canAcceptImproveOutput('<p>Plain prose.</p>', 'Anything.')).toBe(true);
   });
 });

@@ -2168,8 +2168,6 @@ export interface ProtectedMedia {
   html: string;
   /** #1958: the entry's subtree (root included) holds a `pre` with `data-title` or `data-macro-params`. */
   code?: true;
-  /** #1958: the page's own text spells this token besides the one node protectMedia inserted. */
-  literal?: true;
   /**
    * #1958 (review r1 CM-3): the original with every CR / CR LF in the text of
    * its `code` elements written as LF, when that differs from `html`. One HTML
@@ -2525,16 +2523,21 @@ function isMacroParamsObject(raw: string): boolean {
  * #1958: an annotated code block that cannot travel as a CODE-META token
  * (classifyCodeBlock `frozen`), and every token block past the first
  * CODE_META_TOKENS_MAX, is frozen too, in its OWN token namespace
- * (`CQ_CODE_PLACEHOLDER_<N>`, `frozenCode`): the media entries, their tokens
- * and their ordinals are exactly what the release before #1958 wrote, so a
- * suggestion it generated names the same media (review r1 CM-1). A frozen
- * block holding a media node is not frozen (its media keeps its ordinal).
- * Three facts are reported, each read from this DOM: an entry's `code` (its
- * subtree holds an annotated `pre`), its `literal` (the page spells its token
- * itself) and `carried` (the stored body holds an annotated `pre` anywhere,
- * before any replacement).
+ * (`frozenCode`): the media entries, their tokens and their ordinals are
+ * exactly what the release before #1958 wrote, so a suggestion it generated
+ * names the same media (review r1 CM-1). A frozen block holding a media node
+ * is not frozen (its media keeps its ordinal). A frozen entry's token is
+ * `CQ_CODE_PLACEHOLDER_<codeNonce>_<N>` (coordinator decision D28): the
+ * nonce is made per generated suggestion and stored on its row, so only a
+ * suggestion of that generation can spell it; text the page writes itself,
+ * or another generation's token, is plain text. Without a nonce the token is
+ * `CQ_CODE_PLACEHOLDER_<N>`, which the Accept never places (it refuses a
+ * page with frozen code when no row binds a nonce). Two facts are reported,
+ * each read from this DOM: an entry's `code` (its subtree holds an
+ * annotated `pre`) and `carried` (the stored body holds an annotated `pre`
+ * anywhere, before any replacement).
  */
-export function protectMedia(html: string): ProtectedBody {
+export function protectMedia(html: string, options: { codeNonce?: string } = {}): ProtectedBody {
   const dom = new JSDOM(`<body>${html}</body>`);
   const doc = dom.window.document;
   const media: ProtectedMedia[] = [];
@@ -2574,49 +2577,29 @@ export function protectMedia(html: string): ProtectedBody {
     });
   const carried = doc.body.querySelector(ANNOTATED_CODE_BLOCK_SELECTOR) !== null;
   const frozen = carried ? frozenCodeBlocks(doc.body, nodes) : [];
-  /** The placeholder text nodes inserted below: generator output, never an authored spelling. */
-  const synthesized = new Set<Node>();
+  // D28: an entry that holds annotated code (a code-carrying macro wrapper) is as mandatory as a frozen block, so
+  // with a nonce its token carries it too, at the same media ordinal; every other medium keeps the plain token.
+  const nonced = (prefix: string): string => (options.codeNonce === undefined ? prefix : `${prefix}${options.codeNonce}_`);
   for (const node of nodes) {
-    const token = `${MEDIA_TOKEN_PREFIX}${media.length}`;
+    const code = carried && holdsAnnotatedCodeBlock(node as Element);
+    const token = `${code ? nonced(MEDIA_TOKEN_PREFIX) : MEDIA_TOKEN_PREFIX}${media.length}`;
     const entry: ProtectedMedia = { token, html: (node as Element).outerHTML };
-    if (carried && holdsAnnotatedCodeBlock(node as Element)) {
+    if (code) {
       entry.code = true;
       const lineEnds = codeTextLineEndForm(node as Element);
       if (lineEnds !== null) entry.lineEndForm = lineEnds;
     }
     media.push(entry);
-    const placeholder = doc.createTextNode(` ${token} `);
-    synthesized.add(placeholder);
-    node.replaceWith(placeholder);
+    node.replaceWith(doc.createTextNode(` ${token} `));
   }
+  const codePrefix = nonced(CODE_TOKEN_PREFIX);
   const frozenCode: ProtectedMedia[] = frozen.map((pre, index) => {
-    const entry: ProtectedMedia = { token: `${CODE_TOKEN_PREFIX}${index}`, html: pre.outerHTML, code: true };
+    const entry: ProtectedMedia = { token: `${codePrefix}${index}`, html: pre.outerHTML, code: true };
     const lineEnds = codeTextLineEndForm(pre);
     if (lineEnds !== null) entry.lineEndForm = lineEnds;
-    const placeholder = doc.createTextNode(` ${entry.token} `);
-    synthesized.add(placeholder);
-    pre.replaceWith(placeholder);
+    pre.replaceWith(doc.createTextNode(` ${entry.token} `));
     return entry;
   });
-  if (media.length > 0 || frozenCode.length > 0) {
-    // #1958 (review r5 CM5-1, coordinator direction): a token the page's authored text spells anywhere is authored,
-    // whatever inline element, comment or block boundary splits or surrounds it (Markdown conversion can join such
-    // pieces into one run): each authored text node, and all of them joined. Inserted placeholders never count.
-    const texts: string[] = [];
-    const joined: string[] = [];
-    const walker = doc.createTreeWalker(doc.body, dom.window.NodeFilter.SHOW_TEXT);
-    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
-      if (synthesized.has(text)) {
-        joined.push('\u0000');
-      } else {
-        texts.push(text.nodeValue ?? '');
-        joined.push(text.nodeValue ?? '');
-      }
-    }
-    texts.push(joined.join(''));
-    markLiteralTokens(texts, MEDIA_TOKEN_PREFIX, media);
-    markLiteralTokens(texts, CODE_TOKEN_PREFIX, frozenCode);
-  }
   return { html: doc.body.innerHTML, media, frozenCode, carried };
 }
 
@@ -3235,29 +3218,8 @@ function codeTextLineEndForm(el: Element): string | null {
   return changed ? copy.outerHTML : null;
 }
 
-/**
- * #1958 (X4, reviews r4 CM4-2 and r5 CM5-1): an entry is `literal` when the
- * page's authored text spells its token anywhere (either spelling; only the
- * ordinal's digits bound it, so `CQ_CODE_PLACEHOLDER_0_COUNT` and a spelling
- * split by inline markup count too). `texts` are each authored text node and
- * their join. The page itself writes the token, so no spelling of it in a
- * suggestion can be told for a placement: a literal entry never places, and a
- * code-carrying one then refuses the Accept. One pass per prefix over text
- * the size of the page's text, twice.
- */
-function markLiteralTokens(texts: readonly string[], prefix: string, entries: ProtectedMedia[]): void {
-  if (entries.length === 0) return;
-  const counts = new Map<string, number>();
-  const spelling = new RegExp(`(?:${escapeRegExp(prefix)}|${escapeRegExp(prefix.replace(/_/g, '\\_'))})(\\d+)`, 'g');
-  for (const text of texts) {
-    for (const match of text.matchAll(spelling)) {
-      counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
-    }
-  }
-  for (let index = 0; index < entries.length; index += 1) {
-    if ((counts.get(String(index)) ?? 0) > 0) entries[index]!.literal = true;
-  }
-}
+/** `llm_improvements.improve_code_nonce`: 64 random bits, lowercase hex (D28). */
+export const IMPROVE_CODE_NONCE_PATTERN = /^[0-9a-f]{16}$/;
 
 /** One `pre` of the pre-Improve (protected) body whose only child is `code`, in document order. */
 export interface CodeMetaSkeletonBlock {
@@ -3360,6 +3322,14 @@ export interface CodeMetaAccept {
 
 /** `llm_improvements.improve_protocol` the #1958 generator writes on every row it stores (migration 161). */
 export const IMPROVE_CODE_META_PROTOCOL = 1;
+
+/**
+ * #1958 (review r6 CM6-2, D28): the version of the Improve Accept's conversion
+ * (`convertImproveOutput`), part of the Improve cache key with the source
+ * HTML's digest, so an entry another release's converter admitted is never
+ * served. Change it whenever what the Accept takes changes.
+ */
+export const IMPROVE_CONVERTER_VERSION = '1958-d28';
 
 /**
  * Where an applied suggestion comes from (D26 item 2), decided by the route
@@ -3717,17 +3687,30 @@ export class ImproveSuggestionFormatError extends Error {
 /**
  * #1958 (D26 item 3): on the #1958 path a frozen or code-carrying original has
  * no single placement it can take: the suggestion dropped, repeated or moved
- * its placeholder into code, or the page itself spells that placeholder.
+ * its placeholder into code or a context that cannot hold a block.
  * Appending it could duplicate the block, so the Accept is refused instead.
  */
 export class ImproveCodePlacementError extends Error {
   constructor() {
-    super('This AI suggestion dropped, repeated or moved a protected code block of this page, so it cannot be applied without losing or duplicating it. The page is unchanged — run AI Improve again, or edit the page directly (a page that spells CQ_CODE_PLACEHOLDER_<number> in its own text cannot take such a suggestion until that text is changed).');
+    super('This AI suggestion dropped, repeated or moved a protected code block of this page, so it cannot be applied without losing or duplicating it. The page is unchanged — run AI Improve again, or edit the page directly.');
     this.name = 'ImproveCodePlacementError';
   }
 }
 
-/** A code entry's spelling inside a longer identifier (`CQ_CODE_PLACEHOLDER_0_COUNT`, `xCQ_CODE_PLACEHOLDER_0`). */
+/**
+ * #1958 (coordinator decision D28): the page has frozen code blocks and the
+ * Apply names no stored #1958 suggestion with its code nonce (manual or edited
+ * Markdown, an older client): no placeholder in it can be told for one of
+ * this page's frozen blocks. Refused before parsing.
+ */
+export class ImproveSuggestionUnboundError extends Error {
+  constructor() {
+    super('This text is not an AI Improve suggestion stored for this page, so the protected code blocks of this page cannot be placed. The page is unchanged — run AI Improve again and apply its result.');
+    this.name = 'ImproveSuggestionUnboundError';
+  }
+}
+
+/** A frozen code token's spelling inside a longer identifier (`…_0_COUNT`, `xCQ_CODE_PLACEHOLDER_…`): plain text. */
 function isIdentifierPart(html: string, placement: MediaTokenPlacement): boolean {
   if (placement.wrapped) return false;
   return /[A-Za-z0-9_]/.test(html[placement.start - 1] ?? '')
@@ -3742,10 +3725,9 @@ function isIdentifierPart(html: string, placement: MediaTokenPlacement): boolean
  * release before #1958 wrote, restoreMedia at every placement and the
  * `includes` drop guard. Such a page has no code-carrying entry.
  *
- * `meta` (a #1958 row, or Markdown no row matches): one locator pass; every
- * placement screened before counting: a spelling in `pre`/`code`, of an entry
- * the page spells itself (`literal`), or of a code entry inside a longer
- * identifier, stays as written; one in a container the reverse pass drops, or
+ * `meta` (a #1958 row): one locator pass; every placement screened before
+ * counting: a spelling in `pre`/`code`, or of a frozen code token inside a
+ * longer identifier, stays as written; one in a container the reverse pass drops, or
  * a code-carrying entry's one in a context that does not keep a block intact,
  * is removed. An entry without code goes to every viable placement and is
  * appended once when it has none; a code-carrying entry needs exactly one
@@ -3787,8 +3769,8 @@ export function replayProtectedMedia(
     const k = entryOf.get(placement.token)!;
     const entry = entries[k]!;
     const flags = contextFlags(placement.context, cache);
-    if (entry.literal || flags.code) return 'keep';
-    if (k >= entries.length - codeMeta.frozenCode && isIdentifierPart(html, placement)) return 'keep';
+    if (flags.code) return 'keep';
+    if (entry.code && isIdentifierPart(html, placement)) return 'keep';
     if (flags.dropping) return 'remove';
     if (entry.code && flags.unsafe) return 'remove';
     return 'viable';
@@ -4009,13 +3991,17 @@ export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
 }
 
 /**
- * #1958 (review r5 CM5-2): the conversion half of an Improve Accept, from the
- * page's body and the model's Markdown to the finalized HTML, shared by the
+ * #1958 (review r5 CM5-2, D28): the conversion half of an Improve Accept, from
+ * the page's body and the model's Markdown to the finalized HTML, shared by the
  * Apply route and by the Improve generator's cache rule, so an output the
- * Accept refuses is never cached: protectMedia → layout skeleton →
+ * Accept refuses is never cached: protectMedia(codeNonce) → layout skeleton →
  * beginCodeMetaAccept(provenance) → markdownToHtml → replayProtectedMedia →
- * finalizeCodeMetadata. Throws what those throw (LayoutRecoveryError,
- * ImproveSuggestionFormatError, ImproveCodePlacementError,
+ * finalizeCodeMetadata. `codeNonce` is the bound row's
+ * `improve_code_nonce`: the code-carrying originals are placed only at
+ * tokens spelled with it. A page with code-carrying originals and no nonce
+ * refuses (ImproveSuggestionUnboundError). Throws what those throw
+ * (LayoutRecoveryError, ImproveSuggestionFormatError,
+ * ImproveSuggestionUnboundError, ImproveCodePlacementError,
  * ImproveReplayError, ImproveReplayBudgetError,
  * ConfluenceStorageRefusedError). The storage judges of the two exits run
  * after it, on the page state of the exit.
@@ -4023,29 +4009,32 @@ export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
 export async function convertImproveOutput(
   bodyHtml: string,
   improvedMarkdown: string,
-  options: { provenance?: ImproveSuggestionProvenance; witnesses?: boolean } = {},
+  options: { provenance?: ImproveSuggestionProvenance; witnesses?: boolean; codeNonce?: string } = {},
 ): Promise<ConvertedImproveOutput> {
-  const protectedBody = protectMedia(bodyHtml);
+  const protectedBody = protectMedia(bodyHtml, { codeNonce: options.codeNonce });
   const layoutSkeleton = extractLayoutSkeleton(protectedBody.html);
   const codeMeta = beginCodeMetaAccept(protectedBody, options);
+  if (options.codeNonce === undefined && codeMeta.entries.some((entry) => entry.code)) throw new ImproveSuggestionUnboundError();
   const html = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
   const replay = replayProtectedMedia(html, codeMeta);
   return { ...finalizeCodeMetadata(replay.html, codeMeta), dropped: replay.dropped, entries: codeMeta.entries.length };
 }
 
 /**
- * #1958 (review r5 CM5-2): would an Accept of `improvedMarkdown` for a page
- * with body `bodyHtml` succeed? The Improve generator caches only such an
- * output. It runs {@link convertImproveOutput}, the function the Apply route
- * runs, as the #1958 generator's own suggestion, then both exits' storage
- * judges on the result without a stored storage (remote: the string
- * htmlToConfluence writes; local: both publication projections). Any refusal,
- * or any error, answers false. Only what the page's stored storage at Apply
- * time adds (#1955 link origins, R3) is not foreseen.
+ * #1958 (reviews r5 CM5-2, r6 CM6-2): would an Accept of `improvedMarkdown`
+ * for a page with body `bodyHtml`, as the #1958 suggestion generated with
+ * `codeNonce`, succeed? The Improve generator caches only such an output, and
+ * re-checks a cache hit against the requesting page before serving it. It runs
+ * {@link convertImproveOutput}, the function the Apply route runs, then both
+ * exits' storage judges on the result without a stored storage (remote: the
+ * string htmlToConfluence writes; local: both publication projections). Any
+ * refusal, or any error, answers false. What the page's state at Apply time
+ * adds (a changed body, its stored storage, #1955 link origins, R3) is not
+ * foreseen.
  */
-export async function canAcceptImproveOutput(bodyHtml: string, improvedMarkdown: string): Promise<boolean> {
+export async function canAcceptImproveOutput(bodyHtml: string, improvedMarkdown: string, codeNonce?: string): Promise<boolean> {
   try {
-    const converted = await convertImproveOutput(bodyHtml, improvedMarkdown, { provenance: 'code-meta' });
+    const converted = await convertImproveOutput(bodyHtml, improvedMarkdown, { provenance: 'code-meta', codeNonce });
     assertCodeMacroStorage(htmlToConfluence(converted.html), converted.allowance);
     assertLocalCodeMacroProjections(converted.html, converted.allowance, { body_storage: null });
     return true;

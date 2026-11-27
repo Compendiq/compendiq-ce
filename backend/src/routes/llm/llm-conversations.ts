@@ -19,6 +19,8 @@ import {
   htmlToConfluence,
   htmlToText,
   ImproveCodePlacementError,
+  IMPROVE_CODE_NONCE_PATTERN,
+  ImproveSuggestionUnboundError,
   IMPROVE_CODE_META_PROTOCOL,
   ImproveReplayBudgetError,
   ImproveReplayError,
@@ -480,10 +482,13 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // row only, once it is the caller's, for this page and completed; the text
     // is never matched against stored rows. No id, or a row that fails these
     // checks (a manual Apply, an older client), is new input: the #1958 path
-    // with exact-grammar carriers only, and no row changes status. Bound now,
-    // before conversion or remote latency.
-    const linkedRow = selectedImprovementId === undefined ? undefined : (await query<{ id: string; improveProtocol: number | null }>(
-      `SELECT id, improve_protocol AS "improveProtocol"
+    // with exact-grammar carriers only, refused when the page has protected
+    // code blocks (no nonce can place them, D28), and no row changes status.
+    // Bound now, before conversion or remote latency.
+    const linkedRow = selectedImprovementId === undefined ? undefined : (await query<{
+      id: string; improveProtocol: number | null; codeNonce: string | null;
+    }>(
+      `SELECT id, improve_protocol AS "improveProtocol", improve_code_nonce AS "codeNonce"
          FROM llm_improvements
         WHERE id = $1
           AND user_id = $2
@@ -494,6 +499,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const improvementId = linkedRow?.id ?? null;
     const provenance: ImproveSuggestionProvenance = !linkedRow ? 'unmatched'
       : linkedRow.improveProtocol === IMPROVE_CODE_META_PROTOCOL ? 'code-meta' : 'legacy';
+    // D28: only a #1958 row's own nonce places a protected code block; every other spelling is text.
+    const codeNonce = provenance === 'code-meta' && linkedRow?.codeNonce && IMPROVE_CODE_NONCE_PATTERN.test(linkedRow.codeNonce)
+      ? linkedRow.codeNonce : undefined;
 
     if (version !== undefined && version < currentVersion) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -506,7 +514,8 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         : error instanceof ImproveReplayBudgetError ? 'replay-budget'
           : error instanceof ImproveReplayError ? 'replay-integrity'
             : error instanceof ImproveSuggestionFormatError ? 'suggestion-format'
-              : error instanceof ImproveCodePlacementError ? 'code-placement' : null;
+              : error instanceof ImproveSuggestionUnboundError ? 'suggestion-unbound'
+                : error instanceof ImproveCodePlacementError ? 'code-placement' : null;
       if (reason === null) throw error;
       fastify.log.warn(
         { pageId: existingPage.id, reason, provenance, exit: writeStaysLocal ? 'local' : 'remote' },
@@ -536,7 +545,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     //   pre-#1958 suggestion for a page with annotated code is refused first.
     let finalized: ConvertedImproveOutput;
     try {
-      finalized = await convertImproveOutput(existingPage.body_html ?? '', improvedMarkdown, { provenance });
+      finalized = await convertImproveOutput(existingPage.body_html ?? '', improvedMarkdown, { provenance, codeNonce });
     } catch (err) {
       if (err instanceof LayoutRecoveryError) {
         fastify.log.warn(

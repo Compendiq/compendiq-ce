@@ -135,7 +135,7 @@ export async function assembleContextIfNeeded(
   pageId: string | undefined,
   content: string,
   includeSubPages?: boolean,
-  opts?: { protectMedia?: boolean; layoutTokens?: boolean; policyContext?: SubPagePolicyContext; parentRef?: ResolvedPageRef },
+  opts?: { protectMedia?: boolean; layoutTokens?: boolean; codeNonce?: string; policyContext?: SubPagePolicyContext; parentRef?: ResolvedPageRef },
 ): Promise<{ markdown: string; multiPageSuffix: string; includedPageRefs: IncludedPageRef[] }> {
   // Resolve internal-vs-Confluence id: sub-page traversal is keyed on the
   // Confluence id (pages.parent_id; the DB id for standalone pages). A page
@@ -144,7 +144,8 @@ export async function assembleContextIfNeeded(
   // content alone, so both cases produce the same prompt.
   const resolved = includeSubPages && pageId ? opts?.parentRef ?? await resolveReadablePageRef(userId, pageId) : undefined;
   if (resolved) {
-    const parentHtml = opts?.protectMedia ? protectMedia(content).html : content;
+    // #1958 (D28): protected code blocks carry this generation's nonce, so only this suggestion can place them.
+    const parentHtml = opts?.protectMedia ? protectMedia(content, { codeNonce: opts.codeNonce }).html : content;
     const assembled = await assembleSubPageContext(
       userId,
       subPageParentKey(resolved),
@@ -164,7 +165,7 @@ export async function assembleContextIfNeeded(
     };
   }
 
-  const html = opts?.protectMedia ? protectMedia(content).html : content;
+  const html = opts?.protectMedia ? protectMedia(content, { codeNonce: opts.codeNonce }).html : content;
   return {
     // #765: layout boundary tokens are opt-in — only the Improve route
     // requests them.
