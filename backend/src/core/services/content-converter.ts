@@ -2955,7 +2955,6 @@ const CODE_META_PARAM_KEY = new RegExp(`^[A-Za-z][A-Za-z0-9_.-]{0,${CODE_META_KE
 const PLACEHOLDER_SPELLING = /CQ(?:_|\\_)(?:MEDIA|CODE)(?:_|\\_)PLACEHOLDER/;
 const CODE_META_ATTRS = /^n=(0|[1-9]\d{0,2})(?: title=([A-Za-z0-9%-]*))?(?: params=([A-Za-z0-9%-]*))?$/;
 const CODE_META_TOKEN_LINE = /^\[\[\[CODE-META ([^\]\n]*)\]\]\]$/;
-const CODE_META_LOOKALIKE = /^\[\[\[[ \t]*\/?[ \t]*CODE[-_ ]?META\b[^\n]*\]\]\]$/i;
 const CODE_META_MARKDOWN_HINT = /\[\[\[[ \t]*\/?[ \t]*CODE[-_ ]?META/i;
 
 /** The emitted Markdown starts with a CODE-META line (only the Improve conversion writes one unescaped). */
@@ -3194,22 +3193,24 @@ function holdsAnnotatedCodeBlock(el: Element): boolean {
   return el.matches(ANNOTATED_CODE_BLOCK_SELECTOR) || el.querySelector(ANNOTATED_CODE_BLOCK_SELECTOR) !== null;
 }
 
-/** `el`'s outerHTML with CR / CR LF in the text of its `code` elements as LF; null when that changes nothing. */
+/**
+ * `el`'s outerHTML with CR / CR LF in the text of its `code` elements as LF;
+ * null when that changes nothing. One walk of the copy (review r2 CM2-8): a
+ * text node is normalised when it has a `code` ancestor, each node once.
+ */
 function codeTextLineEndForm(el: Element): string | null {
   if (!el.outerHTML.includes('\r')) return null;
   const copy = el.cloneNode(true) as Element;
-  const codes = copy.tagName === 'CODE' ? [copy] : Array.from(copy.querySelectorAll('code'));
   let changed = false;
-  for (const code of codes) {
-    const pending: Node[] = [code];
-    while (pending.length > 0) {
-      const node = pending.pop()!;
-      if (node.nodeType === 3 && node.nodeValue?.includes('\r')) {
-        node.nodeValue = node.nodeValue.replace(/\r\n?/g, '\n');
-        changed = true;
-      }
-      for (let child = node.firstChild; child; child = child.nextSibling) pending.push(child);
+  const pending: Array<{ node: Node; insideCode: boolean }> = [{ node: copy, insideCode: false }];
+  while (pending.length > 0) {
+    const { node, insideCode } = pending.pop()!;
+    if (insideCode && node.nodeType === 3 && node.nodeValue?.includes('\r')) {
+      node.nodeValue = node.nodeValue.replace(/\r\n?/g, '\n');
+      changed = true;
     }
+    const below = insideCode || node.nodeName === 'CODE';
+    for (let child = node.firstChild; child; child = child.nextSibling) pending.push({ node: child, insideCode: below });
   }
   return changed ? copy.outerHTML : null;
 }
@@ -3318,12 +3319,20 @@ export interface CodeMetaAccept {
   readonly entries: readonly ProtectedMedia[];
   /** How many of `entries` are frozen code entries (at the end). */
   readonly frozenCode: number;
-  /** Set by markdownToHtml: the Markdown holds a CODE-META spelling or a code placeholder spelling. */
-  carrierSeen: boolean;
+  /**
+   * Set by markdownToHtml (review r2 CM2-1, D25 1(a)): the suggestion holds a well-formed CODE-META line by the
+   * exact grammar, standing alone (a paragraph or item text), outside code, directly above a fence.
+   */
+  codeMetaEvidence: boolean;
+  /**
+   * Set by replayProtectedMedia (D25 item 1): `meta`, the #1958 path (structural carrier evidence); `base`, the
+   * Accept of the release before #1958 with the trust boundary kept (no carrier, no frozen code on the page).
+   */
+  mode: 'meta' | 'base' | null;
   /** Filled by markdownToHtml, in document order. */
   readonly fences: CodeMetaFence[];
-  /** Entries replayProtectedMedia inserted with a marker. */
-  readonly replayed: Set<number>;
+  /** Marker id (`<k>` or, on the base path, `<k>-<copy>`) → entry index of every original inserted with a marker. */
+  readonly replayed: Map<string, number>;
   readonly report: CodeMetaReport;
 }
 
@@ -3340,9 +3349,10 @@ export function beginCodeMetaAccept(protectedBody: ProtectedBody, options: { wit
     nonce: randomBytes(16).toString('hex'),
     entries: [...protectedBody.media, ...protectedBody.frozenCode],
     frozenCode: protectedBody.frozenCode.length,
-    carrierSeen: false,
+    codeMetaEvidence: false,
+    mode: null,
     fences: [],
-    replayed: new Set(),
+    replayed: new Map(),
     report: {
       bound: 0, orphan: 0, malformed: 0, invalid: 0, duplicate: 0, mismatch: 0, debris: 0,
       stripped: 0, forged: 0, twins: 0, appended: 0, screened: 0, literal: 0,
@@ -3350,10 +3360,34 @@ export function beginCodeMetaAccept(protectedBody: ProtectedBody, options: { wit
   };
 }
 
-const CODE_CARRIER_SPELLING = /CQ\\?_CODE\\?_PLACEHOLDER|\[\[\[[ \t]*\/?[ \t]*CODE[-_ ]?META/i;
-
 function needsCodeMetaAnalysis(accept: CodeMetaAccept, markdown: string): boolean {
   return accept.witnesses || accept.skeleton.some((block) => block.token !== null) || CODE_META_MARKDOWN_HINT.test(markdown);
+}
+
+/**
+ * D25 1(a): does the lexed suggestion hold a well-formed CODE-META line (exact grammar, canonical attributes) that
+ * stands alone as a paragraph or item text, outside code, directly above a fenced code token in the same list?
+ * Reads only; a spelling inside code, inside other text or away from a fence is no evidence.
+ */
+function hasCodeMetaEvidence(tokens: Token[]): boolean {
+  const pending: Token[][] = [tokens];
+  while (pending.length > 0) {
+    const array = pending.pop()!;
+    for (let index = 0; index < array.length; index += 1) {
+      const token = array[index]!;
+      if (token.type === 'paragraph' || token.type === 'text') {
+        const match = CODE_META_TOKEN_LINE.exec((token as Tokens.Paragraph).text);
+        const next = array[index + 1];
+        if (match && parseCodeMetaAttrs(match[1]!) !== null && next?.type === 'code'
+          && (next as Tokens.Code).codeBlockStyle !== 'indented') return true;
+      } else if (token.type === 'blockquote') {
+        pending.push((token as Tokens.Blockquote).tokens);
+      } else if (token.type === 'list') {
+        for (const item of (token as Tokens.List).items) pending.push(item.tokens);
+      }
+    }
+  }
+  return false;
 }
 
 const CODE_RENDERER = new Renderer();
@@ -3400,14 +3434,27 @@ function stripInlineCodeMetaLookalikes(inline: Token[] | undefined, report: Code
 }
 
 /**
+ * #1958 (review r2 CM2-5): how many token spellings `text` holds when it holds
+ * nothing else but white space; 0 otherwise. Each run is matched on its own
+ * (`[^\]\n]*` never crosses a `]`), so prose between two runs is never taken
+ * for one long token.
+ */
+function debrisOnlyRuns(text: string): number {
+  const runs = text.match(CODE_META_INLINE_LOOKALIKE)?.length ?? 0;
+  return runs > 0 && text.replace(CODE_META_INLINE_LOOKALIKE, '').trim() === '' ? runs : 0;
+}
+
+/**
  * #1958: the echo analysis on marked's lexer tokens (after layout recovery):
  * standalone tokens, adjacency, validity, duplicates (G0), equal per-key
  * groups (G1–G3); bound fences render the stored text (G4) with a marker;
  * token and lookalike lines are removed. Fills `accept.fences`. Linear in the
  * number of tokens (review r1 CM-6): positions are recorded once, groups are
- * appended to, and each token list is filtered once.
+ * appended to, and each token list is filtered once. With `full` false (the
+ * base path of D25 1(b)) no token is read, removed or bound: fences are only
+ * recorded (and marked for witnesses), so the rendered bytes are marked's own.
  */
-function analyseCodeMetaEcho(tokens: Token[], accept: CodeMetaAccept): void {
+function analyseCodeMetaEcho(tokens: Token[], accept: CodeMetaAccept, full: boolean): void {
   const report = accept.report;
   const echo = new Map<Token, EchoToken>();
   const removals = new Map<Token[], Set<Token>>();
@@ -3420,14 +3467,17 @@ function analyseCodeMetaEcho(tokens: Token[], accept: CodeMetaAccept): void {
   const walk = (array: Token[]): void => {
     for (let index = 0; index < array.length; index += 1) {
       const token = array[index]!;
+      if (!full && (token.type === 'paragraph' || token.type === 'text' || token.type === 'heading' || token.type === 'table')) {
+        continue;
+      }
       if (token.type === 'paragraph' || token.type === 'text') {
         const line = (token as Tokens.Paragraph).text;
         const match = CODE_META_TOKEN_LINE.exec(line);
         if (match) {
           echo.set(token, { attrs: parseCodeMetaAttrs(match[1]!), adjacent: false });
           remove(array, token);
-        } else if (CODE_META_LOOKALIKE.test(line.trim())) {
-          report.debris += 1;
+        } else if (debrisOnlyRuns(line) > 0) {
+          report.debris += debrisOnlyRuns(line);
           remove(array, token);
         } else if (line.includes('[[[')) {
           stripInlineCodeMetaLookalikes((token as Tokens.Paragraph).tokens, report);
@@ -3437,8 +3487,8 @@ function analyseCodeMetaEcho(tokens: Token[], accept: CodeMetaAccept): void {
       if (token.type === 'heading') {
         // CM-7: a heading never carries metadata; a token made a heading is debris.
         const heading = token as Tokens.Heading;
-        if (CODE_META_LOOKALIKE.test(heading.text.trim())) {
-          report.debris += 1;
+        if (debrisOnlyRuns(heading.text) > 0) {
+          report.debris += debrisOnlyRuns(heading.text);
           remove(array, token);
         } else if (heading.text.includes('[[[')) {
           stripInlineCodeMetaLookalikes(heading.tokens, report);
@@ -3636,12 +3686,13 @@ export class ImproveReplayError extends Error {
 }
 
 /**
- * #1958 (review r1 CM-1): the page has frozen code blocks and the suggestion
- * holds no code carrier at all (no `CQ_CODE_PLACEHOLDER` and no CODE-META
- * spelling). Such a suggestion was generated before #1958, which wrote those
- * blocks as editable Markdown, or the model dropped every carrier: the two
- * cannot be told apart, and appending the originals would duplicate the
- * first. Refused before anything is built or written.
+ * #1958 (review r1 CM-1, r2 CM2-1, D25 1(c)): the page has frozen code blocks
+ * and the suggestion holds no structural #1958 carrier (no CODE-META line the
+ * generator would write, no `CQ_CODE_PLACEHOLDER_<k>` of this page standing
+ * alone outside code). Such a suggestion was generated before #1958, which
+ * wrote those blocks as editable Markdown, or the model dropped every carrier:
+ * the two cannot be told apart, and appending the originals would duplicate
+ * the first. Refused before anything is built or written.
  */
 export class ImproveSuggestionFormatError extends Error {
   constructor() {
@@ -3651,17 +3702,42 @@ export class ImproveSuggestionFormatError extends Error {
 }
 
 /**
- * #1958: re-inject protected media and frozen code blocks by screened
- * placement (replaces the restoreMedia + `includes` drop guard of the
- * Accept). One locator pass; every placement screened before counting: a
- * spelling in `pre`/`code`, or of an entry the page spells itself
- * (`literal`), stays as written; one in a container the reverse pass drops,
- * or a code-carrying entry's one in a context that does not keep a block
- * intact, is removed. An entry without code goes to every viable placement;
- * a code-carrying entry to its single viable placement, marked. An entry
- * with no placement it can take is appended once. The plan is budgeted
- * before anything is built; one splice. Media entries keep the tokens and
- * ordinals of the release before #1958; frozen code entries have their own.
+ * D25 1(a): a placement of a frozen code entry stands where the generator writes one: outside `pre`/`code`, and as
+ * a run of its own (a wrapped `<p>TOKEN</p>`, or a text run that holds nothing but this page's placeholder spellings
+ * and white space up to the next tag: protectMedia writes ` TOKEN ` for every protected node, so neighbouring
+ * placeholders share a run). A spelling inside prose or code is no evidence.
+ */
+function isStandalonePlacement(html: string, placement: MediaTokenPlacement, flags: ContextFlags, spellings: RegExp): boolean {
+  if (flags.code) return false;
+  if (placement.wrapped) return true;
+  const before = html.lastIndexOf('>', placement.start - 1);
+  const after = html.indexOf('<', placement.end);
+  return html.slice(before + 1, after === -1 ? html.length : after).replace(spellings, '').trim() === '';
+}
+
+/**
+ * #1958: re-inject protected media and frozen code blocks. First the Accept
+ * is classified from structural evidence only (D25 item 1, never a
+ * substring): a CODE-META line the generator would write (markdownToHtml), or
+ * a frozen code entry's token standing alone outside code → `meta`; neither
+ * and no frozen code on the page → `base`; neither but frozen code →
+ * ImproveSuggestionFormatError (422).
+ *
+ * `meta` (replaces the restoreMedia + `includes` drop guard of the Accept):
+ * one locator pass; every placement screened before counting: a spelling in
+ * `pre`/`code`, or of an entry the page spells itself (`literal`), stays as
+ * written; one in a container the reverse pass drops, or a code-carrying
+ * entry's one in a context that does not keep a block intact, is removed.
+ * An entry without code goes to every viable placement; a code-carrying
+ * entry to its single viable placement, marked. An entry with no placement it
+ * can take is appended once. The plan is budgeted before anything is built;
+ * one splice. Media entries keep the tokens and ordinals of the release
+ * before #1958; frozen code entries have their own.
+ *
+ * `base` (D25 1(b), ruling Option B): the replay of the release before #1958
+ * byte for byte (every placement replaced, the `includes` drop guard), with
+ * each copy of a code-carrying original marked so finalizeCodeMetadata can
+ * verify it and keep the trust boundary; the markers are removed again.
  */
 export function replayProtectedMedia(
   html: string,
@@ -3669,15 +3745,52 @@ export function replayProtectedMedia(
   options: { replayBudget?: number } = {},
 ): { html: string; dropped: number } {
   const entries = codeMeta.entries;
-  if (entries.length === 0) return { html, dropped: 0 };
-  if (codeMeta.frozenCode > 0 && !codeMeta.carrierSeen) throw new ImproveSuggestionFormatError();
-  const report = codeMeta.report;
-  const placements = locateMediaTokens(html, entries);
+  const placements = entries.length > 0 ? locateMediaTokens(html, entries) : [];
   const entryOf = new Map(entries.map((entry, index) => [entry.token, index] as const));
   const cache = new Map<MediaTokenContext, ContextFlags>();
-  const verdicts = placements.map((placement): 'keep' | 'remove' | 'viable' => {
+  const flagsOf = placements.map((placement) => contextFlags(placement.context, cache));
+  const spellings = new RegExp(entries.flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
+    .map((spelling) => `${escapeRegExp(spelling)}(?![0-9])`).join('|') || '(?!)', 'g');
+  const placeholderEvidence = placements.some((placement, index) =>
+    entryOf.get(placement.token)! >= entries.length - codeMeta.frozenCode
+    && isStandalonePlacement(html, placement, flagsOf[index]!, spellings));
+  if (codeMeta.codeMetaEvidence || placeholderEvidence) codeMeta.mode = 'meta';
+  else if (codeMeta.frozenCode > 0) throw new ImproveSuggestionFormatError();
+  else codeMeta.mode = 'base';
+  if (entries.length === 0) return { html, dropped: 0 };
+  const budget = options.replayBudget
+    ?? MEDIA_REPLAY_FACTOR * entries.reduce((sum, entry) => sum + entry.html.length, 0) + MEDIA_REPLAY_SLACK;
+  const markedCopy = (k: number, id: string): string => {
+    const entry = entries[k]!;
+    const at = entry.html.search(/[\s/>]/);
+    codeMeta.replayed.set(id, k);
+    return `${entry.html.slice(0, at)} ${REPLAY_MARKER}="${codeMeta.nonce}-${id}"${entry.html.slice(at)}`;
+  };
+  if (codeMeta.mode === 'base') {
+    // Exactly what restoreMedia + the `includes` drop guard wrote, decided on the unmarked result.
+    const unmarked = splicePlacements(html, placements, (placement) => entries[entryOf.get(placement.token)!]!.html);
+    const appended = entries.flatMap((entry, k) => (unmarked.includes(entry.html) ? [] : [k]));
+    const cost = placements.reduce((sum, placement) => sum + entries[entryOf.get(placement.token)!]!.html.length, 0)
+      + appended.reduce((sum, k) => sum + entries[k]!.html.length, 0);
+    if (cost > budget) throw new ImproveReplayBudgetError();
+    const copies = new Map<number, number>();
+    const copyOf = (k: number): string => {
+      if (!entries[k]!.code) return entries[k]!.html;
+      const copy = copies.get(k) ?? 0;
+      copies.set(k, copy + 1);
+      return markedCopy(k, `${k}-${copy}`);
+    };
+    const spliced = splicePlacements(html, placements, (placement) => copyOf(entryOf.get(placement.token)!));
+    codeMeta.report.appended += appended.length;
+    return {
+      html: appended.length > 0 ? spliced + appended.map((k) => copyOf(k)).join('\n') : spliced,
+      dropped: appended.length,
+    };
+  }
+  const report = codeMeta.report;
+  const verdicts = placements.map((placement, index): 'keep' | 'remove' | 'viable' => {
     const entry = entries[entryOf.get(placement.token)!]!;
-    const flags = contextFlags(placement.context, cache);
+    const flags = flagsOf[index]!;
     if (entry.literal || flags.code) return 'keep';
     if (flags.dropping) return 'remove';
     if (entry.code && flags.unsafe) return 'remove';
@@ -3687,11 +3800,7 @@ export function replayProtectedMedia(
   placements.forEach((placement, index) => {
     if (verdicts[index] === 'viable') viable[entryOf.get(placement.token)!]! += 1;
   });
-  const marked = entries.map((entry, k) => {
-    if (!entry.code) return entry.html;
-    const at = entry.html.search(/[\s/>]/);
-    return `${entry.html.slice(0, at)} ${REPLAY_MARKER}="${codeMeta.nonce}-${k}"${entry.html.slice(at)}`;
-  });
+  const marked = entries.map((entry, k) => (entry.code ? markedCopy(k, String(k)) : entry.html));
   const replacements = placements.map((placement, index): string | null => {
     const k = entryOf.get(placement.token)!;
     if (verdicts[index] === 'keep') return null;
@@ -3704,16 +3813,11 @@ export function replayProtectedMedia(
   // Budget from the plan alone, before anything is built.
   const cost = replacements.reduce((sum, value) => sum + (value?.length ?? 0), 0)
     + appended.reduce((sum, k) => sum + marked[k]!.length, 0);
-  const budget = options.replayBudget
-    ?? MEDIA_REPLAY_FACTOR * entries.reduce((sum, entry) => sum + entry.html.length, 0) + MEDIA_REPLAY_SLACK;
   if (cost > budget) throw new ImproveReplayBudgetError();
 
   report.screened += verdicts.filter((verdict) => verdict === 'remove').length;
   report.literal += verdicts.filter((verdict) => verdict === 'keep').length;
   report.appended += appended.length;
-  entries.forEach((entry, k) => {
-    if (entry.code) codeMeta.replayed.add(k);
-  });
   const spliced = splicePlacements(html, placements, (_placement, index) => replacements[index]!);
   return {
     html: appended.length > 0 ? spliced + appended.map((k) => marked[k]!).join('\n') : spliced,
@@ -3842,9 +3946,12 @@ function outerHtmlWithout(el: Element, attribute: string): string {
   return copy.outerHTML;
 }
 
-/** Elements carrying `attribute="<nonce>-<i>"` exactly once, by `i`, for the indices `known` accepts. */
-function authenticMarkers(doc: Document, attribute: string, nonce: string, known: (index: number) => boolean): Map<number, Element> {
-  const pattern = new RegExp(`^${nonce}-(0|[1-9]\\d*)$`);
+/**
+ * Elements carrying `attribute="<nonce>-<id>"` exactly once, by `id` (`<i>`, or `<k>-<copy>` for a base-path
+ * copy), for the ids `known` accepts.
+ */
+function authenticMarkers(doc: Document, attribute: string, nonce: string, known: (id: string) => boolean): Map<string, Element> {
+  const pattern = new RegExp(`^${nonce}-((?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*))?)$`);
   const byValue = new Map<string, Element[]>();
   for (const el of doc.body.querySelectorAll(`[${attribute}]`)) {
     const value = el.getAttribute(attribute)!;
@@ -3852,10 +3959,10 @@ function authenticMarkers(doc: Document, attribute: string, nonce: string, known
     if (elements) elements.push(el);
     else byValue.set(value, [el]);
   }
-  const authentic = new Map<number, Element>();
+  const authentic = new Map<string, Element>();
   for (const [value, elements] of byValue) {
     const match = pattern.exec(value);
-    if (match && elements.length === 1 && known(Number(match[1]))) authentic.set(Number(match[1]), elements[0]!);
+    if (match && elements.length === 1 && known(match[1]!)) authentic.set(match[1]!, elements[0]!);
   }
   return authentic;
 }
@@ -3886,6 +3993,11 @@ interface CodeMacroAllowanceState extends CodeMacroAllowance {
   readonly references: Map<string, CodeMacroInventory>;
   /** admitLegacyCodeMetadata ran on this allowance. */
   admitted: boolean;
+  /**
+   * Rule (iii) applies. Off only on the base path of D25 1(b), where nothing binds; an admitted #1953 unit binds
+   * metadata to a block, so admission switches it back on.
+   */
+  checkTwins: boolean;
 }
 
 function allowanceState(allowance: CodeMacroAllowance): CodeMacroAllowanceState {
@@ -3918,10 +4030,10 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
 
   // 1–2. Authentic markers; every marked original verified before anything changes: exactly as written,
   // or with nothing but the CR / CR LF of its code text read as LF (review r1 CM-3). Anything else refuses.
-  const fenceMarkers = authenticMarkers(doc, FENCE_MARKER, nonce, (j) => j < fences.length);
-  const replayMarkers = authenticMarkers(doc, REPLAY_MARKER, nonce, (k) => codeMeta.replayed.has(k));
-  for (const k of codeMeta.replayed) {
-    const root = replayMarkers.get(k);
+  const fenceMarkers = authenticMarkers(doc, FENCE_MARKER, nonce, (j) => /^\d+$/.test(j) && Number(j) < fences.length);
+  const replayMarkers = authenticMarkers(doc, REPLAY_MARKER, nonce, (id) => codeMeta.replayed.has(id));
+  for (const [id, k] of codeMeta.replayed) {
+    const root = replayMarkers.get(id);
     const entry = codeMeta.entries[k]!;
     const marked = root ? outerHtmlWithout(root, REPLAY_MARKER) : null;
     if (marked === null || (marked !== entry.html && marked !== entry.lineEndForm)) throw new ImproveReplayError();
@@ -3953,9 +4065,9 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
   }
 
   // 4. Bind: the marked fence still in the exact shape marked rendered, outside every dropping container.
-  const boundFences = new Map<number, Element>();
+  const boundFences = new Map<string, Element>();
   for (const [j, pre] of fenceMarkers) {
-    const fence = fences[j]!;
+    const fence = fences[Number(j)]!;
     if (fence.bound === null) continue;
     const block = skeleton[fence.bound]!;
     const code = onlyCodeChild(pre);
@@ -3969,14 +4081,15 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
     changed = true;
   }
 
-  // 5. Twin rule: equal effective blocks keep metadata only when all carry identical metadata.
+  // 5. Twin rule: equal effective blocks keep metadata only when all carry identical metadata. On the base path
+  // (D25 1(b)) nothing binds, so metadata comes only from verified originals and the rule does not apply.
   const groups = new Map<string, Element[]>();
   for (const { pre, key } of effectiveCodeBlocks(doc.body, facts)) {
     const members = groups.get(key);
     if (members) members.push(pre);
     else groups.set(key, [pre]);
   }
-  for (const members of groups.values()) {
+  for (const members of codeMeta.mode === 'base' ? [] : groups.values()) {
     if (members.length < 2) continue;
     const metadata = (pre: Element): string => JSON.stringify([pre.getAttribute('data-title'), pre.getAttribute('data-macro-params')]);
     const first = metadata(members[0]!);
@@ -4018,7 +4131,7 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
   const boundElements = new Set([...boundFences.keys()].map((j) => finalFences.get(j)!));
   const witnessOf = new Map<Element, LexerCodeText>();
   for (const [j, pre] of finalFences) {
-    const fence = fences[j]!;
+    const fence = fences[Number(j)]!;
     const code = onlyCodeChild(pre);
     if (fence.bound !== null || pre.attributes.length !== 1 || !code || finalFacts.trusted.has(pre)
       || code.getAttribute('class') !== fence.className || code.attributes.length !== (fence.className === null ? 0 : 1)
@@ -4048,6 +4161,7 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
   ]);
   const allowance: CodeMacroAllowanceState = {
     carried: codeMeta.carried, units, blocks, keyCount, references: new Map(), admitted: false,
+    checkTwins: codeMeta.mode !== 'base',
   };
   return { html: out, witnesses: codeMeta.witnesses ? blocks.map((block) => block.witness) : [], allowance, report };
 }
@@ -4060,7 +4174,7 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
 function removeMarkerTexts(html: string, nonce: string, texts: readonly string[]): string {
   if (texts.length === 0) return html;
   const seen = new Map<string, number>(texts.map((text) => [text, 0] as const));
-  const out = html.replace(new RegExp(` (?:${FENCE_MARKER}|${REPLAY_MARKER})="${nonce}-\\d+"`, 'g'), (text) => {
+  const out = html.replace(new RegExp(` (?:${FENCE_MARKER}|${REPLAY_MARKER})="${nonce}-\\d+(?:-\\d+)?"`, 'g'), (text) => {
     const count = seen.get(text);
     if (count === undefined) return text;
     seen.set(text, count + 1);
@@ -4114,6 +4228,7 @@ export function admitLegacyCodeMetadata(allowance: CodeMacroAllowance, ops: Read
     state.units.push(pre.outerHTML);
     admitted += 1;
   }
+  if (admitted > 0) state.checkTwins = true;
   return admitted;
 }
 
@@ -4284,7 +4399,7 @@ export function judgeCodeMacros(
   const reference = referenceInventory(allowance, options);
   if (written.records.length !== reference.records.length
     || written.records.some((record, index) => record !== reference.records[index])) refuseCodeMacro();
-  if (written.bareKeys.some((key) => reference.recordKeys.has(key))) refuseCodeMacro();
+  if (allowanceState(allowance).checkTwins && written.bareKeys.some((key) => reference.recordKeys.has(key))) refuseCodeMacro();
 }
 
 /**
@@ -4365,9 +4480,14 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     replacement: (content, node) => {
       const checked = (node as HTMLElement).getAttribute('data-checked') === 'true';
       const body = content.trim();
-      // #1958 (review r1 CM-4): a CODE-META line that opens the item goes on its own line after the marker,
-      // so it stays directly above its fence; every other item is written exactly as before.
-      return `${checked ? '- [x]' : '- [ ]'} ${startsWithCodeMeta(body) ? '\n\n' : ''}${body}\n`;
+      // #1958 (review r1 CM-4, r2 CM2-4): an item that opens with a CODE-META line keeps its whole body inside
+      // the item: the token stays on the marker line and every following line is indented to the item's content
+      // column, so the fence (and what follows it) stays in this task item, directly below its token. Every other
+      // item is written exactly as before.
+      if (startsWithCodeMeta(body)) {
+        return `${checked ? '- [x]' : '- [ ]'} ${body.replace(/\n(?!\n)/g, '\n  ')}\n`;
+      }
+      return `${checked ? '- [x]' : '- [ ]'} ${body}\n`;
     },
   });
 
@@ -4553,8 +4673,12 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     replacement: (content, node) => {
       const type = (node as HTMLElement).className.replace('panel-', '').toUpperCase();
       const body = content.trim();
-      // #1958 (review r1 CM-4): same as a task item; a panel that opens with another block is unchanged.
-      return `\n> **${type}**: ${startsWithCodeMeta(body) ? '\n\n' : ''}${body}\n\n`;
+      // #1958 (review r1 CM-4, r2 CM2-4): a panel that opens with a CODE-META line quotes every line of its body,
+      // so the token and its fence stay inside the quote the panel becomes; every other panel is unchanged.
+      if (startsWithCodeMeta(body)) {
+        return `\n> **${type}**:\n>\n${body.split('\n').map((line) => (line === '' ? '>' : `> ${line}`)).join('\n')}\n\n`;
+      }
+      return `\n> **${type}**: ${body}\n\n`;
     },
   });
 
@@ -5836,10 +5960,12 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
   const parser = blockMediaToken ? createEditorMarked(blockMediaToken) : EDITOR_MARKED;
   let html: string;
   const codeMeta = options?.codeMeta;
-  if (codeMeta) codeMeta.carrierSeen = CODE_CARRIER_SPELLING.test(markdown);
+  if (codeMeta) codeMeta.codeMetaEvidence = false;
   if (codeMeta && needsCodeMetaAnalysis(codeMeta, markdown)) {
     const tokens = parser.lexer(normalized);
-    analyseCodeMetaEcho(tokens, codeMeta);
+    codeMeta.codeMetaEvidence = hasCodeMetaEvidence(tokens);
+    // D25: a page with frozen code never takes the base path, so the #1958 analysis runs in full there.
+    analyseCodeMetaEcho(tokens, codeMeta, codeMeta.codeMetaEvidence || codeMeta.frozenCode > 0);
     html = parser.parser(tokens);
   } else {
     html = await parser.parse(normalized) as string;

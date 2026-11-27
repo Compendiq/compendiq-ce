@@ -18,6 +18,13 @@ const TEXT_NODE = 3;
 const CDATA_NODE = 4;
 const ELEMENT_NODE = 1;
 
+/** XML's namespace for `xmlns` / `xmlns:*` declarations; an ordinary attribute that only starts with `xmlns` is not one. */
+const XMLNS = 'http://www.w3.org/2000/xmlns/';
+
+function isNamespaceDeclaration(attribute: Attr): boolean {
+  return attribute.namespaceURI === XMLNS;
+}
+
 export type OracleCodeMacros =
   | { readonly ok: true; readonly records: string[]; readonly bareKeys: string[] }
   | { readonly ok: false; readonly reason: 'unreadable' | 'unapproved-code-macro' };
@@ -52,14 +59,14 @@ export function oracleCodeMacros(storage: string): OracleCodeMacros {
     const local = element.localName.toLowerCase();
     if (local !== 'structured-macro' && local !== 'macro') continue;
     const named = Array.from(element.attributes).some((attribute) =>
-      !attribute.name.startsWith('xmlns') && attribute.localName.toLowerCase() === 'name'
+      !isNamespaceDeclaration(attribute) && attribute.localName.toLowerCase() === 'name'
       && attribute.value.trim().toLowerCase() === 'code');
     if (!named) continue;
     // Inside another canonical code macro's text only an element would make it a candidate; that refuses below anyway.
     for (let ancestor = element.parentElement; ancestor && ancestor !== doc.documentElement; ancestor = ancestor.parentElement) {
       if (INERT.includes(ancestor.localName.toLowerCase())) return refuse;
     }
-    const attributes = Array.from(element.attributes).filter((attribute) => !attribute.name.startsWith('xmlns'));
+    const attributes = Array.from(element.attributes).filter((attribute) => !isNamespaceDeclaration(attribute));
     if (!isAc(element, 'structured-macro') || attributes.length !== 1 || !isAc(attributes[0]!, 'name')
       || attributes[0]!.value !== 'code') return refuse;
     const parameters: Array<[string, string]> = [];
@@ -71,7 +78,7 @@ export function oracleCodeMacros(storage: string): OracleCodeMacros {
       if (body !== null) return refuse;
       const text = textOnly(child);
       if (text === null) return refuse;
-      const childAttributes = Array.from(child.attributes).filter((attribute) => !attribute.name.startsWith('xmlns'));
+      const childAttributes = Array.from(child.attributes).filter((attribute) => !isNamespaceDeclaration(attribute));
       if (isAc(child, 'parameter') && childAttributes.length === 1 && isAc(childAttributes[0]!, 'name')) {
         parameters.push([childAttributes[0]!.value, text]);
       } else if (isAc(child, 'plain-text-body') && childAttributes.length === 0) {

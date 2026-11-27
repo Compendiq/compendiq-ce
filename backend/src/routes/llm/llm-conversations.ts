@@ -430,24 +430,43 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     if (writeStaysLocal && !(await canWritePageLocally(existingPage.id))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
-    // #1958 (review r1 CM-2; the #1955 R4/W3 rule): the remote exit validates
-    // the active actor and page/space authority here, before the stored body
-    // supplies any evidence (media, skeleton, code metadata; from #1953-2 on,
-    // recovery evidence and witnesses), on the successful path as on every
-    // refusal. The admitted transaction's final fence before dispatch stays.
+    // #1958 (review r1 CM-2, r2 CM2-3; the #1955 R4/W3 rule): before the
+    // stored body supplies any evidence (media, skeleton, code metadata; from
+    // #1953-2 on, recovery evidence and witnesses), the remote exit runs the
+    // write-state authorization the page writers use (pages-crud.ts
+    // `loadAuthorizedContentWriteState`): one transaction client, the page row
+    // locked and reloaded, the active actor, the current space and page
+    // authority read without the RBAC caches, and the content and lifecycle
+    // revisions of the row this request read. The admitted transaction's
+    // final fence before dispatch stays.
     if (!writeStaysLocal) {
-      const actor = await query('SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL', [userId]);
-      if (actor.rowCount !== 1) {
-        throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
-      }
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (
-        !existingPage.space_key ||
-        !accessibleSpaces.includes(existingPage.space_key) ||
-        !(await userCanAccessPage(userId, existingPage.id))
-      ) {
-        throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
-      }
+      await withPageWriteTransaction([], async (client) => {
+        const actor = await client.query('SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL', [userId]);
+        if (actor.rowCount !== 1) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+        }
+        const locked = await client.query<{ spaceKey: string | null; contentRevision: string; lifecycleRevision: string }>(
+          `SELECT space_key AS "spaceKey", content_revision::text AS "contentRevision",
+                  lifecycle_revision::text AS "lifecycleRevision"
+             FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+          [existingPage.id],
+        );
+        const current = locked.rows[0];
+        if (!current) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+        const accessibleSpaces = await getUserAccessibleSpaces(userId, client);
+        if (!current.spaceKey || !accessibleSpaces.includes(current.spaceKey)) {
+          throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+        }
+        if (!(await userCanAccessPage(userId, existingPage.id, client))) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+        }
+        if (current.lifecycleRevision !== existingPage.lifecycleRevision) {
+          throw new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after the content was read');
+        }
+        if (current.contentRevision !== existingPage.contentRevision) {
+          throw new PageWriteError(409, 'stale_content_revision', 'The page content changed after the content was read');
+        }
+      });
     }
 
     await rejectIfLiveCollabRoom(

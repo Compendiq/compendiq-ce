@@ -774,6 +774,88 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           await expectUnchanged(pageId, original);
         });
       });
+
+      describe('review r2 (D25 item 1)', () => {
+        // Pages and suggestions generated on a06f304c (disposable worktree), with that release's Accept result.
+        const IMG = (name: string): string => `<img src="/api/attachments/1/${name}.png" alt="${name}">`;
+        const MENTION = '<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p>';
+        const MENTION_MD = 'Inspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.';
+
+        async function pendingImprovement(pageId: number, improvedMarkdown: string): Promise<string> {
+          const inserted = await query<{ id: string }>(
+            `INSERT INTO llm_improvements
+               (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+             VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed')
+             RETURNING id`,
+            [userId, pageId, improvedMarkdown],
+          );
+          return inserted.rows[0]!.id;
+        }
+        const status = async (id: string): Promise<string | undefined> =>
+          (await query<{ status: string }>('SELECT status FROM llm_improvements WHERE id = $1', [id])).rows[0]?.status;
+
+        it('refuses a previous-release suggestion that mentions the placeholder prefix, on a page with frozen code (CM2-1)', async () => {
+          const frozenTable = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>';
+          const page = `${frozenTable}${MENTION}<p>Diagram follows</p>${IMG('d')}<p>End</p>`;
+          const suggestion = `${frozenTable}\n\n${MENTION_MD}\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`;
+          const pageId = await seedPage(page);
+          const improvementId = await pendingImprovement(pageId, suggestion);
+
+          const response = await apply(pageId, suggestion);
+
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.body).toMatch(/run AI Improve again/);
+          await expectUnchanged(pageId, page);
+          expect(await status(improvementId)).toBe('completed');
+        });
+
+        it('applies the same mention on a page without frozen code exactly as the previous release did (CM2-1)', async () => {
+          const page = `${MENTION}<pre data-title="Sample"><code class="language-js">const x = 1;</code></pre><p>Diagram follows</p>${IMG('d')}<p>End</p>`;
+          const suggestion = `${MENTION_MD}\n\n\`\`\`js\nconst x = 1;\n\`\`\`\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`;
+          const pageId = await seedPage(page);
+          const improvementId = await pendingImprovement(pageId, suggestion);
+
+          const response = await apply(pageId, suggestion);
+
+          expect(response.statusCode, response.body).toBe(200);
+          expect((await readPage(pageId)).body_html).toBe(
+            `${MENTION}\n<pre><code class="language-js">const x = 1;\n</code></pre>\n<p>Diagram follows</p>\n${IMG('d')}\n<p>End</p>\n`,
+          );
+          expect(await status(improvementId)).toBe('applied');
+        });
+
+        it('puts an image inside a code block back where the previous release did (CM2-2)', async () => {
+          const page = `<pre data-title="Pic"><code class="language-js">a${IMG('x')}b</code></pre><p>Then</p>${IMG('d')}<p>End</p>`;
+          const suggestion = '```js\na CQ_MEDIA_PLACEHOLDER_0 b\n```\n\nThen\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_1\n\nEnd';
+          const pageId = await seedPage(page);
+          const improvementId = await pendingImprovement(pageId, suggestion);
+
+          const response = await apply(pageId, suggestion);
+
+          expect(response.statusCode, response.body).toBe(200);
+          expect((await readPage(pageId)).body_html).toBe(
+            `<pre><code class="language-js">a ${IMG('x')} b\n</code></pre>\n<p>Then</p>\n${IMG('d')}\n<p>End</p>\n`,
+          );
+          expect(await status(improvementId)).toBe('applied');
+        });
+
+        it('strips code metadata injected into a carrier-free suggestion, and refuses a code-named placeholder (Option B)', async () => {
+          const page = `<p>Intro</p><pre><code class="language-js">a()</code></pre>${IMG('d')}`;
+          const base = 'Intro\n\n```js\na()\n```\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0';
+          const pageId = await seedPage(page);
+
+          const named = await apply(pageId, `${base}\n\n<div class="confluence-macro-unknown" data-macro-name="code">x</div>\n`);
+          expect(named.statusCode, named.body).toBe(422);
+          expect(named.json()).toMatchObject({ reason: 'unapproved-code-macro' });
+          await expectUnchanged(pageId, page);
+
+          const injected = await apply(pageId, `${base}\n\n<pre data-title="Evil" data-macro-params="{&quot;a&quot;:&quot;b&quot;}"><code>raw()</code></pre>\n`);
+          expect(injected.statusCode, injected.body).toBe(200);
+          const saved = (await readPage(pageId)).body_html;
+          expect(saved).toContain('<pre><code>raw()</code></pre>');
+          expect(saved).not.toMatch(/data-title|data-macro-params/);
+        });
+      });
     });
   },
 );

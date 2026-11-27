@@ -11,7 +11,7 @@ import {
   reconcilePageWriteIntent,
 } from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
-import { invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import {
   isDbAvailable,
@@ -1343,6 +1343,54 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         expect(response.statusCode, response.body).toBe(403);
         expect(response.json()).toMatchObject({ reason: 'not_authorized' });
         await expectNothingDispatched(pageId, before);
+      });
+
+      it('answers a stale cached space grant with the authority result, not a body-dependent refusal (r2 CM2-3)', async () => {
+        const { pageId, markdown } = await seed();
+        const before = await readPage(pageId);
+        // A positive space decision is cached (the request path without a transaction client caches it) …
+        await invalidateRbacCache(userId);
+        expect(await getUserAccessibleSpaces(userId)).toContain('OPS');
+        // … and the grant is then withdrawn without touching that cache.
+        await query(`DELETE FROM space_role_assignments WHERE principal_type = 'user' AND principal_id = $1`, [userId]);
+
+        const response = await apply({
+          pageId: 'page-code-meta', improvedMarkdown: `${markdown}\n\n<div class="panel-info" data-macro-name="code">x</div>\n`, version: 7,
+        });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toMatchObject({ reason: 'not_authorized' });
+        await expectNothingDispatched(pageId, before);
+      });
+
+      it('answers a revision that moved before the authorization with the revision result (r2 CM2-3)', async () => {
+        const { pageId, markdown } = await seed();
+        const blocker = await getPool().connect();
+        await blocker.query('BEGIN');
+        // The row is locked by a concurrent writer that changes the body after the request has read it.
+        await blocker.query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>changed elsewhere</p>']);
+        try {
+          const pending = apply({ pageId: 'page-code-meta', improvedMarkdown: markdown, version: 7 });
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            const waiting = await query<{ waiting: boolean }>(
+              `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+                 AND wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE%') AS waiting`,
+            );
+            if (waiting.rows[0]?.waiting) break;
+          }
+          await blocker.query('COMMIT');
+
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(409);
+          expect(response.json()).toMatchObject({ reason: 'stale_content_revision' });
+        } catch (error) {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          blocker.release();
+        }
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect((await query("SELECT 1 FROM page_write_intents WHERE kind = 'page.ai_apply'")).rowCount).toBe(0);
       });
 
       it('denies a deactivated actor with otherwise valid Markdown before any preparation or reservation (r1 CM-2)', async () => {

@@ -55,11 +55,37 @@ import { oracleCodeMacros, oracleCodeMacroVerdict } from './__fixtures__/code-ma
 import { collabExtensions, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { generateJSON } from '@tiptap/html';
 
-/** Every storage string this file hands to the judgement, with its units: the differential's fixture set (CM-8). */
-const judged: Array<{ storage: string; units: string[]; options: HtmlToConfluenceOptions }> = [];
+/**
+ * #1958 r1 CM-8, r2 CM2-7: every storage string this file judges is also judged by the independent XML oracle,
+ * right here, with the same units and options: the verdict and the full records must agree. No shared state, so
+ * any test run alone or in any order still compares its own storage.
+ */
+function expectOracleAgreement(storage: string, units: readonly string[], options: HtmlToConfluenceOptions): void {
+  const oracle = oracleCodeMacros(storage);
+  if (!oracle.ok && oracle.reason === 'unreadable') {
+    // A string the oracle cannot read: the production judgement refuses it whenever it may hold a macro.
+    if (/<[^<> \t\r\n/]*macro[ \t\r\n\f/>]/i.test(storage)) expect(refusal(() => readCodeMacroInventory(storage)), storage).not.toBeNull();
+    return;
+  }
+  const production = ((): { records: string[]; bareKeys: string[] } | string => {
+    try {
+      return readCodeMacroInventory(storage);
+    } catch (error) {
+      if (error instanceof ConfluenceStorageRefusedError) return error.reason;
+      throw error;
+    }
+  })();
+  if (oracle.ok) expect(production, storage).toEqual({ records: oracle.records, bareKeys: oracle.bareKeys });
+  else expect(production, storage).toBe(oracle.reason);
+  const reference = units.length === 0 ? '' : htmlToConfluence(units.join('\n'), options);
+  const allowance = allowanceOf('');
+  (allowance.units as string[]).push(...units);
+  const verdict = refusal(() => assertCodeMacroStorageUnderTest(storage, allowance, options)) ?? 'pass';
+  expect(verdict, storage).toBe(oracleCodeMacroVerdict(storage, reference));
+}
 
 function assertCodeMacroStorage(storage: string, allowance: CodeMacroAllowance, options: HtmlToConfluenceOptions = {}): void {
-  judged.push({ storage, units: [...allowance.units], options });
+  expectOracleAgreement(storage, [...allowance.units], options);
   assertCodeMacroStorageUnderTest(storage, allowance, options);
 }
 
@@ -67,6 +93,8 @@ const LINENUMBERS = '{&quot;linenumbers&quot;:&quot;true&quot;}';
 const TITLED = ` data-title="Startup.cs" data-macro-params="${LINENUMBERS}"`;
 const pre = (code: string, attrs = '', lang = 'js'): string =>
   `<pre${attrs}><code${lang ? ` class="language-${lang}"` : ''}>${code}</code></pre>`;
+/** A titled token block: a faithful echo keeps its CODE-META line, the structural evidence of the #1958 path (D25 1(a)). */
+const ANCHOR = pre('anchor()', ' data-title="Anchor"');
 
 interface OracleMacro {
   language: string | null;
@@ -162,7 +190,7 @@ async function asyncRefusal(run: () => Promise<unknown>): Promise<string | null>
 }
 
 function judge(storage: string, allowance: CodeMacroAllowance, work?: number): string | null {
-  if (work === undefined) judged.push({ storage, units: [...allowance.units], options: {} });
+  if (work === undefined) expectOracleAgreement(storage, [...allowance.units], {});
   const read = readConfluenceStorage(storage);
   if (!read.ok) return read.reason;
   return refusal(() => judgeCodeMacros(read.tree, allowance, {}, work));
@@ -319,17 +347,35 @@ describe('#1958 identity through the chain (criteria 1, 2, 4)', () => {
     ['first in an ordinary list item', `<ul><li>${pre('x()', TITLED)}</li></ul>`],
   ])('keeps title and options of a block %s on a faithful echo (review r1 CM-4)', async (_name, html) => {
     const chain = await improveChain(html);
-    // The token line stands directly above its fence (a list item's own marker may open the line).
-    expect(chain.markdown).toMatch(/^(?:-\s+)?\s*\[\[\[CODE-META n=0 [^\n]*\]\]\]\n\s*```js$/m);
+    // The token line stands directly above its fence (a list or task marker, or a quote prefix, may open the lines).
+    expect(chain.markdown).toMatch(/^(?:-\s+(?:\[[ x]\]\s+)?)?(?:>\s*)?\[\[\[CODE-META n=0 [^\n]*\]\]\]\n[>\s]*```js$/m);
     expect(codeMacros(chain.storage)).toEqual([{ language: 'js', title: 'Startup.cs', params: { linenumbers: 'true' }, code: 'x()' }]);
     expect(chain.report).toMatchObject({ bound: 1, orphan: 0, debris: 0 });
     expect(chain.storage).not.toContain('CODE-META');
   });
 
-  it('keeps the task item and its checked state when the first block moves out of it', async () => {
-    const chain = await improveChain(`<ul data-type="taskList"><li data-type="taskItem" data-checked="true">${pre('x()', TITLED)}</li></ul>`);
-    expect(chain.markdown.startsWith('- [x] \n\n[[[CODE-META n=0 ')).toBe(true);
-    expect(chain.html).toContain('<li data-type="taskItem" data-checked="true">');
+  it.each([
+    ['unchecked', 'false', 'incomplete'],
+    ['checked', 'true', 'complete'],
+  ])('keeps an %s task item that opens with a titled block around that block, and what follows (r2 CM2-4)', async (_name, checked, status) => {
+    const html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="${checked}">${pre('run()\n\n  x', TITLED)}<p>after</p></li>`
+      + '<li data-type="taskItem" data-checked="false"><p>next</p></li></ul><p>tail</p>';
+    const chain = await improveChain(html);
+    expect(chain.storage).toMatch(new RegExp(
+      `^<ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>${status}</ac:task-status><ac:task-body>`
+      + '<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">js</ac:parameter><ac:parameter ac:name="title">Startup\\.cs</ac:parameter>'
+      + '<ac:parameter ac:name="linenumbers">true</ac:parameter><ac:plain-text-body><!\\[CDATA\\[run\\(\\)\n\n  x\\]\\]></ac:plain-text-body></ac:structured-macro>\n'
+      + '<p>after</p>\n</ac:task-body></ac:task><ac:task><ac:task-id>2</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body><p>next</p>\n</ac:task-body></ac:task></ac:task-list>\n<p>tail</p>\n$',
+    ));
+  });
+
+  it('keeps a panel that opens with a titled block around that block and what follows (r2 CM2-4)', async () => {
+    const chain = await improveChain(`<div class="panel-info">${pre('x()', TITLED)}<p>after</p></div><p>tail</p>`);
+    expect(chain.storage).toBe('<blockquote>\n<p><strong>INFO</strong>:</p>\n'
+      + '<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">js</ac:parameter><ac:parameter ac:name="title">Startup.cs</ac:parameter>'
+      + '<ac:parameter ac:name="linenumbers">true</ac:parameter><ac:plain-text-body><![CDATA[x()]]></ac:plain-text-body></ac:structured-macro>\n'
+      + '<p>after</p>\n</blockquote>\n<p>tail</p>\n');
   });
 
   it('writes a panel or task item that does not open with a token block exactly as before', () => {
@@ -696,8 +742,9 @@ describe('#1958 media replay (V4, X4, X5)', () => {
     expect(codeMacros(chain.storage)).toHaveLength(1);
   });
 
+  // These pin the #1958 path, so each page also holds a token block whose CODE-META line the echo keeps (D25 1(a)).
   it('appends an image whose only spelling is in a discarded container, and it reaches storage', async () => {
-    const chain = await improveChain(`<p>x</p>${IMAGE}`, (markdown) =>
+    const chain = await improveChain(`<p>x</p>${IMAGE}${ANCHOR}`, (markdown) =>
       markdown.replace('CQ\\_MEDIA\\_PLACEHOLDER\\_0', '<div class="table-index">CQ_MEDIA_PLACEHOLDER_0</div>'));
     expect(chain.dropped).toBe(1);
     expect(oracleElements(chain.storage, 'ac', 'image').length + (chain.storage.match(/<img /g)?.length ?? 0)).toBe(1);
@@ -705,10 +752,10 @@ describe('#1958 media replay (V4, X4, X5)', () => {
 
   it('appends a frozen code block the model duplicated once at the end, with its metadata and no copy', async () => {
     const frozen = `<div class="confluence-macro-unknown" data-macro-name="foo">${pre('frozen()', TITLED)}<p>opaque &amp; owned</p></div>`;
-    const chain = await improveChain(`<p>x</p>${frozen}`, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`);
+    const chain = await improveChain(`<p>x</p>${frozen}${ANCHOR}`, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`);
     expect(chain.html.match(/confluence-macro-unknown/g)).toHaveLength(1);
     expect(chain.html.endsWith(new JSDOM(`<body>${frozen}</body>`).window.document.body.innerHTML)).toBe(true);
-    expect(codeMacros(chain.storage)).toEqual([{ language: 'js', title: 'Startup.cs', params: { linenumbers: 'true' }, code: 'frozen()' }]);
+    expect(codeMacros(chain.storage).map((macro) => [macro.title, macro.code])).toEqual([['Anchor', 'anchor()'], ['Startup.cs', 'frozen()']]);
   });
 
   it('removes a code-carrying spelling from an unsafe parse context and appends the block', async () => {
@@ -736,7 +783,7 @@ describe('#1958 media replay (V4, X4, X5)', () => {
   });
 
   it('keeps a token the model back-ticked as code and appends the image once', async () => {
-    const chain = await improveChain(`<p>x</p>${IMAGE}`, (markdown) => markdown.replace('CQ\\_MEDIA\\_PLACEHOLDER\\_0', '`CQ_MEDIA_PLACEHOLDER_0`'));
+    const chain = await improveChain(`<p>x</p>${IMAGE}${ANCHOR}`, (markdown) => markdown.replace('CQ\\_MEDIA\\_PLACEHOLDER\\_0', '`CQ_MEDIA_PLACEHOLDER_0`'));
     expect(chain.html).toContain('<code>CQ_MEDIA_PLACEHOLDER_0</code>');
     expect(chain.html.match(/<img/g)).toHaveLength(1);
   });
@@ -980,6 +1027,96 @@ describe('#1958 r1 CM-1: media ordinals are the ones the previous release wrote'
   });
 });
 
+/** Pages and suggestions generated on a06f304c (disposable worktree), with that release's Accept result. */
+const IMG = (name: string): string => `<img src="/api/attachments/1/${name}.png" alt="${name}">`;
+const BASE_FIXTURES = {
+  // r2 CM2-1: a literal mention of the placeholder prefix inside inline code, on a page with frozen code.
+  literalMentionFrozen: {
+    page: '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
+      + `<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p><p>Diagram follows</p>${IMG('d')}<p>End</p>`,
+    suggestion: '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
+      + '\n\nInspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd',
+  },
+  // The same mention on a page without frozen code.
+  literalMentionPlain: {
+    page: `<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre><p>Diagram follows</p>${IMG('d')}<p>End</p>`,
+    suggestion: 'Inspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.\n\n```js\nconst x = 1;\n```\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd',
+    base: '<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p>\n<pre><code class="language-js">const x = 1;\n</code></pre>\n'
+      + `<p>Diagram follows</p>\n${IMG('d')}\n<p>End</p>\n`,
+  },
+  // r2 CM2-2: an image inside an annotated code block (not frozen: it holds media), then a separate image.
+  imageInCode: {
+    page: `<pre data-title="Pic"><code class="language-js">a${IMG('x')}b</code></pre><p>Then</p>${IMG('d')}<p>End</p>`,
+    suggestion: '```js\na CQ_MEDIA_PLACEHOLDER_0 b\n```\n\nThen\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_1\n\nEnd',
+    base: `<pre><code class="language-js">a ${IMG('x')} b\n</code></pre>\n<p>Then</p>\n${IMG('d')}\n<p>End</p>\n`,
+  },
+};
+
+describe('#1958 r2 (D25 item 1): one structural rule for suggestions across the release', () => {
+  it('(c) refuses a carrier-free suggestion on a page with frozen code, whatever its text mentions (CM2-1)', async () => {
+    const { page, suggestion } = BASE_FIXTURES.literalMentionFrozen;
+    await expect(improveChain(page, () => suggestion)).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+  });
+
+  it('(b) applies a carrier-free suggestion on a page without frozen code exactly as a06f304c did', async () => {
+    for (const { page, suggestion, base } of [BASE_FIXTURES.literalMentionPlain, BASE_FIXTURES.imageInCode]) {
+      const chain = await improveChain(page, () => suggestion);
+      expect(chain.html, suggestion).toBe(base);
+      expect(chain.html, suggestion).toBe(await headChain(page, () => suggestion));
+    }
+  });
+
+  it('(b) keeps the trust boundary: injected code metadata is stripped and a code-named placeholder refused', async () => {
+    const { page, suggestion, base } = BASE_FIXTURES.imageInCode;
+    const injected = await improveChain(page, () => `${suggestion}\n\n<pre data-title="Evil" data-macro-params="{&quot;a&quot;:&quot;b&quot;}"><code>raw()</code></pre>\n`);
+    expect(injected.html).toBe(`${base}<pre><code>raw()</code></pre>\n`);
+    expect(injected.report.stripped).toBe(1);
+    expect(await asyncRefusal(() => improveChain(page, () => `${suggestion}\n\n<div class="confluence-macro-unknown" data-macro-name="code">x</div>\n`)))
+      .toBe('unapproved-code-macro');
+  });
+
+  it('(b) keeps every copy of a code-carrying original the old replay writes, verified and accounted for', async () => {
+    const frozen = `<div class="confluence-macro-unknown" data-macro-name="foo">${pre('frozen()', TITLED)}</div>`;
+    const page = `<p>x</p>${frozen}`;
+    const chain = await improveChain(page, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`);
+    expect(chain.html).toBe(await headChain(page, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`));
+    expect(chain.html.match(/confluence-macro-unknown/g)).toHaveLength(2);
+    expect(codeMacros(chain.storage).map((macro) => macro.title)).toEqual(['Startup.cs', 'Startup.cs']);
+    expect(chain.allowance.units).toHaveLength(2);
+  });
+
+  it('(a) needs a CODE-META line by the exact grammar, standing alone, directly above a fence', async () => {
+    const page = `<p>Intro</p>${pre('x()', ' data-title="T"')}${IMG('d')}`;
+    for (const [name, edit] of [
+      ['inside code', (md: string) => `\`\`\`text\n[[[CODE-META n=0 title=T]]]\n\`\`\`\n\n${md.replace(/\[\[\[CODE-META[^\n]*\n/, '')}`],
+      ['inside other text', (md: string) => md.replace(/(\[\[\[CODE-META[^\n]*)\n/, 'See $1\n')],
+      ['away from a fence', (md: string) => md.replace(/(\[\[\[CODE-META[^\n]*)\n/, '$1\n\n')],
+      ['not the grammar', (md: string) => md.replace('[[[CODE-META n=0', '[[[CODE-META n=00')],
+    ] as const) {
+      const protectedBody = protectMedia(page);
+      const codeMeta = beginCodeMetaAccept(protectedBody);
+      const markdown = edit(htmlToMarkdown(protectedBody.html, { layoutTokens: true }));
+      const rebuilt = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedBody.html), protectedMedia: protectedBody.media, codeMeta });
+      replayProtectedMedia(rebuilt, codeMeta);
+      expect(codeMeta.mode, name).toBe('base');
+    }
+    const faithful = protectMedia(page);
+    const codeMeta = beginCodeMetaAccept(faithful);
+    const rebuilt = await markdownToHtml(htmlToMarkdown(faithful.html, { layoutTokens: true }), { protectedMedia: faithful.media, codeMeta });
+    replayProtectedMedia(rebuilt, codeMeta);
+    expect(codeMeta.mode).toBe('meta');
+  });
+
+  it('(a) takes a frozen code placeholder only as a run of placeholders outside code', async () => {
+    const page = `<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table>${IMG('d')}`;
+    for (const markdown of ['`CQ_CODE_PLACEHOLDER_0`', 'See CQ\\_CODE\\_PLACEHOLDER\\_0 here', '```\nCQ_CODE_PLACEHOLDER_0\n```']) {
+      await expect(improveChain(page, () => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`), markdown).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+    }
+    const chain = await improveChain(page, () => 'CQ\\_CODE\\_PLACEHOLDER\\_0 CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+    expect(codeMacros(chain.storage).map((macro) => macro.title)).toEqual(['Startup.cs']);
+  });
+});
+
 describe('#1958 r1 CM-3: a replayed original is compared exactly', () => {
   it('refuses an original one HTML parse cannot give back (a line feed before its code), on an unchanged echo', async () => {
     await expect(improveChain('<p>a</p><pre data-title="Guide">\n\n<code>x</code></pre>')).rejects.toBeInstanceOf(ImproveReplayError);
@@ -994,6 +1131,11 @@ describe('#1958 r1 CM-3: a replayed original is compared exactly', () => {
     expect(chain.html).toBe('<p>a</p>\n<pre data-title="Guide"><code>x<b>y\rz</b></code></pre>\n');
     expect(protectMedia('<pre data-title="G"><code>x<b>y&#13;z</b></code></pre>').frozenCode[0]!.lineEndForm)
       .toBe('<pre data-title="G"><code>x<b>y\nz</b></code></pre>');
+  });
+
+  it('normalises the code text of nested code once, and only code text (r2 CM2-8)', () => {
+    expect(protectMedia('<pre data-title="G"><code>a&#13;<code>b&#13;&#10;c</code></code><span>d&#13;</span></pre>').frozenCode[0]!.lineEndForm)
+      .toBe('<pre data-title="G"><code>a\n<code>b\nc</code></code><span>d\r</span></pre>');
   });
 });
 
@@ -1041,15 +1183,33 @@ describe('#1958 r1 CM-6: bounded work', () => {
 
 describe('#1958 r1 CM-7: carrier debris in headings and tables', () => {
   it('removes a token the model made a heading; the block is saved without metadata', async () => {
-    const page = `<p>Report</p>${pre('daily()', ' data-title="Daily Report"')}`;
-    const chain = await improveChain(page, (markdown) => markdown.replace('[[[CODE-META', '## [[[CODE-META'));
+    const page = `<p>Report</p>${pre('daily()', ' data-title="Daily Report"')}${ANCHOR}`;
+    const chain = await improveChain(page, (markdown) => markdown.replace('[[[CODE-META n=0', '## [[[CODE-META n=0'));
     expect(chain.html).not.toContain('CODE-META');
     expect(chain.html).not.toContain('<h2');
-    expect(codeMacros(chain.storage)).toEqual([{ language: 'js', title: null, params: {}, code: 'daily()\n' }]);
+    expect(codeMacros(chain.storage).map((macro) => [macro.title, macro.code])).toEqual([[null, 'daily()\n'], ['Anchor', 'anchor()']]);
+  });
+
+  it('removes each token run on its own and keeps the heading or paragraph text between them (r2 CM2-5)', async () => {
+    const page = `<p>Report</p>${pre('daily()', ' data-title="Sample"')}${ANCHOR}`;
+    const chain = await improveChain(page, (markdown) => `## [[[CODE-META n=0 title=Sample]]] Release prerequisites [[[CODE-META n=1 title=Sample]]]\n\n`
+      + `[[[CODE-META n=0 title=Sample]]] Install first [[[CODE-META n=1 title=Sample]]]\n\n${markdown.replace(/\[\[\[CODE-META[^\n]*\n/, '')}`);
+    expect(chain.html).toMatch(/<h2>\s*Release prerequisites\s*<\/h2>/);
+    expect(chain.html).toMatch(/<p>\s*Install first\s*<\/p>/);
+    expect(chain.html).not.toContain('CODE-META');
+    // Nothing binds from a heading or prose.
+    expect(codeMacros(chain.storage).map((macro) => macro.title)).toEqual([null, 'Anchor']);
+    expect(chain.report.debris).toBe(4);
+  });
+
+  it('keeps an authored escaped spelling and a code span in a paragraph of token runs', async () => {
+    const chain = await improveChain(`<p>a</p>${ANCHOR}`, (markdown) => `${markdown}\n\n[[[CODE-META n=0]]] \\[\\[\\[CODE-META n=9\\]\\]\\] \`[[[CODE-META n=8]]]\`\n`);
+    expect(chain.html).toContain('[[[CODE-META n=9]]]');
+    expect(chain.html).toContain('<code>[[[CODE-META n=8]]]</code>');
   });
 
   it('strips a token spelling from heading and table text and keeps authored escapes and code spans', async () => {
-    const chain = await improveChain('<p>a</p>', (markdown) => `${markdown}\n\n## Intro [[[CODE-META n=0]]] text\n\n`
+    const chain = await improveChain(`<p>a</p>${ANCHOR}`, (markdown) => `${markdown}\n\n## Intro [[[CODE-META n=0]]] text\n\n`
       + '| a | b |\n|---|---|\n| [[[CODE-META n=1]]] x | `[[[CODE-META n=2]]]` |\n\n'
       + '## \\[\\[\\[CODE-META n=3\\]\\]\\] authored\n');
     expect(chain.html).toContain('<h2>Intro  text</h2>');
@@ -1072,34 +1232,29 @@ describe('#1958 r1 CM-8: projections and the independent differential', () => {
     expect(refusal(() => assertLocalCodeMacroProjections(chain.html, chain.allowance, { body_storage: null }))).toBe('unapproved-code-macro');
   });
 
-  it('agrees with the independent XML oracle on every judged storage of this file, verdict and records', () => {
-    expect(judged.length).toBeGreaterThan(60);
-    let compared = 0;
-    for (const { storage, units, options } of judged) {
-      const oracle = oracleCodeMacros(storage);
-      if (!oracle.ok && oracle.reason === 'unreadable') {
-        // A string the oracle cannot read: the production judgement refuses it whenever it may hold a macro.
-        if (/<[^<> \t\r\n/]*macro[ \t\r\n\f/>]/i.test(storage)) expect(refusal(() => readCodeMacroInventory(storage)), storage).not.toBeNull();
-        continue;
-      }
-      const production = ((): { records: string[]; bareKeys: string[] } | string => {
-        try {
-          return readCodeMacroInventory(storage);
-        } catch (error) {
-          if (error instanceof ConfluenceStorageRefusedError) return error.reason;
-          throw error;
-        }
-      })();
-      if (oracle.ok) expect(production, storage).toEqual({ records: oracle.records, bareKeys: oracle.bareKeys });
-      else expect(production, storage).toBe(oracle.reason);
-      const reference = units.length === 0 ? '' : htmlToConfluence(units.join('\n'), options);
-      const allowance = allowanceOf('');
-      (allowance.units as string[]).push(...units);
-      const verdict = refusal(() => assertCodeMacroStorageUnderTest(storage, allowance, options)) ?? 'pass';
-      expect(verdict, storage).toBe(oracleCodeMacroVerdict(storage, reference));
-      compared += 1;
-    }
-    expect(compared).toBeGreaterThan(50);
+  it('agrees with the independent XML oracle on an explicit corpus, verdict and records (r2 CM2-6, CM2-7)', () => {
+    const bare = M(PARAM('language', 'js') + BODY('sample'));
+    const titled = M(PARAM('language', 'js') + PARAM('title', 'T') + BODY('sample'));
+    const corpus: Array<[string, string[]]> = [
+      [bare, []],
+      [titled, [pre('sample', ' data-title="T"')]],
+      [titled, []],
+      [`${titled}${bare}`, [pre('sample', ' data-title="T"')]],
+      // An ordinary attribute whose name only starts with `xmlns`, on the macro and on a child: not a declaration.
+      [M(PARAM('language', 'js') + BODY('sample'), '<ac:structured-macro ac:name="code" xmlnsNotes="release">'), []],
+      [M('<ac:parameter ac:name="language" xmlnsNotes="r">js</ac:parameter>' + BODY('sample')), []],
+      // A genuine namespace declaration is not an attribute of the element in either reading.
+      [M(PARAM('language', 'js') + BODY('sample'), '<ac:structured-macro xmlns:x="urn:x" ac:name="code">'), []],
+      [`<div xmlns:ac="urn:other">${bare}</div>`, []],
+      [`<style>${bare}</style>`, []],
+      [M(BODY('x') + PARAM('language', 'js')), []],
+      ['<p>no macro</p>', []],
+    ];
+    for (const [storage, units] of corpus) expectOracleAgreement(storage, units, {});
+    // The ordinary `xmlns*` attribute refuses in both readings; the declaration passes in both.
+    expect(oracleCodeMacros(corpus[4]![0])).toEqual({ ok: false, reason: 'unapproved-code-macro' });
+    expect(oracleCodeMacros(corpus[5]![0])).toEqual({ ok: false, reason: 'unapproved-code-macro' });
+    expect(oracleCodeMacros(corpus[6]![0])).toMatchObject({ ok: true });
   });
 });
 
