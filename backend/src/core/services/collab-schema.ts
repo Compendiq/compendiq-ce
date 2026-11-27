@@ -15,6 +15,7 @@ import {
 } from '@tiptap/core';
 import type { DOMOutputSpec, Schema } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
+import { Code } from '@tiptap/extension-code';
 import { Image, type ImageOptions } from '@tiptap/extension-image';
 import { isAllowedUri } from '@tiptap/extension-link';
 import { CONFLUENCE_LINK_LIMITS, isConfluenceUrlClassCarrierFor } from '@compendiq/contracts';
@@ -1043,6 +1044,16 @@ const SafeHighlight = Highlight.extend({
   },
 });
 
+/**
+ * Inline code that excludes only itself (#1954). StarterKit's Code mark excludes
+ * every other mark, so a Confluence link around inline code (or a link whose text
+ * mixes code and prose) lost its link or split around the code. A mark that
+ * does not exclude itself would be stored in Yjs under a hashed key
+ * (`code--…`, y-prosemirror's overlapping-mark rule) beside the `code` key of
+ * every existing room; excluding only itself keeps the key `code`.
+ */
+const LinkableCode = Code.extend({ excludes: 'code' });
+
 let cachedExtensions: AnyExtension[] | null = null;
 let cachedSchema: Schema | null = null;
 
@@ -1051,8 +1062,10 @@ export function collabExtensions(): AnyExtension[] {
   cachedExtensions = [
     StarterKit.configure({
       codeBlock: false,
+      code: false,
       undoRedo: false,
     }),
+    LinkableCode,
     TextAlign.configure({
       types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
       alignments: ['left', 'center', 'right', 'justify'],

@@ -12,6 +12,7 @@ import DOMPurify from 'dompurify';
 import { lowlight } from '../../lib/lowlight';
 import {
   ConfluenceImageSchema,
+  LinkableCode,
   Details,
   DetailsSummary,
   Panel,
@@ -131,12 +132,15 @@ export function ArticleViewer({
     extensions: [
       StarterKit.configure({
         codeBlock: false,
+        // #1954: inline code is LinkableCode below, which a link can sit on.
+        code: false,
         heading: { levels: [1, 2, 3, 4, 5, 6] },
         link: {
           openOnClick: true,
           HTMLAttributes: { target: '_blank', rel: 'noreferrer' },
         },
       }),
+      LinkableCode,
       VersionInsert,
       VersionDelete,
       TextAlign.configure({

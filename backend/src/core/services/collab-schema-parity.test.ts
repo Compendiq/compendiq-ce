@@ -289,6 +289,18 @@ describe('collab schema parity (#1445)', () => {
     expect(viewer).not.toMatch(/\bImage\.configure\(/);
   });
 
+  it('gives inline code the same exclusion in the editor, read mode and the collab schema: only itself (#1954)', () => {
+    // A link sits on code text; a code mark that excluded nothing would be stored under a hashed Yjs key.
+    expect(getCollabSchema().marks.code!.spec.excludes).toBe('code');
+    const article = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');
+    expect(article).toMatch(/export const LinkableCode = Code\.extend\(\{ excludes: 'code' \}\);/);
+    for (const file of ['Editor.tsx', 'ArticleViewer.tsx']) {
+      const source = readFileSync(join(articleDir, file), 'utf8');
+      expect(source, file).toMatch(/StarterKit\.configure\(\{[^}]*\bcode: false,/);
+      expect(source, file).toMatch(/^\s+LinkableCode,$/m);
+    }
+  });
+
   it('round-trips golden HTML including draw.io and comment (structure, not bytes)', () => {
     for (const fixture of GOLDEN) {
       const doc = htmlToYDoc(fixture.html);

@@ -1,7 +1,8 @@
 /**
- * #1954: the collab schema's linked image. A Confluence link whose body is an
+ * #1954: the collab schema's link bodies. A Confluence link whose body is an
  * image rides on the block image node as `href` (and, for a navigable `ri:url`,
  * #1955's class carrier as `linkClass`), and comes back as the wrapper `<a>`.
+ * Inline code excludes only itself, so a link stays on code text.
  */
 import { describe, expect, it } from 'vitest';
 import { JSDOM } from 'jsdom';
@@ -144,5 +145,37 @@ describe('collab schema: a linked image (#1954)', () => {
       imageElement(doc).setAttribute('linkClass', carrierOf('https://example.com/z'));
       expect(wrapper(yDocToHtml(doc))).toBeNull();
     });
+  });
+});
+
+describe('collab schema: inline code inside a link (#1954)', () => {
+  /** The formatted runs of the first paragraph: [text, attribute keys]. */
+  function runs(html: string): Array<[string, string[]]> {
+    const paragraph = htmlToYDoc(html).getXmlFragment('default').get(0) as Y.XmlElement;
+    const text = paragraph.get(0) as Y.XmlText;
+    return (text.toDelta() as Array<{ insert: string; attributes?: Record<string, unknown> }>)
+      .map((op) => [op.insert, Object.keys(op.attributes ?? {}).sort()]);
+  }
+
+  it('stores the code mark under its own key "code", beside a link, as rooms before #1954 do', () => {
+    expect(runs('<p>a <code>b</code> <a href="#confluence-page:X">run <code>c</code></a></p>')).toEqual([
+      ['a ', []],
+      ['b', ['code']],
+      [' ', []],
+      ['run ', ['link']],
+      ['c', ['code', 'link']],
+    ]);
+  });
+
+  it('keeps bold, italic and a comment on inline code, and one link around a mixed body', () => {
+    const html = '<p><a href="#confluence-page:X">run <strong><code>a</code></strong> and '
+      + '<mark data-comment-id="c1"><em><code>b</code></em></mark> now</a></p>';
+    const saved = yDocToHtml(htmlToYDoc(html));
+    const doc = new JSDOM(saved).window.document;
+    expect(doc.querySelectorAll('a')).toHaveLength(1);
+    expect(doc.querySelector('a')!.textContent).toBe('run a and b now');
+    expect(doc.querySelector('strong code')?.textContent).toBe('a');
+    expect(doc.querySelector('mark[data-comment-id="c1"] em code')?.textContent).toBe('b');
+    expect(yDocToHtml(htmlToYDoc(saved))).toBe(saved);
   });
 });

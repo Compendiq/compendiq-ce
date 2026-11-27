@@ -22,6 +22,7 @@ import { useUiStore } from '../../../stores/ui-store';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
   ConfluenceImageSchema,
+  LinkableCode,
   ConfluenceLayout,
   ConfluenceLayoutSection,
   ConfluenceLayoutCell,
@@ -792,8 +793,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     extensions: [
       StarterKit.configure({
         codeBlock: false,
+        // #1954: inline code is LinkableCode below, which a link can sit on.
+        code: false,
         ...(collab ? { undoRedo: false } : {}),
       }),
+      LinkableCode,
       TextAlign.configure({
         types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
         alignments: ['left', 'center', 'right', 'justify'],

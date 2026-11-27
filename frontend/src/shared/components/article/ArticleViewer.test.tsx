@@ -1187,3 +1187,21 @@ describe('ArticleViewer: linked images (#1954)', () => {
     expect(container.querySelector('.ProseMirror')!.innerHTML).not.toMatch(/javascript:|data:text/i);
   });
 });
+
+// #1954: read mode's inline code excludes only itself, so a link around code is one link.
+describe('ArticleViewer: links around inline code (#1954)', () => {
+  it('renders a code-bodied and a mixed link as one link each, around their code', async () => {
+    const html = '<p>Call <a href="#confluence-page:Runbook" data-confluence-link="page"><code>deploy()</code></a> first.</p>'
+      + '<p>Then <a href="#confluence-page:Runbook" data-confluence-link="page">run <code>deploy()</code> now</a>.</p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.ProseMirror a')).toHaveLength(2);
+    });
+    const anchors = [...container.querySelectorAll('.ProseMirror a')];
+    expect(anchors.map((a) => [a.getAttribute('href'), a.textContent, a.querySelector('code')?.textContent])).toEqual([
+      ['#confluence-page:Runbook', 'deploy()', 'deploy()'],
+      ['#confluence-page:Runbook', 'run deploy() now', 'deploy()'],
+    ]);
+  });
+});

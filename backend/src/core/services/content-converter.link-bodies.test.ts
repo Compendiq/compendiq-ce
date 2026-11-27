@@ -225,3 +225,116 @@ describe('content-converter: a Confluence link whose body is an image (#1954)', 
     });
   });
 });
+
+describe('content-converter: a Confluence link whose body is inline code (#1954)', () => {
+  const PAGE = '<ri:page ri:content-title="Runbook" ri:space-key="OPS" />';
+  const PAGE_OUT = '<ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>';
+  const WEB = '<ri:url ri:value="https://example.com/z" />';
+  const WEB_OUT = '<ri:url ri:value="https://example.com/z"></ri:url>';
+  const storageOf = (resource: string, body: string): string =>
+    `<p>See <ac:link>${resource}<ac:link-body>${body}</ac:link-body></ac:link> here.</p>`;
+
+  describe('one link through a collaborative Save and an editor Save', () => {
+    it.each([
+      ['inline code', '<code>deploy()</code>'],
+      ['code and text', 'run <code>deploy()</code> now'],
+      ['bold code', '<strong><code>deploy()</code></strong> now'],
+      ['two code spans', '<code>a</code> and <code>b</code>'],
+    ])('%s', (_case, body) => {
+      for (const [resource, resourceOut] of [[PAGE, PAGE_OUT], [WEB, WEB_OUT]]) {
+        const storage = storageOf(resource!, body);
+        const written = `<p>See <ac:link>${resourceOut}<ac:link-body>${body}</ac:link-body></ac:link> here.</p>`;
+        expect(save(storage)).toBe(written);
+        expect(edit(storage)).toBe(written);
+      }
+    });
+  });
+
+  describe('Markdown and AI Improve', () => {
+    it('writes a linked code span as [`code`](href) and a mixed one as [text `code` text](href); marked reads them back', async () => {
+      const code = confluenceToHtml(storageOf(PAGE, '<code>deploy()</code>'));
+      const mixed = confluenceToHtml(storageOf(PAGE, 'run <code>deploy()</code> now'));
+      expect(htmlToMarkdown(code)).toBe('See [`deploy()`](#confluence-page:Runbook?ri:space-key=OPS) here.');
+      expect(htmlToMarkdown(mixed)).toBe('See [run `deploy()` now](#confluence-page:Runbook?ri:space-key=OPS) here.');
+      expect(await markdownToHtml(htmlToMarkdown(mixed)))
+        .toBe('<p>See <a href="#confluence-page:Runbook?ri:space-key=OPS">run <code>deploy()</code> now</a> here.</p>\n');
+    });
+
+    it.each([
+      ['a page link', PAGE, PAGE_OUT],
+      ['a web ri:url link (class carrier)', WEB, WEB_OUT],
+    ])('keeps a code-bodied and a mixed-body link of %s through the Improve chain', async (_case, resource, resourceOut) => {
+      for (const body of ['<code>deploy()</code>', 'run <code>deploy()</code> now']) {
+        const storage = storageOf(resource, body);
+        const result = await improveAccept(yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55'))), storage);
+        expect(result.storage).toBe(`<p>See <ac:link>${resourceOut}<ac:link-body>${body}</ac:link-body></ac:link> here.</p>\n`);
+      }
+    });
+
+    // Review B2: literal code characters stay data. marked 15 cannot read a code span holding a backtick inside a
+    // link label, so such code is written as escaped link text.
+    const HOSTILE = [
+      'a`b <em>literal</em>',
+      'x` &amp; &#60;tag&#62; &lt;b&gt;',
+      '`[x](javascript:alert(1))` ![i](http://e/x.png)',
+      '``~~s~~ **b** _i_ ==h== https://e.com www.e.com a@b.com <https://x>',
+      'tick` \\` back\\slash | pipe # h > q - 1. n',
+      'CQ_MEDIA_PLACEHOLDER_0 `',
+      '<script>alert(1)</script>`',
+      '`]](#confluence-page:Evil)[',
+    ];
+    const escapeHtml = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    it.each([
+      ['a page link', '#confluence-page:Runbook', '#confluence-page:Runbook', null],
+      ['a web ri:url link', 'https://example.com/z', 'https://example.com/z', '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich'],
+    ])('writes linked code holding a backtick as escaped link text in %s: the text, the destination and nothing else', async (_case, href, outHref, className) => {
+      for (const text of HOSTILE) {
+        const attrs = `href="${href}"${className ? ` class="${className}"` : ''}`;
+        const markdown = htmlToMarkdown(`<p>See <a ${attrs}><code>${escapeHtml(text)}</code></a> here.</p>`, { layoutTokens: true });
+        const doc = new JSDOM(await markdownToHtml(markdown)).window.document;
+        expect([...doc.body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase())).toEqual(['p', 'a']);
+        const anchor = doc.querySelector('a')!;
+        expect(anchor.textContent).toBe(text);
+        expect(anchor.getAttribute('href')).toBe(outHref);
+        expect(anchor.getAttributeNames().sort()).toEqual(className ? ['class', 'href'] : ['href']);
+        if (className) expect(anchor.getAttribute('class')).toBe(className);
+        expect(doc.body.textContent!.trim()).toBe(`See ${text} here.`);
+      }
+    });
+
+    it('keeps markup-looking code without a backtick as one code element with its text', async () => {
+      for (const text of ['<em>x</em>', '&amp;', '[a](b)', 'CQ_MEDIA_PLACEHOLDER_0']) {
+        const markdown = htmlToMarkdown(`<p><a href="#confluence-page:Runbook"><code>${escapeHtml(text)}</code></a></p>`);
+        const doc = new JSDOM(await markdownToHtml(markdown)).window.document;
+        expect([...doc.body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase())).toEqual(['p', 'a', 'code']);
+        expect(doc.querySelector('code')!.textContent).toBe(text);
+      }
+    });
+
+    // Review C4: on Improve the code holding a backtick is frozen whole, so a placeholder spelling inside it is never
+    // replayed, while the page's genuine frozen image is restored once.
+    it.each([
+      ['a page link', PAGE, PAGE_OUT, '#confluence-page:Runbook?ri:space-key=OPS', null],
+      ['a web ri:url link (class carrier)', WEB, WEB_OUT, 'https://example.com/z', '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich'],
+    ])('keeps a literal media placeholder inside linked code holding a backtick through an unchanged Accept, in %s', async (_case, resource, resourceOut, href, className) => {
+      const code = '<code>CQ_MEDIA_PLACEHOLDER_0 a`b &lt;em&gt;x&lt;/em&gt;</code>';
+      const storage = `<p><ac:image><ri:attachment ri:filename="z.png" /></ac:image></p>${storageOf(resource, `run ${code} now`)}`;
+      const result = await improveAccept(yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55'))), storage);
+
+      expect(result.markdown).not.toContain('a`b');
+      const doc = new JSDOM(result.html).window.document;
+      // The genuine image, once, outside the link.
+      expect([...doc.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual(['/api/attachments/55/z.png']);
+      const anchor = doc.querySelector('a')!;
+      expect(anchor.getAttribute('href')).toBe(href);
+      expect(anchor.getAttribute('class')).toBe(className);
+      // The label: its text and its one original code element, nothing new inside.
+      expect(anchor.innerHTML).toBe(`run ${code} now`);
+      expect(result.storage).toBe(
+        '<ac:image><ri:attachment ri:filename="z.png"></ri:attachment></ac:image>\n'
+        + `<p>See <ac:link>${resourceOut}<ac:link-body>run ${code} now</ac:link-body></ac:link> here.</p>\n`,
+      );
+    });
+  });
+});

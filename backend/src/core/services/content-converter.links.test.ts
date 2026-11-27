@@ -328,18 +328,18 @@ describe('content-converter: #1748 Confluence links survive write-back', () => {
       expect(htmlToConfluence(yDocToHtml(doc))).toBe(PAGE_OUT.replace('<p>Intro</p>', '<p>Intro (edited)</p>'));
     });
 
-    it('loses a link whose text is inline code and splits one around inline code or a line break, as before #1748 (deferred, decisions.md item 12)', () => {
-      // Pins today's editor behaviour (orchestrator decision on review r1 F1.1):
-      // the converters keep these links, but StarterKit's Code mark excludes
-      // every other mark, so the Link mark leaves inline code, and Yjs keeps
-      // marks on text only, so a line break splits the link in two.
+    it('keeps a link whose text is inline code, or mixes code and text, as one link (#1954); still splits one around a line break (deferred)', () => {
+      // The Code mark excludes only itself (#1954), so the Link mark stays on
+      // inline code. Yjs still keeps marks on text only, so a line break splits
+      // the link in two (#1954 slice C).
       const save = (body: string): string => htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(
         `<p>See <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>${body}</ac:link-body></ac:link> here.</p>`,
       ))));
-      const plain = (text: string): string => '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>'
-        + `<ac:plain-text-link-body><![CDATA[${text}]]></ac:plain-text-link-body></ac:link>`;
-      expect(save('<code>deploy()</code>')).toBe('<p>See <code>deploy()</code> here.</p>');
-      expect(save('run <code>deploy()</code> now')).toBe(`<p>See ${plain('run ')}<code>deploy()</code>${plain(' now')} here.</p>`);
+      const page = '<ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>';
+      const plain = (text: string): string => `<ac:link>${page}<ac:plain-text-link-body><![CDATA[${text}]]></ac:plain-text-link-body></ac:link>`;
+      expect(save('<code>deploy()</code>')).toBe(`<p>See <ac:link>${page}<ac:link-body><code>deploy()</code></ac:link-body></ac:link> here.</p>`);
+      expect(save('run <code>deploy()</code> now'))
+        .toBe(`<p>See <ac:link>${page}<ac:link-body>run <code>deploy()</code> now</ac:link-body></ac:link> here.</p>`);
       expect(save('line one<br />line two')).toBe(`<p>See ${plain('line one')}<br />${plain('line two')} here.</p>`);
     });
   });

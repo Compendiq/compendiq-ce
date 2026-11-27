@@ -1,6 +1,7 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table } from '@tiptap/extension-table';
 import { Highlight } from '@tiptap/extension-highlight';
+import { Code } from '@tiptap/extension-code';
 import { Image, type ImageOptions } from '@tiptap/extension-image';
 import { isAllowedUri } from '@tiptap/extension-link';
 import { TaskItem } from '@tiptap/extension-list';
@@ -1327,6 +1328,16 @@ export const UnknownMacro = Node.create({
     return ['div', mergeAttributes(HTMLAttributes, { class: 'confluence-macro-unknown' }), 0];
   },
 });
+
+/**
+ * Inline code that excludes only itself (#1954), in place of StarterKit's Code
+ * mark (which excludes every other mark): a Confluence link around inline code,
+ * or a link whose text mixes code and prose, stays one link; bold, italic and
+ * the other marks coexist with code too. Excluding itself keeps the collaborative
+ * documents' attribute key `code` (a mark that does not would be stored under a
+ * hashed key). The collab schema declares the same mark.
+ */
+export const LinkableCode = Code.extend({ excludes: 'code' });
 
 /**
  * The Link mark's own default HTML attributes (`@tiptap/extension-link`), so an
