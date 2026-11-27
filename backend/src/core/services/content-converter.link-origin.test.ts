@@ -432,6 +432,47 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
     });
   });
 
+  // Review r4, R20: an explicit body whose shown text the XML reading cannot establish (here `&lang;`, which the
+  // editor shows as U+27E8 and XML reads as U+2329) is a rival of unknown text, so the two spellings that the editor
+  // shows alike are judged alike.
+  describe('a rival body whose shown text XML cannot establish (R20)', () => {
+    const GUIDE = '<ac:link><ri:url ri:value="/guide" /><ac:plain-text-link-body><![CDATA[Ops\u27E8guide]]></ac:plain-text-link-body></ac:link>';
+    const page = (label: string): string => `<ac:link><ri:page ri:content-title="Home" /><ac:link-body>${label}</ac:link-body></ac:link>`;
+
+    it.each([['the entity name', 'Ops&lang;guide'], ['the character the editor shows', 'Ops\u27E8guide']])(
+      'writes the paragraph left, pointing at the URL, as text with a rich page body spelled with %s, on both Saves',
+      (_name, label) => {
+        for (const storage of [`<p>${GUIDE}</p><p>${page(label)}</p>`, `<p>${page(label)}</p><p>${GUIDE}</p>`]) {
+          // The editor shows the same document for both spellings.
+          expect(yDocToHtml(htmlToYDoc(confluenceToHtml(storage))))
+            .toBe(yDocToHtml(htmlToYDoc(confluenceToHtml(storage.replace(label, 'Ops\u27E8guide')))));
+          const left = '<p><a href="#confluence-url:%2Fguide?body=plain">Ops\u27E8guide</a></p>';
+          const first = htmlToConfluence(left, { previousStorage: storage });
+          expect(first).toBe('<p>Ops\u27E8guide</p>');
+          expect(htmlToConfluence(left, { linkOrigin: first })).toBe(first);
+        }
+      },
+    );
+  });
+
+  // Review r4, R22: no attribute of the input stands for a decision of the converter.
+  describe('an attribute of the stored link is no decision (R22)', () => {
+    const STORAGE = '<p><ac:link data-cq-uncertain-link-reading=""><ri:page ri:content-title="Guide" /></ac:link></p>';
+
+    it('reads a #1748 page link with any extra attribute as the page link, with and without the feature', () => {
+      const html = confluenceToHtml(STORAGE);
+      expect(html).toBe('<p><a href="#confluence-page:Guide" data-confluence-link="page">Guide</a></p>');
+      for (const features of [undefined, NO_STORAGE_DERIVATION_FEATURES]) {
+        expect(htmlToConfluence(html, { previousStorage: STORAGE, derivationFeatures: features }))
+          .toBe('<p><ac:link><ri:page ri:content-title="Guide"></ri:page></ac:link></p>');
+      }
+      const element = new JSDOM(`<body>${STORAGE}</body>`).window.document.body.querySelector('p')!.firstElementChild!;
+      expect(confluenceLinkCarrier(element)).toMatchObject({ kind: 'page', value: 'Guide' });
+      expect(confluenceLinkAnchor(element, NO_STORAGE_DERIVATION_FEATURES)?.map((node) => (node as Element).outerHTML))
+        .toEqual(['<a href="#confluence-page:Guide" data-confluence-link="page">Guide</a>']);
+    });
+  });
+
   describe('what a link held when it is taken away (R3)', () => {
     it('keeps the text of a plain body as the text an XML reader reads from it', () => {
       const html = '<p>a <ac:link><ri:url ri:value="/r"></ri:url><ac:plain-text-link-body>use <b>bold</b> &amp; more</ac:plain-text-link-body></ac:link> z</p>';

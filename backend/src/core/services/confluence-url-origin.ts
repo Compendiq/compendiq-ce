@@ -178,6 +178,11 @@ interface OpenLink {
   /** Its position among the links and anchors, in document order. */
   sequence: number;
   described: Described | null;
+  /**
+   * Review r4, R20: its own body holds text the editor may show otherwise
+   * than XML reads it ({@link HTML_READS_OTHERWISE}): what it shows is not known.
+   */
+  uncertain: boolean;
 }
 
 /** What a link or an anchor is, known when it ends; its place needs the text after it. */
@@ -442,7 +447,8 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     // Review r2, R11: any other link that shows nothing of its own shows what the forward pass shows for it, and
     // that is competing evidence like an explicit body (never authority: only `canonical` grants). When that is
     // not known, its body is '' (no body matches it) and it stands in the text as one unknown character.
-    let known = true;
+    // Review r4, R20: so is a body whose text the editor may show otherwise.
+    let known = !link.uncertain;
     const showsOwn = bodyText !== '' || link.media.length > 0
       || bodies.some((own) => own.children.some((child) => typeof child !== 'string'));
     if (!canonical && !showsOwn) {
@@ -481,6 +487,12 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
       frame.next += 1;
       charge();
       if (typeof child === 'string') {
+        if (outsideBody === 0 && inBodies > 0 && HTML_READS_OTHERWISE.test(child)) {
+          for (const link of open) {
+            charge();
+            if (link.inBody > 0) link.uncertain = true;
+          }
+        }
         appendText(child);
         continue;
       }
@@ -539,7 +551,7 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
           element: child, anchor: isAnchor, ordinal: isLink ? linkLike : -1, inBody: Number(isAnchor), urls: [], hasUser: false,
           media: [], start: stream.length, end: -1, bodyStart: isAnchor ? stream.length : -1, bodyEnd: -1,
           scope: scopes[scopes.length - 1] ?? '', live: dormant === 0, placed: outsideBody === 0,
-          sequence: open.length + closed.length, described: null,
+          sequence: open.length + closed.length, described: null, uncertain: false,
         };
         if (isLink) {
           linkLike += 1;
@@ -727,17 +739,20 @@ export function judgeStorageUrlLinks(
     return missing;
   };
   // Review r2, R11: a stored thing whose shown text is not known (body '') may show any text. One that is still
-  // written is no rival; one missing from what is written could be any written link retargeted.
-  const unknownMissing = (): boolean => missingSources(numberOf('b', '')).size > 0;
+  // written is no rival; one missing from what is written, other than `link`'s own target, could be `link` retargeted.
+  const unknownMissing = (link: StorageUrlLink): boolean => {
+    const missing = missingSources(numberOf('b', ''));
+    return missing.size > Number(missing.has(targetOf(link)));
+  };
   /** Whether a stored thing with `link`'s body and another target, or one that may show it, is missing from what is written. */
   const otherSourceMissing = (link: StorageUrlLink): boolean => {
     const missing = missingSources(bodyOf(link));
-    return missing.size > Number(missing.has(targetOf(link))) || unknownMissing();
+    return missing.size > Number(missing.has(targetOf(link))) || unknownMissing(link);
   };
   /** Whether any stored thing with `link`'s body points somewhere else, or one that may show it is missing. */
   const foreignBody = (link: StorageUrlLink): boolean => {
-    const targets = storedByBody.get(bodyOf(link));
-    return (targets !== undefined && targets.size > Number(targets.has(targetOf(link)))) || unknownMissing();
+    const targets = link.body === '' ? undefined : storedByBody.get(bodyOf(link));
+    return (targets !== undefined && targets.size > Number(targets.has(targetOf(link)))) || unknownMissing(link);
   };
 
   // 0. A link in the place of something that pointed elsewhere.
@@ -760,10 +775,14 @@ export function judgeStorageUrlLinks(
     pushTo(storedLinksByClass, classOf(link), link);
   }
   const candidatesByClass = new Map<string, number[]>();
-  for (const index of remaining) pushTo(candidatesByClass, classOf(written.links[index]!), index);
+  const unmatched: number[] = [];
+  // Review r4, R20: a body that is not known is never the same body as another (veto, never origin).
+  for (const index of remaining) {
+    if (written.links[index]!.body === '') unmatched.push(index);
+    else pushTo(candidatesByClass, classOf(written.links[index]!), index);
+  }
   /** Stored links no written link of their own class has taken, for step 2. */
   const available = new Map<string, number>();
-  const unmatched: number[] = [];
   for (const [key, indexes] of candidatesByClass) {
     const storedClass = storedLinksByClass.get(key);
     if (!storedClass) {
