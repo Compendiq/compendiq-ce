@@ -289,13 +289,16 @@ any change to the existing conflict policy.
     body_html cannot tell the carrier of a link from a stored `<a>` with the
     same href. A link of any kind without a body of its own takes part with
     the text the forward pass shows for it (the display text of its primary
-    value: a page title, a space key, an anchor, a URL), in its body and in
-    the places around it, exactly as an explicit body would; this is only
-    evidence against a match, never a grant. A link whose shown text is not
-    known (a mention, an unknown resource, a link not written `ac:link`) is
-    never taken for one that shows nothing: it stands in the places around it
-    as one unknown character, matches no body, and when it is missing from
-    what is written, every link that could be it retargeted is not kept. A
+    value: a page title, a space key, an anchor, a URL), with white space
+    collapsed as for an explicit body, in its body and in the places around
+    it, exactly as an explicit body would; this is only evidence against a
+    match, never a grant. A link whose shown text is not known (a mention, an
+    unknown resource, a link not written `ac:link`, a value holding U+2329,
+    U+232A or a C1 control, which the HTML reading the editor shows may read
+    as another character) is never taken for one that shows nothing or for
+    one that shows another text: it stands in the places around it as one
+    unknown character, matches no body, and when it is missing from what is
+    written, every link that could be it retargeted is not kept. A
     link in a place that holds one thing in each string, the stored one being
     a link of its target and body, is kept. A link in its stored place with an
     edited body is kept, unless the new body is that of anything stored with
@@ -375,13 +378,21 @@ any change to the existing conflict policy.
   in SVG or MathML (an inserted image leaves foreign content), and under an
   element whose own content holds a start tag the tree builder ignored (a
   cell outside a table, a `div` in a `select`: what it held stands under
-  another element). It stays text and the drop-guard re-appends the media.
+  another element), also when prose around it joins into one text node whose
+  source holds the tag. It stays text and the drop-guard re-appends the media.
   The forward pass reads `&lang;` and `&rang;` in the start tags of a link of
   the five kinds and of its resource as XML does (U+2329, U+232A), so such a
   target is written back with the value Confluence holds, however it is
   spelled; text, bodies and the three #1748 kinds are read with the HTML
   values (U+27E8, U+27E9), as the base commit read them (pre-existing, not
-  changed here).
+  changed here). That spelling is a lexical step; what counts is a check on
+  the storage itself: the links of the five kinds as the HTML parser read
+  them must be those the XML reader reads, in order, value for value.
+  Otherwise (or when the XML reader refuses the string) a link of those kinds
+  whose value holds a character only an HTML reading produces (U+27E8,
+  U+27E9, TAB, LF, CR, U+FFFD, a windows-1252 character of a C1 reference) is
+  shown as its text, so its target is never carried or written back; a value
+  without one is the value XML reads.
   The whole change is the storage-derivation feature `link-kinds` (#1953): a
   version restore reserved before it, or under a profile without it, derives
   the bytes of the base commit and never meets the judgement. Limits, all on
@@ -396,14 +407,18 @@ any change to the existing conflict policy.
   the two is deleted, the link is still kept where it stands in its own
   stored place and that place names it alone, but a link that has moved, or
   whose surroundings changed with the deletion, becomes text, since which one
-  is left cannot be told; schemes are matched in lowercase only, so
+  is left cannot be told; a page link whose title holds U+2329, U+232A or a
+  C1 control is such a rival of unknown text; a link of the five kinds whose
+  target the XML reading does not confirm (above) is text in Compendiq and is
+  written back as text; schemes are matched in lowercase only, so
   `HTTPS://…` is an inert carrier; a literal TAB, LF or CR inside an
   attribute of a stored unsafe link (XML reads it as a space) declines that
   link; a stored link with more attributes than the grammar carries is no
   origin; raw link markup that is not the exact shape and has no body is
   refused rather than removed. A row synced before #1955 holds these links as
-  text; they come back with its next sync from Confluence, or with the
-  re-conversion of #1953.
+  text; they come back only with its next sync from Confluence (a re-sync).
+  No Save and no restore turns that text back into a link: #1953 does not
+  recover these five kinds.
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's
