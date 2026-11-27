@@ -3074,10 +3074,14 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
 
     // Review r6, R25 and coordinator decision D20: an info panel re-parses its body before its links are read, so
     // the carrier the room holds has LF where the stored blog title has CR. That Save is refused before any effect;
-    // the same link in a paragraph is dispatched with the CR XML reads, on both Saves.
+    // the same link in a paragraph is dispatched with the CR XML reads, on both Saves. Review r7, R28 (owner decision
+    // D21): a paragraph before the panel whose CDATA would not be XML once turned into text changes nothing.
     const releaseLink = '<ac:link><ri:blog-post ri:content-title="Release&#13;notes" ri:space-key="OPS" /></ac:link>';
+    const releasePanel = `<ac:structured-macro ac:name="info"><ac:rich-text-body><p>see ${releaseLink} now</p></ac:rich-text-body></ac:structured-macro>`;
     it.each([
-      ['an info panel', `<ac:structured-macro ac:name="info"><ac:rich-text-body><p>see ${releaseLink} now</p></ac:rich-text-body></ac:structured-macro>`, 422],
+      ['an info panel', releasePanel, 422],
+      ['an info panel after escaped `]]>` prose (R28)', `<p>]]&gt;</p>${releasePanel}`, 422],
+      ['an info panel after CDATA `]]` and a literal `>` (R28)', `<p><![CDATA[]]]]>></p>${releasePanel}`, 422],
       ['a paragraph', `<p>see ${releaseLink} now</p>`, 200],
     ])('dispatches a stored blog title with a CR in %s as XML reads it, or refuses the Save, twice (R25)', async (_where, storage, status) => {
       const { token, pageId, confluenceId } = await seedLinkPage(confluenceToHtml(storage), storage);

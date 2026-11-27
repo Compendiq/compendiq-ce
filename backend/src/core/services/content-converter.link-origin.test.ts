@@ -11,7 +11,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
 import { JSDOM } from 'jsdom';
 import { confluenceLinkAnchor, confluenceLinkCarrier, encodeConfluenceLinkValue } from './confluence-link.js';
-import { ConfluenceStorageRefusedError } from './confluence-storage-reader.js';
+import { ConfluenceStorageRefusedError, STORAGE_READER_LIMITS } from './confluence-storage-reader.js';
 import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
 import { htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { logger } from '../utils/logger.js';
@@ -523,6 +523,50 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
         .toBe('changed-link-target');
       expect(warn).toHaveBeenCalledWith({ reason: 'changed-link-target' }, expect.any(String));
       expect(refusal(() => htmlToConfluence(guideHtml, { previousStorage: `<p>${guide}</p>` }))).toBeNull();
+    });
+
+    // Review r7, R29 and owner decision D21: only a link that survives in the completed forward result has a
+    // verdict. These macros replace their whole subtree after the link loop has already converted the parameter's link.
+    it.each([
+      ['status', '<ac:parameter ac:name="colour">Grey</ac:parameter>'],
+      ['toc', ''],
+      ['jira', '<ac:parameter ac:name="key">OPS-1</ac:parameter>'],
+      ['an-unknown-macro', ''],
+    ])('refuses no new link whose carrier only a parameter of a %s macro held (R29)', (name, more) => {
+      const storage = `<p>before</p><ac:structured-macro ac:name="${name}"><ac:parameter ac:name="title">${folded}</ac:parameter>${more}</ac:structured-macro>`;
+      const shown = confluenceToHtml(storage);
+      const shownDoc = new JSDOM(`<body>${shown}</body>`).window.document;
+      expect(shownDoc.querySelectorAll('a[href^="#confluence-blog-post:"]')).toHaveLength(0);
+      expect(refusal(() => htmlToConfluence(`${shown}${guideHtml}`, { previousStorage: storage }))).toBeNull();
+    });
+
+    // Review r7, R28 and owner decision D21: the stored links, the read failure and the limits are those of the
+    // stored string itself, never of its HTML preprocessing (CDATA as text).
+    it.each([
+      ['escaped `]]>` prose', '<p>]]&gt;</p>'],
+      ['CDATA `]]` followed by a literal `>`', '<p><![CDATA[]]]]>></p>'],
+    ])('refuses the info-panel CR title after %s on both Saves; the editor shows both pages alike (R28)', (_name, before) => {
+      const storage = `${before}${inPanel('info')}`;
+      expect(oracleReads(storage)).toBe(true);
+      const projected = yDocToHtml(htmlToYDoc(confluenceToHtml(storage)));
+      expect(projected).toBe(yDocToHtml(htmlToYDoc(confluenceToHtml(`<p>]]&gt;</p>${inPanel('info')}`))));
+      for (const _save of [1, 2]) {
+        expect(refusal(() => htmlToConfluence(projected, { previousStorage: storage }))).toBe('changed-link-target');
+      }
+    });
+
+    it('takes the reader\'s length limit on the stored string, not on its CDATA turned into text (R28)', () => {
+      const cap = STORAGE_READER_LIMITS.length;
+      const head = `<p>${guide}</p><p><![CDATA[`;
+      const tail = ']]></p>';
+      // One character past the limit; without its CDATA delimiters it would be under it.
+      const over = `${head}${'a'.repeat(cap + 1 - head.length - tail.length)}${tail}`;
+      expect(over.length).toBe(cap + 1);
+      expect(refusal(() => htmlToConfluence(guideHtml, { previousStorage: over }))).toBe('too-large');
+      // Within the limit; each `&` would be five characters once the CDATA is text.
+      const within = `${head}${'&'.repeat(Math.ceil(cap / 5) + 1)}${tail}`;
+      expect(within.length).toBeLessThan(cap);
+      expect(refusal(() => htmlToConfluence(guideHtml, { previousStorage: within }))).toBeNull();
     });
   });
 

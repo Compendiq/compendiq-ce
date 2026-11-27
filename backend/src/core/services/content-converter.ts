@@ -644,11 +644,11 @@ function confluenceToHtmlPass(
 ): ConfluenceConversionPass {
   // #1955 (reviews r2 R12, r4 R21): with `link-kinds`, a link of a #1955 kind is read with the values XML reads.
   // Only the storage itself is spelled so; a later pass reads this pass's HTML, whose values were read here.
-  // A witness (D20) has each stored link's start tag marked with its index in what the reader read.
-  const cdataAsText = stripCdata(storageXhtml);
-  const kept = firstPass && derivationHas(features, 'link-kinds') ? keepXmlLinkValues(cdataAsText, witness?.marker) : null;
+  // A witness (D20) has each stored link's start tag marked with its index in what the reader read. Owner decision
+  // D21 (review r7, R28): the reader reads the stored string itself, before its CDATA is turned into text.
+  const kept = firstPass && derivationHas(features, 'link-kinds') ? keepXmlLinkValues(storageXhtml, witness?.marker) : null;
   if (kept && witness) witness.links = kept.links;
-  const preprocessed = expandSelfClosingXhtmlTags(kept ? kept.storage : cdataAsText);
+  const preprocessed = expandSelfClosingXhtmlTags(stripCdata(kept ? kept.storage : storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   forwardDerivationStepForTest?.(doc, features);
@@ -822,7 +822,7 @@ function confluenceToHtmlPass(
     // data-* attribute of a link.
     const replacement = confluenceLinkAnchor(link, features);
     if (replacement) {
-      if (witness) witnessEmittedLink(witness, link);
+      if (witness) witnessEmittedLink(witness, link, replacement[0] as Element);
       link.replaceWith(...replacement);
       continue;
     }
@@ -1792,50 +1792,66 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
 }
 
 /**
- * Coordinator decision D20 (#1955, review r6 R25/R26): what the forward pass emitted for the stored links of the
- * five #1955 kinds, recorded at the point it emits each carrier. `links` is what the storage reader read; each
- * stored link's start tag carries the attribute `marker` with its index there, under a random name.
+ * Coordinator decision D20, owner decision D21 (#1955, reviews r6 R25/R26, r7 R28/R29): what the forward pass
+ * emitted for the stored links of the five #1955 kinds. `links` is what the storage reader read from the stored
+ * string itself; each stored link's start tag carries the attribute `marker` with its index there, under a random
+ * name. Each `<a>` the link loop emits carries `marker` with its index in `emissions`, so the completed result
+ * tells which emitted links survived every later step and pass.
  */
 interface EmittedLinkWitness {
   readonly marker: string;
   links: readonly StorageElement[] | StorageReadFailure;
-  /** carrier → whether a link emitted with it keeps its stored XML target, and whether one does not. */
-  readonly emitted: Map<string, { faithful: boolean; unfaithful: boolean }>;
+  /** Each emitted link of the five kinds: the carrier it was emitted with, and whether that keeps its XML target. */
+  readonly emissions: Array<{ carrier: string; faithful: boolean }>;
 }
 
 /**
- * Record the carrier the forward pass is about to emit for `acLink` (D20): faithful when the stored link the
- * reader read at that tag is written back by it with its XML target (`storedLinkKeepsTarget`), else unfaithful —
- * an element the reader did not read as a link, and every link of storage the reader stopped reading at a limit,
- * has no XML target to keep. Storage known not to be well-formed, and the three #1748 kinds, are not recorded.
+ * Record the link the forward pass emits as `a` for `acLink` and mark `a` (D20): faithful when the stored link the
+ * reader read at that tag is written back by its carrier with its XML target (`storedLinkKeepsTarget`), else
+ * unfaithful — an element the reader did not read as a link, and every link of storage the reader did not read,
+ * has no XML target to keep. The three #1748 kinds are not recorded.
  */
-function witnessEmittedLink(witness: EmittedLinkWitness, acLink: Element): void {
-  const { links } = witness;
-  if (typeof links === 'string' && !isStorageLimitStop(links)) return;
+function witnessEmittedLink(witness: EmittedLinkWitness, acLink: Element, a: Element): void {
   const built = confluenceLinkCarrier(acLink);
   if (!built || CONFLUENCE_LINK_KINDS_1748.includes(built.kind)) return;
+  const { links } = witness;
   const index = acLink.getAttribute(witness.marker);
   const stored = typeof links === 'string' || index === null ? undefined : links[Number(index)];
-  const verdict = witness.emitted.get(built.carrier) ?? { faithful: false, unfaithful: false };
-  if (stored !== undefined && storedLinkKeepsTarget(stored, built)) verdict.faithful = true;
-  else verdict.unfaithful = true;
-  witness.emitted.set(built.carrier, verdict);
+  a.setAttribute(witness.marker, String(witness.emissions.length));
+  witness.emissions.push({ carrier: built.carrier, faithful: stored !== undefined && storedLinkKeepsTarget(stored, built) });
 }
 
 /**
- * Owner decision D19, coordinator decision D20 (#1955): run the forward pass itself over the page's stored storage,
- * with the features of this write-back and a witness, and give the check of an outgoing carrier. A carrier the
- * pass emitted only from links that keep their XML target, or never emitted (a new link, or a candidate the pass
- * discarded), passes. One emitted from a link that would change its target is refused (`changed-link-target`, or
- * the limit the reader stopped at); when a faithful link emitted the same carrier, which of them the outgoing link
- * is cannot be told, and it is refused alike, logged `ambiguous`.
+ * Owner decisions D19/D21, coordinator decision D20 (#1955): run the forward pass itself over the page's stored
+ * storage, with the features of this write-back and a witness, and give the check of an outgoing carrier. Only an
+ * emitted link still in the completed result is an occurrence; it is faithful when it still carries the carrier it
+ * was emitted with and that keeps its stored XML target. A carrier only faithful occurrences carry, or none (a new
+ * link, or a candidate the pass discarded), passes. One an unfaithful occurrence carries is refused
+ * (`changed-link-target`, or the limit the reader stopped at); when a faithful occurrence carries it too, which of
+ * them the outgoing link is cannot be told, and it is refused alike, logged `ambiguous`. Storage the reader knows
+ * is not well-formed is not checked.
  */
 function emittedStoredLinks(storage: string, features: StorageDerivationFeatures): (carrier: string) => void {
-  const witness: EmittedLinkWitness = { marker: `data-cq-stored-link-${randomBytes(8).toString('hex')}`, links: [], emitted: new Map() };
-  confluenceToHtmlWith(storage, undefined, undefined, features, witness);
-  const reason = typeof witness.links === 'string' ? witness.links : 'changed-link-target';
+  const marker = `data-cq-stored-link-${randomBytes(8).toString('hex')}`;
+  const witness: EmittedLinkWitness = { marker, links: [], emissions: [] };
+  const html = confluenceToHtmlWith(storage, undefined, undefined, features, witness);
+  const { links } = witness;
+  const occurrences = new Map<string, { faithful: boolean; unfaithful: boolean }>();
+  if (typeof links !== 'string' || isStorageLimitStop(links)) {
+    const result = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+    for (const a of result.querySelectorAll(`a[${marker}]`)) {
+      const emission = witness.emissions[Number(a.getAttribute(marker))];
+      const carrier = confluenceLinkCarrierOf(a);
+      if (!emission || carrier === null) continue;
+      const verdict = occurrences.get(carrier) ?? { faithful: false, unfaithful: false };
+      if (emission.faithful && emission.carrier === carrier) verdict.faithful = true;
+      else verdict.unfaithful = true;
+      occurrences.set(carrier, verdict);
+    }
+  }
+  const reason = typeof links === 'string' ? links : 'changed-link-target';
   return (carrier) => {
-    const verdict = witness.emitted.get(carrier);
+    const verdict = occurrences.get(carrier);
     if (verdict?.unfaithful) refuseConfluenceStorage(reason, verdict.faithful ? 'ambiguous' : undefined);
   };
 }
