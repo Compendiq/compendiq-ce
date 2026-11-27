@@ -369,6 +369,22 @@ async function loadAuthorizedContentWriteState(
   return current;
 }
 
+/**
+ * #1955 (review r1): whether this actor may write this page's content at the
+ * revision the request read, decided before anything is prepared from the
+ * page's stored content or from files the request names. A space member whom
+ * the page's own entries deny is answered with that denial, never with a
+ * reason that describes a body, a draft or a file. The reservation makes the
+ * same check again under admission, and the dispatch checks the actor again.
+ */
+async function assertContentWriteAuthorizedBeforePreparation(
+  pageId: number,
+  userId: string,
+  expected: PageRevision,
+): Promise<void> {
+  await withPageWriteTransaction([], (client) => loadAuthorizedContentWriteState(client, pageId, userId, expected));
+}
+
 /** A captured PAT is not authority to dispatch after an admission wait. */
 async function loadCurrentConfluenceWriteClient(
   client: PoolClient,
@@ -2845,15 +2861,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // write-back refuses (ConfluenceStorageRefusedError) therefore leaves no
     // intent, no attachment and no page change, and the effect below sends
     // exactly the string that was judged here.
+    const expectedRevision: PageRevision = {
+      contentRevision: existingPage.content_revision,
+      lifecycleRevision: existingPage.lifecycle_revision,
+    };
+    // The page-level authorization comes first: no file is planned and no storage derived for an
+    // actor the page denies.
+    await assertContentWriteAuthorizedBeforePreparation(existingPage.id, userId, expectedRevision);
     const imagePlan = await planLocalImagesForConfluence(body.bodyHtml);
     const nextStorageBody = htmlToConfluence(imagePlan.bodyHtml, {
       previousStorage: existingPage.body_storage,
       legacyTasks: hasOnlyUncarriedTasks(existingPage.body_html),
     });
-    const expectedRevision: PageRevision = {
-      contentRevision: existingPage.content_revision,
-      lifecycleRevision: existingPage.lifecycle_revision,
-    };
     const runtimeId = await getPageWriterRuntimeId();
     const reservationClient = await getPool().connect();
     let writeIntent: PageWriteIntent;
@@ -3649,6 +3668,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     let publishedVisibility = page.visibility;
     const remotePublicationRequired =
       page.confluence_id !== null && !(await pageWriteStaysLocal(userId, page.source));
+    // #1955 (review r1): the draft is stored content of the page. Nothing is derived from it for an actor
+    // the page denies; a local-only publication derives nothing and is authorized where it is written.
+    if (remotePublicationRequired) await assertContentWriteAuthorizedBeforePreparation(page.id, userId, expectedRevision);
     // #1751: publication keeps the draft's HTML rather than re-deriving it from
     // the storage Confluence returns, so a remote publication stores the task
     // ids it writes there.

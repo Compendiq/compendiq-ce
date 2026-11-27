@@ -539,6 +539,37 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
         expect(confluenceRequests).toEqual([]);
       });
 
+      // Review r1, R4: the draft is someone else's stored content for a member the page ACE denies.
+      it('answers a space member the page ACE denies as not authorized, before the draft is read for publication (R4)', async () => {
+        const pageId = await seedConfluencePage();
+        await query('UPDATE pages SET body_storage = $2, draft_body_html = $3, inherit_perms = FALSE WHERE id = $1', [
+          pageId,
+          STORAGE,
+          '<p>draft</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>',
+        ]);
+        const before = await storedPage(pageId);
+
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toMatchObject({ reason: 'not_authorized' });
+        expect(response.body).not.toMatch(/ConfluenceStorageRefusedError|unapproved-link/);
+        expect(await storedPage(pageId)).toEqual(before);
+        expect((await query('SELECT 1 FROM page_versions WHERE page_id = $1', [pageId])).rowCount).toBe(0);
+        expect((await query('SELECT 1 FROM page_write_intents')).rowCount).toBe(0);
+        expect(confluenceRequests).toEqual([]);
+
+        // With an entry for them the same draft is refused for what it holds.
+        await query(
+          `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+           VALUES ('page', $1, 'user', $2, 'edit')`,
+          [pageId, ownerId],
+        );
+        const allowed = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+        expect(allowed.statusCode, allowed.body).toBe(422);
+        expect(allowed.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'unapproved-link' });
+      });
+
       it('never judges a publication that stays local', async () => {
         const pageId = await seedConfluencePage();
         const draft = '<p>draft</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>';

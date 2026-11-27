@@ -761,6 +761,36 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       expect(await pageRow(pageId)).toEqual(before);
     });
 
+    // Review r1, R4: membership of the space is not access to a page that does not inherit its permissions.
+    it.each([
+      ['a body the write-back refuses', '<p>x</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>'],
+      ['a pasted image that is gone', '<p><img src="/api/attachments/page-1/missing.png"></p>'],
+    ])('answers a space member the page ACE denies as not authorized for %s: nothing is planned or derived for them (R4)', async (_name, bodyHtml) => {
+      const pageId = await seedLinkedPage();
+      await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
+      const before = await pageRow(pageId);
+
+      const response = await app.inject({ method: 'PUT', url: `/api/pages/${pageId}`, payload: { title: 'Changed', version: 7, bodyHtml } });
+
+      // The denial, not a reason that describes the body or the files it names.
+      expect(response.statusCode, response.body).toBe(403);
+      expect(response.json()).toMatchObject({ reason: 'not_authorized' });
+      expect(response.body).not.toMatch(/ConfluenceStorageRefusedError|unapproved-link|pasted_image/);
+      expect(providerCalls).toEqual([]);
+      expect(attachmentUploadUrls).toEqual([]);
+      expect(await intentRows(pageId)).toBe(0);
+      expect(await pageRow(pageId)).toEqual(before);
+
+      // With an entry for them the same request is answered for what it holds.
+      await query(
+        `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [pageId, currentUserId],
+      );
+      const allowed = await app.inject({ method: 'PUT', url: `/api/pages/${pageId}`, payload: { title: 'Changed', version: 7, bodyHtml } });
+      expect([409, 422]).toContain(allowed.statusCode);
+    });
+
     it('uploads the planned image once and then sends exactly the storage it derived from the plan (W3)', async () => {
       const pageId = await seedLinkedPage();
       await mkdir(join(attachmentsDir, 'page-1'), { recursive: true });
