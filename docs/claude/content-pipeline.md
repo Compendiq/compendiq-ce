@@ -272,7 +272,10 @@ force (`derivationFeatures`, no key while none is), recovery derives with that
 record only, and an intent without it gets the empty set, which must keep
 writing the bytes of `__fixtures__/storage-derivation-base-corpus.ts`
 (`storage-derivation.corpus.test.ts`; `describeRestoreDerivationFeature` in
-`test-restore-derivation-contract.ts` is the test a registering change runs).
+`__fixtures__/test-restore-derivation-contract.ts` is the test a registering
+change runs). Recovery refuses a recorded name it does not register before it
+takes ownership of the intent (`registerPageWriteIntentPreflight`), so a
+runtime that registers it still finds the fenced owner.
 Every other writer passes no set and derives with all features. The digest
 proves the derived storage and the effective title, not the historical row: the
 route compares the row's id, title and HTML before the provider PUT.
