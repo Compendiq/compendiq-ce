@@ -377,7 +377,9 @@ params=…]]]` on the line directly above (also when it opens a panel or task
 item, the whole block then stays inside it: continuation lines indented, every
 panel line quoted); every other annotated block is frozen by `protectMedia` (as are token
 blocks past 1,000) as a `CQ_CODE_PLACEHOLDER_<nonce>_<N>` code entry (a media
-entry holding annotated code is `CQ_MEDIA_PLACEHOLDER_<nonce>_<N>`). **Media
+entry holding annotated code is `CQ_MACRO_PLACEHOLDER_<nonce>_<N>`: no token may
+be a prefix of another, and `locateMediaTokens` ends a token at a boundary,
+review r7 CM7-1). **Media
 tokens and ordinals stay exactly those of the release before #1958**; never put
 frozen code into the `CQ_MEDIA_PLACEHOLDER` ordinal space. On Accept the
 remote exit first authorizes the actor and the page in one transaction that
@@ -410,7 +412,8 @@ status to that row only (owner, page, `completed`). Never match the text
 against stored rows, and never add an "authored literal" rule: only a token
 spelled with the bound nonce places a protected block, so whatever the page
 spells itself is text. Protocol 1 → the #1958 path; no bound nonce on a page
-with protected code → 422 (`ImproveSuggestionUnboundError`); no bound row
+with protected code → 422 (`ImproveSuggestionUnboundError`); a result that still
+spells the bound nonce (a quoted placeholder) → 422 (r7 CM7-2); no bound row
 otherwise → the #1958 path (no status change); a row without a protocol →
 422 on a page with any annotated code, else the pre-#1958 replay byte for byte
 (`restoreMedia` + `includes` guard, no CODE-META analysis) with the trust

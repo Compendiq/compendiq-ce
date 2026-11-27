@@ -1515,7 +1515,9 @@ On `POST /llm/improvements/apply` the route:
    **#1958 path** it replays as follows. The tokens of the media
    entries and of the frozen code entries (and their turndown-escaped
    variants `CQ\_MEDIA\_PLACEHOLDER\_N`) are located once
-   (`locateMediaTokens`, #1955): a token is a placement only where it stands
+   (`locateMediaTokens`, #1955; a token ends before another token or where no
+   identifier character or escaped `\_` follows, so none is read at the start
+   of a longer one, review r7 CM7-1): a token is a placement only where it stands
    as content, never inside an attribute value, a comment, raw text, a
    `select`, SVG or MathML, a subtree the tree builder moved or an element
    holding a start tag it ignored. Every placement is screened before
@@ -1597,11 +1599,15 @@ fence lexes back to exactly one fenced code token of that language; no CR).
 1,000. A frozen block travels as a **code entry** in its own namespace,
 `CQ_CODE_PLACEHOLDER_<nonce>_<N>` with its own ordinals (`frozenCode`); a media
 entry that holds annotated code (a code-carrying macro wrapper) is spelled
-`CQ_MEDIA_PLACEHOLDER_<nonce>_<N>` at its media ordinal. The `<nonce>` is 64
-random bits the generator makes per suggestion and stores on its row
-(coordinator decision D28): only a token spelled with the bound row's nonce
-can place a protected block, so nothing the page writes itself and nothing
-another generation wrote can. Every other media entry keeps exactly the
+`CQ_MACRO_PLACEHOLDER_<nonce>_<N>` at its media ordinal (its own prefix: no
+ordinary `CQ_MEDIA_PLACEHOLDER_<N>` is a prefix of it, review r7 CM7-1). The
+`<nonce>` is 64 random bits the generator makes per suggestion and stores on
+its row (coordinator decision D28): only a token spelled with the bound row's
+nonce can place a protected block, so nothing the page writes itself and
+nothing another generation wrote can. An Accept whose result still spells the
+bound nonce anywhere (a placeholder the model quoted in code or copied) is
+refused (422), so a generation's tokens never reach the stored page or a later
+prompt (review r7 CM7-2). Every other media entry keeps exactly the
 token, ordinal and HTML the release before #1958 wrote (`media`), and a
 frozen-class block that holds a media node is not frozen (its medium keeps
 its ordinal; the block loses its metadata as before). `protectMedia` also
@@ -1720,7 +1726,10 @@ against stored rows. The Accept is classified once, from that row:
   limit for pending suggestions: regenerate them.
 - **Base path:** a row without a protocol for a page without annotated code:
   the Accept of the release before #1958, byte for byte (`restoreMedia` at
-  every placement, the `includes` drop guard, no CODE-META analysis). Such a
+  every placement, the `includes` drop guard, no CODE-META analysis), with one
+  narrowing (review r7 CM7-1): a token spelling followed by a letter, `_` or
+  `\_` (`CQ_MEDIA_PLACEHOLDER_0abc`) is text, where that release placed the
+  medium and left the rest; tokens written back to back still place both. Such a
   page has no code-carrying original. The trust boundary stays: `pre`
   metadata in the suggestion is stripped, a code-named placeholder or raw code
   macro markup is refused (**422** `unapproved-code-macro`), the storage rules
@@ -1747,7 +1756,8 @@ would refuse it (a policy refusal stays a refusal). A page with protected
 code has a fresh nonce in every prompt, so its outputs are never cached.
 Not foreseen: what the page's state at Apply time adds (a changed body, its
 stored storage, #1955 link origins, R3), and nothing promises the provider
-returns a usable output.
+returns a usable output. The nonce is not a secret: it is visible to the model
+and in the suggestion; it only tells this generation's placeholders apart.
 
 **#1953-2 interface.** The remote Apply's authorization point (above) precedes
 every evidence read; #1953-2 reads recovery evidence only after it.
