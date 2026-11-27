@@ -100,7 +100,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
-| `th` / `td` with `style="text-align: left\|center\|right;"` (#1956) | the same cell with `align="…"` appended (the stored `style` is kept); the editor schemas model it as the cell's `align` and render `align="…"` | on Improve, a table the stock GFM rule states exactly gets column markers (`:--` / `:-:` / `--:`); any other table with `align` (every editor/Confluence table, which has a `colgroup`) travels frozen as one media token; the write-back turns `align` into `style="text-align: X;"` again (feature `cell-align`) |
+| `th` / `td` with `style="text-align: left\|center\|right;"` (#1956) | the same cell with `align="…"` appended (the stored `style` is kept); the editor schemas model it as the cell's `align` and render `align="…"` | the stock GFM rule's column markers (`:--` / `:-:` / `--:`, from the header row) on the Improve conversion, unchanged by #1956; the write-back turns `align` into `style="text-align: X;"` again (feature `cell-align`) |
 | `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); any other resource (`ri:blog-post`, `ri:space`, …) stays its text | `[text](href)` (the href is a valid link destination) |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
@@ -731,13 +731,13 @@ Write-back (storage-derivation feature `cell-align`) writes `style="text-align: 
 round-trips byte for byte; a style that mentions `text-align` always decides and an
 ambiguous one (duplicate, quoted, custom property, upper-case property, a priority other
 than a lower-case `!important`, a bracket, brace or unbalanced parenthesis, over 1,024
-characters) means no alignment and is never rewritten. On AI Improve (decision D12) a table
-without `align` converts exactly as before (pinned against the slice base); a table whose
-alignment the stock GFM rule states exactly (stock heading row, no colgroup, span, caption,
-footer or nested table, one-line cells, every cell aligned like its header marker) converts
-through the stock rule; every other table with `align` is frozen by `protectMedia` and
-replayed verbatim on Accept (not improvable). Markdown → HTML → Markdown keeps the column
-alignment.
+characters) means no alignment and is never rewritten. #1956 makes no change to the AI
+Improve chain (decision D15; pinned against the slice base for aligned and unaligned
+tables). Through AI Improve, alignment survives as far as the stock GFM table rule
+expresses it, i.e. per column from the header row; a body cell aligned differently from
+its column header takes the header's alignment on Accept; whatever the stock rule mangled
+before this change (a pipe inside a cell, a table inside a panel) it still mangles.
+Markdown → HTML → Markdown keeps the column alignment.
 
 **Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
 ` ```drawio ` fence into `div.confluence-drawio[data-diagram-name]`, and the

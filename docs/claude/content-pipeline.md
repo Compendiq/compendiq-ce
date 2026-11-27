@@ -401,27 +401,18 @@ three values, written lower case; `style` stays stripped on import. Write-back (
 byte, a style without it only gets the declaration appended, and nothing is rewritten.
 `confluenceToHtml` appends `align="X"` next to a plain `text-align` style and leaves the
 style alone, so `htmlToConfluence(confluenceToHtml(x))` is `x`. **AI Improve (decision
-D12):** `htmlToMarkdown` is unchanged; the decision is made in `protectMedia`, on the
-stored table alone, never on the model's echo. A table with no `align` on its own cells
-converts exactly as before this issue (stock rule or stock keep), pinned byte for byte
-against the slice base (`__fixtures__/table-align-improve-base.json`); what that path
-loses (literal markup, spans, a table in a flattened panel, …) stays lost. A table whose
-alignment the stock GFM rule states exactly (`isFrozenAlignedTable` /
-`stockGfmStatesAlignment`: the stock heading row, no colgroup, caption, footer, comment,
-nested table or span, one-line cells, and every cell's alignment as the schemas read it
-equal to the marker the stock rule writes from the header's raw `align`) converts through
-the stock rule and comes back with its markers. Every other table with `align` on a cell
-is **frozen**: one opaque media token, replayed verbatim on Accept by `restoreMedia`, its
-media travelling inside it; the model cannot edit it. An editor- or Confluence-serialised
-table always has a `colgroup`, so an aligned one is always frozen on Improve. Freezing has
-the soundness of every other frozen block (drawio, unknown macro) in the same position:
-the token is text in any parent turndown keeps text for (a GFM cell of an unaligned outer
-table, a list item, a layout cell, a flattened panel). Every other `htmlToMarkdown` caller
-(embedding text, tagging, chat context, sub-page context) is byte-identical to before.
-**Known limits:** a frozen table's text is not improved; a legacy row whose cells carry
-only a `text-align` style (stored before this change, no `align`) takes the base path and
-loses its alignment there as before; non-Improve callers keep stock turndown's output for
-`<p>`-celled tables (pre-existing, D6).
+D15):** #1956 makes no change to the Improve chain (`protectMedia`, `htmlToMarkdown`,
+`markdownToHtml`, `restoreMedia` and the Accept drop guard are the slice-base code for
+tables, aligned or not; no table becomes a media token), pinned byte for byte, Markdown
+and applied HTML, against the slice base for aligned and unaligned inputs
+(`__fixtures__/table-align-improve-base.json`); a suggestion generated before the change
+applies exactly as before. **Known limits:** through AI Improve, alignment survives as far
+as the stock GFM table rule expresses it, i.e. per column from the header row; a body cell
+aligned differently from its column header takes the header's alignment on Accept;
+whatever the stock rule mangled before this change (a pipe inside a cell, a table inside a
+panel) it still mangles. Every other `htmlToMarkdown` caller (embedding text, tagging,
+chat context, sub-page context) is byte-identical to before; they keep stock turndown's
+output for `<p>`-celled tables (pre-existing, D6).
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
