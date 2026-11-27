@@ -161,14 +161,13 @@ describe('POST /api/pages/import/preview through the real converter (#1752)', ()
       expect(htmlToConfluence(applied)).toContain('<th style="text-align: center;">b</th>');
     });
 
-    it('keeps the alignment through AI Improve after an editor serialisation, which travels frozen', async () => {
+    it('keeps the alignment through AI Improve after an editor serialisation, which the stock rule keeps as HTML', async () => {
       const editorHtml = yDocToHtml(htmlToYDoc(await preview(ALIGNED)));
       expect(editorHtml).toContain('<colgroup>');
       const { markdown, applied } = await improveChain(editorHtml);
-      expect(markdown).toBe('CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+      expect(markdown).toBe(editorHtml);
       expect(aligns(applied, 'th')).toEqual(['left', 'center', 'right', null]);
       expect(aligns(applied, 'td')).toEqual(['left', 'center', 'right', null]);
-      expect(parse(applied).querySelector('table')!.outerHTML).toBe(parse(editorHtml).querySelector('table')!.outerHTML);
     });
 
     it('writes the imported alignment to Confluence as text-align styles after the collaborative load', async () => {

@@ -757,13 +757,13 @@ function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlig
   if (depth !== 0 || /[{}[\]]/.test(style)) return 'other';
   return normalizeTableCellAlign(cssTextAlign) ?? 'other';
 }
+// <table-cell-align:end>
+
+// <table-cell-align-attribute:begin>
 function resolveTableCellAlign(style: string, cssTextAlign: string, alignAttr: string | null): TableCellAlign | null {
   const fromStyle = tableCellStyleAlign(style, cssTextAlign);
   return fromStyle === null ? normalizeTableCellAlign(alignAttr) : fromStyle === 'other' ? null : fromStyle;
 }
-// <table-cell-align:end>
-
-// <table-cell-align-attribute:begin>
 const TABLE_CELL_ALIGN_ATTRIBUTE = {
   default: null as TableCellAlign | null,
   parseHTML: (element: HTMLElement) =>

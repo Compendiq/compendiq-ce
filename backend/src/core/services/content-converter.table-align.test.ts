@@ -29,14 +29,6 @@ function table(cellHtml: string): string {
 
 const IMPROVE = { layoutTokens: true } as const;
 
-/** What an editor serialises for a 3-column aligned table: generated colgroup, one paragraph per cell. */
-const EDITOR_TABLE = '<table style="min-width: 75px;"><colgroup><col style="min-width: 25px;"><col style="min-width: 25px;">'
-  + '<col style="min-width: 25px;"></colgroup><tbody><tr>'
-  + '<th colspan="1" rowspan="1" align="left"><p>a</p></th><th colspan="1" rowspan="1" align="center"><p>b</p></th>'
-  + '<th colspan="1" rowspan="1"><p>c</p></th></tr><tr>'
-  + '<td colspan="1" rowspan="1" align="left"><p>1</p></td><td colspan="1" rowspan="1" align="center"><p>2</p></td>'
-  + '<td colspan="1" rowspan="1"><p>3</p></td></tr></tbody></table>';
-
 describe('table cell alignment: confluenceToHtml (#1956)', () => {
   it.each([
     ['left', '<td class="confluenceTd" style="text-align: left;">x</td>'],
@@ -181,31 +173,17 @@ async function improveChain(body: string): Promise<{ markdown: string; applied: 
   return { markdown, applied: restoreMedia(applied, media) };
 }
 
-function dom(html: string): Document {
-  return new JSDOM(`<body>${html}</body>`).window.document;
-}
-
-/** An editor-serialised, unresized two-column table: generated colgroup, one paragraph per cell, first column aligned. */
-function editorTable(align: string, header: readonly [string, string], body: readonly [string, string]): string {
-  const cell = (tag: string, html: string, aligned: boolean): string =>
-    `<${tag} colspan="1" rowspan="1"${aligned ? ` align="${align}"` : ''}><p>${html}</p></${tag}>`;
-  return '<table style="min-width: 50px;"><colgroup><col style="min-width: 25px;"><col style="min-width: 25px;"></colgroup><tbody>'
-    + `<tr>${cell('th', header[0], true)}${cell('th', header[1], false)}</tr><tr>${cell('td', body[0], true)}${cell('td', body[1], false)}</tr>`
-    + '</tbody></table>';
-}
-
-function serialized(html: string): string {
-  return dom(html).querySelector('table')!.outerHTML;
-}
-
 interface ImproveBaseCase { html: string; markdown: string; applied: string }
 
-/** Captured at the slice base bda4d1ed (decision D12; provenance in the fixture). */
+/** Captured at the slice base bda4d1ed (decisions D12, D15; provenance in the fixture). */
 const IMPROVE_BASE: { cases: Record<string, ImproveBaseCase> } = JSON.parse(
   readFileSync(join(here, '__fixtures__/table-align-improve-base.json'), 'utf8'),
 );
 
-describe('AI Improve: a table without alignment converts exactly as at the slice base (D12, #1956)', () => {
+// Decision D15: #1956 makes no change to the AI Improve chain. Every table, aligned or not, converts and applies
+// exactly as at the slice base: the stock GFM rule states the header row's alignment per column; what it mangles
+// (a pipe in a cell, a table first in a flattened panel) it still mangles.
+describe('AI Improve: every table converts exactly as at the slice base (D15, #1956)', () => {
   it.each(Object.entries(IMPROVE_BASE.cases))('%s: the same Markdown and the same applied HTML', async (_name, base) => {
     const { markdown, applied } = await improveChain(base.html);
     expect(markdown).toBe(base.markdown);
@@ -213,8 +191,8 @@ describe('AI Improve: a table without alignment converts exactly as at the slice
   });
 });
 
-describe('AI Improve: an aligned table (D12, #1956)', () => {
-  it('converts through the stock GFM rule when its markers state every cell, and Apply brings the alignment back', async () => {
+describe('AI Improve: column alignment through the stock GFM rule (issue criterion 5, #1956)', () => {
+  it('writes the header row\'s markers, and Apply brings the alignment back on every cell of the column', async () => {
     const { markdown, applied } = await improveChain(IMPROVE_BASE.cases.alignedStockTable!.html);
     expect(markdown).toBe('| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |');
     expect(cells(applied).map((c) => [c.nodeName, c.textContent, c.getAttribute('align')])).toEqual([
@@ -230,100 +208,14 @@ describe('AI Improve: an aligned table (D12, #1956)', () => {
     expect(htmlToMarkdown(await markdownToHtml(once), IMPROVE).trim()).toBe(once);
   });
 
-  it('freezes an editor-serialised table: the model sees one token, Apply replays the table verbatim', async () => {
-    const { markdown, applied } = await improveChain(`<p>before</p>${EDITOR_TABLE}<p>after</p>`);
-    expect(markdown).toBe('before\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nafter');
-    const doc = dom(applied);
-    expect([...doc.body.children].map((el) => el.nodeName)).toEqual(['P', 'TABLE', 'P']);
-    expect(doc.querySelector('table')!.outerHTML).toBe(EDITOR_TABLE);
+  it('gives a body cell aligned differently from its header the header\'s alignment on Accept (recorded limit)', async () => {
+    const { applied } = await improveChain(IMPROVE_BASE.cases.alignedBodyCellDiffersFromHeader!.html);
+    expect(cells(applied).map((c) => c.getAttribute('align'))).toEqual(['left', 'left']);
   });
 
-  const frozen: Array<[string, string]> = [
-    ['an editor table (generated colgroup)', EDITOR_TABLE],
-    ['a body cell aligned differently from its header', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="right">1</td></tr></tbody></table>'],
-    ['a body cell without its header\'s alignment', '<table><thead><tr><th align="center">a</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>'],
-    ['a header alignment the stock rule cannot read', '<table><thead><tr><th align=" Right ">a</th></tr></thead><tbody><tr><td align=" Right ">1</td></tr></tbody></table>'],
-    ['a style that decides against the attribute', '<table><thead><tr><th style="text-align: right" align="left">a</th></tr></thead><tbody><tr><td align="left">1</td></tr></tbody></table>'],
-    ['a column span', '<table><thead><tr><th colspan="2" align="center">name</th></tr></thead><tbody><tr><td align="center">a</td><td>b</td></tr></tbody></table>'],
-    ['a row span', '<table><tbody><tr><th align="left">a</th><th>b</th></tr><tr><td rowspan="2" align="left">1</td><td>2</td></tr><tr><td>3</td></tr></tbody></table>'],
-    ['a paragraph in a cell', '<table><thead><tr><th align="left"><p>a</p></th></tr></thead><tbody><tr><td align="left"><p>1</p></td></tr></tbody></table>'],
-    ['a line break in a cell', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left">x<br>y</td></tr></tbody></table>'],
-    ['a caption', '<table><caption>Revenue</caption><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left">1</td></tr></tbody></table>'],
-    ['a footer', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left">1</td></tr></tbody><tfoot><tr><td>t</td></tr></tfoot></table>'],
-    ['a comment between rows', '<table><tbody><tr><th align="left">a</th></tr><!-- c --><tr><td align="left">1</td></tr></tbody></table>'],
-    ['a header row that is not all th', '<table><tbody><tr><th align="left">a</th><td>b</td></tr><tr><td align="left">1</td><td>2</td></tr></tbody></table>'],
-    ['a nested table', '<table><thead><tr><th align="left">a</th></tr></thead><tbody><tr><td align="left"><table><tbody><tr><td>n</td></tr></tbody></table></td></tr></tbody></table>'],
-  ];
-
-  it.each(frozen)('freezes %s and replays it verbatim', async (_label, html) => {
-    const { html: protectedHtml, media } = protectMedia(html);
-    expect(media.map((m) => m.html)).toEqual([serialized(html)]);
-    expect(protectedHtml).not.toContain('<table');
-    expect(serialized((await improveChain(html)).applied)).toBe(serialized(html));
-  });
-
-  it('freezes only the table that carries the alignment: an unaligned outer table keeps converting around it', async () => {
-    const html = `<table><tbody><tr><td>${EDITOR_TABLE}</td></tr></tbody></table>`;
-    const { html: protectedHtml, media } = protectMedia(html);
-    expect(media.map((m) => m.html)).toEqual([EDITOR_TABLE]);
-    expect(protectedHtml).toBe('<table><tbody><tr><td> CQ_MEDIA_PLACEHOLDER_0 </td></tr></tbody></table>');
-    const doc = dom((await improveChain(html)).applied);
-    expect(doc.querySelectorAll('table')).toHaveLength(2);
-    expect(doc.querySelector('td > table')!.outerHTML).toBe(EDITOR_TABLE);
-  });
-
-  it('carries media inside a frozen table in the table, not as tokens of their own', () => {
-    const html = editorTable('center', ['H', 'I'], ['<img src="/attachments/x.png" alt="d">', '<span class="confluence-status" data-color="green">OK</span>']);
-    expect(protectMedia(html).media.map((m) => m.html)).toEqual([serialized(html)]);
-  });
-
-  // Review r2 A2-1 / A2-2: content and link attributes of an aligned table reach the page unchanged.
-  it('keeps literal markup, non-breaking spaces, code whitespace and link attributes, also in the storage write', async () => {
-    const html = editorTable(
-      'center',
-      ['This is &lt;EM &gt;demo&lt;/EM&gt;', '&nbsp;unit&nbsp;'],
-      ['<code>cmd   /help</code>', '<a target="_blank" rel="noopener noreferrer nofollow" href="https://example.com/guide">guide</a>'],
-    );
-    const { applied } = await improveChain(html);
-    expect(serialized(applied)).toBe(serialized(html));
-    const doc = dom(applied);
-    expect([...doc.querySelectorAll('th, td')].map((c) => c.textContent)).toEqual([
-      'This is <EM >demo</EM>', '\u00a0unit\u00a0', 'cmd   /help', 'guide',
-    ]);
-    expect(doc.querySelector('td em, th em')).toBeNull();
-    const link = dom(htmlToConfluence(applied)).querySelector('a')!;
-    expect([link.getAttribute('href'), link.getAttribute('target'), link.getAttribute('rel')])
-      .toEqual(['https://example.com/guide', '_blank', 'noopener noreferrer nofollow']);
-  });
-
-  // Review r2 A2-3: a table in an existing (non-native) panel.
-  it.each([
-    ['first in the panel', (t: string) => `<div class="panel-info">${t}</div><p>after</p>`],
-    ['after a paragraph, before multi-line code', (t: string) => `<div class="panel-info"><p>Note</p>${t}<pre><code>a\n\n**literal**</code></pre></div><p>after</p>`],
-  ])('keeps an aligned table %s: one table, its cells, contents and alignment', async (_label, wrap) => {
-    const table = editorTable('right', ['H', 'I'], ['b', '<img src="/attachments/x.png" alt="d">']);
-    const doc = dom((await improveChain(wrap(table))).applied);
-    expect(doc.querySelectorAll('table')).toHaveLength(1);
-    expect(doc.querySelector('table')!.outerHTML).toBe(table);
-    expect(cells(doc.body.innerHTML).map((c) => [c.textContent, c.getAttribute('align')]))
-      .toEqual([['H', 'right'], ['I', null], ['b', 'right'], ['', null]]);
-    expect(doc.querySelector('td img')!.getAttribute('src')).toBe('/attachments/x.png');
-  });
-
-  // Review r2 A2-4: layout tokens inside and around an aligned table.
-  it('keeps a literal layout token and a real layout inside the table, and one surrounding layout', async () => {
-    const inner = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">'
-      + '<div class="confluence-layout-cell"><p>inner</p></div></div></div>';
-    const table = editorTable('left', ['Literal [[[EXPAND]]] text', `<span title="[[[LAYOUT]]]">t</span>`], [inner, 'b']);
-    const page = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">'
-      + `<div class="confluence-layout-cell"><p>x</p>${table}</div></div></div>`;
-    const { applied } = await improveChain(page);
-    const doc = dom(applied);
-    expect(doc.querySelector('table')!.outerHTML).toBe(serialized(table));
-    expect(doc.querySelectorAll('div.confluence-layout')).toHaveLength(2);
-    expect(doc.querySelector('th')!.textContent).toBe('Literal [[[EXPAND]]] text');
-    expect(htmlToConfluence(applied).match(/<ac:layout>/g)).toHaveLength(2);
-    expect(htmlToConfluence(page).match(/<ac:layout>/g)).toHaveLength(2);
+  it('keeps no media token for a table: the protected media of an aligned page are its media only', () => {
+    expect(protectMedia(IMPROVE_BASE.cases.alignedEditorTableBeforeImage!.html).media.map((m) => m.html))
+      .toEqual(['<img src="/api/attachments/1/diagram.png" alt="Diagram">']);
   });
 });
 
@@ -401,17 +293,6 @@ describe('the converter reads a cell as both schemas do (#1956)', () => {
       expect(cells(collab)[0]!.getAttribute('align')).toBe(expected);
       const [saved] = cells(htmlToConfluence(collab));
       expect(saved!.getAttribute('style')).toBe(expected === null ? null : `text-align: ${expected};`);
-    },
-  );
-
-  // AI Improve (D12): a table carrying `align` either converts through the stock rule because its markers state every
-  // cell, or is frozen; either way an unchanged echo gives every cell the alignment the schemas read before.
-  it.each(CELL_ALIGN_VECTORS.filter(([, attrs]) => /align="/i.test(attrs)))(
-    'AI Improve keeps the alignment the schemas read for %s',
-    async (_label, attrs, expected) => {
-      const html = `<table><thead><tr><th ${attrs}>h</th></tr></thead><tbody><tr><td ${attrs}>c</td></tr></tbody></table>`;
-      const { applied } = await improveChain(html);
-      expect(cells(yDocToHtml(htmlToYDoc(applied))).map((cell) => cell.getAttribute('align'))).toEqual([expected, expected]);
     },
   );
 });
