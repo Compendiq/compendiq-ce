@@ -5,8 +5,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { FastifyInstance } from 'fastify';
 import { getPool, query } from '../../core/db/postgres.js';
 import { confluenceToHtml, htmlToConfluence, htmlToMarkdown, htmlToText, protectMedia } from '../../core/services/content-converter.js';
-import { oracleElements, oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { oracleElements, oracleUrlLinks, storageOracle } from '../../core/services/__fixtures__/storage-oracle.js';
 import { LEGACY_CARRIER_FIXTURES } from '../../core/services/__fixtures__/confluence-carrier-legacy.js';
+import { CARRIER_RECONCILE_MAX_UNITS } from '../../core/services/confluence-carrier-reconcile.js';
+import type { StoredCarrierResult } from '../../core/services/confluence-carrier-recovery.js';
 import { logger } from '../../core/utils/logger.js';
 import {
   lockPageLifecycle,
@@ -38,6 +40,31 @@ const mockHttpRequest = vi.hoisted(() => vi.fn());
 vi.mock('undici', async (importOriginal) => {
   const actual = await importOriginal<typeof Undici>();
   return { ...actual, request: mockHttpRequest };
+});
+
+// #1953-2 refusal controls (design §9.3 T-compose): a defect seam on the reconcile's result and on #1958's
+// admission. Null everywhere else, so every other test runs the production functions unchanged.
+const carrierSeams = vi.hoisted(() => ({
+  mapResult: null as null | ((result: StoredCarrierResult) => StoredCarrierResult),
+  admit: null as null | (() => number),
+}));
+vi.mock('../../core/services/confluence-carrier-recovery.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/services/confluence-carrier-recovery.js')>();
+  return {
+    ...actual,
+    reconcileStoredCarriers: (input: Parameters<typeof actual.reconcileStoredCarriers>[0]) => {
+      const result = actual.reconcileStoredCarriers(input);
+      return carrierSeams.mapResult ? carrierSeams.mapResult(result) : result;
+    },
+  };
+});
+vi.mock('../../core/services/content-converter.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/services/content-converter.js')>();
+  return {
+    ...actual,
+    admitLegacyCodeMetadata: (...args: Parameters<typeof actual.admitLegacyCodeMetadata>) =>
+      (carrierSeams.admit ? carrierSeams.admit() : actual.admitLegacyCodeMetadata(...args)),
+  };
 });
 
 const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
@@ -1615,10 +1642,11 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         expect((await query('SELECT 1 FROM page_collaborative_docs WHERE page_id = $1', [pageId])).rowCount).toBe(1);
       });
 
-      it('combined (#1955 + #1958 + #1953): a page holding an https ri:url link with a body abstains whole; the link and the code are written as #1955 and #1958 write them', async () => {
+      it('combined (#1955 + #1958 + #1953): a page holding an https ri:url link with a body abstains whole; the link label and the code are written as #1955 and #1958 write them', async () => {
         const storage = `${LEGACY.storage}<p>Web: <ac:link><ri:url ri:value="https://example.com/a" />`
           + '<ac:plain-text-link-body><![CDATA[site]]></ac:plain-text-link-body></ac:link>.</p>';
-        const legacyHtml = `${LEGACY.legacyHtml}<p>Web: <a>site</a>.</p>`;
+        // Before #1955 sync stored a ri:url link as its text (no element): the realistic legacy body.
+        const legacyHtml = `${LEGACY.legacyHtml}<p>Web: site.</p>`;
         const { pageId, markdown } = await seedLegacy('page-legacy-combined', { storage, legacyHtml });
         acceptNextConfluenceUpdate();
         const info = vi.spyOn(logger, 'info');
@@ -1629,9 +1657,218 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         } finally {
           info.mockRestore();
         }
-        expect(codeMacros(sentStorage())).toEqual([[['language', 'java']]]);
-        expect(sentStorage()).not.toContain('data-cq-');
+        const sent = sentStorage();
+        // The independent oracle: the code macro as #1958 writes an unannotated fence; the URL link a row synced
+        // before #1955 holds as text stays its visible label in its paragraph (#1955: only a re-sync brings the link
+        // back, #1953 recovers no ri:url link); the text around both is kept.
+        expect(codeMacros(sent)).toEqual([[['language', 'java']]]);
+        expect(oracleUrlLinks(sent)).toEqual([]);
+        expect(oracleElements(sent, 'ac', 'link')).toEqual([]);
+        const paragraphs = storageOracle(sent).getElementsByTagName('p');
+        expect(Array.from(paragraphs, (p) => p.textContent)).toEqual(['Intro', 'Web: site.']);
+        expect(sent).not.toMatch(/data-cq-|CODE-META/);
+        const saved = await readPage(pageId);
+        expect(saved.body_html).toBe(confluenceToHtml(sent, 'page-legacy-combined', 'OPS'));
+        expect(saved.body_html).toContain('<p>Web: site.</p>');
+        expect(saved.body_text).toBe(htmlToText(saved.body_html));
+        expect(saved.body_text).toContain('Web: site.');
       });
+
+      it('CW-1: prose that names the draw.io class is no diagram wrapper; the row recovers and publishes its code metadata', async () => {
+        const intro = 'The confluence-drawio class is documented here';
+        const { pageId, markdown } = await seedLegacy('page-legacy-prose', {
+          storage: LEGACY.storage.replace('Intro', intro),
+          legacyHtml: LEGACY.legacyHtml.replace('Intro', intro),
+        });
+        acceptNextConfluenceUpdate();
+        const response = await apply({ pageId: 'page-legacy-prose', improvedMarkdown: markdown, version: 7 });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java'], ['title', 'Main'], ['linenumbers', 'true']]]);
+        expect(sentStorage()).toContain(intro);
+        const saved = await readPage(pageId);
+        expect(saved.body_html).toBe(confluenceToHtml(sentStorage(), 'page-legacy-prose', 'OPS'));
+        expect(saved.body_text).toBe(htmlToText(saved.body_html));
+      });
+
+      it.each([
+        ['canonical', '<div class="confluence-drawio" data-diagram-name="Arch"></div>'],
+        ['entity-spelled', '<div class="confluence&#45;drawio" data-diagram-name="Arch"></div>'],
+      ])('CW-1: a %s draw.io wrapper in the stored body excludes the row: nothing recovered, the reason logged', async (_spelling, wrapper) => {
+        const { pageId, markdown } = await seedLegacy('page-legacy-wrapper', {
+          storage: `${LEGACY.storage}<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">Arch</ac:parameter></ac:structured-macro>`,
+          legacyHtml: `${LEGACY.legacyHtml}${wrapper}`,
+        });
+        acceptNextConfluenceUpdate();
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-wrapper', improvedMarkdown: markdown, version: 7 });
+          expect(response.statusCode, response.body).toBe(200);
+          expect(carrierLines(info)).toEqual([{
+            pageId, writer: 'ai_apply', excluded: 'drawio', kinds: ['macro.code', 'macro.status', 'macro.toc'],
+          }]);
+        } finally {
+          info.mockRestore();
+        }
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java']]]);
+      });
+
+      it.each([null, 1] as const)('a selected suggestion (protocol %s) admits a recovered historic fence and is marked applied', async (protocol) => {
+        const { pageId, markdown } = await seedLegacy();
+        const id = await insertAcceptedImprovement(userId, pageId, markdown);
+        await query('UPDATE llm_improvements SET improve_protocol = $2, improve_code_nonce = $3 WHERE id = $1',
+          [id, protocol, protocol === null ? null : 'de0a7b130a271204']);
+        acceptNextConfluenceUpdate();
+        const response = await apply({ pageId: 'page-legacy-code', improvedMarkdown: markdown, improvementId: id, version: 7 });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java'], ['title', 'Main'], ['linenumbers', 'true']]]);
+        expect(await improvementStatus(id)).toBe('applied');
+        const saved = await readPage(pageId);
+        expect(saved.body_html).toBe(confluenceToHtml(sentStorage(), 'page-legacy-code', 'OPS'));
+        expect(saved.body_text).toBe(htmlToText(saved.body_html));
+      });
+
+      /** Nothing of an Accept refused before its effects: no provider call, no intent, row and suggestion unchanged. */
+      async function expectRefusedBeforeEffects(pageId: number, before: unknown, improvementId: string): Promise<void> {
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect((await query("SELECT 1 FROM page_write_intents WHERE kind = 'page.ai_apply'")).rowCount).toBe(0);
+        expect(await readPage(pageId)).toEqual(before);
+        expect(await improvementStatus(improvementId)).toBe('completed');
+      }
+
+      it('CW-2: a recovered title equal to the bound suggestion nonce refuses the Accept (422) before any effect', async () => {
+        const nonce = '7b19a7b2de3408ac';
+        const { pageId, markdown } = await seedLegacy('page-legacy-nonce', { ...LEGACY, storage: LEGACY.storage.replace('>Main<', `>${nonce}<`) });
+        expect(markdown).not.toContain(nonce);
+        const id = await insertAcceptedImprovement(userId, pageId, markdown);
+        await query('UPDATE llm_improvements SET improve_protocol = 1, improve_code_nonce = $2 WHERE id = $1', [id, nonce]);
+        const before = await readPage(pageId);
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-nonce', improvedMarkdown: markdown, improvementId: id, version: 7 });
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.body).not.toContain(nonce);
+          expect(carrierLines(info)).toEqual([{ pageId, writer: 'ai_apply', outcome: 'refused' }]);
+          expect(JSON.stringify(info.mock.calls)).not.toContain(nonce);
+        } finally {
+          info.mockRestore();
+        }
+        await expectRefusedBeforeEffects(pageId, before, id);
+      });
+
+      it('CW-2 control: a recovered title that only looks like a nonce (not the bound one) is published', async () => {
+        const foreign = '0123456789abcdef';
+        const { pageId, markdown } = await seedLegacy('page-legacy-foreign', { ...LEGACY, storage: LEGACY.storage.replace('>Main<', `>${foreign}<`) });
+        const id = await insertAcceptedImprovement(userId, pageId, markdown);
+        await query('UPDATE llm_improvements SET improve_protocol = 1, improve_code_nonce = $2 WHERE id = $1', [id, '7b19a7b2de3408ac']);
+        acceptNextConfluenceUpdate();
+        const response = await apply({ pageId: 'page-legacy-foreign', improvedMarkdown: markdown, improvementId: id, version: 7 });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java'], ['title', foreign], ['linenumbers', 'true']]]);
+        expect(await improvementStatus(id)).toBe('applied');
+      });
+
+      it.each([
+        ['an operation reported for another block than the one written (wrong-ordinal swap)', 'swap'],
+        ['an operation #1958 does not admit (admission shortfall)', 'admission'],
+      ] as const)('%s refuses the Accept with 422 before any effect, logging names only', async (_name, defect) => {
+        const second = '<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">python</ac:parameter>'
+          + '<ac:plain-text-body><![CDATA[print(1)]]></ac:plain-text-body></ac:structured-macro>';
+        const { pageId, markdown } = await seedLegacy('page-legacy-defect', {
+          storage: `${LEGACY.storage}${second}`,
+          legacyHtml: `${LEGACY.legacyHtml}<pre><code class="language-python">print(1)</code></pre>`,
+        });
+        const id = await insertAcceptedImprovement(userId, pageId, markdown);
+        const before = await readPage(pageId);
+        if (defect === 'swap') {
+          carrierSeams.mapResult = (result) => ({
+            ...result,
+            report: { ...result.report, codeOps: result.report.codeOps.map((op) => ({ ...op, ordinal: 1 - op.ordinal })) },
+          });
+        } else {
+          carrierSeams.admit = () => 0;
+        }
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-defect', improvedMarkdown: markdown, improvementId: id, version: 7 });
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.json()).toMatchObject({ reason: 'unapproved-code-macro' });
+          expect(response.body).not.toMatch(/Main|linenumbers/);
+          expect(carrierLines(info)).toEqual([{ pageId, writer: 'ai_apply', outcome: 'refused' }]);
+          expect(JSON.stringify(info.mock.calls)).not.toMatch(/Main|linenumbers|data-cq-/);
+        } finally {
+          info.mockRestore();
+          carrierSeams.mapResult = null;
+          carrierSeams.admit = null;
+        }
+        await expectRefusedBeforeEffects(pageId, before, id);
+      });
+
+      it('a carried page whose echo was dropped is not re-recovered from the stored storage: the code is written as #1958 alone writes it', async () => {
+        const carried = confluenceToHtml(LEGACY.storage, 'page-carried', 'OPS');
+        expect(carried).toContain('data-title="Main"');
+        const dropEcho = (markdown: string): string => markdown.replace(/\[\[\[CODE-META[^\n]*\]\]\]\n?/g, '');
+        // The control: the same page excluded from #1953 (locally modified), #1958's result alone.
+        const control = await seedLegacy('page-carried-control', { storage: LEGACY.storage, legacyHtml: carried });
+        await query('UPDATE pages SET local_modified_at = NOW() WHERE id = $1', [control.pageId]);
+        expect(control.markdown).toContain('[[[CODE-META');
+        acceptNextConfluenceUpdate();
+        expect((await apply({ pageId: 'page-carried-control', improvedMarkdown: dropEcho(control.markdown), version: 7 })).statusCode).toBe(200);
+        const alone = codeMacros(sentStorage());
+        mockHttpRequest.mockClear();
+
+        const { markdown } = await seedLegacy('page-carried', { storage: LEGACY.storage, legacyHtml: carried });
+        acceptNextConfluenceUpdate();
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-carried', improvedMarkdown: dropEcho(markdown), version: 7 });
+          expect(response.statusCode, response.body).toBe(200);
+          expect(carrierLines(info).every((line) => (line as { recovered?: Record<string, number> }).recovered?.['macro.code'] === undefined)).toBe(true);
+        } finally {
+          info.mockRestore();
+        }
+        expect(codeMacros(sentStorage())).toEqual(alone);
+        expect(alone).toEqual([[['language', 'java']]]);
+      });
+
+      it('#1958 rejected echo + #1953 Accept: an echo the model invented for a legacy fence is refused, never written, and the stored metadata is recovered for that unchanged fence', async () => {
+        const { pageId, markdown } = await seedLegacy();
+        expect(markdown).not.toContain('CODE-META');
+        const forged = markdown.replace('```java', '[[[CODE-META n=0 title=Evil params=%7B%22theme%22%3A%22x%22%7D]]]\n```java');
+        expect(forged).not.toBe(markdown);
+        acceptNextConfluenceUpdate();
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-code', improvedMarkdown: forged, version: 7 });
+          expect(response.statusCode, response.body).toBe(200);
+          expect(carrierLines(info)).toEqual([{
+            pageId, writer: 'ai_apply', outcome: 'recovered', recovered: { 'macro.code': 1 }, skipped: {},
+          }]);
+        } finally {
+          info.mockRestore();
+        }
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java'], ['title', 'Main'], ['linenumbers', 'true']]]);
+        expect(sentStorage()).not.toMatch(/Evil|theme|CODE-META|data-cq-/);
+        const saved = await readPage(pageId);
+        expect(saved.body_html).toBe(confluenceToHtml(sentStorage(), 'page-legacy-code', 'OPS'));
+        expect(saved.body_text).toBe(htmlToText(saved.body_html));
+      });
+
+      it('Z6: a finalized string past the bound runs nothing of #1953 though the stored body and storage are within it', async () => {
+        const { pageId, markdown } = await seedLegacy();
+        // `&` is one character of Markdown and five of HTML: the finalized HTML outgrows the bound.
+        const grown = `${markdown}\n\n${'&'.repeat(Math.ceil(CARRIER_RECONCILE_MAX_UNITS / 4))}\n`;
+        acceptNextConfluenceUpdate();
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-code', improvedMarkdown: grown, version: 7 });
+          expect(response.statusCode, response.body).toBe(200);
+          expect(carrierLines(info)).toEqual([]);
+        } finally {
+          info.mockRestore();
+        }
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java']]]);
+        expect((await readPage(pageId)).body_html.length).toBeGreaterThan(CARRIER_RECONCILE_MAX_UNITS);
+      }, 60_000);
     });
 
     it('validates the required request fields at the route boundary', async () => {

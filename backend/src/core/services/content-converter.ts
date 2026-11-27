@@ -4414,15 +4414,19 @@ export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
  * reaches a later prompt": a rendering that joins text the two projections
  * keep apart (block boundaries, entities in another renderer) can still
  * reconstruct it; the nonce is no secret. A foreign nonce is page text.
+ * `witnesses: 'uncarried'` (#1953-2, §3.7 step 1) asks for witnesses only when
+ * the stored body is not carried, decided on this call's own protectMedia
+ * result, so a caller never protects the body a second time to learn it.
  */
 export async function convertImproveOutput(
   bodyHtml: string,
   improvedMarkdown: string,
-  options: { provenance?: ImproveSuggestionProvenance; witnesses?: boolean; codeNonce?: string } = {},
+  options: { provenance?: ImproveSuggestionProvenance; witnesses?: boolean | 'uncarried'; codeNonce?: string } = {},
 ): Promise<ConvertedImproveOutput> {
   const protectedBody = protectMedia(bodyHtml, { codeNonce: options.codeNonce });
   const layoutSkeleton = extractLayoutSkeleton(protectedBody.html);
-  const codeMeta = beginCodeMetaAccept(protectedBody, options);
+  const witnesses = options.witnesses === 'uncarried' ? !protectedBody.carried : options.witnesses === true;
+  const codeMeta = beginCodeMetaAccept(protectedBody, { provenance: options.provenance, witnesses });
   if (options.codeNonce === undefined && codeMeta.entries.some((entry) => entry.code)) throw new ImproveSuggestionUnboundError();
   const html = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
   const replay = replayProtectedMedia(html, codeMeta);

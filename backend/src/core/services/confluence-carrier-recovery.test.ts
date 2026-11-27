@@ -54,6 +54,33 @@ describe('lockstepStoredBody', () => {
     expect(lockstepStoredBody(row({ body_html: `${F.ac1.legacyHtml}<div class="confluence-drawio"></div>` })))
       .toEqual({ applicable: true, excluded: 'drawio' });
   });
+
+  it('CW-1: excludes a parsed draw.io wrapper element however its class is spelled, and nothing else', () => {
+    const wrappers = [
+      '<div class="confluence-drawio" data-diagram-name="A"></div>',
+      '<div class="confluence&#45;drawio" data-diagram-name="A"></div>',
+      '<div class="confluence&#x2d;drawio"></div>',
+      '<div class="other  confluence-drawio"></div>',
+    ];
+    for (const wrapper of wrappers) {
+      expect(lockstepStoredBody(row({ body_html: `${F.ac1.legacyHtml}${wrapper}` }))).toEqual({ applicable: true, excluded: 'drawio' });
+    }
+    const prose = [
+      '<p>The confluence-drawio class is documented here</p>',
+      '<pre><code>&lt;div class="confluence-drawio"&gt;</code></pre>',
+      '<p title="confluence-drawio">x</p>',
+      '<div class="confluence-drawio-legacy"></div>',
+    ];
+    for (const text of prose) {
+      expect(lockstepStoredBody(row({ body_html: `${F.ac1.legacyHtml}${text}` }))).toEqual({ applicable: true, excluded: null });
+    }
+  });
+
+  it('never parses a stored body past the length bound (§3.6 stage 0): the matcher answers bound instead', () => {
+    const huge = `<div class="confluence-drawio"></div>${'x'.repeat(CARRIER_RECONCILE_MAX_UNITS)}`;
+    expect(lockstepStoredBody(row({ body_html: huge }))).toEqual({ applicable: true, excluded: null });
+    expect(reconcileStoredCarriers({ row: row({ body_html: huge }), targetHtml: huge }).report.outcome).toBe('bound');
+  });
 });
 
 describe('reconcileStoredCarriers', () => {

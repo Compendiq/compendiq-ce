@@ -76,11 +76,21 @@ export function lockstepStoredBody(row: CarrierRow): { applicable: false } | { a
   if (row.source !== 'confluence' || !row.body_storage || !row.body_html) return { applicable: false };
   if (row.local_modified_at !== null) return { applicable: true, excluded: 'local_modified' };
   if (row.has_collab_doc) return { applicable: true, excluded: 'collab_document' };
-  // Behind the length bound: the probe never scans an over-bound body (§3.6 stage 0).
-  if (row.body_html.length <= CARRIER_RECONCILE_MAX_UNITS && row.body_html.includes('confluence-drawio')) {
+  // Behind the length bound: the probe never parses an over-bound body (§3.6 stage 0).
+  if (row.body_html.length <= CARRIER_RECONCILE_MAX_UNITS && holdsDrawioWrapper(row.body_html)) {
     return { applicable: true, excluded: 'drawio' };
   }
   return { applicable: true, excluded: null };
+}
+
+/**
+ * D9 R4 / A4: the stored body holds a draw.io wrapper, the element the unmarked preview writer
+ * (`drawio-previews.ts`) rewrites and `htmlToConfluence` writes back as a draw.io macro: an element of the parsed
+ * body whose class list holds `confluence-drawio`, the selector both use. Structural, never a spelling: an
+ * entity-spelled class is the same element, prose or code naming the class is none.
+ */
+function holdsDrawioWrapper(html: string): boolean {
+  return new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document.querySelector('.confluence-drawio') !== null;
 }
 
 /** The kinds `storage` may carry, behind the length bound; none past it. */
@@ -211,6 +221,8 @@ const CODE_META_ATTRIBUTES = ['data-title', 'data-macro-params'];
  * step 5); it is the guard against a defect, not an expected outcome.
  */
 export function legacyCodeApplicationHolds(beforeHtml: string, afterHtml: string, ops: ReadonlyArray<LegacyCodeMetadataOp>): boolean {
+  // Byte-identical HTML with no operation is the check's own answer: nothing applied, nothing to compare.
+  if (ops.length === 0 && beforeHtml === afterHtml) return true;
   const parse = (html: string): HTMLElement => new JSDOM(`<body>${html}</body>`).window.document.body;
   const before = parse(beforeHtml);
   const after = parse(afterHtml);

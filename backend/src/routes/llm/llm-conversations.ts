@@ -27,7 +27,6 @@ import {
   ImproveReplayError,
   ImproveSuggestionFormatError,
   LayoutRecoveryError,
-  protectMedia,
   type ConvertedImproveOutput,
   type ImproveSuggestionProvenance,
 } from '../../core/services/content-converter.js';
@@ -566,7 +565,8 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     //   pre-#1958 suggestion for a page with annotated code is refused first.
     // #1953-2 (§3.7 step 1): witnesses are asked for only on the remote Accept that may recover a legacy code
     // block: a lockstep row within the length bound whose storage may carry a code macro and whose stored body is
-    // not carried (#1958's whole-body flag). Every other Accept keeps #1958's route.
+    // not carried (#1958's whole-body flag, read from the conversion's own protectMedia: `'uncarried'`). Every
+    // other Accept keeps #1958's route.
     const carrierRow: CarrierRow = {
       source: existingPage.source,
       body_html: existingPage.body_html,
@@ -581,12 +581,11 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       && existingPage.body_html!.length <= CARRIER_RECONCILE_MAX_UNITS
       && existingPage.bodyStorage!.length <= CARRIER_RECONCILE_MAX_UNITS;
     const wantWitnesses = recoverable
-      && carrierKindsStorageMayCarry(existingPage.bodyStorage).includes('macro.code')
-      && !protectMedia(existingPage.body_html ?? '').carried;
+      && carrierKindsStorageMayCarry(existingPage.bodyStorage).includes('macro.code');
     let finalized: ConvertedImproveOutput;
     try {
       finalized = await convertImproveOutput(existingPage.body_html ?? '', improvedMarkdown, {
-        provenance, codeNonce, witnesses: wantWitnesses,
+        provenance, codeNonce, witnesses: wantWitnesses ? 'uncarried' : false,
       });
     } catch (err) {
       if (err instanceof LayoutRecoveryError) {
@@ -619,7 +618,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       carriers = reconcileStoredCarriers({
         row: carrierRow,
         targetHtml: finalized.html,
-        codeWitnesses: wantWitnesses ? finalized.witnesses : [],
+        codeWitnesses: finalized.witnesses,
       });
       const ops = carriers.report.codeOps;
       let admitted = true;
@@ -643,8 +642,20 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         '#1958: AI Improve code-block metadata',
       );
     }
-    // Review r9 CM9-2: the bound-nonce check already projected this exact HTML; a changed body is projected anew.
-    const bodyText = finalized.text !== undefined && bodyHtml === finalized.html ? finalized.text : htmlToText(bodyHtml);
+    // Review r9 CM9-2: the bound-nonce check already projected this exact HTML. A body the recovery changed is
+    // projected anew, and #1958's bound-nonce refusal runs again on that final HTML and that text (#1953-2 r1
+    // CW-2): a recovered value may spell the nonce. Before any storage derivation, reservation or effect.
+    let bodyText: string;
+    if (bodyHtml === finalized.html && finalized.text !== undefined) {
+      bodyText = finalized.text;
+    } else {
+      bodyText = htmlToText(bodyHtml);
+      if (codeNonce !== undefined && bodyHtml !== finalized.html
+        && (bodyHtml.includes(codeNonce) || bodyText.includes(codeNonce))) {
+        logStoredCarriers({ pageId: existingPage.id, writer: 'ai_apply', result: carriers!, final: 'refused' });
+        return refuseImproveResult(new ImproveCodePlacementError());
+      }
+    }
 
     const cache = new RedisCache(fastify.redis);
     let newVersion: number;
