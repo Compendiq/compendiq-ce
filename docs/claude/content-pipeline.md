@@ -389,6 +389,10 @@ collaborative Save from a room without the key writes what the room holds and
 logs `collab.commit_carriers_unproven` (D9 R2); an existing lineage is never
 replaced (D9 R3). Logs (`Confluence carriers reconciled (#1953)`) carry page
 id, writer, outcome and per-kind counts only, after the reservation commits.
+No migration and no backfill: a row is reconciled only when one of these
+writers saves it. Rollback is a revert of the writer wiring; HTML already
+published with recovered carriers is ordinary carried HTML every release since
+#1749/#1750 reads and writes.
 
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
@@ -422,7 +426,12 @@ them when its body is next re-derived from Confluence (an upstream change, or
 a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
 or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
 `POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
-unchanged pages). A save before that still drops them.
+unchanged pages). Before that, the first PUT, remote draft publish, remote AI
+Improve Apply or newly seeded room of a lockstep page recovers them from
+`body_storage` where the matcher proves them (#1953, above); every other save
+of such a page (a locally edited row, one with a collaborative document or a
+draw.io wrapper, a room created before v0.10.0, a version restore, or a
+carrier the matcher skips) still drops them.
 
 **AI Improve keeps code-block title and options (#1958).** With `layoutTokens`
 an annotated `pre` that can travel (one `code` child without elements, not in
