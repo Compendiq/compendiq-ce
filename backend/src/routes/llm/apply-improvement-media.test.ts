@@ -35,9 +35,24 @@ let attachmentsDir: string;
 let userId: string;
 let authenticated = true;
 
-/** Mirrors the markdown shown to Improve for a page whose structure is retained. */
-function faithfulEcho(bodyHtml: string): string {
-  return htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true });
+/** Mirrors the markdown shown to Improve for a page whose structure is retained, with that generation's code nonce. */
+function faithfulEcho(bodyHtml: string, codeNonce?: string): string {
+  return htmlToMarkdown(protectMedia(bodyHtml, { codeNonce }).html, { layoutTokens: true });
+}
+
+/** D28: a generation's code nonce, as the generator stores it on its row. */
+const NONCE = '0123456789abcdef';
+
+/** A completed #1958 suggestion (protocol 1) with its code nonce, as the generator stores it. */
+async function storeCodeMetaRow(pageId: number, improvedMarkdown: string, codeNonce = NONCE): Promise<string> {
+  const inserted = await query<{ id: string }>(
+    `INSERT INTO llm_improvements
+       (user_id, page_id, improvement_type, model, original_content, improved_content, status, improve_protocol, improve_code_nonce)
+     VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed', 1, $4)
+     RETURNING id`,
+    [userId, pageId, improvedMarkdown, codeNonce],
+  );
+  return inserted.rows[0]!.id;
 }
 
 async function seedPage(bodyHtml: string, version = 5): Promise<number> {
@@ -762,9 +777,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         it('refuses a result only its relocation projection would publish with a twin, and writes nothing (CM-8)', async () => {
           const original = '<table><tbody><tr><td><pre data-title="Title"><code class="language-js">sample</code></pre></td></tr></tbody></table>';
           const pageId = await seedPage(original);
-          const echo = `${faithfulEcho(original)}\n\n<pre><code class="language-js"><textarea>\n\nsample</textarea></code></pre>\n`;
+          const echo = `${faithfulEcho(original, NONCE)}\n\n<pre><code class="language-js"><textarea>\n\nsample</textarea></code></pre>\n`;
+          const improvementId = await storeCodeMetaRow(pageId, echo);
 
-          const response = await apply(pageId, echo);
+          const response = await apply(pageId, echo, { improvementId });
 
           expect(response.statusCode, response.body).toBe(422);
           expect(response.json()).toMatchObject({ reason: 'unapproved-code-macro' });
@@ -781,6 +797,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         const MENTION_MD = 'Inspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.';
         const IDENTIFIER_TABLE = `<table><tbody><tr><td><pre data-title="Sample"${LN}><code class="language-js">const n = CQ_CODE_PLACEHOLDER_0_COUNT;</code></pre></td></tr></tbody></table>`;
         const BOLD_TABLE = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">x()</code></pre></td></tr></tbody></table>';
+        const DRAWIO = '<div class="confluence-drawio" data-diagram-name="flow"><img src="/api/attachments/1/flow.png" alt="flow"></div>';
         const ANNOTATED: ReadonlyArray<[string, string, string]> = [
           ['r2 CM2-1 literal mention, frozen code', `${SAMPLE_TABLE}${MENTION}<p>Diagram follows</p>${IMG('d')}<p>End</p>`,
             `${SAMPLE_TABLE}\n\n${MENTION_MD}\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`],
@@ -801,6 +818,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         ];
 
         async function storedImprovement(pageId: number, improvedMarkdown: string, protocol: number | null): Promise<string> {
+          if (protocol === 1) return storeCodeMetaRow(pageId, improvedMarkdown);
           const inserted = await query<{ id: string }>(
             `INSERT INTO llm_improvements
                (user_id, page_id, improvement_type, model, original_content, improved_content, status, improve_protocol)
@@ -832,6 +850,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           ['a literal placeholder mention', `${MENTION}<pre><code class="language-js">const x = 1;</code></pre><p>Diagram follows</p>${IMG('d')}<p>End</p>`,
             `${MENTION_MD}\n\n\`\`\`js\nconst x = 1;\n\`\`\`\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`,
             `${MENTION}\n<pre><code class="language-js">const x = 1;\n</code></pre>\n<p>Diagram follows</p>\n${IMG('d')}\n<p>End</p>\n`],
+          // Review r8 CM8-1: model outputs a06f304c's generator stored, with that release's Accept bytes.
+          ['a token run into its caption', `<p>${IMG('d')}Figure 1.</p><p>End.</p>`,
+            'CQ_MEDIA_PLACEHOLDER_0Figure 1.\n\nEnd.',
+            `<p>${IMG('d')}Figure 1.</p>\n<p>End.</p>\n`],
+          ['a block-media token run into a word in a task item', `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>Step</p>${DRAWIO}</li></ul><p>End</p>`,
+            '- [ ] Step\n\n  CQ\\_MEDIA\\_PLACEHOLDER\\_0see\n\nEnd',
+            `<ul>\n<li><p>[ ] Step</p>\n<p>${DRAWIO}see</p>\n</li>\n</ul>\n<p>End</p>\n`],
         ])('(b) applies a pending pre-#1958 suggestion on a page without annotated code as that release did: %s', async (_name, page, suggestion, base) => {
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, null);
@@ -866,7 +891,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
 
         it('(a) applies a #1958 suggestion on a page with frozen code, keeping the block and its title', async () => {
           const page = `${SAMPLE_TABLE}<p>Diagram follows</p>${IMG('d')}<p>End</p>`;
-          const suggestion = faithfulEcho(page);
+          const suggestion = faithfulEcho(page, NONCE);
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, 1);
 
@@ -879,31 +904,36 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           expect(await status(improvementId)).toBe('applied');
         });
 
-        it('(a) refuses a #1958 suggestion whose frozen placeholder the page itself spells (CM3-2 collision)', async () => {
+        it('(a) applies a #1958 suggestion on a page whose own text spells a placeholder: that text stays text (D28)', async () => {
           const page = `${BOLD_TABLE}<p>See <strong>CQ_CODE_PLACEHOLDER_0</strong> here.</p>`;
-          const suggestion = faithfulEcho(page);
+          const suggestion = faithfulEcho(page, NONCE);
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, 1);
 
           const response = await apply(pageId, suggestion, { improvementId });
 
-          expect(response.statusCode, response.body).toBe(422);
-          expect(response.body).toMatch(/edit the page directly/);
-          await expectUnchanged(pageId, page);
-          expect(await status(improvementId)).toBe('completed');
+          expect(response.statusCode, response.body).toBe(200);
+          const saved = (await readPage(pageId)).body_html;
+          expect(saved.match(/<pre/g)).toHaveLength(1);
+          expect(saved).toMatch(/<td><pre data-title="Sample"><code class="language-js">x\(\)<\/code><\/pre><\/td>/);
+          expect(saved).toContain('<strong>CQ_CODE_PLACEHOLDER_0</strong>');
+          expect(await status(improvementId)).toBe('applied');
         });
 
-        it('(c) takes unmatched Markdown down the #1958 path: an old suggestion with no row is refused, never duplicated', async () => {
+        it('(c) refuses Markdown no #1958 row binds on a page with protected code: no nonce can place its block (D28)', async () => {
           const page = `${SAMPLE_TABLE}<p>Diagram follows</p>${IMG('d')}<p>End</p>`;
           const pageId = await seedPage(page);
 
-          const old = await apply(pageId, `${SAMPLE_TABLE}\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`);
-          expect(old.statusCode, old.body).toBe(422);
-          expect(old.body).toMatch(/dropped, repeated or moved a protected code block/);
-          await expectUnchanged(pageId, page);
+          for (const markdown of [`${SAMPLE_TABLE}\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`, faithfulEcho(page), faithfulEcho(page, NONCE)]) {
+            const unbound = await apply(pageId, markdown);
+            expect(unbound.statusCode, unbound.body).toBe(422);
+            expect(unbound.body).toMatch(/not an AI Improve suggestion stored for this page/);
+            await expectUnchanged(pageId, page);
+          }
 
-          const echo = await apply(pageId, faithfulEcho(page));
-          expect(echo.statusCode, echo.body).toBe(200);
+          const echo = faithfulEcho(page, NONCE);
+          const bound = await apply(pageId, echo, { improvementId: await storeCodeMetaRow(pageId, echo) });
+          expect(bound.statusCode, bound.body).toBe(200);
           expect((await readPage(pageId)).body_html.match(/data-title="Sample"/g)).toHaveLength(1);
         });
 
@@ -982,9 +1012,131 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
 
             const edited = await apply(pageId, `${old}\n\nRevised.`);
             expect(edited.statusCode, edited.body).toBe(422);
-            expect(edited.body).toMatch(/dropped, repeated or moved a protected code block/);
+            expect(edited.body).toMatch(/not an AI Improve suggestion stored for this page/);
             await expectUnchanged(pageId, page);
             expect(await status(row)).toBe('completed');
+          });
+        });
+
+        describe('review r5/r6: what the page writes never places a protected block (D28 nonce)', () => {
+          it.each([
+            ['an inline element', '<p>CQ_CODE_<span>PLACEHOLDER_0</span></p>'],
+            ['a comment', '<p>CQ_CODE_<!-- c -->PLACEHOLDER_0</p>'],
+            ['an inline element and a numeric paragraph (r6 CM6-1)', '<p>CQ_CODE_<span>PLACEHOLDER_0</span></p><p>1 example</p>'],
+          ])('refuses every suggestion that could only place the block at the authored spelling split by %s', async (_name, paragraph) => {
+            const page = `${BOLD_TABLE}${paragraph}`;
+            // Generated on a06f304c (disposable worktree): the paragraph as one escaped spelling.
+            const old = `${BOLD_TABLE}\n\nCQ\\_CODE\\_PLACEHOLDER\\_0${paragraph.includes('1 example') ? '\n\n1 example' : ''}`;
+            const current = faithfulEcho(page, NONCE);
+            expect(current).toContain(`<td>CQ_CODE_PLACEHOLDER_${NONCE}_0</td>`);
+            expect(current).toContain('CQ\\_CODE\\_PLACEHOLDER\\_0');
+            const dropped = current.replace(`<td>CQ_CODE_PLACEHOLDER_${NONCE}_0</td>`, '<td></td>');
+            const pageId = await seedPage(page);
+            const legacy = await storedImprovement(pageId, old, null);
+            const fresh = await storedImprovement(pageId, current, 1);
+            const before = await readPage(pageId);
+
+            const attempts: Array<[string, Record<string, unknown>]> = [
+              [old, { improvementId: legacy }],
+              [`${old}\n\nRevised.`, {}],
+              // The model dropped the structural placeholder from the table; only the authored spelling is left.
+              [dropped, { improvementId: fresh }],
+              [`${dropped}\n\nRevised.`, {}],
+            ];
+            for (const [markdown, extra] of attempts) {
+              const response = await apply(pageId, markdown, extra);
+              expect(response.statusCode, `${markdown}: ${response.body}`).toBe(422);
+              // Text, metadata, block count and place, version: all as they were.
+              expect(await readPage(pageId)).toEqual(before);
+            }
+            expect([await status(legacy), await status(fresh)]).toEqual(['completed', 'completed']);
+
+            // The generation's own echo places the block once, in the table, and keeps the authored text.
+            const applied = await apply(pageId, current, { improvementId: fresh });
+            expect(applied.statusCode, applied.body).toBe(200);
+            const saved = (await readPage(pageId)).body_html;
+            expect(saved.match(/<pre/g)).toHaveLength(1);
+            expect(saved).toMatch(/<td><pre data-title="Sample"/);
+            expect(saved).toContain('CQ_CODE_PLACEHOLDER_0');
+            expect(await status(fresh)).toBe('applied');
+          });
+        });
+
+        describe('review r7: no token is read at the start of another; a generation\'s tokens never reach the page', () => {
+          // An ordinary image at media ordinal 0, then a macro holding titled code in a table cell (media ordinal 1).
+          const PAGE = `${IMG('d')}<table><tbody><tr><td><div class="confluence-macro-unknown" data-macro-name="foo">`
+            + '<pre data-title="Sample"><code class="language-js">x()</code></pre></div></td></tr></tbody></table>';
+          const OVERLAP = '0abcdef123456789';
+          const OTHER = 'fedcba9876543210';
+
+          it.each([OVERLAP, OTHER])('applies the faithful echo whatever the nonce starts with (%s, CM7-1)', async (nonce) => {
+            const pageId = await seedPage(PAGE);
+            const echo = faithfulEcho(PAGE, nonce);
+            const improvementId = await storeCodeMetaRow(pageId, echo, nonce);
+
+            const response = await apply(pageId, echo, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(200);
+            const saved = (await readPage(pageId)).body_html;
+            expect(saved.match(/<img /g)).toHaveLength(1);
+            expect(saved).toMatch(/<td><div class="confluence-macro-unknown" data-macro-name="foo"><pre data-title="Sample">/);
+            expect(await status(improvementId)).toBe('applied');
+          });
+
+          it('keeps another generation\'s spelling as text and adds no image (CM7-1)', async () => {
+            const pageId = await seedPage(PAGE);
+            const suggestion = `${faithfulEcho(PAGE, OTHER)}\n\nArchived CQ_MEDIA_PLACEHOLDER_${OVERLAP}_1`;
+            const improvementId = await storeCodeMetaRow(pageId, suggestion, OTHER);
+
+            const response = await apply(pageId, suggestion, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(200);
+            const saved = await readPage(pageId);
+            expect(saved.version).toBe(6);
+            expect(saved.body_html.match(/<img /g)).toHaveLength(1);
+            expect(saved.body_html).toContain(`<p>Archived CQ_MEDIA_PLACEHOLDER_${OVERLAP}_1</p>`);
+            expect(saved.body_html.match(/data-title="Sample"/g)).toHaveLength(1);
+          });
+
+          it('refuses a result that quotes this generation\'s placeholder, so its nonce never reaches the page (CM7-2)', async () => {
+            const page = `${SAMPLE_TABLE}<p>End</p>`;
+            const echo = faithfulEcho(page, NONCE);
+            const quoted = `${echo}\n\nUse \`CQ_CODE_PLACEHOLDER_${NONCE}_0\` in scripts.`;
+            const pageId = await seedPage(page);
+            const improvementId = await storeCodeMetaRow(pageId, quoted);
+
+            const response = await apply(pageId, quoted, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(422);
+            await expectUnchanged(pageId, page);
+            expect((await readPage(pageId)).body_text).not.toContain(NONCE);
+            expect(await status(improvementId)).toBe('completed');
+          });
+
+          it('keeps prose that only starts like two tokens as text, with the page\'s one image (r8 CM8-2)', async () => {
+            const page = `<p>Intro</p>${IMG('d')}<p>End</p>`;
+            const suggestion = `${faithfulEcho(page)}\n\nPrefix example: CQ_MEDIA_PLACEHOLDER_0CQ_MEDIA_PLACEHOLDER_COUNT`;
+            const pageId = await seedPage(page);
+
+            const response = await apply(pageId, suggestion);
+
+            expect(response.statusCode, response.body).toBe(200);
+            const saved = (await readPage(pageId)).body_html;
+            expect(saved.match(/<img /g)).toHaveLength(1);
+            expect(saved).toContain('<p>Prefix example: CQ_MEDIA_PLACEHOLDER_0CQ_MEDIA_PLACEHOLDER_COUNT</p>');
+          });
+
+          it('refuses a placeholder whose nonce inline markup splits in the HTML but not in the text (r8 CM8-3)', async () => {
+            const page = `${SAMPLE_TABLE}<p>End</p>`;
+            const split = `${faithfulEcho(page, NONCE)}\n\nSee CQ\\_CODE\\_PLACEHOLDER\\_${NONCE.slice(0, 8)}<span>${NONCE.slice(8)}</span>\\_0 here.`;
+            const pageId = await seedPage(page);
+            const improvementId = await storeCodeMetaRow(pageId, split);
+
+            const response = await apply(pageId, split, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(422);
+            await expectUnchanged(pageId, page);
+            expect(await status(improvementId)).toBe('completed');
           });
         });
       });

@@ -409,14 +409,21 @@ projection) is written as its fence with `[[[CODE-META n=<ordinal> title=…
 params=…]]]` on the line directly above (also when it opens a panel or task
 item, the whole block then stays inside it: continuation lines indented, every
 panel line quoted); every other annotated block is frozen by `protectMedia` (as are token
-blocks past 1,000) as a `CQ_CODE_PLACEHOLDER_<N>` code entry. **Media tokens
-and ordinals stay exactly those of the release before #1958**; never put
+blocks past 1,000) as a `CQ_CODE_PLACEHOLDER_<nonce>_<N>` code entry (a media
+entry holding annotated code is `CQ_MACRO_PLACEHOLDER_<nonce>_<N>`: no token may
+be a prefix of another; on the #1958 path `locateMediaTokens` and the task-item
+pattern end a token before a run of complete tokens or a non-identifier (one
+memoized pass per run, `currentTokenEnds`, never a lookahead that rescans the
+run: r9 CM9-1), while the D26 base path and every other caller keep the legacy
+`(?![0-9])` end, `MediaTokenGrammar`, reviews r7 CM7-1, r8 CM8-1/CM8-2). **Media
+tokens and ordinals stay exactly those of the release before #1958**; never put
 frozen code into the `CQ_MEDIA_PLACEHOLDER` ordinal space. On Accept the
 remote exit first authorizes the actor and the page in one transaction that
 locks the row, fences its content/lifecycle revisions (409) and reads spaces
 and access uncached (403/404); then the route runs
+`convertImproveOutput(body, md, { provenance, codeNonce })` (protectMedia →
 `beginCodeMetaAccept(…, { provenance })` → `markdownToHtml(…, { codeMeta })` →
-`replayProtectedMedia(html, codeMeta)` → `finalizeCodeMetadata` → (local)
+`replayProtectedMedia(html, codeMeta)` → `finalizeCodeMetadata`) → (local)
 `assertLocalCodeMacroProjections` or (remote) `htmlToConfluence` +
 `assertCodeMacroStorage`. Metadata returns only to a fence whose language and
 exact lexer text equal the pre-Improve block's, in per-key groups equal element
@@ -429,24 +436,29 @@ the writer's exact shape and accounted for by the page, else 422
 Model-written code markup that is not a fence or a plain `pre` is refused (R2;
 `data-macro-name="code"` counts only on a placeholder the writer names a macro
 from). A replayed original must come back exactly (only CR → LF in its code
-text is allowed). A placeholder spelled in `pre`/`code`, one the page itself
-spells, or a frozen one inside a longer identifier stays text; a code-carrying
-original without exactly one viable placement refuses the Accept (422), never
-appended or copied. **Provenance decides the path, never the text (D26,
-D27):** the Improve generator writes `llm_improvements.improve_protocol = 1`
-(`IMPROVE_CODE_META_PROTOCOL`, migration 161) on its row; the Apply request
-carries the selected `improvementId`, and the route binds provenance and the
-`applied` status to that row only (owner, page, `completed`). Never match the
-text against stored rows. Protocol 1, no id or a row that fails the checks →
-the #1958 path (no status change without a bound row); a row without a
-protocol → 422 on a page with any annotated code, else the pre-#1958 replay
-byte for byte (`restoreMedia` + `includes` guard, no CODE-META analysis) with
-the trust boundary kept (foreign `pre` metadata stripped, code-named markup
-refused, storage rules). Never infer provenance from CODE-META lines or
-placeholder spellings. `literal` is read per authored text node, with the
-replay's boundaries, never from the flattened body text. The generator never
-caches an output that cannot place every frozen block
-(`placesFrozenCodeTokens`).
+text is allowed). A placeholder spelled in `pre`/`code`, or a protected one
+inside a longer identifier, stays text; a code-carrying original without
+exactly one viable placement refuses the Accept (422), never appended or
+copied. **Provenance decides the path, never the text (D26, D27, D28):** the
+Improve generator writes `llm_improvements.improve_protocol = 1`
+(`IMPROVE_CODE_META_PROTOCOL`) and `improve_code_nonce` (64 random bits per
+suggestion; migration 161) on its row; the Apply request carries the selected
+`improvementId`, and the route binds provenance, the nonce and the `applied`
+status to that row only (owner, page, `completed`). Never match the text
+against stored rows, and never add an "authored literal" rule: only a token
+spelled with the bound nonce places a protected block, so whatever the page
+spells itself is text. Protocol 1 → the #1958 path; no bound nonce on a page
+with protected code → 422 (`ImproveSuggestionUnboundError`); a result whose HTML or
+`htmlToText` still holds the bound nonce contiguously → 422 (r7 CM7-2, r8 CM8-3; Apply reuses that checked
+`text` as `body_text`, r9 CM9-2); no bound row
+otherwise → the #1958 path (no status change); a row without a protocol →
+422 on a page with any annotated code, else the pre-#1958 replay byte for byte
+(`restoreMedia` + `includes` guard, no CODE-META analysis) with the trust
+boundary kept. The generator caches only output `canAcceptImproveOutput`
+(that same conversion plus both storage judges) accepts, under a key that also
+names the source HTML's digest and `IMPROVE_CONVERTER_VERSION`, re-checks a
+hit with it before serving, and never caches a prompt that carries a nonce.
+Bump `IMPROVE_CONVERTER_VERSION` whenever what the Accept takes changes.
 Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
 "AI Improve code-block metadata". #1953-2 consumes `witnesses`,
 `codeBlockElements` and `admitLegacyCodeMetadata` (once per allowance) after

@@ -2483,8 +2483,6 @@ export interface ProtectedMedia {
   html: string;
   /** #1958: the entry's subtree (root included) holds a `pre` with `data-title` or `data-macro-params`. */
   code?: true;
-  /** #1958: the page's own text spells this token besides the one node protectMedia inserted. */
-  literal?: true;
   /**
    * #1958 (review r1 CM-3): the original with every CR / CR LF in the text of
    * its `code` elements written as LF, when that differs from `html`. One HTML
@@ -2509,6 +2507,84 @@ export interface ProtectedBody {
 const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
 /** #1958: frozen annotated code blocks; never in the media ordinal space. */
 const CODE_TOKEN_PREFIX = 'CQ_CODE_PLACEHOLDER_';
+/**
+ * #1958 (D28, review r7 CM7-1): a media entry that holds annotated code, spelled with the generation's nonce as
+ * `CQ_MACRO_PLACEHOLDER_<nonce>_<N>` at its media ordinal: a prefix of no other token, nor any other token of it.
+ */
+const MACRO_TOKEN_PREFIX = 'CQ_MACRO_PLACEHOLDER_';
+/**
+ * Which grammar ends a token spelling. `legacy` is the matcher of the release before #1958 (`(?![0-9])`), kept
+ * byte for byte wherever that release's tokens are read: #1955's general locator and restoreMedia, and the D26
+ * base path of a pre-#1958 suggestion (review r8 CM8-1). `current` is the #1958 path's (review r7 CM7-1, r8
+ * CM8-2): a token ends where no identifier character and no escaped `\_` follows, or where a run of complete
+ * tokens (prefix, optional 16-hex nonce, ordinal) so ended begins, so no token matches the start of a longer one
+ * and `…_0CQ_MEDIA_PLACEHOLDER_COUNT` is not a token followed by a token. Review r9 CM9-1: the current grammar is
+ * decided by tokenMatches (currentTokenEnds), not by a lookahead that rescans the rest of a run at every token.
+ */
+export type MediaTokenGrammar = 'legacy' | 'current';
+const TOKEN_SEP = '(?:_|\\\\_)';
+/** One complete token, read at one offset (sticky) by currentTokenEnds. */
+const COMPLETE_TOKEN_AT = new RegExp(
+  `CQ${TOKEN_SEP}(?:MEDIA|CODE|MACRO)${TOKEN_SEP}PLACEHOLDER${TOKEN_SEP}(?:[0-9a-f]{16}${TOKEN_SEP})?[0-9]+`,
+  'y',
+);
+const IDENTIFIER_CHAR = /[0-9A-Za-z_]/;
+
+/**
+ * The pattern source matching `spellings` (raw, escaped here) under `grammar`. Legacy: each spelling followed by
+ * `(?![0-9])`, in the given order, as the release before #1958 wrote it. Current: the bare spellings, longest first
+ * (a spelling that is a prefix of another ends inside it, on an ordinal digit, so it never ends a token there);
+ * tokenMatches keeps the matches that end a token.
+ */
+function tokenSpellingPattern(spellings: readonly string[], grammar: MediaTokenGrammar): string {
+  if (grammar === 'legacy') return spellings.map((spelling) => `${escapeRegExp(spelling)}(?![0-9])`).join('|');
+  return [...spellings].sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
+}
+
+/**
+ * Review r9 CM9-1: under the current grammar, does a token spelling ending at offset `end` of `text` end a token?
+ * It does where no identifier character and no `\_` follows, or where a complete token begins whose own end does.
+ * Every offset of a chain is decided once and remembered, and each step consumes one complete token, so a run of
+ * n adjacent tokens costs O(n) work however many of its tokens are asked about. A complete token is read
+ * greedily: a shorter reading (fewer ordinal digits, no nonce) always ends before a digit, a hex letter or `_`.
+ */
+function currentTokenEnds(text: string): (end: number) => boolean {
+  const decided = new Map<number, boolean>();
+  return (end) => {
+    const chain: number[] = [];
+    let at = end;
+    let verdict: boolean;
+    for (;;) {
+      const known = decided.get(at);
+      if (known !== undefined) {
+        verdict = known;
+        break;
+      }
+      chain.push(at);
+      if (!IDENTIFIER_CHAR.test(text.charAt(at)) && !text.startsWith('\\_', at)) {
+        verdict = true;
+        break;
+      }
+      COMPLETE_TOKEN_AT.lastIndex = at;
+      if (COMPLETE_TOKEN_AT.exec(text) === null) {
+        verdict = false;
+        break;
+      }
+      at = COMPLETE_TOKEN_AT.lastIndex;
+    }
+    for (const offset of chain) decided.set(offset, verdict);
+    return verdict;
+  };
+}
+
+/** The matches of `pattern` (global, from tokenSpellingPattern) in `text` that end a token under `grammar`. */
+function tokenMatches(text: string, pattern: RegExp, grammar: MediaTokenGrammar): RegExpExecArray[] {
+  const matches = [...text.matchAll(pattern)];
+  if (grammar === 'legacy' || matches.length === 0) return matches;
+  const ends = currentTokenEnds(text);
+  return matches.filter((match) => ends(match.index + match[0].length));
+}
+
 // #765: legacy section/column wrappers are NO LONGER opaque-protected here
 // (with one exception — see below). #723 froze them whole (token swap), which
 // preserved them but made the prose inside uneditable by the LLM. They now
@@ -2840,16 +2916,21 @@ function isMacroParamsObject(raw: string): boolean {
  * #1958: an annotated code block that cannot travel as a CODE-META token
  * (classifyCodeBlock `frozen`), and every token block past the first
  * CODE_META_TOKENS_MAX, is frozen too, in its OWN token namespace
- * (`CQ_CODE_PLACEHOLDER_<N>`, `frozenCode`): the media entries, their tokens
- * and their ordinals are exactly what the release before #1958 wrote, so a
- * suggestion it generated names the same media (review r1 CM-1). A frozen
- * block holding a media node is not frozen (its media keeps its ordinal).
- * Three facts are reported, each read from this DOM: an entry's `code` (its
- * subtree holds an annotated `pre`), its `literal` (the page spells its token
- * itself) and `carried` (the stored body holds an annotated `pre` anywhere,
- * before any replacement).
+ * (`frozenCode`): the media entries, their tokens and their ordinals are
+ * exactly what the release before #1958 wrote, so a suggestion it generated
+ * names the same media (review r1 CM-1). A frozen block holding a media node
+ * is not frozen (its media keeps its ordinal). A frozen entry's token is
+ * `CQ_CODE_PLACEHOLDER_<codeNonce>_<N>` (coordinator decision D28): the
+ * nonce is made per generated suggestion and stored on its row, so only a
+ * suggestion of that generation can spell it; text the page writes itself,
+ * or another generation's token, is plain text. Without a nonce the token is
+ * `CQ_CODE_PLACEHOLDER_<N>`, which the Accept never places (it refuses a
+ * page with frozen code when no row binds a nonce). Two facts are reported,
+ * each read from this DOM: an entry's `code` (its subtree holds an
+ * annotated `pre`) and `carried` (the stored body holds an annotated `pre`
+ * anywhere, before any replacement).
  */
-export function protectMedia(html: string): ProtectedBody {
+export function protectMedia(html: string, options: { codeNonce?: string } = {}): ProtectedBody {
   const dom = new JSDOM(`<body>${html}</body>`);
   const doc = dom.window.document;
   const media: ProtectedMedia[] = [];
@@ -2889,41 +2970,30 @@ export function protectMedia(html: string): ProtectedBody {
     });
   const carried = doc.body.querySelector(ANNOTATED_CODE_BLOCK_SELECTOR) !== null;
   const frozen = carried ? frozenCodeBlocks(doc.body, nodes) : [];
-  /** The placeholder text nodes inserted below: generator output, never an authored spelling. */
-  const synthesized = new Set<Node>();
+  // D28: an entry that holds annotated code (a code-carrying macro wrapper) is as mandatory as a frozen block, so
+  // with a nonce it is spelled `CQ_MACRO_PLACEHOLDER_<nonce>_<N>` at its media ordinal (r7 CM7-1: a prefix that no
+  // ordinary `CQ_MEDIA_PLACEHOLDER_<N>` shares); every other medium keeps the plain token.
+  const nonced = (prefix: string): string => (options.codeNonce === undefined ? prefix : `${prefix}${options.codeNonce}_`);
   for (const node of nodes) {
-    const token = `${MEDIA_TOKEN_PREFIX}${media.length}`;
+    const code = carried && holdsAnnotatedCodeBlock(node as Element);
+    const token = code && options.codeNonce !== undefined ? `${nonced(MACRO_TOKEN_PREFIX)}${media.length}` : `${MEDIA_TOKEN_PREFIX}${media.length}`;
     const entry: ProtectedMedia = { token, html: (node as Element).outerHTML };
-    if (carried && holdsAnnotatedCodeBlock(node as Element)) {
+    if (code) {
       entry.code = true;
       const lineEnds = codeTextLineEndForm(node as Element);
       if (lineEnds !== null) entry.lineEndForm = lineEnds;
     }
     media.push(entry);
-    const placeholder = doc.createTextNode(` ${token} `);
-    synthesized.add(placeholder);
-    node.replaceWith(placeholder);
+    node.replaceWith(doc.createTextNode(` ${token} `));
   }
+  const codePrefix = nonced(CODE_TOKEN_PREFIX);
   const frozenCode: ProtectedMedia[] = frozen.map((pre, index) => {
-    const entry: ProtectedMedia = { token: `${CODE_TOKEN_PREFIX}${index}`, html: pre.outerHTML, code: true };
+    const entry: ProtectedMedia = { token: `${codePrefix}${index}`, html: pre.outerHTML, code: true };
     const lineEnds = codeTextLineEndForm(pre);
     if (lineEnds !== null) entry.lineEndForm = lineEnds;
-    const placeholder = doc.createTextNode(` ${entry.token} `);
-    synthesized.add(placeholder);
-    pre.replaceWith(placeholder);
+    pre.replaceWith(doc.createTextNode(` ${entry.token} `));
     return entry;
   });
-  if (media.length > 0 || frozenCode.length > 0) {
-    // #1958 (review r4 CM4-2): each authored text node on its own, as the replay sees text runs; never the
-    // flattened body text, whose node joins would hide a spelling standing alone in its own paragraph.
-    const texts: string[] = [];
-    const walker = doc.createTreeWalker(doc.body, dom.window.NodeFilter.SHOW_TEXT);
-    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
-      if (!synthesized.has(text)) texts.push(text.nodeValue ?? '');
-    }
-    markLiteralTokens(texts, MEDIA_TOKEN_PREFIX, media);
-    markLiteralTokens(texts, CODE_TOKEN_PREFIX, frozenCode, true);
-  }
   return { html: doc.body.innerHTML, media, frozenCode, carried };
 }
 
@@ -3092,18 +3162,19 @@ function countWithin(offsets: readonly number[], start: number, end: number): nu
  * code sample or a discarded container without parsing the string a second
  * way.
  */
-export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]): MediaTokenPlacement[] {
+export function locateMediaTokens(
+  html: string,
+  media: readonly ProtectedMedia[],
+  grammar: MediaTokenGrammar = 'legacy',
+): MediaTokenPlacement[] {
   const tokenOf = new Map<string, string>();
-  const alternatives: string[] = [];
   for (const { token } of media) {
-    for (const spelling of [token, token.replace(/_/g, '\\_')]) {
-      tokenOf.set(spelling, token);
-      // The bare form ends on a non-digit so token N never matches token N0…N9.
-      alternatives.push(`${escapeRegExp(spelling)}(?![0-9])`);
-    }
+    for (const spelling of [token, token.replace(/_/g, '\\_')]) tokenOf.set(spelling, token);
   }
-  if (alternatives.length === 0 || !new RegExp(alternatives.join('|')).test(html)) return [];
-  const spellings = new RegExp(alternatives.join('|'), 'g');
+  // Token N never matches N0…N9; under the current grammar (#1958 path) not `N_…`, `Nabc` or a longer identifier.
+  const pattern = tokenOf.size > 0 ? tokenSpellingPattern([...tokenOf.keys()], grammar) : '';
+  if (pattern === '' || !new RegExp(pattern).test(html)) return [];
+  const spellings = new RegExp(pattern, 'g');
 
   const placements: MediaTokenPlacement[] = [];
   const root = parseFragment(html, { sourceCodeLocationInfo: true });
@@ -3169,7 +3240,7 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
         });
         continue;
       }
-      for (const match of source.matchAll(spellings)) {
+      for (const match of tokenMatches(source, spellings, grammar)) {
         const start = location.startOffset + match.index;
         placements.push({ token: tokenOf.get(match[0])!, start, end: start + match[0].length, wrapped: false, context: own });
       }
@@ -3197,8 +3268,9 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
  *   already-injected media is never re-scanned, so an earlier entry whose
  *   original HTML literally contains a *later* token (e.g. in an `alt` /
  *   `data-diagram-name`) cannot be corrupted by a subsequent replacement.
- * - `<p>TOKEN</p>` is consumed with its paragraph. A `(?![0-9])` boundary on
- *   the bare form stops `..._1` from matching the prefix of `..._10`.
+ * - `<p>TOKEN</p>` is consumed with its paragraph. The legacy token end
+ *   (`(?![0-9])`, MediaTokenGrammar) on the bare form stops `..._1` from
+ *   matching the prefix of `..._10`.
  */
 export function restoreMedia(
   html: string,
@@ -3279,7 +3351,7 @@ export const CODE_MACRO_WORK = 8_000_000;
 
 const ANNOTATED_CODE_BLOCK_SELECTOR = 'pre[data-title], pre[data-macro-params]';
 const CODE_META_PARAM_KEY = new RegExp(`^[A-Za-z][A-Za-z0-9_.-]{0,${CODE_META_KEY_MAX - 1}}$`);
-const PLACEHOLDER_SPELLING = /CQ(?:_|\\_)(?:MEDIA|CODE)(?:_|\\_)PLACEHOLDER/;
+const PLACEHOLDER_SPELLING = /CQ(?:_|\\_)(?:MEDIA|CODE|MACRO)(?:_|\\_)PLACEHOLDER/;
 const CODE_META_ATTRS = /^n=(0|[1-9]\d{0,2})(?: title=([A-Za-z0-9%-]*))?(?: params=([A-Za-z0-9%-]*))?$/;
 const CODE_META_TOKEN_LINE = /^\[\[\[CODE-META ([^\]\n]*)\]\]\]$/;
 const CODE_META_MARKDOWN_HINT = /\[\[\[[ \t]*\/?[ \t]*CODE[-_ ]?META/i;
@@ -3542,31 +3614,8 @@ function codeTextLineEndForm(el: Element): string | null {
   return changed ? copy.outerHTML : null;
 }
 
-/**
- * #1958 (X4, review r4 CM4-2): an entry is `literal` when an authored text
- * node of the protected body (never a placeholder protectMedia inserted)
- * spells its token, either spelling, digit boundary: the page itself writes
- * the token, so no spelling of it can be told for a placement. Each node is
- * scanned on its own, as the replay reads a text run; for code entries
- * (`identifier`) a spelling inside a longer identifier within that node
- * (`CQ_CODE_PLACEHOLDER_0_COUNT`) is not one, as in the replay
- * (isIdentifierPart). A token whose node ends where an identifier goes on in
- * the next one (`CQ_CODE_PLACEHOLDER_0<!---->_COUNT`) counts: refusal, never a guess.
- */
-function markLiteralTokens(texts: readonly string[], prefix: string, entries: ProtectedMedia[], identifier = false): void {
-  if (entries.length === 0) return;
-  const counts = new Map<string, number>();
-  const spelled = `(?:${escapeRegExp(prefix)}|${escapeRegExp(prefix.replace(/_/g, '\\_'))})(\\d+)`;
-  const spelling = new RegExp(identifier ? `(?<![A-Za-z0-9_])${spelled}(?![A-Za-z0-9_]|\\\\_)` : spelled, 'g');
-  for (const text of texts) {
-    for (const match of text.matchAll(spelling)) {
-      counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
-    }
-  }
-  for (let index = 0; index < entries.length; index += 1) {
-    if ((counts.get(String(index)) ?? 0) > 0) entries[index]!.literal = true;
-  }
-}
+/** `llm_improvements.improve_code_nonce`: 64 random bits, lowercase hex (D28). */
+export const IMPROVE_CODE_NONCE_PATTERN = /^[0-9a-f]{16}$/;
 
 /** One `pre` of the pre-Improve (protected) body whose only child is `code`, in document order. */
 export interface CodeMetaSkeletonBlock {
@@ -3669,6 +3718,14 @@ export interface CodeMetaAccept {
 
 /** `llm_improvements.improve_protocol` the #1958 generator writes on every row it stores (migration 161). */
 export const IMPROVE_CODE_META_PROTOCOL = 1;
+
+/**
+ * #1958 (review r6 CM6-2, D28): the version of the Improve Accept's conversion
+ * (`convertImproveOutput`), part of the Improve cache key with the source
+ * HTML's digest, so an entry another release's converter admitted is never
+ * served. Change it whenever what the Accept takes changes.
+ */
+export const IMPROVE_CONVERTER_VERSION = '1958-r8';
 
 /**
  * Where an applied suggestion comes from (D26 item 2), decided by the route
@@ -4026,17 +4083,30 @@ export class ImproveSuggestionFormatError extends Error {
 /**
  * #1958 (D26 item 3): on the #1958 path a frozen or code-carrying original has
  * no single placement it can take: the suggestion dropped, repeated or moved
- * its placeholder into code, or the page itself spells that placeholder.
+ * its placeholder into code or a context that cannot hold a block.
  * Appending it could duplicate the block, so the Accept is refused instead.
  */
 export class ImproveCodePlacementError extends Error {
   constructor() {
-    super('This AI suggestion dropped, repeated or moved a protected code block of this page, so it cannot be applied without losing or duplicating it. The page is unchanged — run AI Improve again, or edit the page directly (a page that spells CQ_CODE_PLACEHOLDER_<number> in its own text cannot take such a suggestion until that text is changed).');
+    super('This AI suggestion dropped, repeated or moved a protected code block of this page, so it cannot be applied without losing or duplicating it. The page is unchanged — run AI Improve again, or edit the page directly.');
     this.name = 'ImproveCodePlacementError';
   }
 }
 
-/** A code entry's spelling inside a longer identifier (`CQ_CODE_PLACEHOLDER_0_COUNT`, `xCQ_CODE_PLACEHOLDER_0`). */
+/**
+ * #1958 (coordinator decision D28): the page has frozen code blocks and the
+ * Apply names no stored #1958 suggestion with its code nonce (manual or edited
+ * Markdown, an older client): no placeholder in it can be told for one of
+ * this page's frozen blocks. Refused before parsing.
+ */
+export class ImproveSuggestionUnboundError extends Error {
+  constructor() {
+    super('This text is not an AI Improve suggestion stored for this page, so the protected code blocks of this page cannot be placed. The page is unchanged — run AI Improve again and apply its result.');
+    this.name = 'ImproveSuggestionUnboundError';
+  }
+}
+
+/** A frozen code token's spelling inside a longer identifier (`…_0_COUNT`, `xCQ_CODE_PLACEHOLDER_…`): plain text. */
 function isIdentifierPart(html: string, placement: MediaTokenPlacement): boolean {
   if (placement.wrapped) return false;
   return /[A-Za-z0-9_]/.test(html[placement.start - 1] ?? '')
@@ -4051,10 +4121,9 @@ function isIdentifierPart(html: string, placement: MediaTokenPlacement): boolean
  * release before #1958 wrote, restoreMedia at every placement and the
  * `includes` drop guard. Such a page has no code-carrying entry.
  *
- * `meta` (a #1958 row, or Markdown no row matches): one locator pass; every
- * placement screened before counting: a spelling in `pre`/`code`, of an entry
- * the page spells itself (`literal`), or of a code entry inside a longer
- * identifier, stays as written; one in a container the reverse pass drops, or
+ * `meta` (a #1958 row): one locator pass; every placement screened before
+ * counting: a spelling in `pre`/`code`, or of a frozen code token inside a
+ * longer identifier, stays as written; one in a container the reverse pass drops, or
  * a code-carrying entry's one in a context that does not keep a block intact,
  * is removed. An entry without code goes to every viable placement and is
  * appended once when it has none; a code-carrying entry needs exactly one
@@ -4073,7 +4142,8 @@ export function replayProtectedMedia(
 ): { html: string; dropped: number } {
   const entries = codeMeta.entries;
   if (entries.length === 0) return { html, dropped: 0 };
-  const placements = locateMediaTokens(html, entries);
+  // Review r8 CM8-1: the D26 base path reads the tokens as the release before #1958 did.
+  const placements = locateMediaTokens(html, entries, codeMeta.mode === 'base' ? 'legacy' : 'current');
   const entryOf = new Map(entries.map((entry, index) => [entry.token, index] as const));
   const budget = options.replayBudget
     ?? MEDIA_REPLAY_FACTOR * entries.reduce((sum, entry) => sum + entry.html.length, 0) + MEDIA_REPLAY_SLACK;
@@ -4096,8 +4166,8 @@ export function replayProtectedMedia(
     const k = entryOf.get(placement.token)!;
     const entry = entries[k]!;
     const flags = contextFlags(placement.context, cache);
-    if (entry.literal || flags.code) return 'keep';
-    if (k >= entries.length - codeMeta.frozenCode && isIdentifierPart(html, placement)) return 'keep';
+    if (flags.code) return 'keep';
+    if (entry.code && isIdentifierPart(html, placement)) return 'keep';
     if (flags.dropping) return 'remove';
     if (entry.code && flags.unsafe) return 'remove';
     return 'viable';
@@ -4309,6 +4379,83 @@ interface CodeMacroAllowanceState extends CodeMacroAllowance {
 
 function allowanceState(allowance: CodeMacroAllowance): CodeMacroAllowanceState {
   return allowance as CodeMacroAllowanceState;
+}
+
+/** What {@link convertImproveOutput} returns: the finalized Accept and how many media were re-appended. */
+export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
+  readonly dropped: number;
+  readonly entries: number;
+  /**
+   * Review r9 CM9-2: `htmlToText(html)` when the bound-nonce check computed it (a code nonce was given), so the
+   * Apply route publishes it without parsing the same HTML again. A caller that changes `html` derives its own.
+   */
+  readonly text?: string;
+}
+
+/**
+ * #1958 (review r5 CM5-2, D28): the conversion half of an Improve Accept, from
+ * the page's body and the model's Markdown to the finalized HTML, shared by the
+ * Apply route and by the Improve generator's cache rule, so an output the
+ * Accept refuses is never cached: protectMedia(codeNonce) → layout skeleton →
+ * beginCodeMetaAccept(provenance) → markdownToHtml → replayProtectedMedia →
+ * finalizeCodeMetadata. `codeNonce` is the bound row's
+ * `improve_code_nonce`: the code-carrying originals are placed only at
+ * tokens spelled with it. A page with code-carrying originals and no nonce
+ * refuses (ImproveSuggestionUnboundError). Throws what those throw
+ * (LayoutRecoveryError, ImproveSuggestionFormatError,
+ * ImproveSuggestionUnboundError, ImproveCodePlacementError,
+ * ImproveReplayError, ImproveReplayBudgetError,
+ * ConfluenceStorageRefusedError). The storage judges of the two exits run
+ * after it, on the page state of the exit. Reviews r7 CM7-2 / r8 CM8-3: a
+ * result whose final HTML or its text projection (`htmlToText`, the page's
+ * `body_text`) holds this generation's nonce as one contiguous string (a
+ * placeholder the model quoted, in code, in an attribute, or split by inline
+ * markup) is refused too (ImproveCodePlacementError). Narrower than "never
+ * reaches a later prompt": a rendering that joins text the two projections
+ * keep apart (block boundaries, entities in another renderer) can still
+ * reconstruct it; the nonce is no secret. A foreign nonce is page text.
+ */
+export async function convertImproveOutput(
+  bodyHtml: string,
+  improvedMarkdown: string,
+  options: { provenance?: ImproveSuggestionProvenance; witnesses?: boolean; codeNonce?: string } = {},
+): Promise<ConvertedImproveOutput> {
+  const protectedBody = protectMedia(bodyHtml, { codeNonce: options.codeNonce });
+  const layoutSkeleton = extractLayoutSkeleton(protectedBody.html);
+  const codeMeta = beginCodeMetaAccept(protectedBody, options);
+  if (options.codeNonce === undefined && codeMeta.entries.some((entry) => entry.code)) throw new ImproveSuggestionUnboundError();
+  const html = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
+  const replay = replayProtectedMedia(html, codeMeta);
+  const finalized = finalizeCodeMetadata(replay.html, codeMeta);
+  const nonce = options.codeNonce;
+  if (nonce === undefined) return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length };
+  if (finalized.html.includes(nonce)) throw new ImproveCodePlacementError();
+  const text = htmlToText(finalized.html);
+  if (text.includes(nonce)) throw new ImproveCodePlacementError();
+  return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length, text };
+}
+
+/**
+ * #1958 (reviews r5 CM5-2, r6 CM6-2): would an Accept of `improvedMarkdown`
+ * for a page with body `bodyHtml`, as the #1958 suggestion generated with
+ * `codeNonce`, succeed? The Improve generator caches only such an output, and
+ * re-checks a cache hit against the requesting page before serving it. It runs
+ * {@link convertImproveOutput}, the function the Apply route runs, then both
+ * exits' storage judges on the result without a stored storage (remote: the
+ * string htmlToConfluence writes; local: both publication projections). Any
+ * refusal, or any error, answers false. What the page's state at Apply time
+ * adds (a changed body, its stored storage, #1955 link origins, R3) is not
+ * foreseen.
+ */
+export async function canAcceptImproveOutput(bodyHtml: string, improvedMarkdown: string, codeNonce?: string): Promise<boolean> {
+  try {
+    const converted = await convertImproveOutput(bodyHtml, improvedMarkdown, { provenance: 'code-meta', codeNonce });
+    assertCodeMacroStorage(htmlToConfluence(converted.html), converted.allowance);
+    assertLocalCodeMacroProjections(converted.html, converted.allowance, { body_storage: null });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** What {@link finalizeCodeMetadata} returns. */
@@ -5825,38 +5972,6 @@ export function hasRecoverableLayoutTokens(markdown: string): boolean {
 }
 
 /**
- * #1958 (review r4 CM4-4): can an Improve output still place every frozen
- * code block the input Markdown carried? Each `CQ_CODE_PLACEHOLDER_<N>` the
- * input spells outside Markdown code (either spelling, identifier
- * boundaries, as the Accept reads it) must be spelled there exactly once in
- * the input and exactly once in the output. An output that fails can only
- * be refused on Accept (ImproveCodePlacementError), so the generator never
- * caches it and "run AI Improve again" reaches the provider anew. A pass is
- * no promise the Accept succeeds (the placement's context still decides).
- */
-export function placesFrozenCodeTokens(input: string, output: string): boolean {
-  const spelling = new RegExp(
-    `(?<![A-Za-z0-9_])(?:${escapeRegExp(CODE_TOKEN_PREFIX)}|${escapeRegExp(CODE_TOKEN_PREFIX.replace(/_/g, '\\_'))})(\\d+)(?![A-Za-z0-9_]|\\\\_)`,
-    'g',
-  );
-  const count = (markdown: string): Map<string, number> => {
-    const counts = new Map<string, number>();
-    transformOutsideMarkdownCode(markdown, (segment) => {
-      for (const match of segment.matchAll(spelling)) counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
-      return segment;
-    });
-    return counts;
-  };
-  const expected = count(input);
-  if (expected.size === 0) return true;
-  const found = count(output);
-  for (const [ordinal, times] of expected) {
-    if (times !== 1 || found.get(ordinal) !== 1) return false;
-  }
-  return true;
-}
-
-/**
  * Lowercase + strip markdown decoration/escapes + collapse whitespace, with a
  * map from each normalized char back to its original index. Both anchors and
  * the model's prose are normalized with this before matching, so case fixes,
@@ -6115,31 +6230,36 @@ const DIV_START_TAG = /<div[\s/>]/i;
 /**
  * #1752: either spelling (turndown escapes `_`) of every protectMedia token
  * whose original HTML holds a `<div>` — the tokens the caller's restoreMedia
- * turns back into a div. `_1` never matches `_10`. Null when there are none,
- * or when nothing will restore the tokens (no media given).
+ * turns back into a div, read by the replay's grammar (tokenMatches,
+ * MediaTokenGrammar; `_1` never matches `_10`). Null when there are none, or
+ * when nothing will restore the tokens (no media given).
  */
-function blockMediaTokenPattern(media: readonly ProtectedMedia[] | undefined): RegExp | null {
+function blockMediaTokenTest(
+  media: readonly ProtectedMedia[] | undefined,
+  grammar: MediaTokenGrammar,
+): ((body: string) => boolean) | null {
   const spellings = (media ?? [])
     .filter((entry) => DIV_START_TAG.test(entry.html))
-    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
-    .map(escapeRegExp);
-  return spellings.length > 0 ? new RegExp(`(?:${spellings.join('|')})(?![0-9])`) : null;
+    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')]);
+  if (spellings.length === 0) return null;
+  const pattern = new RegExp(tokenSpellingPattern(spellings, grammar), 'g');
+  return (body) => tokenMatches(body, pattern, grammar).length > 0;
 }
 
 /**
  * #1752: does this rendered task-item body hold a `<div>`, or something that
  * becomes one — a draw.io fence (markdownToHtml turns it into
  * `div.confluence-drawio` after parsing) or a block-media token
- * (blockMediaTokenPattern)? TipTap's TaskItem parses its content from the
+ * (blockMediaTokenTest)? TipTap's TaskItem parses its content from the
  * first descendant `div` (`contentElement` in @tiptap/extension-list
  * task-item.ts), so a task item holding one would lose all content outside
  * that div in the editor. Inline placeholders (image, mention, status, Jira)
  * hold no div, so their task items stay tasks.
  */
-function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): boolean {
+function breaksTaskItemParse(body: string, holdsBlockMediaToken: ((body: string) => boolean) | null): boolean {
   return DIV_START_TAG.test(body)
     || body.includes('<code class="language-drawio">')
-    || (blockMediaToken !== null && blockMediaToken.test(body));
+    || (holdsBlockMediaToken !== null && holdsBlockMediaToken(body));
 }
 
 /**
@@ -6167,14 +6287,14 @@ function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): bool
  * once. A list without a task item returns `false`: marked's own rendering,
  * byte for byte.
  */
-function createEditorMarked(blockMediaToken: RegExp | null): Marked {
+function createEditorMarked(holdsBlockMediaToken: ((body: string) => boolean) | null): Marked {
   return new Marked({
     renderer: {
       list(token) {
         if (!token.items.some((item) => item.task)) return false;
         const items = token.items.map((item) => {
           const body = this.parser.parse(item.tokens, item.loose);
-          if (item.task && !breaksTaskItemParse(body, blockMediaToken)) {
+          if (item.task && !breaksTaskItemParse(body, holdsBlockMediaToken)) {
             return {
               task: true,
               html: `<li data-type="taskItem" data-checked="${item.checked ? 'true' : 'false'}">${body}</li>\n`,
@@ -6292,10 +6412,11 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
-  const blockMediaToken = blockMediaTokenPattern(options?.protectedMedia);
-  const parser = blockMediaToken ? createEditorMarked(blockMediaToken) : EDITOR_MARKED;
-  let html: string;
   const codeMeta = options?.codeMeta;
+  // Review r8 CM8-1: the #1958 path's grammar only there; the base path and every other caller keep the legacy one.
+  const holdsBlockMediaToken = blockMediaTokenTest(options?.protectedMedia, codeMeta?.mode === 'meta' ? 'current' : 'legacy');
+  const parser = holdsBlockMediaToken ? createEditorMarked(holdsBlockMediaToken) : EDITOR_MARKED;
+  let html: string;
   if (codeMeta && needsCodeMetaAnalysis(codeMeta, markdown)) {
     const tokens = parser.lexer(normalized);
     // D26: the #1958 analysis runs in full on the #1958 path; on the base path only fences are recorded (#1953).
