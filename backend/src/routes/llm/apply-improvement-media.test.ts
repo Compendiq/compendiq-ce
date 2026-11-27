@@ -44,13 +44,13 @@ function faithfulEcho(bodyHtml: string, codeNonce?: string): string {
 const NONCE = '0123456789abcdef';
 
 /** A completed #1958 suggestion (protocol 1) with its code nonce, as the generator stores it. */
-async function storeCodeMetaRow(pageId: number, improvedMarkdown: string): Promise<string> {
+async function storeCodeMetaRow(pageId: number, improvedMarkdown: string, codeNonce = NONCE): Promise<string> {
   const inserted = await query<{ id: string }>(
     `INSERT INTO llm_improvements
        (user_id, page_id, improvement_type, model, original_content, improved_content, status, improve_protocol, improve_code_nonce)
      VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed', 1, $4)
      RETURNING id`,
-    [userId, pageId, improvedMarkdown, NONCE],
+    [userId, pageId, improvedMarkdown, codeNonce],
   );
   return inserted.rows[0]!.id;
 }
@@ -1051,6 +1051,58 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
             expect(saved).toMatch(/<td><pre data-title="Sample"/);
             expect(saved).toContain('CQ_CODE_PLACEHOLDER_0');
             expect(await status(fresh)).toBe('applied');
+          });
+        });
+
+        describe('review r7: no token is read at the start of another; a generation\'s tokens never reach the page', () => {
+          // An ordinary image at media ordinal 0, then a macro holding titled code in a table cell (media ordinal 1).
+          const PAGE = `${IMG('d')}<table><tbody><tr><td><div class="confluence-macro-unknown" data-macro-name="foo">`
+            + '<pre data-title="Sample"><code class="language-js">x()</code></pre></div></td></tr></tbody></table>';
+          const OVERLAP = '0abcdef123456789';
+          const OTHER = 'fedcba9876543210';
+
+          it.each([OVERLAP, OTHER])('applies the faithful echo whatever the nonce starts with (%s, CM7-1)', async (nonce) => {
+            const pageId = await seedPage(PAGE);
+            const echo = faithfulEcho(PAGE, nonce);
+            const improvementId = await storeCodeMetaRow(pageId, echo, nonce);
+
+            const response = await apply(pageId, echo, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(200);
+            const saved = (await readPage(pageId)).body_html;
+            expect(saved.match(/<img /g)).toHaveLength(1);
+            expect(saved).toMatch(/<td><div class="confluence-macro-unknown" data-macro-name="foo"><pre data-title="Sample">/);
+            expect(await status(improvementId)).toBe('applied');
+          });
+
+          it('keeps another generation\'s spelling as text and adds no image (CM7-1)', async () => {
+            const pageId = await seedPage(PAGE);
+            const suggestion = `${faithfulEcho(PAGE, OTHER)}\n\nArchived CQ_MEDIA_PLACEHOLDER_${OVERLAP}_1`;
+            const improvementId = await storeCodeMetaRow(pageId, suggestion, OTHER);
+
+            const response = await apply(pageId, suggestion, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(200);
+            const saved = await readPage(pageId);
+            expect(saved.version).toBe(6);
+            expect(saved.body_html.match(/<img /g)).toHaveLength(1);
+            expect(saved.body_html).toContain(`<p>Archived CQ_MEDIA_PLACEHOLDER_${OVERLAP}_1</p>`);
+            expect(saved.body_html.match(/data-title="Sample"/g)).toHaveLength(1);
+          });
+
+          it('refuses a result that quotes this generation\'s placeholder, so its nonce never reaches the page (CM7-2)', async () => {
+            const page = `${SAMPLE_TABLE}<p>End</p>`;
+            const echo = faithfulEcho(page, NONCE);
+            const quoted = `${echo}\n\nUse \`CQ_CODE_PLACEHOLDER_${NONCE}_0\` in scripts.`;
+            const pageId = await seedPage(page);
+            const improvementId = await storeCodeMetaRow(pageId, quoted);
+
+            const response = await apply(pageId, quoted, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(422);
+            await expectUnchanged(pageId, page);
+            expect((await readPage(pageId)).body_text).not.toContain(NONCE);
+            expect(await status(improvementId)).toBe('completed');
           });
         });
       });

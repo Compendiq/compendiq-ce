@@ -2192,6 +2192,16 @@ export interface ProtectedBody {
 const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
 /** #1958: frozen annotated code blocks; never in the media ordinal space. */
 const CODE_TOKEN_PREFIX = 'CQ_CODE_PLACEHOLDER_';
+/**
+ * #1958 (D28, review r7 CM7-1): a media entry that holds annotated code, spelled with the generation's nonce as
+ * `CQ_MACRO_PLACEHOLDER_<nonce>_<N>` at its media ordinal: a prefix of no other token, nor any other token of it.
+ */
+const MACRO_TOKEN_PREFIX = 'CQ_MACRO_PLACEHOLDER_';
+/**
+ * Where a token spelling ends (review r7 CM7-1): before another token (`…_1CQ_MEDIA_PLACEHOLDER_0`, #1955), else
+ * where no identifier character and no escaped `\_` follows, so no token matches the start of a longer one.
+ */
+const TOKEN_END = '(?:(?=CQ(?:_|\\\\_)(?:MEDIA|CODE|MACRO)(?:_|\\\\_)PLACEHOLDER)|(?![0-9A-Za-z_]|\\\\_))';
 // #765: legacy section/column wrappers are NO LONGER opaque-protected here
 // (with one exception — see below). #723 froze them whole (token swap), which
 // preserved them but made the prose inside uneditable by the LLM. They now
@@ -2578,11 +2588,12 @@ export function protectMedia(html: string, options: { codeNonce?: string } = {})
   const carried = doc.body.querySelector(ANNOTATED_CODE_BLOCK_SELECTOR) !== null;
   const frozen = carried ? frozenCodeBlocks(doc.body, nodes) : [];
   // D28: an entry that holds annotated code (a code-carrying macro wrapper) is as mandatory as a frozen block, so
-  // with a nonce its token carries it too, at the same media ordinal; every other medium keeps the plain token.
+  // with a nonce it is spelled `CQ_MACRO_PLACEHOLDER_<nonce>_<N>` at its media ordinal (r7 CM7-1: a prefix that no
+  // ordinary `CQ_MEDIA_PLACEHOLDER_<N>` shares); every other medium keeps the plain token.
   const nonced = (prefix: string): string => (options.codeNonce === undefined ? prefix : `${prefix}${options.codeNonce}_`);
   for (const node of nodes) {
     const code = carried && holdsAnnotatedCodeBlock(node as Element);
-    const token = `${code ? nonced(MEDIA_TOKEN_PREFIX) : MEDIA_TOKEN_PREFIX}${media.length}`;
+    const token = code && options.codeNonce !== undefined ? `${nonced(MACRO_TOKEN_PREFIX)}${media.length}` : `${MEDIA_TOKEN_PREFIX}${media.length}`;
     const entry: ProtectedMedia = { token, html: (node as Element).outerHTML };
     if (code) {
       entry.code = true;
@@ -2774,8 +2785,9 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
   for (const { token } of media) {
     for (const spelling of [token, token.replace(/_/g, '\\_')]) {
       tokenOf.set(spelling, token);
-      // The bare form ends on a non-digit so token N never matches token N0…N9.
-      alternatives.push(`${escapeRegExp(spelling)}(?![0-9])`);
+      // #1958 (review r7 CM7-1): a token ends where no identifier character (nor an escaped `\_`) follows, so token
+      // N never matches the start of N0…N9, of `N_…` or of a longer identifier such as another token.
+      alternatives.push(`${escapeRegExp(spelling)}${TOKEN_END}`);
     }
   }
   if (alternatives.length === 0 || !new RegExp(alternatives.join('|')).test(html)) return [];
@@ -2873,8 +2885,9 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
  *   already-injected media is never re-scanned, so an earlier entry whose
  *   original HTML literally contains a *later* token (e.g. in an `alt` /
  *   `data-diagram-name`) cannot be corrupted by a subsequent replacement.
- * - `<p>TOKEN</p>` is consumed with its paragraph. A `(?![0-9])` boundary on
- *   the bare form stops `..._1` from matching the prefix of `..._10`.
+ * - `<p>TOKEN</p>` is consumed with its paragraph. A token boundary
+ *   (TOKEN_END) on the bare form stops `..._1` from matching the prefix of
+ *   `..._10`, `..._1abc` or `..._1_x`.
  */
 export function restoreMedia(
   html: string,
@@ -2955,7 +2968,7 @@ export const CODE_MACRO_WORK = 8_000_000;
 
 const ANNOTATED_CODE_BLOCK_SELECTOR = 'pre[data-title], pre[data-macro-params]';
 const CODE_META_PARAM_KEY = new RegExp(`^[A-Za-z][A-Za-z0-9_.-]{0,${CODE_META_KEY_MAX - 1}}$`);
-const PLACEHOLDER_SPELLING = /CQ(?:_|\\_)(?:MEDIA|CODE)(?:_|\\_)PLACEHOLDER/;
+const PLACEHOLDER_SPELLING = /CQ(?:_|\\_)(?:MEDIA|CODE|MACRO)(?:_|\\_)PLACEHOLDER/;
 const CODE_META_ATTRS = /^n=(0|[1-9]\d{0,2})(?: title=([A-Za-z0-9%-]*))?(?: params=([A-Za-z0-9%-]*))?$/;
 const CODE_META_TOKEN_LINE = /^\[\[\[CODE-META ([^\]\n]*)\]\]\]$/;
 const CODE_META_MARKDOWN_HINT = /\[\[\[[ \t]*\/?[ \t]*CODE[-_ ]?META/i;
@@ -4004,7 +4017,11 @@ export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
  * ImproveSuggestionUnboundError, ImproveCodePlacementError,
  * ImproveReplayError, ImproveReplayBudgetError,
  * ConfluenceStorageRefusedError). The storage judges of the two exits run
- * after it, on the page state of the exit.
+ * after it, on the page state of the exit. Review r7 CM7-2: a result that
+ * still spells this generation's nonce anywhere (a placeholder the model
+ * quoted in code, an attribute, a second copy) is refused too
+ * (ImproveCodePlacementError), so a generation's tokens never reach the
+ * stored page and from there a later prompt; a foreign nonce is page text.
  */
 export async function convertImproveOutput(
   bodyHtml: string,
@@ -4017,7 +4034,9 @@ export async function convertImproveOutput(
   if (options.codeNonce === undefined && codeMeta.entries.some((entry) => entry.code)) throw new ImproveSuggestionUnboundError();
   const html = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
   const replay = replayProtectedMedia(html, codeMeta);
-  return { ...finalizeCodeMetadata(replay.html, codeMeta), dropped: replay.dropped, entries: codeMeta.entries.length };
+  const finalized = finalizeCodeMetadata(replay.html, codeMeta);
+  if (options.codeNonce !== undefined && finalized.html.includes(options.codeNonce)) throw new ImproveCodePlacementError();
+  return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length };
 }
 
 /**
@@ -5823,7 +5842,7 @@ function blockMediaTokenPattern(media: readonly ProtectedMedia[] | undefined): R
     .filter((entry) => DIV_START_TAG.test(entry.html))
     .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
     .map(escapeRegExp);
-  return spellings.length > 0 ? new RegExp(`(?:${spellings.join('|')})(?![0-9])`) : null;
+  return spellings.length > 0 ? new RegExp(`(?:${spellings.join('|')})${TOKEN_END}`) : null;
 }
 
 /**

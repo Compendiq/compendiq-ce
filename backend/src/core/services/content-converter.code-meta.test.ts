@@ -38,6 +38,7 @@ import {
   ImproveSuggestionFormatError,
   isCodeMetaTitle,
   isDroppingContext,
+  locateMediaTokens,
   judgeCodeMacros,
   markdownToHtml,
   parseCodeMacroParams,
@@ -1192,10 +1193,44 @@ describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never i
     }
     // Without a bound nonce a page with protected code refuses: nothing in the text can be told for its block.
     await expect(convertImproveOutput(table, generated(table), { provenance: 'unmatched' })).rejects.toBeInstanceOf(ImproveSuggestionUnboundError);
-    // A code-carrying macro wrapper's token carries the nonce too; other media keep theirs.
+    // A code-carrying macro wrapper's token carries the nonce too, under its own prefix; other media keep theirs.
     const wrapper = `<div class="confluence-macro-unknown" data-macro-name="foo">${pre('w()', TITLED)}</div><img src="/a.png" alt="a">`;
     expect(protectMedia(wrapper, { codeNonce: NONCE }).media.map((entry) => entry.token))
-      .toEqual([`CQ_MEDIA_PLACEHOLDER_${NONCE}_0`, 'CQ_MEDIA_PLACEHOLDER_1']);
+      .toEqual([`CQ_MACRO_PLACEHOLDER_${NONCE}_0`, 'CQ_MEDIA_PLACEHOLDER_1']);
+  });
+
+  it('never matches one token at the start of another: ordinary media, nonce-bound macros, foreign spellings (r7 CM7-1)', async () => {
+    // An ordinary image at ordinal 0, then a macro holding titled code in a cell; the nonce starts with a digit.
+    const overlap = '0abcdef123456789';
+    const page = `${IMG('a')}<table><tbody><tr><td><div class="confluence-macro-unknown" data-macro-name="foo">${pre('x()', TITLED)}</div></td></tr></tbody></table>`;
+    const echo = htmlToMarkdown(protectMedia(page, { codeNonce: overlap }).html, { layoutTokens: true });
+    const accepted = await convertImproveOutput(page, echo, { provenance: 'code-meta', codeNonce: overlap });
+    expect(accepted.html.match(/<img/g)).toHaveLength(1);
+    expect(accepted.html).toMatch(/<td><div class="confluence-macro-unknown"/);
+    // A foreign spelling (another generation's, of the r6 shape) stays text; the ordinary token does not eat its start.
+    const second = 'fedcba9876543210';
+    const foreign = `${htmlToMarkdown(protectMedia(page, { codeNonce: second }).html, { layoutTokens: true })}\n\nArchived CQ_MEDIA_PLACEHOLDER_${overlap}_1`;
+    const withForeign = await convertImproveOutput(page, foreign, { provenance: 'code-meta', codeNonce: second });
+    expect(withForeign.html).toContain(`Archived CQ_MEDIA_PLACEHOLDER_${overlap}_1`);
+    expect(withForeign.html.match(/<img/g)).toHaveLength(1);
+    // Tokens written back to back are still two tokens (#1955).
+    const placements = locateMediaTokens('<p>CQ_MEDIA_PLACEHOLDER_1CQ_MEDIA_PLACEHOLDER_0</p>', [
+      { token: 'CQ_MEDIA_PLACEHOLDER_0', html: '<img src="/0.png">' }, { token: 'CQ_MEDIA_PLACEHOLDER_1', html: '<img src="/1.png">' },
+    ]);
+    expect(placements.map((placement) => placement.token)).toEqual(['CQ_MEDIA_PLACEHOLDER_1', 'CQ_MEDIA_PLACEHOLDER_0']);
+    expect(locateMediaTokens('<p>CQ_MEDIA_PLACEHOLDER_0abc and CQ\\_MEDIA\\_PLACEHOLDER\\_0\\_x</p>', [
+      { token: 'CQ_MEDIA_PLACEHOLDER_0', html: '<img src="/0.png">' },
+    ])).toEqual([]);
+  });
+
+  it('refuses a result that still spells the generation\'s nonce, so it never reaches the stored page (r7 CM7-2)', async () => {
+    const table = `<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table>`;
+    const echo = generated(table);
+    await expect(convertImproveOutput(table, `${echo}\n\nUse \`CQ_CODE_PLACEHOLDER_${NONCE}_0\` here.`, { provenance: 'code-meta', codeNonce: NONCE }))
+      .rejects.toBeInstanceOf(ImproveCodePlacementError);
+    // Another generation's nonce is page text.
+    const kept = await convertImproveOutput(table, `${echo}\n\nUse \`CQ_CODE_PLACEHOLDER_${OTHER_NONCE}_0\` here.`, { provenance: 'code-meta', codeNonce: NONCE });
+    expect(kept.html).toContain(`<code>CQ_CODE_PLACEHOLDER_${OTHER_NONCE}_0</code>`);
   });
 
   it('tells the generator whether the Accept would take an output, by the Accept\'s own conversion (r5 CM5-2)', async () => {

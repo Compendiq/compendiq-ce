@@ -93,7 +93,7 @@ describe.skipIf(!available)('POST /api/llm/improve - Accept-bound cache (#1958)'
 
   it.each([
     ['a frozen code block', FROZEN_CONTENT, (nonce: string) => `<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_${nonce}_0</td></tr></tbody></table>\n\nProse improved.`],
-    ['a code-carrying macro', WRAPPER_CONTENT, (nonce: string) => `CQ\\_MEDIA\\_PLACEHOLDER\\_${nonce}\\_0\n\nProse improved.`],
+    ['a code-carrying macro', WRAPPER_CONTENT, (nonce: string) => `CQ\\_MACRO\\_PLACEHOLDER\\_${nonce}\\_0\n\nProse improved.`],
   ])('asks the provider on every request for a page with %s; a usable output names that generation\'s nonce', async (_name, content, usable) => {
     fixture.output = 'Prose improved, the protected block left out.';
     expect((await improve(content)).statusCode).toBe(200);
