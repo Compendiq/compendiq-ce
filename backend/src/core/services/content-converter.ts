@@ -1720,17 +1720,14 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // One forward pass over the stored storage, when something needs it: the D19 check and the D21 fallback's `shown`.
   let stored: StoredLinkWitness | undefined;
   const storedLinks = (): StoredLinkWitness => (stored ??= witnessStoredLinks(linkOrigin!, writeBackFeatures(options)));
+  /** The carriers of the outgoing links of the five #1955 kinds, checked at the end (D19). */
+  const carriers: string[] = [];
   for (const a of doc.querySelectorAll(linkAnchors)) {
     const acLink = confluenceLinkElement(a, options.derivationFeatures);
     if (!acLink) continue;
-    // Owner decision D19, coordinator decision D20 (#1955, reviews r5 R24, r6 R25/R26): a link of a #1955 kind
-    // that carries a carrier the forward pass emitted from a stored link is written with that link's XML target,
-    // or the write is refused here, before any effect.
     const carrier = linkKinds && linkOrigin ? confluenceLinkCarrierOf(a) : null;
     const kind = carrier === null ? undefined : parseConfluenceLinkHref(carrier)?.kind;
-    if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) {
-      storedLinks().check(carrier);
-    }
+    if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) carriers.push(carrier);
     a.replaceWith(acLink);
   }
 
@@ -1787,9 +1784,15 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // XML (confluence-link.ts): a link to a value that is not a navigable URL
   // stays only where the stored page holds that occurrence, and a string that
   // would carry one past the check is refused. The check may change the
-  // document and serialise it again; nothing follows it.
+  // document and serialise it again; nothing follows it but the D19 check.
   if (!linkKinds) return serialiseStorage(doc);
-  return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin, (element) => storedLinks().shown(element));
+  const written = enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin, (element) => storedLinks().shown(element));
+  // Owner decision D19, coordinator decision D20 (#1955, reviews r5 R24, r6 R25/R26): a link of a #1955 kind that
+  // carries a carrier the forward pass emitted from a stored link is written with that link's XML target, or the
+  // write is refused here, before any effect. It runs last so that every cheaper refusal, the work limit of the
+  // `ri:url` judgement first, is decided before the forward pass over the stored storage runs (W5).
+  for (const carrier of carriers) storedLinks().check(carrier);
+  return written;
 }
 
 /**
