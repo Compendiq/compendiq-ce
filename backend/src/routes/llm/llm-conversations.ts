@@ -575,7 +575,8 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         '#1958: AI Improve code-block metadata',
       );
     }
-    const bodyText = htmlToText(bodyHtml);
+    // Review r9 CM9-2: the bound-nonce check already projected this exact HTML; a changed body is projected anew.
+    const bodyText = finalized.text !== undefined && bodyHtml === finalized.html ? finalized.text : htmlToText(bodyHtml);
 
     const cache = new RedisCache(fastify.redis);
     let newVersion: number;

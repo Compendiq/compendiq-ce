@@ -1246,10 +1246,46 @@ describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never i
     // Another generation's nonce is page text.
     const kept = await convertImproveOutput(table, `${echo}\n\nUse \`CQ_CODE_PLACEHOLDER_${OTHER_NONCE}_0\` here.`, { provenance: 'code-meta', codeNonce: NONCE });
     expect(kept.html).toContain(`<code>CQ_CODE_PLACEHOLDER_${OTHER_NONCE}_0</code>`);
+    // r9 CM9-2: the checked text is the page's text projection, handed to Apply for publication.
+    expect(kept.text).toBe(htmlToText(kept.html));
     // r8 CM8-3: inline markup splitting the nonce in the HTML does not hide it from the page's text.
     const split = `${echo}\n\nSee CQ\\_CODE\\_PLACEHOLDER\\_${NONCE.slice(0, 8)}<span>${NONCE.slice(8)}</span>\\_0 here.`;
     await expect(convertImproveOutput(table, split, { provenance: 'code-meta', codeNonce: NONCE }))
       .rejects.toBeInstanceOf(ImproveCodePlacementError);
+  });
+
+  it('recognises a run of adjacent tokens with work linear in its length, in the locator and in task items (r9 CM9-1)', async () => {
+    const n = 300;
+    const media = Array.from({ length: n }, (_, k) => ({ token: `CQ_MEDIA_PLACEHOLDER_${k}`, html: `<img src="/${k}.png">` }));
+    const run = media.map((entry) => entry.token).join('');
+    // Each read of one complete token (currentTokenEnds) is one sticky exec; the spelling scan itself has no lookahead.
+    const exec = vi.spyOn(RegExp.prototype, 'exec');
+    const tokenReads = (): number =>
+      exec.mock.contexts.filter((regex) => (regex as RegExp).sticky && (regex as RegExp).source.startsWith('CQ')).length;
+    try {
+      expect(locateMediaTokens(`<p>${run} end</p>`, media, 'current').map((placement) => placement.token))
+        .toEqual(media.map((entry) => entry.token));
+      expect(tokenReads()).toBeLessThanOrEqual(n);
+      exec.mockClear();
+      expect(locateMediaTokens(`<p>${run.replace(/_/g, '\\_')}.</p>`, media, 'current')).toHaveLength(n);
+      expect(tokenReads()).toBeLessThanOrEqual(n);
+      exec.mockClear();
+      // An incomplete final neighbour or a malformed ending ends no token of the run.
+      expect(locateMediaTokens(`<p>${run}CQ_MEDIA_PLACEHOLDER_COUNT</p>`, media, 'current')).toEqual([]);
+      expect(locateMediaTokens(`<p>${run}_x</p>`, media, 'current')).toEqual([]);
+      expect(tokenReads()).toBeLessThanOrEqual(2 * n);
+      exec.mockClear();
+      // Task items read block-media tokens by the same rule: a task item holding the run stays a plain item.
+      const divs = Array.from({ length: n }, (_, k) => `<div class="confluence-drawio" data-diagram-name="d${k}"><img src="/d${k}.png"></div>`);
+      const page = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>Step</p>${divs.join('')}</li></ul>`;
+      const accepted = await convertImproveOutput(page, `- [ ] Step ${run.replace(/_/g, '\\_')}`, { provenance: 'unmatched' });
+      expect(accepted.html).toContain('<li>[ ] Step ');
+      expect(accepted.html).not.toContain('data-type="taskItem"');
+      for (const div of divs) expect(accepted.html.split(div)).toHaveLength(2);
+      expect(tokenReads()).toBeLessThanOrEqual(2 * n);
+    } finally {
+      exec.mockRestore();
+    }
   });
 
   it('tells the generator whether the Accept would take an output, by the Accept\'s own conversion (r5 CM5-2)', async () => {

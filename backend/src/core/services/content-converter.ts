@@ -2203,16 +2203,73 @@ const MACRO_TOKEN_PREFIX = 'CQ_MACRO_PLACEHOLDER_';
  * base path of a pre-#1958 suggestion (review r8 CM8-1). `current` is the #1958 path's (review r7 CM7-1, r8
  * CM8-2): a token ends where no identifier character and no escaped `\_` follows, or where a run of complete
  * tokens (prefix, optional 16-hex nonce, ordinal) so ended begins, so no token matches the start of a longer one
- * and `…_0CQ_MEDIA_PLACEHOLDER_COUNT` is not a token followed by a token.
+ * and `…_0CQ_MEDIA_PLACEHOLDER_COUNT` is not a token followed by a token. Review r9 CM9-1: the current grammar is
+ * decided by tokenMatches (currentTokenEnds), not by a lookahead that rescans the rest of a run at every token.
  */
 export type MediaTokenGrammar = 'legacy' | 'current';
 const TOKEN_SEP = '(?:_|\\\\_)';
-const IDENTIFIER_END = '(?![0-9A-Za-z_]|\\\\_)';
-const COMPLETE_TOKEN = `CQ${TOKEN_SEP}(?:MEDIA|CODE|MACRO)${TOKEN_SEP}PLACEHOLDER${TOKEN_SEP}(?:[0-9a-f]{16}${TOKEN_SEP})?[0-9]+`;
-const TOKEN_END: Record<MediaTokenGrammar, string> = {
-  legacy: '(?![0-9])',
-  current: `(?=(?:${COMPLETE_TOKEN})*${IDENTIFIER_END})`,
-};
+/** One complete token, read at one offset (sticky) by currentTokenEnds. */
+const COMPLETE_TOKEN_AT = new RegExp(
+  `CQ${TOKEN_SEP}(?:MEDIA|CODE|MACRO)${TOKEN_SEP}PLACEHOLDER${TOKEN_SEP}(?:[0-9a-f]{16}${TOKEN_SEP})?[0-9]+`,
+  'y',
+);
+const IDENTIFIER_CHAR = /[0-9A-Za-z_]/;
+
+/**
+ * The pattern source matching `spellings` (raw, escaped here) under `grammar`. Legacy: each spelling followed by
+ * `(?![0-9])`, in the given order, as the release before #1958 wrote it. Current: the bare spellings, longest first
+ * (a spelling that is a prefix of another ends inside it, on an ordinal digit, so it never ends a token there);
+ * tokenMatches keeps the matches that end a token.
+ */
+function tokenSpellingPattern(spellings: readonly string[], grammar: MediaTokenGrammar): string {
+  if (grammar === 'legacy') return spellings.map((spelling) => `${escapeRegExp(spelling)}(?![0-9])`).join('|');
+  return [...spellings].sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
+}
+
+/**
+ * Review r9 CM9-1: under the current grammar, does a token spelling ending at offset `end` of `text` end a token?
+ * It does where no identifier character and no `\_` follows, or where a complete token begins whose own end does.
+ * Every offset of a chain is decided once and remembered, and each step consumes one complete token, so a run of
+ * n adjacent tokens costs O(n) work however many of its tokens are asked about. A complete token is read
+ * greedily: a shorter reading (fewer ordinal digits, no nonce) always ends before a digit, a hex letter or `_`.
+ */
+function currentTokenEnds(text: string): (end: number) => boolean {
+  const decided = new Map<number, boolean>();
+  return (end) => {
+    const chain: number[] = [];
+    let at = end;
+    let verdict: boolean;
+    for (;;) {
+      const known = decided.get(at);
+      if (known !== undefined) {
+        verdict = known;
+        break;
+      }
+      chain.push(at);
+      if (!IDENTIFIER_CHAR.test(text.charAt(at)) && !text.startsWith('\\_', at)) {
+        verdict = true;
+        break;
+      }
+      COMPLETE_TOKEN_AT.lastIndex = at;
+      if (COMPLETE_TOKEN_AT.exec(text) === null) {
+        verdict = false;
+        break;
+      }
+      at = COMPLETE_TOKEN_AT.lastIndex;
+    }
+    for (const offset of chain) decided.set(offset, verdict);
+    return verdict;
+  };
+}
+
+/** The matches of `pattern` (global, from tokenSpellingPattern) in `text` that end a token under `grammar`. */
+function tokenMatches(text: string, pattern: RegExp, grammar: MediaTokenGrammar): RegExpExecArray[] {
+  const matches = [...text.matchAll(pattern)];
+  if (grammar === 'legacy' || matches.length === 0) return matches;
+  const ends = currentTokenEnds(text);
+  return matches.filter((match) => ends(match.index + match[0].length));
+}
+
 // #765: legacy section/column wrappers are NO LONGER opaque-protected here
 // (with one exception — see below). #723 froze them whole (token swap), which
 // preserved them but made the prose inside uneditable by the LLM. They now
@@ -2796,16 +2853,13 @@ export function locateMediaTokens(
   grammar: MediaTokenGrammar = 'legacy',
 ): MediaTokenPlacement[] {
   const tokenOf = new Map<string, string>();
-  const alternatives: string[] = [];
   for (const { token } of media) {
-    for (const spelling of [token, token.replace(/_/g, '\\_')]) {
-      tokenOf.set(spelling, token);
-      // Token N never matches N0…N9; under the current grammar (#1958 path) not `N_…`, `Nabc` or a longer identifier.
-      alternatives.push(`${escapeRegExp(spelling)}${TOKEN_END[grammar]}`);
-    }
+    for (const spelling of [token, token.replace(/_/g, '\\_')]) tokenOf.set(spelling, token);
   }
-  if (alternatives.length === 0 || !new RegExp(alternatives.join('|')).test(html)) return [];
-  const spellings = new RegExp(alternatives.join('|'), 'g');
+  // Token N never matches N0…N9; under the current grammar (#1958 path) not `N_…`, `Nabc` or a longer identifier.
+  const pattern = tokenOf.size > 0 ? tokenSpellingPattern([...tokenOf.keys()], grammar) : '';
+  if (pattern === '' || !new RegExp(pattern).test(html)) return [];
+  const spellings = new RegExp(pattern, 'g');
 
   const placements: MediaTokenPlacement[] = [];
   const root = parseFragment(html, { sourceCodeLocationInfo: true });
@@ -2871,7 +2925,7 @@ export function locateMediaTokens(
         });
         continue;
       }
-      for (const match of source.matchAll(spellings)) {
+      for (const match of tokenMatches(source, spellings, grammar)) {
         const start = location.startOffset + match.index;
         placements.push({ token: tokenOf.get(match[0])!, start, end: start + match[0].length, wrapped: false, context: own });
       }
@@ -4016,6 +4070,11 @@ function allowanceState(allowance: CodeMacroAllowance): CodeMacroAllowanceState 
 export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
   readonly dropped: number;
   readonly entries: number;
+  /**
+   * Review r9 CM9-2: `htmlToText(html)` when the bound-nonce check computed it (a code nonce was given), so the
+   * Apply route publishes it without parsing the same HTML again. A caller that changes `html` derives its own.
+   */
+  readonly text?: string;
 }
 
 /**
@@ -4054,10 +4113,11 @@ export async function convertImproveOutput(
   const replay = replayProtectedMedia(html, codeMeta);
   const finalized = finalizeCodeMetadata(replay.html, codeMeta);
   const nonce = options.codeNonce;
-  if (nonce !== undefined && (finalized.html.includes(nonce) || htmlToText(finalized.html).includes(nonce))) {
-    throw new ImproveCodePlacementError();
-  }
-  return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length };
+  if (nonce === undefined) return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length };
+  if (finalized.html.includes(nonce)) throw new ImproveCodePlacementError();
+  const text = htmlToText(finalized.html);
+  if (text.includes(nonce)) throw new ImproveCodePlacementError();
+  return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length, text };
 }
 
 /**
@@ -5855,32 +5915,36 @@ const DIV_START_TAG = /<div[\s/>]/i;
 /**
  * #1752: either spelling (turndown escapes `_`) of every protectMedia token
  * whose original HTML holds a `<div>` — the tokens the caller's restoreMedia
- * turns back into a div. `_1` never matches `_10`; the grammar is the
- * replay's (MediaTokenGrammar). Null when there are none, or when nothing
- * will restore the tokens (no media given).
+ * turns back into a div, read by the replay's grammar (tokenMatches,
+ * MediaTokenGrammar; `_1` never matches `_10`). Null when there are none, or
+ * when nothing will restore the tokens (no media given).
  */
-function blockMediaTokenPattern(media: readonly ProtectedMedia[] | undefined, grammar: MediaTokenGrammar): RegExp | null {
+function blockMediaTokenTest(
+  media: readonly ProtectedMedia[] | undefined,
+  grammar: MediaTokenGrammar,
+): ((body: string) => boolean) | null {
   const spellings = (media ?? [])
     .filter((entry) => DIV_START_TAG.test(entry.html))
-    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
-    .map(escapeRegExp);
-  return spellings.length > 0 ? new RegExp(`(?:${spellings.join('|')})${TOKEN_END[grammar]}`) : null;
+    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')]);
+  if (spellings.length === 0) return null;
+  const pattern = new RegExp(tokenSpellingPattern(spellings, grammar), 'g');
+  return (body) => tokenMatches(body, pattern, grammar).length > 0;
 }
 
 /**
  * #1752: does this rendered task-item body hold a `<div>`, or something that
  * becomes one — a draw.io fence (markdownToHtml turns it into
  * `div.confluence-drawio` after parsing) or a block-media token
- * (blockMediaTokenPattern)? TipTap's TaskItem parses its content from the
+ * (blockMediaTokenTest)? TipTap's TaskItem parses its content from the
  * first descendant `div` (`contentElement` in @tiptap/extension-list
  * task-item.ts), so a task item holding one would lose all content outside
  * that div in the editor. Inline placeholders (image, mention, status, Jira)
  * hold no div, so their task items stay tasks.
  */
-function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): boolean {
+function breaksTaskItemParse(body: string, holdsBlockMediaToken: ((body: string) => boolean) | null): boolean {
   return DIV_START_TAG.test(body)
     || body.includes('<code class="language-drawio">')
-    || (blockMediaToken !== null && blockMediaToken.test(body));
+    || (holdsBlockMediaToken !== null && holdsBlockMediaToken(body));
 }
 
 /**
@@ -5908,14 +5972,14 @@ function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): bool
  * once. A list without a task item returns `false`: marked's own rendering,
  * byte for byte.
  */
-function createEditorMarked(blockMediaToken: RegExp | null): Marked {
+function createEditorMarked(holdsBlockMediaToken: ((body: string) => boolean) | null): Marked {
   return new Marked({
     renderer: {
       list(token) {
         if (!token.items.some((item) => item.task)) return false;
         const items = token.items.map((item) => {
           const body = this.parser.parse(item.tokens, item.loose);
-          if (item.task && !breaksTaskItemParse(body, blockMediaToken)) {
+          if (item.task && !breaksTaskItemParse(body, holdsBlockMediaToken)) {
             return {
               task: true,
               html: `<li data-type="taskItem" data-checked="${item.checked ? 'true' : 'false'}">${body}</li>\n`,
@@ -6035,8 +6099,8 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
 
   const codeMeta = options?.codeMeta;
   // Review r8 CM8-1: the #1958 path's grammar only there; the base path and every other caller keep the legacy one.
-  const blockMediaToken = blockMediaTokenPattern(options?.protectedMedia, codeMeta?.mode === 'meta' ? 'current' : 'legacy');
-  const parser = blockMediaToken ? createEditorMarked(blockMediaToken) : EDITOR_MARKED;
+  const holdsBlockMediaToken = blockMediaTokenTest(options?.protectedMedia, codeMeta?.mode === 'meta' ? 'current' : 'legacy');
+  const parser = holdsBlockMediaToken ? createEditorMarked(holdsBlockMediaToken) : EDITOR_MARKED;
   let html: string;
   if (codeMeta && needsCodeMetaAnalysis(codeMeta, markdown)) {
     const tokens = parser.lexer(normalized);
