@@ -70,7 +70,9 @@ import {
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
-import { MAX_TASK_LIST_NESTING, confluenceToHtml, htmlToConfluence } from '../../core/services/content-converter.js';
+import { MAX_TASK_LIST_NESTING, assignTaskIds, confluenceToHtml, htmlToConfluence } from '../../core/services/content-converter.js';
+import { NO_STORAGE_DERIVATION_FEATURES } from '../../core/services/storage-derivation.js';
+import { STORAGE_DERIVATION_BASE_CORPUS } from '../../core/services/__fixtures__/storage-derivation-base-corpus.js';
 import {
   NESTED_TASK_LIST_EDITOR_HTML,
   NESTED_TASK_LIST_HTML,
@@ -3196,6 +3198,40 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       // Each task's list closes after the deeper ones: exactly one list per level, all nested.
       expect(written).toContain(`${'</ac:task-body></ac:task></ac:task-list>'.repeat(MAX_TASK_LIST_NESTING)}`);
       expect(written.match(/<ac:task-list>/g)).toHaveLength(MAX_TASK_LIST_NESTING);
+      editor.ws.close();
+    });
+
+    // Review r2 B2: a collaborative Save assigns ids before it serializes; both
+    // must take the pre-#1957 profile for a 33-level page. The oracle is the
+    // empty feature set (the base-bytes contract of storage-derivation.corpus).
+    it('saves the restore corpus page with a 33-level chain with the task ids of before #1957 (#1957)', async () => {
+      const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'tasks-list-before-own-body')!;
+      let chain = '';
+      for (let level = MAX_TASK_LIST_NESTING + 1; level >= 1; level -= 1) {
+        chain = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${100 + level}">`
+          + `<p>t${level}</p>${chain}</li></ul>`;
+      }
+      const { token, pageId, confluenceId } = await seedTaskPage(`<p>Tasks</p>${entry.targetHtml}${chain}`, entry.previousStorage!);
+      const editor = await joinTaskEditor(pageId, token);
+      const provider = mockTaskProvider(confluenceId);
+      const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+
+      editIntro(editor, ' (edited)');
+      await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('Tasks (edited)'));
+      const roomHtml = yDocToHtml(room.doc);
+      const saved = await save(pageId, token, commitPayload(editor.ws, 'Save', Y.snapshot(editor.doc)));
+      expect(saved.statusCode, saved.body).toBe(200);
+      const written = provider.storages[0]!;
+      expect(storageTaskIds(written))
+        .toEqual(['1', '134', ...Array.from({ length: MAX_TASK_LIST_NESTING + 1 }, (_, index) => String(101 + index))]);
+      const base = assignTaskIds(roomHtml, {
+        previousStorage: entry.previousStorage,
+        legacyTasks: false,
+        derivationFeatures: NO_STORAGE_DERIVATION_FEATURES,
+      });
+      expect(written).toBe(htmlToConfluence(base.html, { derivationFeatures: NO_STORAGE_DERIVATION_FEATURES }));
+      await vi.waitFor(() => expect(editor.controls).toContain('pages_version'));
+      expect.soft(taskIdsOf(editor.doc).slice(0, 2)).toEqual(['1', '134']);
       editor.ws.close();
     });
 

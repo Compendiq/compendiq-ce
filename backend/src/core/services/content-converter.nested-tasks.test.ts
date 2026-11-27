@@ -20,10 +20,10 @@ import {
   htmlToMarkdown,
   markdownToHtml,
   measureTaskListConversion,
-  storageTaskNesting,
 } from './content-converter.js';
 import { applyHtmlToYDoc, collabCarriesTaskIds, collabTaskItems, htmlToYDoc, markTaskIds, yDocToHtml } from './collab-schema.js';
 import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
+import { STORAGE_DERIVATION_BASE_CORPUS } from './__fixtures__/storage-derivation-base-corpus.js';
 import {
   NESTED_TASK_LIST_EDITOR_HTML,
   NESTED_TASK_LIST_HTML,
@@ -45,15 +45,26 @@ const BASE = {
   rawSublistForward: 'add2f2020a25a4c01b67a73b888883752b3e0d3341a4fcb16d1221c3c3879a23',
 };
 
+/**
+ * What bff6d4ec wrote for the review-r2 inputs, captured at that commit
+ * (`$EPIC/evidence/1957/capture-r2.mts.txt`).
+ */
+const BASE_R2 = {
+  comment33ForwardSha: '2b5302eb304f8ee6f56823259312b094a99b327b4b0d29f3bfe9ddb88f5d88e3',
+  mixedRawWriteSha: '40205edeb6c294cf5d367b0a6484525cf5294c65cc9f3dd904693a2bd4ade631',
+  draftSentSha: '5a68727a9b4e101795eecc0b0a722cea2f1ff4bc56a97ee32d3e597375023982',
+  draftIds: ['1', '134', ...Array.from({ length: 33 }, (_, index) => String(101 + index))],
+};
+
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
 /** `depth` editor task lists, each in the previous task's li; `innermost` ends the deepest task. */
-function editorChain(depth: number, innermost = ''): string {
+function editorChain(depth: number, innermost = '', idBase = 0): string {
   let html = '';
   for (let level = depth; level >= 1; level -= 1) {
-    html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${level}">`
+    html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${idBase + level}">`
       + `<p>t${level}</p>${level === depth ? innermost : ''}${html}</li></ul>`;
   }
   return html;
@@ -336,14 +347,15 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       expect(items(confluenceToHtml(siblingChain(MAX_TASK_LIST_NESTING + 50))).every((item) => item.depth === 1)).toBe(true);
     });
 
-    it('decides the limit with a scan of the storage as written, before any conversion work', () => {
-      for (const depth of [1, 10, MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1, 200]) {
-        // One look at each task-list tag: linear in the page.
-        expect(storageTaskNesting(chain(depth)), `depth ${depth}`).toEqual({ depth, tags: 2 * depth });
+    it('decides the limit with one walk of the parsed page, before anything is restructured', () => {
+      // The walk is the conversion's own index: one visit per element.
+      for (const depth of [1, 10, MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1]) {
+        expect(measureTaskListConversion(chain(depth, (level) => `t${level}`)), `depth ${depth}`)
+          .toEqual({ depth, visited: 5 * depth, moved: 3 * depth - 1 });
       }
       // A task list shown as code is text, not nesting.
       const code = `<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[${'<ac:task-list>'.repeat(40)}]]></ac:plain-text-body></ac:structured-macro>`;
-      expect(storageTaskNesting(`${code}${chain(2)}`)).toEqual({ depth: 2, tags: 4 });
+      expect(items(confluenceToHtml(`${code}${chain(2)}`)).map(({ id, depth }) => [id, depth])).toEqual([['1', 1], ['2', 2]]);
     });
 
     it('writes editor HTML nested one level more exactly as before #1957 (bff6d4ec)', () => {
@@ -361,7 +373,6 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
         + '<ac:task-status>incomplete</ac:task-status><ac:task-body>raw</ac:task-body></ac:task></ac:task-list>');
       const storage = htmlToConfluence(html);
       expect(sha256(storage)).toBe(BASE.rawSublistWrite);
-      expect(storageTaskNesting(storage).depth).toBe(MAX_TASK_LIST_NESTING + 1);
       expect(sha256(confluenceToHtml(storage))).toBe(BASE.rawSublistForward);
     });
 
@@ -391,6 +402,66 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
         previousStorage: storage,
         derivationFeatures: NO_STORAGE_DERIVATION_FEATURES,
       })).map((t) => t.id)).toEqual([String(depth)]);
+    });
+  });
+
+  describe('one limit decision on what reaches the output (review r2, decision D13a)', () => {
+    const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'tasks-list-before-own-body')!;
+    const previousStorage = entry.previousStorage!;
+    const RAW_133 = '<ac:task-list><ac:task><ac:task-id>133</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body>raw</ac:task-body></ac:task></ac:task-list>';
+    /** ids written for the corpus entry's two id-less tasks `n` and `own`. */
+    const ownIds = (storage: string) => storedTasks(storage).filter((t) => t.depth === 1).slice(0, 2).map((t) => t.id);
+
+    it('reads a task-list spelling inside a comment as text: 32 real levels still nest', () => {
+      const storage = chain(MAX_TASK_LIST_NESTING, (level) => (level === 1 ? 't1<!-- <ac:task-list> -->' : `t${level}`));
+      const html = confluenceToHtml(storage);
+      expect(items(html).map(({ id, depth }) => [id, depth]))
+        .toEqual(Array.from({ length: MAX_TASK_LIST_NESTING }, (_, index) => [String(index + 1), index + 1]));
+      expect(new JSDOM(`<body>${html}</body>`).window.document.getElementsByTagName('ac:task-list')).toHaveLength(0);
+    });
+
+    it('reads a closing spelling inside a comment as text: 33 real levels convert as before (bff6d4ec)', () => {
+      const storage = chain(MAX_TASK_LIST_NESTING + 1, (level) => (level === 1 ? 't1<!-- </ac:task-list> -->' : `t${level}`));
+      expect(sha256(confluenceToHtml(storage))).toBe(BASE_R2.comment33ForwardSha);
+    });
+
+    it('does not count lists placed directly in a list: a real subtask beside 33 of them still nests', () => {
+      const storage = list(
+        task('1', 'incomplete', `parent${list(task('2', 'complete', 'child'))}`),
+        `${'<ac:task-list>'.repeat(MAX_TASK_LIST_NESTING + 1)}${'</ac:task-list>'.repeat(MAX_TASK_LIST_NESTING + 1)}`,
+      );
+      expect(items(confluenceToHtml(storage)).map(({ id, depth }) => [id, depth])).toEqual([['1', 1], ['2', 2]]);
+    });
+
+    it('does not count a subtree write-back removes: an index of 33 levels leaves the profile alone', () => {
+      const plain = htmlToConfluence(entry.targetHtml, { previousStorage });
+      const indexed = htmlToConfluence(
+        `${entry.targetHtml}<div class="figure-index">${editorChain(MAX_TASK_LIST_NESTING + 1)}</div>`,
+        { previousStorage },
+      );
+      expect(indexed).toBe(plain);
+      // The control: the two profiles write different ids for this target.
+      expect(ownIds(plain)).toEqual(['2', '1']);
+      expect(ownIds(htmlToConfluence(entry.targetHtml, { previousStorage, derivationFeatures: NO_STORAGE_DERIVATION_FEATURES })))
+        .toEqual(['1', '3']);
+    });
+
+    it('counts editor and raw lists together: 32 editor levels and a raw one write the ids of before #1957 (bff6d4ec)', () => {
+      const deep = htmlToConfluence(`${entry.targetHtml}${editorChain(MAX_TASK_LIST_NESTING, RAW_133, 100)}`, { previousStorage });
+      expect(sha256(deep)).toBe(BASE_R2.mixedRawWriteSha);
+      expect(ownIds(deep)).toEqual(['1', '134']);
+      // Without the raw list the page is within the limit and gets the #1957 ids.
+      expect(ownIds(htmlToConfluence(`${entry.targetHtml}${editorChain(MAX_TASK_LIST_NESTING, '', 100)}`, { previousStorage })))
+        .toEqual(['2', '1']);
+    });
+
+    it('decides once for assignTaskIds and htmlToConfluence: a 33-level draft gets the ids of before #1957 (bff6d4ec)', () => {
+      const draft = `${entry.targetHtml}${editorChain(MAX_TASK_LIST_NESTING + 1, '', 100)}`;
+      const assigned = assignTaskIds(draft, { previousStorage, legacyTasks: false });
+      expect(assigned.taskIds).toEqual(BASE_R2.draftIds);
+      expect(sha256(htmlToConfluence(assigned.html))).toBe(BASE_R2.draftSentSha);
+      expect(storedTasks(htmlToConfluence(draft, { previousStorage })).map((t) => t.id)).toEqual(BASE_R2.draftIds);
     });
   });
 
