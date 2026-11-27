@@ -23,7 +23,7 @@ import {
   measureTaskListConversion,
 } from './content-converter.js';
 import { applyHtmlToYDoc, collabCarriesTaskIds, collabTaskItems, htmlToYDoc, markTaskIds, yDocToHtml } from './collab-schema.js';
-import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
+import { ALL_STORAGE_DERIVATION_FEATURES, NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
 import { STORAGE_DERIVATION_BASE_CORPUS } from './__fixtures__/storage-derivation-base-corpus.js';
 import {
   NESTED_TASK_LIST_EDITOR_HTML,
@@ -67,6 +67,17 @@ const BASE_R3 = {
   panel32Forward: 'df7bebd4be8030a733097ce2ea409b65b05d67e4026948d1fcba11577d02cef1',
   tocWrite: 'bc932bcd18b3795e5e3e5012bdda7da1ca45a70fd6d3f7b19ceb1347506a5f5f',
   wrap33Write: 'ae5d0bed50f28a56827c14b9160801ae79e172503b610997f43e9dbf607eb6b6',
+};
+
+/**
+ * What bff6d4ec wrote for the review-r4 inputs, captured at that commit
+ * (`$EPIC/evidence/1957/capture-r4.mts.txt`).
+ */
+const BASE_R4 = {
+  mixedForward: '16fea08ff469e879a3e09b4b0cec72547b9d859eb2a87e4a173e60126c0e13b0',
+  codeBodyForward: '00b0f4d08be2b1b1c055f12eb5ff547250f8909a0bbe53aafee35a51ce6edd3d',
+  wrappers33Forward: 'c8b402159953fe840e24b92d936a45b62348d07f940fbb3c11dcb6c497f4996c',
+  previousMixedWrite: 'b556b9cadb417e2968c15213fd1b3810b84ad4cc33823cf83133b7f5bc9783cb',
 };
 
 function sha256(value: string): string {
@@ -360,8 +371,8 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       expect(items(confluenceToHtml(siblingChain(MAX_TASK_LIST_NESTING + 50))).every((item) => item.depth === 1)).toBe(true);
     });
 
-    it('decides the limit with one walk of the parsed page, before anything is restructured', () => {
-      // The walk is the conversion's own index: one visit per element.
+    it('indexes the page for placing tasks in one walk', () => {
+      // One visit per element; placement only, the limit is decided syntactically.
       for (const depth of [1, 10, MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1]) {
         expect(measureTaskListConversion(chain(depth, (level) => `t${level}`)), `depth ${depth}`)
           .toEqual({ depth, visited: 5 * depth, moved: 3 * depth - 1 });
@@ -439,12 +450,14 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       expect(sha256(confluenceToHtml(storage))).toBe(BASE_R2.comment33ForwardSha);
     });
 
-    it('does not count lists placed directly in a list: a real subtask beside 33 of them still nests', () => {
-      const storage = list(
-        task('1', 'incomplete', `parent${list(task('2', 'complete', 'child'))}`),
-        `${'<ac:task-list>'.repeat(MAX_TASK_LIST_NESTING + 1)}${'</ac:task-list>'.repeat(MAX_TASK_LIST_NESTING + 1)}`,
+    it('counts lists placed directly in a list: a subtask beside 33 of them converts as before #1957 (D13b, bff6d4ec)', () => {
+      const beside = (wrappers: number) => list(
+        task('1', 'incomplete', `parent${list(task('2', 'incomplete', 'child'))}`),
+        `${'<ac:task-list>'.repeat(wrappers)}${'</ac:task-list>'.repeat(wrappers)}`,
       );
-      expect(items(confluenceToHtml(storage)).map(({ id, depth }) => [id, depth])).toEqual([['1', 1], ['2', 2]]);
+      expect(sha256(confluenceToHtml(beside(MAX_TASK_LIST_NESTING + 1)))).toBe(BASE_R4.wrappers33Forward);
+      // Within the limit the wrappers stay flat and the real subtask nests.
+      expect(items(confluenceToHtml(beside(MAX_TASK_LIST_NESTING - 1))).map(({ id, depth }) => [id, depth])).toEqual([['1', 1], ['2', 2]]);
     });
 
     it('does not count a subtree write-back removes: an index of 33 levels leaves the profile alone', () => {
@@ -520,7 +533,6 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       return deepest;
     };
     const storageDepth = (storage: string) => Math.max(0, ...storedTasks(storage).map((t) => t.depth));
-    const htmlDepth = (html: string) => Math.max(0, ...items(html).map((item) => item.depth));
 
     it('never brings back a task the code step discards (bff6d4ec)', () => {
       const storage = list(plain('1', 'keep'), code(list(plain('2', 'discard'))));
@@ -580,30 +592,90 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       }
     }, 300_000);
 
-    it('decides the forward pass on the lists it parses: past 32 the base output, within it no deeper output than counted', () => {
-      const shapes: Record<string, (depth: number) => string> = {
-        chain: (depth) => deep(depth),
-        toc: (depth) => deep(depth - 1, macro('toc', list(plain('200', 'toc')))),
-        panel: (depth) => deep(depth - 1, macro('info', list(plain('200', 'panel')))),
-        code: (depth) => deep(depth - 1, code(list(plain('200', 'code')))),
-        comment: (depth) => deep(depth, '<!-- <ac:task-list><ac:task-list> -->'),
-        siblings: (depth) => deep(depth - 1, siblingChain(4)),
-      };
-      for (const [name, shape] of Object.entries(shapes)) {
-        for (const depth of [MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1]) {
-          const storage = shape(depth);
-          const counted = measureTaskListConversion(storage).depth;
-          const html = confluenceToHtml(storage);
-          const label = `${name} ${depth} (counted ${counted})`;
-          if (counted > MAX_TASK_LIST_NESTING) {
-            expect(html, label).toBe(_confluenceToHtmlWithForTest(storage, NO_STORAGE_DERIVATION_FEATURES));
-          } else {
-            expect(htmlDepth(html), label).toBeLessThanOrEqual(counted);
-            expect(new JSDOM(`<body>${html}</body>`).window.document.getElementsByTagName('ac:task-list'), label).toHaveLength(0);
+    /**
+     * Forward fixtures with their syntactic nesting stated by the builder (task
+     * lists by ancestry, editor and raw, empty ones included; D13b), not by
+     * the converter. `depth` is the deepest list.
+     */
+    const forwardFixtures = (depth: number): Record<string, string> => ({
+      chain: deep(depth),
+      toc: deep(depth - 1, macro('toc', list(plain('200', 'toc')))),
+      panel: deep(depth - 1, macro('info', list(plain('200', 'panel')))),
+      code: deep(depth - 1, code(list(plain('200', 'code')))),
+      comment: deep(depth, '<!-- <ac:task-list><ac:task-list> -->'),
+      empty: deep(depth - 1, '<ac:task-list></ac:task-list>'),
+      wrappers: list(plain('500', 'p'), `${'<ac:task-list>'.repeat(depth - 1)}${'</ac:task-list>'.repeat(depth - 1)}`),
+      mixed: `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="500"><p>e</p>${deep(depth - 1)}</li></ul>`,
+      codeBody: '<ac:task-list><ac:task><ac:task-id>500</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+        + `${code('<ac:task-body>stray</ac:task-body>')}<ac:task-body>real${deep(depth - 1)}</ac:task-body></ac:task></ac:task-list>`,
+    });
+    /** Deepest editor-list nesting of `html`, empty lists included. */
+    const htmlListDepth = (html: string) => {
+      let deepest = 0;
+      const doc = new JSDOM(`<body>${html}</body>`).window.document;
+      for (const ul of doc.querySelectorAll('ul[data-type="taskList"]')) {
+        let depth = 0;
+        for (let up: Element | null = ul; up; up = up.parentElement) if (up.matches('ul[data-type="taskList"]')) depth += 1;
+        deepest = Math.max(deepest, depth);
+      }
+      return deepest;
+    };
+    /** Where `convert` breaks D13b on the fixtures at 32 and 33 levels. */
+    const forwardViolations = (convert: (storage: string) => string): string[] => {
+      const violations: string[] = [];
+      for (const depth of [MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1]) {
+        for (const [name, storage] of Object.entries(forwardFixtures(depth))) {
+          const html = convert(storage);
+          if (depth > MAX_TASK_LIST_NESTING) {
+            if (html !== _confluenceToHtmlWithForTest(storage, NO_STORAGE_DERIVATION_FEATURES)) violations.push(`${name} ${depth}: not the base output`);
+          } else if (htmlListDepth(html) > depth || new JSDOM(`<body>${html}</body>`).window.document.getElementsByTagName('ac:task-list').length > 0) {
+            violations.push(`${name} ${depth}: not converted within the limit`);
           }
         }
       }
+      return violations;
+    };
+
+    it('decides the forward pass on the syntactic depth: past 32 the base output, within it no deeper output', () => {
+      expect(forwardViolations((storage) => confluenceToHtml(storage))).toEqual([]);
     }, 300_000);
+
+    it('catches a converter that undercounts by one, everywhere or only for a code macro (review r4 mutations)', () => {
+      const onePastTheLimit = (storage: string) => _confluenceToHtmlWithForTest(storage, ALL_STORAGE_DERIVATION_FEATURES, MAX_TASK_LIST_NESTING + 1);
+      expect(forwardViolations(onePastTheLimit)).toEqual(expect.arrayContaining(['chain 33: not the base output']));
+      const code33 = forwardFixtures(MAX_TASK_LIST_NESTING + 1).code;
+      const selective = (storage: string) => (storage === code33 ? onePastTheLimit(storage) : confluenceToHtml(storage));
+      expect(forwardViolations(selective)).toEqual(['code 33: not the base output']);
+    }, 300_000);
+  });
+
+  describe('the forward limit counts editor and raw lists by ancestry (review r4, decision D13b)', () => {
+    const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'tasks-list-before-own-body')!;
+    /** `depth` raw levels with ids idBase+1…idBase+depth, as captured at bff6d4ec. */
+    const raw = (depth: number, idBase: number) => {
+      let storage = '';
+      for (let level = depth; level >= 1; level -= 1) storage = list(task(String(idBase + level), 'incomplete', `t${idBase + level}${storage}`));
+      return storage;
+    };
+    /** One editor task enclosing 32 raw levels: 33 syntactically, 32 by subtask ownership. */
+    const mixed = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="100"><p>e</p>${raw(32, 100)}</li></ul>`;
+
+    it('converts an editor task enclosing 32 raw levels as before #1957 (bff6d4ec)', () => {
+      expect(sha256(confluenceToHtml(mixed))).toBe(BASE_R4.mixedForward);
+    });
+
+    it('converts a task whose code macro holds a stray body before its 32-level body as before #1957 (bff6d4ec)', () => {
+      const storage = '<ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+        + '<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[x]]></ac:plain-text-body><ac:task-body>stray</ac:task-body>'
+        + `</ac:structured-macro><ac:task-body>real${raw(32, 1)}</ac:task-body></ac:task></ac:task-list>`;
+      expect(sha256(confluenceToHtml(storage))).toBe(BASE_R4.codeBodyForward);
+    });
+
+    it('reads stored tasks nested 33 deep in mixed form as before #1957: write-back keeps the ids of then (bff6d4ec)', () => {
+      const written = htmlToConfluence(entry.targetHtml, { previousStorage: `${entry.previousStorage}${mixed}` });
+      expect(sha256(written)).toBe(BASE_R4.previousMixedWrite);
+      expect(storedTasks(written).map((t) => t.id)).toEqual(['1', '133']);
+    });
   });
 
   describe('collab TipTap schema and a collaborative round trip', () => {

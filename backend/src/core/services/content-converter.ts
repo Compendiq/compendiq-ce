@@ -317,10 +317,16 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
 /**
  * Test seam (#1957): {@link confluenceToHtml} with a stated feature set, so a
  * test can compare a conversion with the one the empty set (the pre-#1957
- * derivation) gives.
+ * derivation) gives. `maxTaskListNesting` stands in for
+ * {@link MAX_TASK_LIST_NESTING}, so a test can check that its oracle catches
+ * a converter that decides the limit wrongly.
  */
-export function _confluenceToHtmlWithForTest(storageXhtml: string, features: StorageDerivationFeatures): string {
-  return confluenceToHtmlWith(storageXhtml, undefined, undefined, features);
+export function _confluenceToHtmlWithForTest(
+  storageXhtml: string,
+  features: StorageDerivationFeatures,
+  maxTaskListNesting = MAX_TASK_LIST_NESTING,
+): string {
+  return confluenceToHtmlWith(storageXhtml, undefined, undefined, features, maxTaskListNesting);
 }
 
 /**
@@ -341,12 +347,13 @@ function confluenceToHtmlWith(
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
+  maxTaskListNesting = MAX_TASK_LIST_NESTING,
 ): string {
   assertStorageDerivationFeatures(features);
   let nestTasks: boolean | undefined;
   let input = storageXhtml;
   while (true) {
-    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, nestTasks);
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, nestTasks, maxTaskListNesting);
     nestTasks = pass.nestTasks;
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
@@ -647,16 +654,21 @@ export function _setForwardDerivationStepForTest(step: ForwardDerivationStep | u
  */
 export const MAX_TASK_LIST_NESTING = 32;
 
+/** The generated figure and table indexes write-back removes before export (#13). */
+const GENERATED_INDEXES = 'div.figure-index, div.table-index';
+
 /**
- * How deep the task lists of HTML being written back nest (#1957, decision
- * D13b): editor lists (`ul[data-type="taskList"]`) and the raw `ac:task-list`
- * a body synced before #1957 still holds, by ancestry, outside the generated
- * figure and table indexes write-back removes. Syntactic: a list inside a
- * macro placeholder write-back drops, or placed directly in a list, counts
- * too, so this may overcount the written hierarchy and never undercounts it.
- * One walk of the already-parsed page, before anything is restructured.
+ * How deep the task lists of a parsed page nest (#1957, decision D13b):
+ * editor lists (`ul[data-type="taskList"]`) and raw `ac:task-list` alike, by
+ * element ancestry, empty lists included, outside subtrees matching `skip`
+ * (write-back passes the generated indexes it removes; the forward pass
+ * skips nothing). Syntactic: task ownership, the body a task's content comes
+ * from and whether an enclosing macro later keeps, flattens or drops a list
+ * play no part, so this may overcount the converted hierarchy and never
+ * undercounts it. Comments and CDATA are not elements. One walk of the
+ * already-parsed page, before anything is restructured.
  */
-function htmlTaskNesting(doc: Document): number {
+function taskListNesting(doc: Document, skip?: string): number {
   const depthOf = new Map<Element, number>();
   const removed = new Set<Element>();
   let deepest = 0;
@@ -664,7 +676,7 @@ function htmlTaskNesting(doc: Document): number {
   // the tree per index, which a 6,000-task page turned into seconds.
   for (const el of doc.body.querySelectorAll('*')) {
     const parent = el.parentElement;
-    if ((parent && removed.has(parent)) || el.matches('div.figure-index, div.table-index')) {
+    if (skip !== undefined && ((parent && removed.has(parent)) || el.matches(skip))) {
       removed.add(el);
       continue;
     }
@@ -690,7 +702,7 @@ function htmlTaskNesting(doc: Document): number {
  */
 function writeBackProfile(doc: Document, options: HtmlToConfluenceOptions): StorageDerivationFeatures {
   const features = writeBackFeatures(options);
-  if (!derivationHas(features, 'nested-tasks') || htmlTaskNesting(doc) <= MAX_TASK_LIST_NESTING) return features;
+  if (!derivationHas(features, 'nested-tasks') || taskListNesting(doc, GENERATED_INDEXES) <= MAX_TASK_LIST_NESTING) return features;
   return new Set([...features].filter((feature) => feature !== 'nested-tasks'));
 }
 
@@ -718,7 +730,7 @@ interface TaskListIndex {
   keptListOf: Map<Element, Element>;
   /** The tasks of each kept list, in source order. */
   tasksOf: Map<Element, Element[]>;
-  /** The deepest kept-list nesting: the depth the conversion writes. */
+  /** The deepest kept-list nesting the conversion writes (not the limit decision). */
   deepest: number;
   visited: number;
 }
@@ -732,9 +744,9 @@ interface TaskListIndex {
  * outside its body) is not Confluence's nesting: its tasks join the nearest
  * kept list in source order, as they always have, and it adds no depth. The
  * walk sees elements only, so a comment or CDATA text spelling a task list
- * counts for nothing. `deepest` decides the limit on the first pass's parse,
- * a list inside any macro included (syntactic, D13b); the conversion indexes
- * again after the code step. `null` when the page has no task list.
+ * counts for nothing. Placement only: the limit is decided by
+ * {@link taskListNesting}. The conversion indexes at its own step, after the
+ * code step. `null` when the page has no task list.
  */
 function indexTaskLists(doc: Document): TaskListIndex | null {
   if (doc.getElementsByTagName('ac:task-list').length === 0) return null;
@@ -914,6 +926,7 @@ function confluenceToHtmlPass(
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
   nestTasks: boolean | undefined,
+  maxTaskListNesting: number,
 ): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
@@ -921,14 +934,13 @@ function confluenceToHtmlPass(
   forwardDerivationStepForTest?.(doc, features);
   // #1957 (decisions D13a, D13b): the first pass decides on the tree it just
   // parsed, before anything moves; later passes keep that decision. The count
-  // is syntactic: the subtask nesting of every task list parsed, inside a
-  // macro that later keeps, flattens or drops it included, so it may
-  // overcount the output (the page then converts as before #1957) and never
-  // undercounts it.
+  // is syntactic (taskListNesting: every editor and raw task list by
+  // ancestry), so it may overcount the output (the page then converts as
+  // before #1957) and never undercounts it. The task index below only places
+  // tasks.
   let nest = nestTasks;
   if (nest === undefined) {
-    nest = derivationHas(features, 'nested-tasks')
-      && (indexTaskLists(doc)?.deepest ?? 0) <= MAX_TASK_LIST_NESTING;
+    nest = derivationHas(features, 'nested-tasks') && taskListNesting(doc) <= maxTaskListNesting;
   }
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
   const macrosBefore = countRawStructuredMacros(doc.body);
@@ -1449,7 +1461,7 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   const features = writeBackProfile(doc, options);
 
   // Strip auto-generated index blocks before export to Confluence (#13)
-  for (const div of doc.querySelectorAll('div.figure-index, div.table-index')) {
+  for (const div of doc.querySelectorAll(GENERATED_INDEXES)) {
     div.remove();
   }
 
