@@ -287,15 +287,23 @@ any change to the existing conflict policy.
     after it). Everything stored that points somewhere takes part: every
     link-like element and every `<a href>`, whatever its body, because
     body_html cannot tell the carrier of a link from a stored `<a>` with the
-    same href. A link in a place that holds one thing in each string, the
-    stored one being a link of its target and body, is kept. A link in its
-    stored place with an edited body is kept, unless the new body is that of
-    anything stored with another target. A moved link with its stored body is
-    kept, unless something stored with that body and another target is missing
-    from what is written. A link that took the place of something stored with
-    another target, one of several identical copies outside the stored place,
-    and one with no match at all are not kept. With no origin no such link is
-    kept.
+    same href. A link of any kind without a body of its own takes part with
+    the text the forward pass shows for it (the display text of its primary
+    value: a page title, a space key, an anchor, a URL), in its body and in
+    the places around it, exactly as an explicit body would; this is only
+    evidence against a match, never a grant. A link whose shown text is not
+    known (a mention, an unknown resource, a link not written `ac:link`) is
+    never taken for one that shows nothing: it stands in the places around it
+    as one unknown character, matches no body, and when it is missing from
+    what is written, every link that could be it retargeted is not kept. A
+    link in a place that holds one thing in each string, the stored one being
+    a link of its target and body, is kept. A link in its stored place with an
+    edited body is kept, unless the new body is that of anything stored with
+    another target. A moved link with its stored body is kept, unless
+    something stored with that body and another target is missing from what is
+    written. A link that took the place of something stored with another
+    target, one of several identical copies outside the stored place, and one
+    with no match at all are not kept. With no origin no such link is kept.
   - **A link that is not kept becomes what it shows, or the write is
     refused.** The link is taken away in the document and what it shows stays:
     the nodes of an `ac:link-body`, the text an XML reader reads from an
@@ -311,7 +319,9 @@ any change to the existing conflict policy.
   reads the string with `confluence-storage-reader.ts`: a streaming XML reader
   (saxes, namespace-aware, the 248 XHTML entity names, no DOM) with fixed
   limits (8 MiB, depth 1,024, 1,000,000 nodes) that stops at its first
-  refusal. Storage format is XML, and JSDOM reads the same string as HTML: the
+  refusal; the start of a tag and each attribute are charged at their own
+  parser event, so a refusal leaves the rest of a tag unread. Storage format
+  is XML, and JSDOM reads the same string as HTML: the
   two disagree about raw-text elements, templates, CDATA and comments. A link
   is recognised by the local name `url` in any prefix and any case; only
   `ri:url` in the Confluence namespace directly inside an `ac:link` with a
@@ -358,27 +368,42 @@ any change to the existing conflict policy.
   token only where it stands as content (`locateMediaTokens`, parse5 source
   locations): a token spelled in an attribute value, a comment or raw text
   stays as written, so restoring media cannot rewrite an href or a class. A
-  token under an element the tree builder moved is no placement either: its
-  place in the tree is not where its source stands (an element or text
-  directly inside a table, misnested formatting rebuilt around a block), so
-  it stays text and the drop-guard re-appends the media.
+  token is no placement either where a reparse would not hold what is spliced
+  in at the place reported: under an element the tree builder moved (an
+  element or text directly inside a table, misnested formatting rebuilt
+  around a block), in a `select` (it drops every element inserted into it),
+  in SVG or MathML (an inserted image leaves foreign content), and under an
+  element whose own content holds a start tag the tree builder ignored (a
+  cell outside a table, a `div` in a `select`: what it held stands under
+  another element). It stays text and the drop-guard re-appends the media.
+  The forward pass reads `&lang;` and `&rang;` in the start tags of a link of
+  the five kinds and of its resource as XML does (U+2329, U+232A), so such a
+  target is written back with the value Confluence holds, however it is
+  spelled; text, bodies and the three #1748 kinds are read with the HTML
+  values (U+27E8, U+27E9), as the base commit read them (pre-existing, not
+  changed here).
   The whole change is the storage-derivation feature `link-kinds` (#1953): a
   version restore reserved before it, or under a profile without it, derives
   the bytes of the base commit and never meets the judgement. Limits, all on
   the declining side: a link the editor splits (around inline code, an image,
-  a line break on a collaborative Save) keeps at most one piece as the link; a
-  link moved and relabelled in one save becomes text, and so may one
-  relabelled next to another link with the same text; on a page that also
-  stores an `<a>` with the same body as a link (a hand-written
-  `<a href="#confluence-url:…">`, or an ordinary anchor showing the same
-  text), deleting or moving either leaves text, since which one is left
-  cannot be told; schemes are matched in lowercase only, so `HTTPS://…` is an
-  inert carrier; a literal TAB, LF or CR inside an attribute of a stored
-  unsafe link (XML reads it as a space) declines that link; a stored link with
-  more attributes than the grammar carries is no origin; raw link markup that
-  is not the exact shape and has no body is refused rather than removed. A row
-  synced before #1955 holds these links as text; they come back with its next
-  sync from Confluence, or with the re-conversion of #1953.
+  a line break on a collaborative Save) keeps at most one piece as an unsafe
+  (not navigable) `ri:url` link, while every piece of a navigable one is
+  written; a link moved and relabelled in one save becomes text, and so may
+  one relabelled next to another link with the same text; on a page that
+  also stores something else showing the same text as a link (an `<a>` such
+  as a hand-written `<a href="#confluence-url:…">`, an ordinary anchor, or a
+  link of another kind such as a page link titled like the URL), when one of
+  the two is deleted, the link is still kept where it stands in its own
+  stored place and that place names it alone, but a link that has moved, or
+  whose surroundings changed with the deletion, becomes text, since which one
+  is left cannot be told; schemes are matched in lowercase only, so
+  `HTTPS://…` is an inert carrier; a literal TAB, LF or CR inside an
+  attribute of a stored unsafe link (XML reads it as a space) declines that
+  link; a stored link with more attributes than the grammar carries is no
+  origin; raw link markup that is not the exact shape and has no body is
+  refused rather than removed. A row synced before #1955 holds these links as
+  text; they come back with its next sync from Confluence, or with the
+  re-conversion of #1953.
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's
@@ -1423,7 +1448,9 @@ On `POST /llm/improvements/apply` the route:
    turndown-escaped variants `CQ\_MEDIA\_PLACEHOLDER\_N`) with the original
    HTML verbatim. A token is replaced only where it stands as content
    (`locateMediaTokens`, #1955); one inside an attribute value, a comment or
-   raw text stays as written.
+   raw text stays as written, and so does one where a reparse would not hold
+   the media at that place (a `select`, SVG or MathML, a subtree the tree
+   builder moved, an element holding a start tag it ignored).
 4. Appends any media entries whose HTML is still missing after restoration
    (LLM dropped the token entirely) and logs a warning.
 

@@ -81,11 +81,16 @@ where a writer keeps `previousStorage` for task ids alone) holds that very
 link, same target with the same body or in the same place, and nothing else
 stored could be its source (`confluence-url-origin.ts`). Every stored link and
 `<a href>` with the same body competes, whatever the label: body_html cannot
-tell a link's carrier from a stored anchor with the same href. A link that is
+tell a link's carrier from a stored anchor with the same href. A link of any
+kind without a body competes with the text the forward pass shows for it (its
+title, key, anchor or value); one whose shown text is not known (a mention)
+matches no body, and when it is missing from what is written no moved or
+relabelled link that could be it is kept. A link that is
 not approved becomes what it shows: the nodes of a rich body, the XML text of
 a plain body, or the display text of a body-less link. That is judged on the
 storage string about to be sent, read as XML by `confluence-storage-reader.ts`
-(saxes, never JSDOM, which reads storage as HTML). `ConfluenceStorageRefusedError`
+(saxes, never JSDOM, which reads storage as HTML; a tag's start and each
+attribute are charged as the parser reads them). `ConfluenceStorageRefusedError`
 (422, nothing sent, nothing changed) is thrown instead of a silent loss: the
 string may hold a `url` element and cannot be read, the links cannot be judged
 within the work limit (written or stored side), or an unapproved link cannot be
@@ -95,17 +100,25 @@ after the repair). No cap of the judgement drops a link: a body of any length
 is evidence. Every writer of a synced page derives the storage once, before it
 reserves its intent, and authorizes the page before it plans files or derives
 anything; create and relocation have no origin, so they write no unsafe
-`ri:url`. `restoreMedia` replaces a token only where it stands as content
+`ri:url`. The forward pass reads `&lang;`/`&rang;` in the tags of a link of the
+five kinds as XML does (U+2329/U+232A), so its target is written back
+unchanged; text and the #1748 kinds keep the HTML values, as before #1955.
+`restoreMedia` replaces a token only where it stands as content
 (`locateMediaTokens`, parse5): never in an attribute, a comment or raw text,
-and never under an element the tree builder moved (out of a table, or
-misnested formatting). The change is the storage-derivation feature
-`link-kinds`. Limits, all declining: a link the editor splits keeps at most one
-piece; a link both moved and relabelled, one of several identical links, and a
-link left when a stored thing with its body and another target went missing
-become text; a page that also stores an `<a>` with the same body cannot keep
-the link once either is deleted or moved; a row synced before #1955 holds these
-links as text until it is re-synced. That Confluence rejects storage that is
-not well-formed XML is an assumption, not tested against a server.
+never under an element the tree builder moved (out of a table, or misnested
+formatting), and never where a reparse would drop or move what is spliced in
+(a `select`, SVG or MathML, an element holding a start tag the tree builder
+ignored). The change is the storage-derivation feature `link-kinds`. Limits,
+all declining: a link the editor splits keeps at most one piece as an unsafe
+(not navigable) `ri:url` link; a link both moved and relabelled, one of several
+identical links, and a link left when a stored thing with its body and another
+target went missing become text; on a page that also stores something else
+showing the same text as a link (an `<a>`, a page link with that title), once
+one of the two is deleted the link is kept only where it still stands in its
+own stored place, unchanged around it, and becomes text if it moved; a row
+synced before #1955 holds these links as text until it is re-synced. That
+Confluence rejects storage that is not well-formed XML is an assumption, not
+tested against a server.
 
 `body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
 imports, drafts, version text; Notion imports join parts with blank lines, restores copy
