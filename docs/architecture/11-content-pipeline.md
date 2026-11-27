@@ -29,7 +29,7 @@ truth. Two writers move `body_html`:
 | Path | What it writes | What it must not write |
 |------|----------------|------------------------|
 | **Snapshot** (debounced 2 s after an applied update, and immediately on last disconnect) | `pages.body_html`, `pages.body_text`, `embedding_dirty`, gated `image_analysis_dirty`. `page_collaborative_docs.doc_state` / `state_vector` (persistence generation `version`). | `pages.version`, `local_modified_at` / `local_modified_by`, `summary_status` / `quality_status`, `body_storage`. Snapshot HTML is search freshness, not a Save. Stamping local-modified would make confluence-wins treat a pause as `hasLocalEdits`. |
-| **Commit** (`POST /api/pages/:id/collab/commit`) | Snapshot HTML from the Y.Doc (do **not** bump `pages.version` yet). **Standalone:** `title`, `body_html`, `body_text`, `version = version + 1`, `local_modified_*`, summary/quality pending, embedding flags. Retry once if two commits race. **Confluence:** GET remote version; if `version.number` moved vs current `pages.version` → 409 `{ code: 'confluence_modified', remoteVersion, localVersion }`, no `updatePage`, room stays live. Else `htmlToConfluence` + `uploadLocalImagesToConfluence` (pasted images only; draw.io preview `img`s inside `.confluence-drawio` are never uploaded, #1935) then **`client.updatePage` first** (pass the current local version; the client adds 1). On 5xx local version unchanged. On success one transaction: `body_html` / `body_text` / `body_storage` / `version = confPage.version.number` / `last_synced` / clear `local_modified_*` / summary+quality pending. A commit that uploaded pasted images then marks them (`data-confluence-filename`, `data-confluence-image-source="attachment"`) in the live room and in `page_collaborative_docs`, so the room's next snapshot keeps them and the next commit does not upload them again (#1764). Broadcasts WS control type 4 `pages_version`. | Client `bodyHtml` / client `version`. Never increment `pages.version` before the remote write succeeds. |
+| **Commit** (`POST /api/pages/:id/collab/commit`) | Snapshot HTML from the Y.Doc (do **not** bump `pages.version` yet). **Standalone:** `title`, `body_html`, `body_text`, `version = version + 1`, `local_modified_*`, summary/quality pending, embedding flags. Retry once if two commits race. **Confluence:** GET remote version; if `version.number` moved vs current `pages.version` → 409 `{ code: 'confluence_modified', remoteVersion, localVersion }`, no `updatePage`, room stays live. Else `htmlToConfluence` on the planned pasted images (`planLocalImagesForConfluence`, then `preparePastedImagePlan` and `uploadPreparedPastedImage` inside the effect; pasted images only; draw.io preview `img`s inside `.confluence-drawio` are never uploaded, #1935) then **`client.updatePage` first** (pass the current local version; the client adds 1). On 5xx local version unchanged. On success one transaction: `body_html` / `body_text` / `body_storage` / `version = confPage.version.number` / `last_synced` / clear `local_modified_*` / summary+quality pending. A commit that uploaded pasted images then marks them (`data-confluence-filename`, `data-confluence-image-source="attachment"`) in the live room and in `page_collaborative_docs`, so the room's next snapshot keeps them and the next commit does not upload them again (#1764). Broadcasts WS control type 4 `pages_version`. | Client `bodyHtml` / client `version`. Never increment `pages.version` before the remote write succeeds. |
 
 A non-collab `body_html` writer (PUT, restore, Apply, draft-publish) **409s**
 `collab_session_active` while `collab:active:{pageId}` is non-empty. When the
@@ -281,60 +281,104 @@ any change to the existing conflict policy.
     always written back. Any other `ri:url` in the storage about to be sent is
     kept only where the origin, the storage the page holds now
     (`HtmlToConfluenceOptions.linkOrigin`, by default `previousStorage`), has
-    the same link: the same resource and attributes in any
-    order, with either the same body (text with white space collapsed, plus
-    its media) or the same place (the task it is in and the 64 characters of
-    text before and after it). A link in its stored place with an edited body
-    is kept; a moved link with its stored body is kept; a link that took the
-    place or the distinctive body of another stored link, one of several
-    identical copies outside the stored place, and one with no match at all
-    are unwrapped to their body (logged as `Confluence URL links without a
-    stored origin written as text (#1955)`, counts only). With no
-    origin every such link is unwrapped.
+    the same link: the same resource and attributes in any order, with either
+    the same body (text with white space collapsed, plus its media) or the
+    same place (the task it is in and the 64 characters of text before and
+    after it). Everything stored that points somewhere takes part: every
+    link-like element and every `<a href>`, whatever its body, because
+    body_html cannot tell the carrier of a link from a stored `<a>` with the
+    same href. A link in a place that holds one thing in each string, the
+    stored one being a link of its target and body, is kept. A link in its
+    stored place with an edited body is kept, unless the new body is that of
+    anything stored with another target. A moved link with its stored body is
+    kept, unless something stored with that body and another target is missing
+    from what is written. A link that took the place of something stored with
+    another target, one of several identical copies outside the stored place,
+    and one with no match at all are not kept. With no origin no such link is
+    kept.
+  - **A link that is not kept becomes what it shows, or the write is
+    refused.** The link is taken away in the document and what it shows stays:
+    the nodes of an `ac:link-body`, the text an XML reader reads from an
+    `ac:plain-text-link-body` (the CDATA text, not the document's text of the
+    element), or the display text of the exact shape without a body. It is
+    logged as `Confluence URL links without a stored origin written as text
+    (#1955)`, counts only. What a link shows is not known when it is not an
+    `ac:link` element, holds text or an element outside its bodies other than
+    empty resource elements, or has no body with content and is not the exact
+    shape; such a link is not taken away, the write is refused.
   The judgement runs on the storage string itself, last, after every other
   stage (`enforceConfluenceUrlLinkOrigin`, `confluence-url-origin.ts`). It
   reads the string with `confluence-storage-reader.ts`: a streaming XML reader
   (saxes, namespace-aware, the 248 XHTML entity names, no DOM) with fixed
-  limits (8 MiB, depth 1,024, 1,000,000 nodes), because JSDOM reads storage as
-  HTML and Confluence reads it as XML, and the two disagree about raw-text
-  elements, CDATA and comments. A link is recognised by the local name `url`
-  in any prefix; only `ri:url` in the Confluence namespace directly inside an
-  `ac:link` with a lossless carrier can be approved. After a repair the string
-  is serialised and read again, and the second reading is the one that counts.
-  `ConfluenceStorageRefusedError` (`not-well-formed`, `too-large`, `too-deep`,
-  `too-many-nodes`, `unapproved-link`) is thrown when the body still holds a
-  `url` element the judgement did not approve, or cannot be read as XML while
-  a `url` start tag appears in it; a body that names no such tag is returned
-  as it always was. The global error handler answers **422** with the reason
-  and a message that says nothing was changed; the user can remove the link or
-  the markup around it, or edit the page in Confluence. Every writer of a
-  synced page (`PUT /pages/:id`, draft publish, collaborative Save, version
-  restore, Improve apply) gives the stored storage as the origin and derives
-  the storage once, before the intent is reserved and before any upload, then
+  limits (8 MiB, depth 1,024, 1,000,000 nodes) that stops at its first
+  refusal. Storage format is XML, and JSDOM reads the same string as HTML: the
+  two disagree about raw-text elements, templates, CDATA and comments. A link
+  is recognised by the local name `url` in any prefix and any case; only
+  `ri:url` in the Confluence namespace directly inside an `ac:link` with a
+  lossless carrier can be approved. A string is not read at all only when it
+  cannot hold such an element by XML's name grammar (no `<`, name characters,
+  `url`, end of name). After a repair the string is serialised and read again;
+  the second reading is the one that counts, and it must show the same text
+  as the first. `ConfluenceStorageRefusedError` (`not-well-formed`,
+  `too-large`, `too-deep`, `too-many-nodes`, `unapproved-link`) is thrown:
+  - when the string may hold a `url` element and cannot be read. It is left
+    as it was only when a lexical scan accounts for all of it (comments, CDATA
+    sections, processing instructions, end tags, start tags with quoted
+    values) and finds no start tag named `url`; a `<` that opens no tag, an
+    unquoted value or anything else the scan cannot account for is a refusal;
+  - when the links cannot be judged within the work limit
+    (`STORAGE_LINK_LIMITS.work`, steps plus characters kept), in the written
+    or in the stored storage. There is no other cap: a body of any length and
+    with any number of images is compared in full, and a link is never
+    dropped because judging it was costly;
+  - when a link that is not kept cannot be taken away without loss (above),
+    is no element of the document (markup in raw text), or is still there.
+  The refusal is logged once, where it is decided, with its reason only. The
+  global error handler answers **422** with the reason and a message that
+  says nothing was changed; the user can remove the link or the markup around
+  it, or edit the page in Confluence. That a Confluence server rejects storage
+  that is not well-formed XML is an assumption: it was not tested against a
+  server, and nothing here depends on it. Every writer of a synced page
+  (`PUT /pages/:id`, draft publish, collaborative Save, version restore,
+  Improve apply) gives the stored storage as the origin and derives the
+  storage once, before the intent is reserved and before any upload, then
   sends that very string; draft publish and collaborative Save pass it as
-  `linkOrigin` because they keep `previousStorage` for task ids alone. Create
-  and relocation have no origin. Recovery of a
-  version restore reads a refusal of the recorded derivation as
-  `intent_restore_target_changed` and sends nothing.
+  `linkOrigin` because they keep `previousStorage` for task ids alone.
+  `PUT /pages/:id` and draft publish authorize the page (active actor, the
+  page's own access entries, the revision read) before they plan pasted
+  images or derive anything from the stored body or draft, so a space member
+  the page denies gets that denial and no refusal that describes content.
+  Create and relocation have no origin. Recovery of a version restore reads a
+  refusal of the recorded derivation as `intent_restore_target_changed` and
+  sends nothing.
   On Improve the Markdown destination of a `ri:url` link is always its
   carrier, so a model that keeps the link returns the carrier and
   `markdownToHtml` turns a navigable one back into the real href with its
-  class (`materializeConfluenceUrlLinks`). `restoreMedia` now replaces a media
+  class (`materializeConfluenceUrlLinks`). `restoreMedia` replaces a media
   token only where it stands as content (`locateMediaTokens`, parse5 source
   locations): a token spelled in an attribute value, a comment or raw text
-  stays as written, so restoring media cannot rewrite an href or a class.
+  stays as written, so restoring media cannot rewrite an href or a class. A
+  token under an element the tree builder moved is no placement either: its
+  place in the tree is not where its source stands (an element or text
+  directly inside a table, misnested formatting rebuilt around a block), so
+  it stays text and the drop-guard re-appends the media.
   The whole change is the storage-derivation feature `link-kinds` (#1953): a
-  version restore reserved before it derives the bytes of the base commit and
-  never meets the judgement. Limits, all on the declining side: a link the
-  editor splits (around inline code, an image, a line break on a
-  collaborative Save) keeps at most one piece as the link; a link moved and
-  relabelled in one save becomes text, and so may one relabelled next to
-  another link with the same text; schemes are matched in lowercase only, so `HTTPS://…` is an
+  version restore reserved before it, or under a profile without it, derives
+  the bytes of the base commit and never meets the judgement. Limits, all on
+  the declining side: a link the editor splits (around inline code, an image,
+  a line break on a collaborative Save) keeps at most one piece as the link; a
+  link moved and relabelled in one save becomes text, and so may one
+  relabelled next to another link with the same text; on a page that also
+  stores an `<a>` with the same body as a link (a hand-written
+  `<a href="#confluence-url:…">`, or an ordinary anchor showing the same
+  text), deleting or moving either leaves text, since which one is left
+  cannot be told; schemes are matched in lowercase only, so `HTTPS://…` is an
   inert carrier; a literal TAB, LF or CR inside an attribute of a stored
   unsafe link (XML reads it as a space) declines that link; a stored link with
-  more attributes than the grammar carries is no origin. A row synced before
-  #1955 holds these links as text; they come back with its next sync from
-  Confluence, or with the re-conversion of #1953.
+  more attributes than the grammar carries is no origin; raw link markup that
+  is not the exact shape and has no body is refused rather than removed. A row
+  synced before #1955 holds these links as text; they come back with its next
+  sync from Confluence, or with the re-conversion of #1953.
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's

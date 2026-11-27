@@ -76,22 +76,36 @@ carries exactly that href (`isConfluenceUrlClassCarrierFor`). Any other value
 (`javascript:`, `data:`, relative, `HTTPS:`, empty) is an inert
 `#confluence-url:` fragment and is never an href anywhere. On write-back a
 navigable `ri:url` is always written; any other `ri:url` is written only where
-`linkOrigin` (the page's stored storage) holds that very link, same target,
-same place or same body, and otherwise becomes its text
-(`confluence-url-origin.ts`). That is judged on the storage string about to be
-sent, read as XML by `confluence-storage-reader.ts` (saxes, never JSDOM, which
-reads storage as HTML): a body that still holds a `url` element the judgement
-did not approve, or cannot be read while it names one, throws
-`ConfluenceStorageRefusedError` (422, nothing sent, nothing changed). Every
-writer of a synced page gives the stored storage as the origin
-(`previousStorage`, or `linkOrigin` where a writer keeps `previousStorage` for
-task ids alone) and derives the storage once, before it reserves its intent;
-create and relocation have none, so they write no unsafe `ri:url`. `restoreMedia` replaces a token only where it
-stands as content (`locateMediaTokens`, parse5), never in an attribute. The
-change is the storage-derivation feature `link-kinds`. Limits: a link the
-editor splits keeps at most one piece; a link both moved and relabelled, or one
-of several identical links, becomes text; a row synced before #1955 holds
-these links as text until it is re-synced.
+the origin (the page's stored storage: `previousStorage`, or `linkOrigin`
+where a writer keeps `previousStorage` for task ids alone) holds that very
+link, same target with the same body or in the same place, and nothing else
+stored could be its source (`confluence-url-origin.ts`). Every stored link and
+`<a href>` with the same body competes, whatever the label: body_html cannot
+tell a link's carrier from a stored anchor with the same href. A link that is
+not approved becomes what it shows: the nodes of a rich body, the XML text of
+a plain body, or the display text of a body-less link. That is judged on the
+storage string about to be sent, read as XML by `confluence-storage-reader.ts`
+(saxes, never JSDOM, which reads storage as HTML). `ConfluenceStorageRefusedError`
+(422, nothing sent, nothing changed) is thrown instead of a silent loss: the
+string may hold a `url` element and cannot be read, the links cannot be judged
+within the work limit (written or stored side), or an unapproved link cannot be
+taken away without loss (it is no element of the document, it is not the exact
+`ac:link` shape and shows something outside a body, or the text shown differs
+after the repair). No cap of the judgement drops a link: a body of any length
+is evidence. Every writer of a synced page derives the storage once, before it
+reserves its intent, and authorizes the page before it plans files or derives
+anything; create and relocation have no origin, so they write no unsafe
+`ri:url`. `restoreMedia` replaces a token only where it stands as content
+(`locateMediaTokens`, parse5): never in an attribute, a comment or raw text,
+and never under an element the tree builder moved (out of a table, or
+misnested formatting). The change is the storage-derivation feature
+`link-kinds`. Limits, all declining: a link the editor splits keeps at most one
+piece; a link both moved and relabelled, one of several identical links, and a
+link left when a stored thing with its body and another target went missing
+become text; a page that also stores an `<a>` with the same body cannot keep
+the link once either is deleted or moved; a row synced before #1955 holds these
+links as text until it is re-synced. That Confluence rejects storage that is
+not well-formed XML is an assumption, not tested against a server.
 
 `body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
 imports, drafts, version text; Notion imports join parts with blank lines, restores copy
