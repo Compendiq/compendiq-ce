@@ -13,7 +13,9 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { isVersionPlaceholderTitle, livePageVersion, type PageVersionSource } from '../../../core/services/version-snapshot.js';
 import {
   PageWriteError,
+  registerPageWriteIntentPreflight,
   registerPageWriteIntentReconciler,
+  type PageWriteIntentPreflight,
   type PageWriteIntentReconciler,
   type PageWriteRecoveryIntent,
 } from '../../../core/services/page-write-admission.js';
@@ -251,7 +253,7 @@ function publicationFromRecoveryIntent(
     if (!derivation.ok) {
       // Reserved by a release that registers a feature this one does not.
       // Its storage cannot be derived here; a runtime that knows the feature
-      // recovers it. Nothing was read or written.
+      // recovers it. The preflight below raises this before the claim.
       throw new PageWriteError(
         409,
         'intent_restore_derivation_unsupported',
@@ -560,6 +562,22 @@ export async function publishConfluencePagePut(
   };
 }
 
+/**
+ * Refuse a restore whose recorded storage-derivation features this runtime
+ * does not register before recovery takes ownership of it (#1953): the intent
+ * keeps its fenced owner, so a runtime of the reserving release can still
+ * claim and settle it. This is the parse the reconciler repeats after the
+ * claim, and only this refusal is raised here; every other one keeps its
+ * place after the claim.
+ */
+const refuseUnsupportedRestoreDerivation: PageWriteIntentPreflight = (intent) => {
+  try {
+    publicationFromRecoveryIntent(intent);
+  } catch (error) {
+    if (error instanceof PageWriteError && error.reason === 'intent_restore_derivation_unsupported') throw error;
+  }
+};
+
 const reconcilePagePut: PageWriteIntentReconciler = async (dbClient, intent) => {
   const publication = publicationFromRecoveryIntent(intent);
   const confluence = await getClientForUser(publication.actorId, dbClient);
@@ -640,5 +658,6 @@ export function registerConfluencePagePutIntentReconcilers(): void {
   if (registered) return;
   registerPageWriteIntentReconciler('page.ai_apply', reconcilePagePut);
   registerPageWriteIntentReconciler('page.version_restore', reconcilePagePut);
+  registerPageWriteIntentPreflight('page.version_restore', refuseUnsupportedRestoreDerivation);
   registered = true;
 }

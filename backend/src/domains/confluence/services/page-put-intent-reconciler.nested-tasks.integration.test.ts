@@ -17,7 +17,7 @@ import {
   expectRestoreRecoveredOnce,
   restoreDerivationStackAvailable,
   useRestoreDerivationHarness,
-} from './test-restore-derivation-contract.js';
+} from './__fixtures__/test-restore-derivation-contract.js';
 import { deriveVersionRestoreStorage } from './page-put-intent-reconciler.js';
 
 const corpus = (name: string) => STORAGE_DERIVATION_BASE_CORPUS.find((entry) => entry.name === name)!;
