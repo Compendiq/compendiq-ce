@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { FastifyInstance } from 'fastify';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import {
   ApplyImprovementRequestSchema,
@@ -13,6 +13,7 @@ import {
   UpdateConversationSchema,
 } from '@compendiq/contracts';
 import {
+  admitLegacyCodeMetadata,
   assertCodeMacroStorage,
   assertLocalCodeMacroProjections,
   convertImproveOutput,
@@ -26,9 +27,22 @@ import {
   ImproveReplayError,
   ImproveSuggestionFormatError,
   LayoutRecoveryError,
+  protectMedia,
   type ConvertedImproveOutput,
   type ImproveSuggestionProvenance,
 } from '../../core/services/content-converter.js';
+import { CARRIER_RECONCILE_MAX_UNITS } from '../../core/services/confluence-carrier-reconcile.js';
+import {
+  assertCarrierRecoveryEligible,
+  carrierKindsStorageMayCarry,
+  isStaleCarrierReservation,
+  legacyCodeApplicationHolds,
+  lockstepStoredBody,
+  logStoredCarriers,
+  reconcileStoredCarriers,
+  type CarrierRow,
+  type StoredCarrierResult,
+} from '../../core/services/confluence-carrier-recovery.js';
 import { ConfluenceStorageRefusedError } from '../../core/services/confluence-storage-reader.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -59,8 +73,11 @@ import {
   assertNoPendingSyncConflict,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
+  getPageWriterRuntimeId,
+  lockPageLifecycle,
+  lockPageWriterRuntime,
   PageWriteError,
-  reservePageWriteIntent,
+  reservePageWriteIntentInTransaction,
   runPageWriteIntentEffect,
   withPageWriteTransaction,
   type PageWriteIntent,
@@ -326,10 +343,14 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       source: string; confluence_id: string | null; body_html: string | null;
       created_by_user_id: string | null; visibility: string;
       contentRevision: string; lifecycleRevision: string; bodyStorage: string | null;
+      /** #1953: the evidence of a lockstep row. */
+      localModifiedAt: Date | null; hasCollabDoc: boolean;
     };
     const PAGE_COLUMNS = `id, version, remote_version, title, space_key, source, confluence_id, body_html,
               created_by_user_id, visibility, content_revision::text AS "contentRevision",
-              lifecycle_revision::text AS "lifecycleRevision", body_storage AS "bodyStorage"`;
+              lifecycle_revision::text AS "lifecycleRevision", body_storage AS "bodyStorage",
+              local_modified_at AS "localModifiedAt",
+              EXISTS (SELECT 1 FROM page_collaborative_docs d WHERE d.page_id = pages.id) AS "hasCollabDoc"`;
     const currentConfluenceClient = async (
       client: PoolClient,
       intent: PageWriteIntent,
@@ -543,9 +564,30 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // - #1958: code-block title and options travel as CODE-META echo tokens
     //   and are re-attached from this stored body only on exact identity; a
     //   pre-#1958 suggestion for a page with annotated code is refused first.
+    // #1953-2 (§3.7 step 1): witnesses are asked for only on the remote Accept that may recover a legacy code
+    // block: a lockstep row within the length bound whose storage may carry a code macro and whose stored body is
+    // not carried (#1958's whole-body flag). Every other Accept keeps #1958's route.
+    const carrierRow: CarrierRow = {
+      source: existingPage.source,
+      body_html: existingPage.body_html,
+      body_storage: existingPage.bodyStorage,
+      local_modified_at: existingPage.localModifiedAt,
+      confluence_id: existingPage.confluence_id,
+      space_key: existingPage.space_key,
+      has_collab_doc: existingPage.hasCollabDoc,
+    };
+    const carrierGate = writeStaysLocal ? null : lockstepStoredBody(carrierRow);
+    const recoverable = carrierGate !== null && carrierGate.applicable && carrierGate.excluded === null
+      && existingPage.body_html!.length <= CARRIER_RECONCILE_MAX_UNITS
+      && existingPage.bodyStorage!.length <= CARRIER_RECONCILE_MAX_UNITS;
+    const wantWitnesses = recoverable
+      && carrierKindsStorageMayCarry(existingPage.bodyStorage).includes('macro.code')
+      && !protectMedia(existingPage.body_html ?? '').carried;
     let finalized: ConvertedImproveOutput;
     try {
-      finalized = await convertImproveOutput(existingPage.body_html ?? '', improvedMarkdown, { provenance, codeNonce });
+      finalized = await convertImproveOutput(existingPage.body_html ?? '', improvedMarkdown, {
+        provenance, codeNonce, witnesses: wantWitnesses,
+      });
     } catch (err) {
       if (err instanceof LayoutRecoveryError) {
         fastify.log.warn(
@@ -566,7 +608,33 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         '#723: re-appended media dropped during AI Improve',
       );
     }
-    const bodyHtml = finalized.html;
+    // #1953-2 (§3.7 steps 2–5): on the remote exit of a lockstep row, the carriers of a page synced before
+    // v0.10.0 are recovered into the finalized HTML, code only through #1958's witnesses (always passed, possibly
+    // empty), checked against the operations it reports and admitted by #1958 before anything is derived from it.
+    // An excluded row only discloses its reason; a string past the bound gets nothing of #1953.
+    let carriers: StoredCarrierResult | null = null;
+    if (carrierGate?.applicable && carrierGate.excluded !== null) {
+      carriers = reconcileStoredCarriers({ row: carrierRow, targetHtml: finalized.html });
+    } else if (recoverable && finalized.html.length <= CARRIER_RECONCILE_MAX_UNITS) {
+      carriers = reconcileStoredCarriers({
+        row: carrierRow,
+        targetHtml: finalized.html,
+        codeWitnesses: wantWitnesses ? finalized.witnesses : [],
+      });
+      const ops = carriers.report.codeOps;
+      let admitted = true;
+      try {
+        admitted = legacyCodeApplicationHolds(finalized.html, carriers.html, ops)
+          && (ops.length === 0 || admitLegacyCodeMetadata(finalized.allowance, ops) === ops.length);
+      } catch {
+        admitted = false;
+      }
+      if (!admitted) {
+        logStoredCarriers({ pageId: existingPage.id, writer: 'ai_apply', result: carriers, final: 'refused' });
+        return refuseImproveResult(new ConfluenceStorageRefusedError('unapproved-code-macro'));
+      }
+    }
+    const bodyHtml = carriers?.html ?? finalized.html;
     const { report } = finalized;
     if (Object.values(report).some((count) => count > 0)) {
       const lossy = report.screened + report.stripped + report.forged + report.twins + report.appended > 0;
@@ -681,18 +749,39 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         expectedLocalVersion: currentVersion,
         improvementId,
       });
-      const intent = await reservePageWriteIntent({
-        pageIds: [existingPage.id],
-        kind: publication.kind,
-        actorId: userId,
-        expectedRevisions: {
-          [existingPage.id]: {
-            contentRevision: existingPage.contentRevision,
-            lifecycleRevision: existingPage.lifecycleRevision,
+      // #1953-2 (Y7): the PUT route's reservation pattern, so a recovered Accept re-establishes its lockstep
+      // evidence under the lifecycle lock in the transaction that reserves the write. Either 409 rolls back all.
+      const runtimeId = await getPageWriterRuntimeId();
+      const reservationClient = await getPool().connect();
+      let intent: PageWriteIntent;
+      try {
+        await reservationClient.query('BEGIN');
+        await lockPageWriterRuntime(reservationClient, runtimeId);
+        await lockPageLifecycle(reservationClient, [existingPage.id]);
+        if (carriers?.changed) await assertCarrierRecoveryEligible(reservationClient, existingPage.id);
+        intent = await reservePageWriteIntentInTransaction(reservationClient, {
+          pageIds: [existingPage.id],
+          kind: publication.kind,
+          actorId: userId,
+          expectedRevisions: {
+            [existingPage.id]: {
+              contentRevision: existingPage.contentRevision,
+              lifecycleRevision: existingPage.lifecycleRevision,
+            },
           },
-        },
-        effect: publication.effect,
-      });
+          effect: publication.effect,
+        });
+        await reservationClient.query('COMMIT');
+      } catch (error) {
+        await reservationClient.query('ROLLBACK');
+        if (carriers && isStaleCarrierReservation(error)) {
+          logStoredCarriers({ pageId: existingPage.id, writer: 'ai_apply', result: carriers, final: 'stale' });
+        }
+        throw error;
+      } finally {
+        reservationClient.release();
+      }
+      if (carriers) logStoredCarriers({ pageId: existingPage.id, writer: 'ai_apply', result: carriers, final: 'reserved' });
 
       let admittedClient: ConfluenceClient;
       try {

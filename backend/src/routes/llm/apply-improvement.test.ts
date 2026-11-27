@@ -6,6 +6,8 @@ import type { FastifyInstance } from 'fastify';
 import { getPool, query } from '../../core/db/postgres.js';
 import { confluenceToHtml, htmlToConfluence, htmlToMarkdown, htmlToText, protectMedia } from '../../core/services/content-converter.js';
 import { oracleElements, oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { LEGACY_CARRIER_FIXTURES } from '../../core/services/__fixtures__/confluence-carrier-legacy.js';
+import { logger } from '../../core/utils/logger.js';
 import {
   lockPageLifecycle,
   reconcilePageWriteIntent,
@@ -1490,6 +1492,145 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           }
           expect(await readPage(pageId)).toMatchObject({ version: 7, body_storage: '<p>re-synced</p>', local_modified_by: null });
         });
+      });
+    });
+
+    describe('carriers of a page synced before v0.10.0 through Apply (#1953, T-compose)', () => {
+      const LOG = 'Confluence carriers reconciled (#1953)';
+      const LEGACY = LEGACY_CARRIER_FIXTURES.code;
+      const sentStorage = (): string =>
+        (JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } }).body.storage.value;
+      const codeMacros = (storage: string): unknown[] => oracleElements(storage, 'ac', 'structured-macro')
+        .filter((macro) => macro.getAttribute('ac:name') === 'code')
+        .map((macro) => Array.from(macro.children).filter((child) => child.localName === 'parameter')
+          .map((child) => [child.getAttribute('ac:name'), child.textContent]));
+      const carrierLines = (spy: { mock: { calls: unknown[][] } }): unknown[] =>
+        spy.mock.calls.filter((call) => call[1] === LOG).map((call) => call[0]);
+
+      async function seedLegacy(confluenceId = 'page-legacy-code', fixture: { storage: string; legacyHtml: string } = LEGACY) {
+        const pageId = await insertConfluencePage(confluenceId, 'Legacy code', 'OPS');
+        await setPageContent(pageId, fixture.legacyHtml, 7, fixture.storage);
+        await enableConfluence(true);
+        const markdown = htmlToMarkdown(protectMedia(fixture.legacyHtml).html, { layoutTokens: true });
+        return { pageId, markdown };
+      }
+
+      it('an unchanged legacy fence recovers its title and parameters, is admitted, and the storage passes the code check', async () => {
+        const { pageId, markdown } = await seedLegacy();
+        acceptNextConfluenceUpdate();
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-code', improvedMarkdown: markdown.replace('Intro', 'Introduction'), version: 7 });
+          expect(response.statusCode, response.body).toBe(200);
+          expect(codeMacros(sentStorage())).toEqual([[['language', 'java'], ['title', 'Main'], ['linenumbers', 'true']]]);
+          expect(sentStorage()).toContain('Introduction');
+          expect(carrierLines(info)).toEqual([{
+            pageId, writer: 'ai_apply', outcome: 'recovered', recovered: { 'macro.code': 1 }, skipped: {},
+          }]);
+          expect(JSON.stringify(info.mock.calls)).not.toMatch(/Main|linenumbers|data-cq-/);
+        } finally {
+          info.mockRestore();
+        }
+        expect(sentStorage()).not.toMatch(/data-cq-|CODE-META/);
+        const saved = await readPage(pageId);
+        expect(saved.body_html).toBe(confluenceToHtml(sentStorage(), 'page-legacy-code', 'OPS'));
+        expect(saved.body_text).toBe(htmlToText(saved.body_html));
+      });
+
+      it('recovers nothing for a fence with a twin in the final HTML', async () => {
+        const { markdown } = await seedLegacy();
+        acceptNextConfluenceUpdate();
+        const twin = `${markdown}\n\n\`\`\`java\nclass A {}\n\`\`\`\n`;
+
+        const response = await apply({ pageId: 'page-legacy-code', improvedMarkdown: twin, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java']], [['language', 'java']]]);
+      });
+
+      it('an edited fence recovers nothing', async () => {
+        const { markdown } = await seedLegacy();
+        acceptNextConfluenceUpdate();
+
+        const response = await apply({ pageId: 'page-legacy-code', improvedMarkdown: markdown.replace('class A {}', 'class B {}'), version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java']]]);
+      });
+
+      it('runs no reconcile for an excluded row and logs only the reason', async () => {
+        const { pageId, markdown } = await seedLegacy();
+        await query('UPDATE pages SET local_modified_at = NOW() WHERE id = $1', [pageId]);
+        acceptNextConfluenceUpdate();
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-code', improvedMarkdown: markdown, version: 7 });
+          expect(response.statusCode, response.body).toBe(200);
+          // The cheap gate tests element names only (#1953-1 CAR-5): a structured macro may be any of the three.
+          expect(carrierLines(info)).toEqual([{
+            pageId, writer: 'ai_apply', excluded: 'local_modified', kinds: ['macro.code', 'macro.status', 'macro.toc'],
+          }]);
+        } finally {
+          info.mockRestore();
+        }
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java']]]);
+      });
+
+      it('on the local exit the persisted HTML holds no recovered metadata and body_text is htmlToText of exactly that HTML', async () => {
+        const { pageId, markdown } = await seedLegacy();
+        await enableConfluence(false);
+
+        const response = await apply({ pageId: String(pageId), improvedMarkdown: markdown, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        const saved = await readPage(pageId);
+        expect(saved.body_html).not.toContain('data-title');
+        expect(saved.body_text).toBe(htmlToText(saved.body_html));
+      });
+
+      it('Y7: prepare → seed → reserve answers 409 before the PUT and leaves the lineage', async () => {
+        const { pageId, markdown } = await seedLegacy();
+        const blocker = await getPool().connect();
+        try {
+          await blocker.query('BEGIN');
+          await lockPageLifecycle(blocker, [pageId]);
+          const pending = apply({ pageId: 'page-legacy-code', improvedMarkdown: markdown, version: 7 });
+          await waitForBlockedLifecycleLock();
+          await blocker.query(
+            `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version, updated_at)
+             VALUES ($1, '\\x00'::bytea, '\\x00'::bytea, 1, NOW())`,
+            [pageId],
+          );
+          await blocker.query('COMMIT');
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(409);
+          expect(response.json()).toMatchObject({ reason: 'stale_content_revision' });
+        } finally {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          blocker.release();
+        }
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect((await query("SELECT 1 FROM page_write_intents WHERE kind = 'page.ai_apply'")).rowCount).toBe(0);
+        expect((await query('SELECT 1 FROM page_collaborative_docs WHERE page_id = $1', [pageId])).rowCount).toBe(1);
+      });
+
+      it('combined (#1955 + #1958 + #1953): a page holding an https ri:url link with a body abstains whole; the link and the code are written as #1955 and #1958 write them', async () => {
+        const storage = `${LEGACY.storage}<p>Web: <ac:link><ri:url ri:value="https://example.com/a" />`
+          + '<ac:plain-text-link-body><![CDATA[site]]></ac:plain-text-link-body></ac:link>.</p>';
+        const legacyHtml = `${LEGACY.legacyHtml}<p>Web: <a>site</a>.</p>`;
+        const { pageId, markdown } = await seedLegacy('page-legacy-combined', { storage, legacyHtml });
+        acceptNextConfluenceUpdate();
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await apply({ pageId: 'page-legacy-combined', improvedMarkdown: markdown, version: 7 });
+          expect(response.statusCode, response.body).toBe(200);
+          expect(carrierLines(info)).toEqual([{ pageId, writer: 'ai_apply', outcome: 'storage_reading_differs' }]);
+        } finally {
+          info.mockRestore();
+        }
+        expect(codeMacros(sentStorage())).toEqual([[['language', 'java']]]);
+        expect(sentStorage()).not.toContain('data-cq-');
       });
     });
 

@@ -16,6 +16,7 @@ import {
   encodeStorageDerivationFeatures,
 } from '../../core/services/storage-derivation.js';
 import { STORAGE_DERIVATION_BASE_CORPUS } from '../../core/services/__fixtures__/storage-derivation-base-corpus.js';
+import { LEGACY_CARRIER_FIXTURES } from '../../core/services/__fixtures__/confluence-carrier-legacy.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import {
@@ -1035,6 +1036,37 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       + '<ac:task><ac:task-id>2</ac:task-id><ac:task-status>incomplete</ac:task-status>'
       + '<ac:task-body><p>Write docs</p></ac:task-body></ac:task>'
       + '</ac:task-list>',
+    );
+  });
+
+  it('D9 R1 (#1953): restores a legacy version byte for byte as the snapshot holds it; today\'s carriers are not copied onto it', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-legacy-carriers',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Legacy',
+      bodyHtml: LEGACY_CARRIER_FIXTURES.code.legacyHtml,
+      bodyText: 'Intro class A {}',
+    });
+    // Today's storage holds the code block's title and options; the historical version's HTML lacks them.
+    await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, LEGACY_CARRIER_FIXTURES.code.storage]);
+    await seedVersion(pageId, 1, 'Legacy', LEGACY_CARRIER_FIXTURES.code.legacyHtml, 'Intro class A {}');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(confluenceRequests[0]?.body?.body.storage.value).toBe(
+      '<p>Intro</p><ac:structured-macro ac:name="code"><ac:parameter ac:name="language">java</ac:parameter>'
+      + '<ac:plain-text-body><![CDATA[class A {}]]></ac:plain-text-body></ac:structured-macro>',
     );
   });
 
