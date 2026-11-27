@@ -84,10 +84,11 @@ stored could be its source (`confluence-url-origin.ts`). Every stored link and
 tell a link's carrier from a stored anchor with the same href. A link of any
 kind without a body competes with the text the forward pass shows for it (its
 title, key, anchor or value, white space collapsed as the editor shows it);
-one whose shown text is not known (a mention, or a value with U+2329, U+232A
-or a C1 control, which the HTML reading may show otherwise) matches no body,
-and when it is missing from what is written no moved or relabelled link that
-could be it is kept. A link that is
+one whose shown text is not known (a mention, or a title or own body with
+U+2329, U+232A or a C1 control, which the editor may show as another
+character) matches no body, is never the same body as another, and when it is
+missing from what is written no moved or relabelled link that could be it is
+kept. A link that is
 not approved becomes what it shows: the nodes of a rich body, the XML text of
 a plain body, or the display text of a body-less link. That is judged on the
 storage string about to be sent, read as XML by `confluence-storage-reader.ts`
@@ -102,12 +103,11 @@ after the repair). No cap of the judgement drops a link: a body of any length
 is evidence. Every writer of a synced page derives the storage once, before it
 reserves its intent, and authorizes the page before it plans files or derives
 anything; create and relocation have no origin, so they write no unsafe
-`ri:url`. The forward pass reads `&lang;`/`&rang;` in the tags of a link of the
-five kinds as XML does (U+2329/U+232A); text and the #1748 kinds keep the HTML
-values, as before #1955. It then checks the links of the five kinds it read
-against the XML reading of the same storage (`markUncertainLinkReadings`): if
-they differ, a link whose value holds a character only an HTML reading
-produces is shown as its text, so a target is never written back changed.
+`ri:url`. The forward pass reads the start tags of a link of the five kinds and
+of its resource as XML does (`keepXmlLinkValues`: the storage reader finds the
+tags; `&lang;`/`&rang;`, C1 numeric references and literal TAB/LF/CR are spelled
+so HTML reads XML's value), so a target is written back as Confluence holds
+it; text and the #1748 kinds keep the HTML values, as before #1955.
 `restoreMedia` replaces a token only where it stands as content
 (`locateMediaTokens`, parse5): never in an attribute, a comment or raw text,
 never under an element the tree builder moved (out of a table, or misnested

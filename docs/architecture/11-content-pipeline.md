@@ -380,19 +380,20 @@ any change to the existing conflict policy.
   cell outside a table, a `div` in a `select`: what it held stands under
   another element), also when prose around it joins into one text node whose
   source holds the tag. It stays text and the drop-guard re-appends the media.
-  The forward pass reads `&lang;` and `&rang;` in the start tags of a link of
-  the five kinds and of its resource as XML does (U+2329, U+232A), so such a
-  target is written back with the value Confluence holds, however it is
-  spelled; text, bodies and the three #1748 kinds are read with the HTML
-  values (U+27E8, U+27E9), as the base commit read them (pre-existing, not
-  changed here). That spelling is a lexical step; what counts is a check on
-  the storage itself: the links of the five kinds as the HTML parser read
-  them must be those the XML reader reads, in order, value for value.
-  Otherwise (or when the XML reader refuses the string) a link of those kinds
-  whose value holds a character only an HTML reading produces (U+27E8,
-  U+27E9, TAB, LF, CR, U+FFFD, a windows-1252 character of a C1 reference) is
-  shown as its text, so its target is never carried or written back; a value
-  without one is the value XML reads.
+  The forward pass reads the start tag of every link of the five kinds, and
+  of its resource, as XML does (`keepXmlLinkValues`): the storage reader
+  finds those tags by their ranges in the string (never a comment, a
+  processing instruction or raw text), and only they are spelled so that the
+  HTML parser reads each value as XML reads it: `&lang;`/`&rang;` as the
+  references of U+2329/U+232A, a C1 numeric reference as its own character
+  (HTML would map it to windows-1252), a literal TAB, LF, CR or CR LF as a
+  space (XML's attribute normalisation). Those are the only places where the
+  two readings of a well-formed attribute value differ, so such a target is
+  written back with the value Confluence holds, however it is spelled, and
+  no write-time check is needed. Text, bodies and the three #1748 kinds are
+  read with the HTML values, as the base commit read them (pre-existing, not
+  changed here). A string the reader cannot read (not XML, or past its
+  limits) is read with the HTML values, as before #1955.
   The whole change is the storage-derivation feature `link-kinds` (#1953): a
   version restore reserved before it, or under a profile without it, derives
   the bytes of the base commit and never meets the judgement. Limits, all on
@@ -407,13 +408,11 @@ any change to the existing conflict policy.
   the two is deleted, the link is still kept where it stands in its own
   stored place and that place names it alone, but a link that has moved, or
   whose surroundings changed with the deletion, becomes text, since which one
-  is left cannot be told; a page link whose title holds U+2329, U+232A or a
-  C1 control is such a rival of unknown text; a link of the five kinds whose
-  target the XML reading does not confirm (above) is text in Compendiq and is
-  written back as text; schemes are matched in lowercase only, so
-  `HTTPS://…` is an inert carrier; a literal TAB, LF or CR inside an
-  attribute of a stored unsafe link (XML reads it as a space) declines that
-  link; a stored link with more attributes than the grammar carries is no
+  is left cannot be told; a page link whose title, or any link or anchor
+  whose own body, holds U+2329, U+232A or a C1 control is such a rival of
+  unknown text, never the same body as another; schemes are matched in
+  lowercase only, so `HTTPS://…` is an inert carrier; a stored link with more
+  attributes than the grammar carries is no
   origin; raw link markup that is not the exact shape and has no body is
   refused rather than removed. A row synced before #1955 holds these links as
   text; they come back only with its next sync from Confluence (a re-sync).
