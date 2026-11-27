@@ -20,12 +20,15 @@
  */
 import {
   CONFLUENCE_LINK_LIMITS,
+  CONFLUENCE_LINK_PRIMARY_ATTR,
+  CONFLUENCE_LINK_RESOURCE_ELEMENT,
   buildConfluenceLinkHref,
   confluenceLinkDisplayText,
   isConfluenceLinkLocalName,
   isConfluenceLinkValue,
   isNavigableConfluenceUrl,
   type ConfluenceLinkAttr,
+  type ConfluenceLinkKind,
 } from '@compendiq/contracts';
 import {
   isStorageName,
@@ -74,7 +77,13 @@ export class StorageLinkBudgetError extends Error {
 export interface StorageLinkClaim {
   /** What it points at, comparable across two readings. */
   readonly target: string;
-  /** Its body: `[text, images]` as JSON, the text with white space collapsed. */
+  /**
+   * Its body: `[text, images]` as JSON, the text with white space collapsed.
+   * A link without a body of its own has the text the forward pass shows for
+   * it (any kind). `''` when that is not known (a mention, an unknown
+   * resource, a link not written `ac:link`): it then matches no body, and a
+   * missing one makes every link that could be it retargeted ambiguous.
+   */
   readonly body: string;
   /**
    * Where it stands: the enclosing task's id, and the text before and after
@@ -261,6 +270,35 @@ function carriedAttributes(
   return carried.length > CONFLUENCE_LINK_LIMITS.attrs ? null : { carried, primary: value };
 }
 
+/** The kind each resource element is the target of, by its name as written in lower case. */
+const RESOURCE_KIND: ReadonlyMap<string, ConfluenceLinkKind> = new Map(
+  Object.entries(CONFLUENCE_LINK_RESOURCE_ELEMENT).map(([kind, element]) => [element, kind as ConfluenceLinkKind]),
+);
+
+/** What a link whose shown text is not known stands for in the text of a string: one character, never empty. */
+const UNKNOWN_SHOWN = '\uFFFC';
+
+/**
+ * What the forward pass shows for an `ac:link` that shows nothing of its own
+ * (#1955, review r2 R11), read as `confluence-link.ts` reads one: the display
+ * text of its kind's primary value (a page title, a space key, an anchor, a
+ * URL). Its first `ri:*` child is the resource; with none it is an anchor.
+ * Null when that is not known: the element is not written `ac:link`, it holds
+ * text or an element that is no resource, its resource is of no kind the
+ * forward pass carries (a mention), or the value is none the grammar takes.
+ */
+function forwardLabel(element: StorageElement, others: readonly StorageElement[]): string | null {
+  if (element.name !== 'ac:link') return null;
+  if (element.children.some((child) => typeof child === 'string' && child.trim() !== '')) return null;
+  if (others.some((child) => !child.name.toLowerCase().startsWith('ri:'))) return null;
+  const resource = others[0];
+  const kind = resource ? RESOURCE_KIND.get(resource.name.toLowerCase()) : 'anchor';
+  if (!kind) return null;
+  const primary = CONFLUENCE_LINK_PRIMARY_ATTR[kind];
+  const value = (resource ?? element).attributes.find((attribute) => attribute.name.toLowerCase() === primary)?.value;
+  return value !== undefined && isConfluenceLinkValue(value) ? confluenceLinkDisplayText({ kind, value }) : null;
+}
+
 /**
  * Every link-like element and anchor of `tree`, described for a judgement.
  * One pass over the tree; throws {@link StorageLinkBudgetError} past the work
@@ -348,10 +386,21 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
         shown: '',
       };
     }
-    const children = element.children.filter((child): child is StorageElement => typeof child !== 'string');
-    const bodies = children.filter((child) => BODY_LOCALS.some((local) => isStorageName(child, 'ac', local)));
-    const url = children.find((child) => isStorageName(child, 'ri', 'url'));
-    charge(children.length + attributeCost(element.attributes) + (url ? attributeCost(url.attributes) : 0));
+    // The link's own children, told apart in one pass that is charged before it is made (review r2, R13).
+    charge(element.children.length + attributeCost(element.attributes));
+    const bodies: StorageElement[] = [];
+    const others: StorageElement[] = [];
+    let url: StorageElement | undefined;
+    for (const child of element.children) {
+      if (typeof child === 'string') continue;
+      if (BODY_LOCALS.some((local) => isStorageName(child, 'ac', local))) {
+        bodies.push(child);
+        continue;
+      }
+      others.push(child);
+      url ??= isStorageName(child, 'ri', 'url') ? child : undefined;
+    }
+    if (url) charge(attributeCost(url.attributes));
     const linkAttrs = isStorageName(element, 'ac', 'link') ? carriedAttributes(element, 'ac', null) : null;
     const urlAttrs = url ? carriedAttributes(url, 'ri', 'value') : null;
     const body = bodies[0];
@@ -360,7 +409,7 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     let canonical = Boolean(
       url && linkAttrs && urlAttrs && urlAttrs.primary !== null
       && link.urls.length === 1 && link.urls[0] === url
-      && children.length === 1 + bodies.length && bodies.length <= 1
+      && others.length === 1 && bodies.length <= 1
       && url.children.length === 0
       && element.children.every((child) => typeof child !== 'string' || child.trim() === '')
       && !link.hasUser,
@@ -376,24 +425,37 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
       canonical = dropped.length === 0;
     }
     const display = canonical ? confluenceLinkDisplayText({ kind: 'url', value: value! }) : '';
-    const text = canonical && blank ? display : bodyText;
+    let text = canonical && blank ? display : bodyText;
+    let shown = canonical && blank ? display : '';
+    // Review r2, R11: any other link that shows nothing of its own shows what the forward pass shows for it, and
+    // that is competing evidence like an explicit body (never authority: only `canonical` grants). When that is
+    // not known, its body is '' (no body matches it) and it stands in the text as one unknown character.
+    let known = true;
+    const showsOwn = bodyText !== '' || link.media.length > 0
+      || bodies.some((own) => own.children.some((child) => typeof child !== 'string'));
+    if (!canonical && !showsOwn) {
+      const label = forwardLabel(element, others);
+      known = label !== null;
+      text = label ?? '';
+      shown = label ?? UNKNOWN_SHOWN;
+    }
     let target: string;
     if (canonical) {
       // Attribute order is not part of what a link points at.
       target = `url|${Number(link.live)}|${JSON.stringify([value, [...linkAttrs!.carried].sort(), [...urlAttrs!.carried].sort()])}`;
     } else {
-      const shape = structure(children.filter((child) => !bodies.includes(child)));
+      const shape = structure(others);
       target = `link|${JSON.stringify([element.name, element.uri, sortedAttributes(element.attributes), shape])}`;
     }
     return {
       described: {
         target,
-        body: JSON.stringify([text, link.media]),
+        body: known ? JSON.stringify([text, link.media]) : '',
         canonical,
         value,
         label: canonical && blank ? display : '',
       },
-      shown: canonical && blank ? display : '',
+      shown,
     };
   };
 
@@ -652,15 +714,18 @@ export function judgeStorageUrlLinks(
     missingByBody.set(body, missing);
     return missing;
   };
-  /** Whether a stored thing with `link`'s body and another target is missing from what is written. */
+  // Review r2, R11: a stored thing whose shown text is not known (body '') may show any text. One that is still
+  // written is no rival; one missing from what is written could be any written link retargeted.
+  const unknownMissing = (): boolean => missingSources(numberOf('b', '')).size > 0;
+  /** Whether a stored thing with `link`'s body and another target, or one that may show it, is missing from what is written. */
   const otherSourceMissing = (link: StorageUrlLink): boolean => {
     const missing = missingSources(bodyOf(link));
-    return missing.size > Number(missing.has(targetOf(link)));
+    return missing.size > Number(missing.has(targetOf(link))) || unknownMissing();
   };
-  /** Whether any stored thing with `link`'s body points somewhere else. */
+  /** Whether any stored thing with `link`'s body points somewhere else, or one that may show it is missing. */
   const foreignBody = (link: StorageUrlLink): boolean => {
     const targets = storedByBody.get(bodyOf(link));
-    return targets !== undefined && targets.size > Number(targets.has(targetOf(link)));
+    return (targets !== undefined && targets.size > Number(targets.has(targetOf(link)))) || unknownMissing();
   };
 
   // 0. A link in the place of something that pointed elsewhere.

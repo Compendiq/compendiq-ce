@@ -4,7 +4,7 @@
  * is made on two readings of the storage reader: what is written, and what is
  * stored. These cases pin which written link stands for which stored one.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readConfluenceStorage } from './confluence-storage-reader.js';
 import {
   analyseStorageLinks,
@@ -396,6 +396,56 @@ describe('confluence-url-origin: a stored lookalike never inherits a deleted lin
   });
 });
 
+// Review r2, R11. A link of another kind without a body shows what the forward pass shows for it (a title, a
+// key, a value): that text is its body and part of the places around it, as an explicit body would be. A link
+// whose shown text is not known (a mention, an unknown resource) is never taken for empty: it stands in the
+// places around it, and its absence from what is written leaves a moved link with no other proof ambiguous.
+describe('confluence-url-origin: every link shows what the forward pass shows (R11)', () => {
+  const genuine = link();
+  const pageBare = '<ac:link><ri:page ri:content-title="/rel/a"></ri:page></ac:link>';
+  const pageLabelled = `<ac:link><ri:page ri:content-title="Home"></ri:page>${text('/rel/a')}</ac:link>`;
+  const spaceBare = '<ac:link><ri:space ri:space-key="/rel/a"></ri:space></ac:link>';
+  const anchorBare = '<ac:link ac:anchor="/rel/a"></ac:link>';
+  const mention = '<ac:link><ri:user ri:userkey="u-1"></ri:user></ac:link>';
+  const left = `<p>${link()}</p>`;
+
+  it('gives a body-less link of every kind the text it shows as its body, as an explicit body would', () => {
+    const { claims } = analyse(`<p>${pageBare}</p><p>${pageLabelled}</p><p>${spaceBare}</p><p>${anchorBare}</p>`);
+    expect(claims.map((claim) => claim.body)).toEqual(Array(4).fill(JSON.stringify(['/rel/a', []])));
+  });
+
+  it.each([
+    ['a body-less page link', pageBare],
+    ['a labelled page link', pageLabelled],
+    ['a body-less space link', spaceBare],
+    ['a body-less anchor link', anchorBare],
+  ])('declines the one left of a URL link and %s showing the same text, in either order, on both Saves', (_name, other) => {
+    for (const stored of [`<p>${genuine}</p><p>${other}</p>`, `<p>${other}</p><p>${genuine}</p>`]) {
+      expect(judge(stored, left)).toEqual(['ambiguous']);
+      // Nothing deleted: the original is kept.
+      expect(judge(stored, stored)).toEqual(['unchanged']);
+    }
+    // The first Save wrote text; the second has nothing stored.
+    expect(judge('<p>/rel/a</p>', left)).toEqual(['unproven']);
+  });
+
+  it('declines a link relabelled in place to the text a body-less page link elsewhere shows', () => {
+    const stored = `<p>See ${link(text('Guide'))} now</p>${FILLER}<p>${pageBare}</p>`;
+    expect(judge(stored, `<p>See ${link()} now</p>${FILLER}`)).toEqual(['retarget']);
+    expect(judge(stored, `<p>See ${link(text('Guidance'))} now</p>${FILLER}<p>${pageBare}</p>`)).toEqual(['edited']);
+  });
+
+  it('never takes a link whose shown text is not known for one that shows nothing', () => {
+    expect(analyse(`<p>${mention}</p>`).claims.map((claim) => claim.body)).toEqual(['']);
+    const stored = `<p>${genuine}</p><p>${mention}</p>`;
+    expect(judge(stored, left)).toEqual(['ambiguous']);
+    // While it is still written, nothing changes: in place, and moved.
+    expect(judge(stored, stored)).toEqual(['unchanged']);
+    expect(judge(`${FILLER}<p>a</p><p>${genuine}</p><p>${mention}</p>`, `<p>${genuine}</p>${FILLER}<p>a</p><p>${mention}</p>`))
+      .toEqual(['unchanged']);
+  });
+});
+
 // Review r1, R6. No cap of this module takes a link away: what cannot be judged within the work limit is refused.
 describe('confluence-url-origin: a long or rich body is evidence like any other (R6)', () => {
   it.each([4_096, 4_097, 100_000])('keeps an unchanged link whose plain body has %i characters', (length) => {
@@ -509,5 +559,23 @@ describe('confluence-url-origin: bounded work (W5)', () => {
     const analysis = analyse(`<p>${nested}</p>`, tight({ work: 2_000 }));
     expect(analysis.links).toHaveLength(depth);
     expect(new Set(analysis.links.map((found) => found.body))).toEqual(new Set([JSON.stringify(['core', []])]));
+  });
+
+  // Review r2, R13: work done where it is done, counted as the elements every array membership test of an
+  // analysis compares (`includes`, `indexOf`). It grows with a link's children, not with their square.
+  it('tells a link\'s bodies from its other children in one pass over them', () => {
+    const compared = (bodies: number): number => {
+      const read = readConfluenceStorage(link(text('b').repeat(bodies)));
+      if (!read.ok) throw new Error(read.reason);
+      const spies = [vi.spyOn(Array.prototype, 'includes'), vi.spyOn(Array.prototype, 'indexOf')];
+      try {
+        analyseStorageLinks(read.tree);
+        return spies.reduce((sum, spy) => sum + spy.mock.contexts.reduce((n: number, list) => n + (list as unknown[]).length, 0), 0);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    };
+    // At e084eeae: 36, 136 and 528 comparisons for 8, 16 and 32 bodies.
+    for (const bodies of [8, 16, 32, 128]) expect(compared(bodies)).toBeLessThanOrEqual(4 * bodies + 16);
   });
 });
