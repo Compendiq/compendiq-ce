@@ -2819,13 +2819,23 @@ export interface HtmlToMarkdownOptions {
  * (`[^`]*`), so `[``a`b``](href)` is not read as a link and its destination
  * would show as text. The code is written as link text instead: line breaks
  * become spaces (as turndown's code rule does) and every ASCII punctuation
- * character, CommonMark's backslash-escapable set, is backslash-escaped, so no
- * raw HTML, entity, emphasis, autolink, image or nested link can form from it.
- * The link and the characters are kept; the code formatting is not. AI Improve
- * sends the same Markdown, so an Accept brings the characters back as link text.
+ * character, CommonMark's backslash-escapable set, is escaped, so no raw HTML,
+ * entity, emphasis, autolink, image or nested link can form from it. The link
+ * and the characters are kept; the code formatting is not.
+ *
+ * Turndown puts the node's flanking white space around the replacement, so the
+ * text is trimmed here and each boundary is written once.
+ *
+ * On the Improve chain (`references`) a punctuation character is a decimal
+ * character reference instead of a backslash escape: marked passes a
+ * reference through, so the HTML text never spells a media placeholder
+ * (`CQ_MEDIA_PLACEHOLDER_0` arrives as `CQ&#95;MEDIA…`) or a layout token,
+ * and `restoreMedia` leaves the label alone; the parser reads the characters
+ * back at Accept. Elsewhere the backslash form keeps the Markdown readable.
  */
-function escapeLinkedCodeText(text: string): string {
-  return text.replace(/\r\n|\r|\n/g, ' ').replace(/[!-/:-@[-`{-~]/g, '\\$&');
+function escapeLinkedCodeText(text: string, references: boolean): string {
+  return text.trim().replace(/\r\n|\r|\n/g, ' ')
+    .replace(/[!-/:-@[-`{-~]/g, (character) => (references ? `&#${character.charCodeAt(0)};` : `\\${character}`));
 }
 
 /** #1954: inline code that a link holds and that itself holds a backtick (escapeLinkedCodeText). */
@@ -2868,7 +2878,7 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
   // #1954: inline code inside a link that holds a backtick (escapeLinkedCodeText).
   turndownService.addRule('linkedCodeWithBacktick', {
     filter: (node) => isLinkedBacktickCode(node),
-    replacement: (_content, node) => escapeLinkedCodeText((node as HTMLElement).textContent ?? ''),
+    replacement: (_content, node) => escapeLinkedCodeText((node as HTMLElement).textContent ?? '', layoutTokens),
   });
 
   if (layoutTokens) {
