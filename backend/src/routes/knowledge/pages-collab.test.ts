@@ -2667,8 +2667,8 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
           if (request.method === 'GET') {
             response.end(JSON.stringify({
               id: confluenceId, title: 'Conf page', type: 'page', status: 'current',
-              version: { number: 4, when: '2026-09-20T00:00:00Z' },
-              body: { storage: { value: LEGACY.storage } },
+              version: { number: 4 + pagePuts.length, when: '2026-09-20T00:00:00Z' },
+              body: { storage: { value: pagePuts.at(-1) ?? LEGACY.storage } },
             }));
             return;
           }
@@ -2677,7 +2677,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
           const sent = JSON.parse(bytes);
           pagePuts.push(sent.body.storage.value);
           response.end(JSON.stringify({
-            ...sent, id: confluenceId, status: 'current', version: { number: 5, when: '2026-09-20T00:00:02Z' },
+            ...sent, id: confluenceId, status: 'current', version: { number: 4 + pagePuts.length, when: '2026-09-20T00:00:02Z' },
           }));
         });
         await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
@@ -2692,6 +2692,16 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
           payload: commitPayload(ws, 'Legacy commit'),
         });
         expect(response.statusCode, response.body).toBe(200);
+        // AC4: a second Save over the same lineage writes the same storage.
+        const second = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: commitPayload(ws, 'Second legacy commit'),
+        });
+        expect(second.statusCode, second.body).toBe(200);
+        expect(pagePuts).toHaveLength(2);
+        expect(pagePuts[1]).toBe(pagePuts[0]);
         const unproven = info.mock.calls.filter((call) => call[1] === 'collab.commit_carriers_unproven').map((call) => call[0]);
         const seeded = info.mock.calls.filter((call) => call[1] === 'Confluence carriers reconciled (#1953)').map((call) => call[0]);
         return { pageId, pagePuts, unproven, seeded };
@@ -2712,7 +2722,9 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     it('a Save from a room seeded after the release writes the carriers its seed recovered, with no unproven line for those kinds', async () => {
       const { pageId, pagePuts, unproven, seeded } = await saveLegacyRoom({ keylessLineage: false });
       expect(seeded).toEqual([expect.objectContaining({ pageId, writer: 'collab_seed', outcome: 'recovered' })]);
-      expect(pagePuts).toHaveLength(1);
+      expect(oracleElements(pagePuts[0]!, 'ac', 'emoticon').map((e) => e.getAttribute('ac:name'))).toEqual(['tick', 'cross']);
+      expect(pagePuts[0]).toContain('ri:filename="a.pdf"');
+      expect(pagePuts[0]).toContain('ac:anchor="top"');
       expect(codeTitle(pagePuts[0]!)).toBe('Main');
       expect(pagePuts[0]).toContain('ri:space-key="ENG"');
       expect(unproven).toEqual([]);
@@ -2722,10 +2734,10 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       const { pageId, pagePuts, unproven, seeded } = await saveLegacyRoom({ keylessLineage: true });
       // D9 R3: the existing lineage is neither replaced nor reconciled.
       expect(seeded).toEqual([]);
-      expect(pagePuts).toHaveLength(1);
+      expect(oracleElements(pagePuts[0]!, 'ac', 'emoticon')).toEqual([]);
       expect(codeTitle(pagePuts[0]!)).toBeNull();
       expect(pagePuts[0]).not.toContain('ri:space-key="ENG"');
-      expect(unproven).toEqual([{ pageId, kinds: ['macro.code', 'macro.status', 'macro.toc', 'link', 'emoticon'] }]);
+      expect(unproven[0]).toEqual({ pageId, kinds: ['macro.code', 'macro.status', 'macro.toc', 'link', 'emoticon'] });
     });
   });
 

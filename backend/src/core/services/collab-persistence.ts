@@ -79,19 +79,11 @@ type LoadRow = {
   page_type: string | null;
   doc_state: Buffer | null;
   doc_epoch: string | null;
-  /** #1953: the evidence of a lockstep row, read by the writable load of a missing document. */
-  source: string;
-  body_storage: string | null;
-  local_modified_at: Date | null;
-  confluence_id: string | null;
-  space_key: string | null;
 };
 
 const LOAD_PAGE_AND_DOC = `SELECT p.body_html, p.version, p.lifecycle_revision::text,
                                   p.baseline_id, p.deleted_at, p.page_type,
-                                  d.doc_state, d.doc_epoch::text,
-                                  p.source, p.body_storage, p.local_modified_at,
-                                  p.confluence_id, p.space_key
+                                  d.doc_state, d.doc_epoch::text
                              FROM pages p
                         LEFT JOIN page_collaborative_docs d ON d.page_id = p.id
                             WHERE p.id = $1`;
@@ -166,7 +158,7 @@ export async function loadOrInitCollabDoc(
       const result = await client.query<LoadRow>(LOAD_PAGE_AND_DOC, [pageId]);
       const row = result.rows[0];
       if (!row) return 'missing';
-      seedCarriers = row.doc_state || row.deleted_at ? null : await chooseSeedCarriers(client, pageId, row);
+      seedCarriers = row.doc_state || row.deleted_at ? null : await chooseSeedCarriers(client, pageId, row.body_html);
       const seed = seedCarriers
         ? { seedHtml: seedCarriers.html, carrierKinds: seededCarrierKinds(seedCarriers) }
         : undefined;
@@ -206,20 +198,28 @@ async function seedDocState(client: PoolClient, pageId: number, doc: Y.Doc): Pro
 }
 
 /**
- * #1953 (§3.8, Y7, Z5): what a new lineage of a missing document is seeded with. The evidence and the pending
- * intents are read in the seed's own transaction, under the page lifecycle lock that also serializes every
- * reservation. A lockstep row with no pending write intent reconciles the stored body with itself; a seed under
- * the page's own pending collaborative Save (the one intent admission lets pass) runs unrecovered and writes no
- * key. Null: seed the ordinary HTML exactly as before.
+ * #1953 (§3.8, Y7, Z5): what a new lineage of a missing document is seeded with. Only this branch reads the
+ * evidence (the storage and the lockstep columns) and the pending intents, in the seed's own transaction, under
+ * the page lifecycle lock that also serializes every reservation. A lockstep row with no pending write intent
+ * reconciles the stored body with itself; a seed under the page's own pending collaborative Save (the one intent
+ * admission lets pass) runs unrecovered and writes no key. Null: seed the ordinary HTML exactly as before.
  */
-async function chooseSeedCarriers(client: PoolClient, pageId: number, row: LoadRow): Promise<StoredCarrierResult | null> {
-  if (row.source !== 'confluence' || !row.body_storage || !row.body_html) return null;
-  const pending = await client.query(
-    `SELECT 1 FROM page_write_intents WHERE status = 'pending' AND page_ids && ARRAY[$1]::integer[] LIMIT 1`,
+async function chooseSeedCarriers(client: PoolClient, pageId: number, bodyHtml: string | null): Promise<StoredCarrierResult | null> {
+  if (!bodyHtml) return null;
+  const evidence = await client.query<{
+    source: string; body_storage: string | null; local_modified_at: Date | null;
+    confluence_id: string | null; space_key: string | null; pending: boolean;
+  }>(
+    `SELECT p.source, p.body_storage, p.local_modified_at, p.confluence_id, p.space_key,
+            EXISTS (SELECT 1 FROM page_write_intents i
+                     WHERE i.status = 'pending' AND i.page_ids && ARRAY[p.id]::integer[]) AS pending
+       FROM pages p
+      WHERE p.id = $1 AND p.source = 'confluence' AND p.body_storage IS NOT NULL`,
     [pageId],
   );
-  if ((pending.rowCount ?? 0) > 0) return null;
-  const result = reconcileStoredCarriers({ row: { ...row, has_collab_doc: false }, targetHtml: row.body_html });
+  const row = evidence.rows[0];
+  if (!row || row.pending) return null;
+  const result = reconcileStoredCarriers({ row: { ...row, body_html: bodyHtml, has_collab_doc: false }, targetHtml: bodyHtml });
   return result.applicable ? result : null;
 }
 

@@ -644,6 +644,38 @@ describe.skipIf(!canRun)('seed of a page synced before v0.10.0 (#1953, Z5, Z6)',
     }
   });
 
+  it('CW-1: a stored body holding an entity-spelled draw.io wrapper seeds the ordinary HTML without the key', async () => {
+    const owner = await insertUser('carrier_seed_drawio');
+    const fixture = {
+      storage: `${LEGACY.ac1.storage}<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">A</ac:parameter></ac:structured-macro>`,
+      legacyHtml: `${LEGACY.ac1.legacyHtml}<div class="confluence&#45;drawio" data-diagram-name="A"></div>`,
+    };
+    const pageId = await insertLegacyPage(owner, fixture);
+    const doc = new Y.Doc();
+    try {
+      await writableLoad(pageId, owner, doc);
+      expect(yDocToHtml(doc)).toBe(documentOf(fixture.legacyHtml).html);
+      expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
+    } finally {
+      doc.destroy();
+    }
+  });
+
+  it('CW-1: prose naming the draw.io class is no wrapper; the seed recovers and writes the key', async () => {
+    const owner = await insertUser('carrier_seed_prose');
+    const intro = 'The confluence-drawio class';
+    const fixture = { storage: LEGACY.code.storage.replace('Intro', intro), legacyHtml: LEGACY.code.legacyHtml.replace('Intro', intro) };
+    const pageId = await insertLegacyPage(owner, fixture);
+    const doc = new Y.Doc();
+    try {
+      await writableLoad(pageId, owner, doc);
+      expect(yDocToHtml(doc)).toBe(documentOf(confluenceToHtml(fixture.storage, 'legacy-seed', 'OPS'), ALL_KINDS).html);
+      expect([...collabSeededCarrierKinds(doc)]).toEqual(ALL_KINDS);
+    } finally {
+      doc.destroy();
+    }
+  });
+
   it('a writable load of a locally modified page seeds the ordinary HTML once, without recovery and without the key', async () => {
     const owner = await insertUser('carrier_seed_local');
     const pageId = await insertLegacyPage(owner, LEGACY.ac1, true);
