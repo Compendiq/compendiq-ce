@@ -429,16 +429,22 @@ any change to the existing conflict policy.
   ancestors. Lists in a list but not in a task body stay flat in source order,
   as before. Nesting applies only within `MAX_TASK_LIST_NESTING` = 32, decided
   once per document, before anything is restructured, as a pure function of
-  the input, so a recorded restore derivation still reproduces its bytes. It
-  counts only the hierarchy that reaches the output, by one walk of the tree
-  the pass already parses (no second parse, no string scan): the forward pass
-  uses `convertTaskLists`' own index (`indexTaskLists`: only kept subtask
-  lists add a level; comments and CDATA are text), and write-back counts the
-  editor lists and raw `ac:task-list` a pre-#1957 body still holds, skipping
-  the figure and table indexes it removes. Write-back's decision
+  the input, so a recorded restore derivation still reproduces its bytes. The
+  count is syntactic, by one walk of the tree the pass already parses (no
+  second parse, no string scan): the task lists present in the input,
+  whether or not an enclosing macro later keeps, flattens or drops them. The
+  forward pass uses `convertTaskLists`' own index (`indexTaskLists`: only a
+  list in a task body adds a level; comments and CDATA are text); write-back
+  counts editor lists and raw `ac:task-list` by ancestry, outside the
+  generated figure and table indexes it removes. It may overcount the output,
+  never undercount it; an overcounted page takes the pre-#1957 path, whose
+  bytes and task ids are those of `bff6d4ec`. Write-back's decision
   (`writeBackProfile`) is shared by `assignTaskIds`, so draft publish,
-  collaborative Save, PUT and a direct `htmlToConfluence` give a page the same
-  ids. Deeper, the page converts exactly as before #1957 on both passes (the
+  collaborative Save, PUT and a direct `htmlToConfluence` derive a page with
+  the same profile; a task write-back drops (in a generated index) can still
+  get different ids from the two-step writers, which number it before the
+  index is removed, as before #1957. Deeper, the page converts exactly as
+  before #1957 on both passes (the
   pre-#1957 forward loop; write-back reads the stored tasks with it too):
   nothing is refused, sync, history, Save, draft publish and restore behave as
   before, and such a page keeps the duplicated pre-#1957 shape — #1957 is not
