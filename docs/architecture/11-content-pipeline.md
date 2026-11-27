@@ -425,14 +425,23 @@ any change to the existing conflict policy.
   follow-up).
   The whole change is the storage-derivation feature `link-kinds` (#1953): a
   version restore reserved before it, or under a profile without it, derives
-  the bytes of the base commit and never meets the judgement. Limits, all on
+  the bytes of the base commit and never meets the judgement. Owner decision
+  D21 (fallback after review r8): a non-web `ri:url` occurrence whose origin
+  is not proven is written as its text (its label, no `ri:url`), on every Save.
+  A stored link is a source only if the forward pass delivered it to the
+  editor as a link (its emitted anchor is still in the completed result of
+  the same witness run as the D19 check); one only a macro parameter or
+  another discarded part held grants nothing. An ordinary anchor the editor
+  shows (`a` or `A`, `href` or `HREF`) is competing evidence, never a source.
+  Limits, all on
   the declining side: a link the editor splits (around inline code, an image,
   a line break on a collaborative Save) keeps at most one piece as an unsafe
   (not navigable) `ri:url` link, while every piece of a navigable one is
   written; a link moved and relabelled in one save becomes text, and so may
   one relabelled next to another link with the same text; on a page that
   also stores something else showing the same text as a link (an `<a>` such
-  as a hand-written `<a href="#confluence-url:…">`, an ordinary anchor, or a
+  as a hand-written `<a href="#confluence-url:…">`, an ordinary anchor in any
+  letter case, or a
   link of another kind such as a page link titled like the URL), when one of
   the two is deleted, the link is still kept where it stands in its own
   stored place and that place names it alone, but a link that has moved, or
