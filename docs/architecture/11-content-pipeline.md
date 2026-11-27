@@ -431,12 +431,15 @@ any change to the existing conflict policy.
   once per document, before anything is restructured, as a pure function of
   the input, so a recorded restore derivation still reproduces its bytes. The
   count is syntactic, by one walk of the tree the pass already parses (no
-  second parse, no string scan): the task lists present in the input,
-  whether or not an enclosing macro later keeps, flattens or drops them. The
-  forward pass uses `convertTaskLists`' own index (`indexTaskLists`: only a
-  list in a task body adds a level; comments and CDATA are text); write-back
-  counts editor lists and raw `ac:task-list` by ancestry, outside the
-  generated figure and table indexes it removes. It may overcount the output,
+  second parse, no string scan; `taskListNesting`): every task list present
+  in the input — editor `ul[data-type="taskList"]` and raw `ac:task-list`
+  alike, empty ones included — by element ancestry, whatever task owns it,
+  whichever body a task's content is read from, and whether or not an
+  enclosing macro later keeps, flattens or drops it; comments and CDATA are
+  text. Write-back skips only the generated figure and table indexes it
+  removes. `indexTaskLists` places tasks and plays no part in the decision. A
+  list placed directly in a list therefore counts toward the limit even though
+  it stays flat within it. It may overcount the output,
   never undercount it; an overcounted page takes the pre-#1957 path, whose
   bytes and task ids are those of `bff6d4ec`. Write-back's decision
   (`writeBackProfile`) is shared by `assignTaskIds`, so draft publish,

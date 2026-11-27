@@ -237,14 +237,16 @@ ancestors). A task list that is not in a task body (placed directly in a list,
 in a wrapper, or in a task but outside its body) is not Confluence's nesting
 and stays flat in source order, exactly as before. Nesting applies only within
 `MAX_TASK_LIST_NESTING` (32) levels, decided once per document before anything
-is restructured, by one walk of the tree the pass already parses. The count is
-syntactic: the task lists present in the input, whether or not an enclosing
-macro later keeps, flattens or drops them — the forward pass uses
-`convertTaskLists`' own index (`indexTaskLists`; only a list in a task body
-adds a level, comments and CDATA are text), write-back (`writeBackProfile`,
-shared by `assignTaskIds`, so every writer derives with the same profile)
-counts editor lists and raw `ac:task-list` by ancestry outside the generated
-figure and table indexes it removes. It may overcount the output, never
+is restructured, by one walk of the tree the pass already parses
+(`taskListNesting`). The count is syntactic: every task list present in the
+input — editor `ul[data-type="taskList"]` and raw `ac:task-list` alike, empty
+ones included — by element ancestry, whatever task owns it, whichever body a
+task's content is read from, and whether or not an enclosing macro later
+keeps, flattens or drops it (comments and CDATA are text); write-back skips
+only the generated figure and table indexes it removes. `indexTaskLists` only
+places tasks. Write-back's decision (`writeBackProfile`) is shared by
+`assignTaskIds`, so every writer derives with the same profile. It may
+overcount the output, never
 undercount it, and an overcounted page takes the pre-#1957 path (the bytes and
 ids of `bff6d4ec`); a task in a removed index can still get different ids from
 the two-step writers, as before #1957. A page
