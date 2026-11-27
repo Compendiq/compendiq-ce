@@ -374,11 +374,14 @@ an annotated `pre` that can travel (one `code` child without elements, not in
 a table cell, not draw.io, non-blank, bounded valid metadata, a lossless
 projection) is written as its fence with `[[[CODE-META n=<ordinal> title=…
 params=…]]]` on the line directly above (also when it opens a panel or task
-item); every other annotated block is frozen by `protectMedia` (as are token
+item, the whole block then stays inside it: continuation lines indented, every
+panel line quoted); every other annotated block is frozen by `protectMedia` (as are token
 blocks past 1,000) as a `CQ_CODE_PLACEHOLDER_<N>` code entry. **Media tokens
 and ordinals stay exactly those of the release before #1958**; never put
 frozen code into the `CQ_MEDIA_PLACEHOLDER` ordinal space. On Accept the
-remote exit authorizes the actor and the page first, then the route runs
+remote exit first authorizes the actor and the page in one transaction that
+locks the row, fences its content/lifecycle revisions (409) and reads spaces
+and access uncached (403/404); then the route runs
 `beginCodeMetaAccept` → `markdownToHtml(…, { codeMeta })` →
 `replayProtectedMedia(html, codeMeta)` → `finalizeCodeMetadata` → (local)
 `assertLocalCodeMacroProjections` or (remote) `htmlToConfluence` +
@@ -395,8 +398,16 @@ Model-written code markup that is not a fence or a plain `pre` is refused (R2;
 from). A replayed original must come back exactly (only CR → LF in its code
 text is allowed). A placeholder spelled in `pre`/`code`, or one the page itself
 spells, stays text; a code-carrying original without exactly one viable
-placement is appended once. A suggestion holding no code carrier for a page
-with frozen code (one generated before #1958) is refused with 422.
+placement is appended once. The Accept is classified structurally, never by
+a substring (D25 item 1): a standalone CODE-META line directly above a fence,
+or a frozen code placeholder of the page outside code (one the page itself
+spells only in a run of its own) →
+the #1958 path; no such carrier and no frozen code → the base path, the
+pre-#1958 replay byte for byte (`restoreMedia` + `includes` guard, no
+CODE-META analysis, no twin rule, storage rule (iii) off until a #1953 unit is
+admitted) with the trust boundary kept (foreign `pre` metadata stripped,
+code-named markup refused, copies of originals verified); no carrier but
+frozen code → 422.
 Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
 "AI Improve code-block metadata". #1953-2 consumes `witnesses`,
 `codeBlockElements` and `admitLegacyCodeMetadata` (once per allowance) after

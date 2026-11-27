@@ -1506,7 +1506,10 @@ On `POST /llm/improvements/apply` the route:
    nothing is saved or pushed. `codeMeta` (#1958) is the Accept's code
    metadata state from `beginCodeMetaAccept(protectMedia(body_html))`.
 3. Calls `replayProtectedMedia(html, codeMeta)` (#1958; it replaced
-   `restoreMedia` plus the `includes` drop guard). The tokens of the media
+   `restoreMedia` plus the `includes` drop guard). It first classifies the
+   Accept (see "Suggestions across the release"): on the **base path** it
+   writes exactly what `restoreMedia` plus the drop guard wrote; on the
+   **#1958 path** it replays as follows. The tokens of the media
    entries and of the frozen code entries (and their turndown-escaped
    variants `CQ\_MEDIA\_PLACEHOLDER\_N`) are located once
    (`locateMediaTokens`, #1955): a token is a placement only where it stands
@@ -1526,19 +1529,22 @@ On `POST /llm/improvements/apply` the route:
    marked; any entry left without a viable placement is **appended once** at
    the end (logged `#723: re-appended media dropped during AI Improve`). The
    plan is budgeted before anything is built (`2 × Σ originals + 65,536`
-   UTF-16 units, else **422**). With no screened placement, no literal or
-   code-carrying entry and every entry placed, the result is byte-identical
-   to the former `restoreMedia` + drop guard. A page with frozen code blocks
-   whose suggestion holds no code carrier at all (no `CQ_CODE_PLACEHOLDER`,
-   no CODE-META spelling) is refused with **422** before anything is built:
-   see "Suggestions across the release".
+   UTF-16 units, else **422**; on either path). With no screened placement,
+   no literal or code-carrying entry and every entry placed, the result is
+   byte-identical to the former `restoreMedia` + drop guard.
 4. Calls `finalizeCodeMetadata` (#1958, see "AI Improve code-block metadata"),
    then derives `body_text`; the local exit judges the publication
    projections before the write transaction, the remote exit judges the
    storage `htmlToConfluence` returned before the intent is reserved. On the
    remote exit the active actor and the page/space authority are validated
    right after the page is resolved, before step 1 reads any stored-body
-   evidence (#1958 review r1; the final fence before dispatch stays).
+   evidence (#1958 reviews r1/r2): in one transaction that locks the page
+   row (`FOR UPDATE`), the content and lifecycle revisions the route read are
+   compared (**409** `stale_content_revision` / `stale_lifecycle`), and the
+   readable spaces and page access are read uncached (**403**
+   `not_authorized`, **404** `page_not_found`), as the write transaction
+   does. A revoked grant still warm in the RBAC cache therefore answers 403
+   before anything body-dependent; the final fence before dispatch stays.
 
 ### Lossless confluence-drawio turndown rule
 
@@ -1591,7 +1597,10 @@ annotated `pre`), `literal` (the page's text spells its token more than once)
 and `lineEndForm` (below), and `carried` (the stored body holds an annotated
 `pre` anywhere). A panel or task item that opens with a token block writes the
 token on its own line after the panel label or task marker, so it stays
-directly above its fence; every other panel and task item is written as before.
+directly above its fence, and the whole block stays inside the item or panel:
+the task item's continuation lines are indented under its marker, every line of
+the panel body is quoted (`> `, an empty line `>`). Every other panel and task
+item is written as before.
 
 **Bounds (both ways).** Title ≤ 1,024 characters; options a plain JSON object
 of ≤ 16 own keys (`^[A-Za-z][A-Za-z0-9_.-]{0,63}$`, not `constructor` /
@@ -1612,14 +1621,17 @@ for element (G1–G3). A bound fence renders the **stored** code text; the
 stored values are set on it later, never the echoed ones. Token lines and
 three-bracket lookalikes are removed, also from inside a line of prose, a
 heading (a heading that is only a token is removed whole and binds nothing)
-and a table cell; a page's own escaped spelling and a code span stay text.
-The analysis records each fence's position once and filters each token list
-once (linear in the tokens).
+and a table cell: each lookalike run (`[[[CODE-META` up to the next `]]]`) is
+removed on its own, so text between two runs stays; a page's own escaped
+spelling and a code span stay text. This analysis runs only on the #1958
+path. The analysis records each fence's position once and filters each token
+list once (linear in the tokens).
 
 **HTML stage (`finalizeCodeMetadata`).** Markers (`data-cq-code-fence`,
-`data-cq-code-replay`, value `<nonce>-<index>`, the nonce 128 random bits made
-at Accept) are authentic when they name a fence or a replayed entry of this
-Accept and occur once. Each replayed code-carrying original must come back
+`data-cq-code-replay`, value `<nonce>-<index>`, on the base path
+`<nonce>-<index>-<copy>` for each copy of an original; the nonce 128 random
+bits made at Accept) are authentic when they name a fence or a replayed copy
+of this Accept and occur once. Each replayed code-carrying copy must come back
 exactly as written; the one allowed difference is that CR / CR LF in the text
 of its `code` elements reads as LF (one HTML parse does that; `lineEndForm`).
 Anything else (a line feed before the `code` of a `pre`, a CR in an attribute
@@ -1633,7 +1645,9 @@ attribute on any other element is an inert annotation and stays; every other
 `pre` outside a verified original loses `data-title`/`data-macro-params`;
 forged `data-cq-*` attributes are removed; a marked fence still in marked's
 exact shape, outside every dropping container, gets the stored values.
-**Twin rule:** effective code blocks (every `pre` with a `code` descendant)
+**Twin rule** (#1958 path; on the base path nothing binds, so it is off, and
+so is storage rule (iii) until #1953-2 admits a unit): effective code blocks
+(every `pre` with a `code` descendant)
 with one key (the language the writer emits, the class or else a carried
 `language`, and the code text with XML line ends) keep metadata only when all
 carry identical metadata; otherwise every member loses it (content kept),
@@ -1670,16 +1684,42 @@ write transaction re-checks the `body_storage` used. A refusal is **422**
 dispatched or stored.
 
 **Suggestions across the release.** A suggestion is Markdown the model
-returned; nothing records which converter produced it. The media ordinals are
-the previous release's, so a pending suggestion (an `llm_improvements` row or a
-direct Apply) generated before #1958 applies as it did for every page without
-a frozen code block: its fences are unbound, as they were. For a page with a
-frozen code block the previous release wrote that block as editable Markdown
-while this release writes `CQ_CODE_PLACEHOLDER_<N>`; a suggestion holding no
-code carrier at all is refused with **422** ("run AI Improve again"), because
-it cannot be told from one whose model dropped every carrier and appending the
-originals would duplicate the block. After a rollback to a release before
-#1958, a suggestion generated by #1958 shows its `[[[CODE-META …]]]` and
+returned; nothing records which converter produced it, and no substring of it
+decides anything (coordinator decision D25 item 1). The Accept is classified
+once, structurally:
+
+- **#1958 path** when the suggestion holds a carrier: a CODE-META line by the
+  exact grammar, standing alone (paragraph or list-item text), directly above a
+  fence, outside code; or a `CQ_CODE_PLACEHOLDER_<k>` of a frozen entry of this
+  page as content outside `pre`/`code`. No release before #1958 wrote that
+  namespace, so a token the page never spells is generator output wherever it
+  stands (the generator writes it beside text next to the frozen block, as in
+  `<td>Run: TOKEN</td>`); a token the page spells itself counts only in a run
+  of its own (a wrapped `<p>`, or a text run holding nothing but this page's
+  placeholder spellings and white space). Everything above applies.
+- **Base path** when it holds none and the page has no frozen code block: the
+  Accept of the release before #1958, byte for byte (`restoreMedia` at every
+  placement, no screening, the `includes` drop guard on the unmarked result,
+  no CODE-META analysis, no twin rule). The trust boundary stays (owner
+  ruling, Option B): `data-title`/`data-macro-params` on any `pre` outside a
+  verified original are stripped, a code-named placeholder or raw code macro
+  markup is refused (**422** `unapproved-code-macro`), each copy of a
+  code-carrying original is marked and verified, storage rules (i) and (ii)
+  apply, and R7/R8 read failures refuse. A pending suggestion generated
+  before #1958 (an `llm_improvements` row or a direct Apply) therefore
+  applies as it did, also with an image inside a code block or a literal
+  `CQ_CODE_PLACEHOLDER_…` mention in its text.
+- **Refused (422,** "run AI Improve again") when it holds none and the page has
+  a frozen code block: the previous release wrote that block as editable
+  Markdown while this release writes `CQ_CODE_PLACEHOLDER_<N>`, and such a
+  suggestion cannot be told from one whose model dropped every carrier;
+  appending the originals would duplicate the block. Nothing is built or
+  written.
+
+A token the model turned into a heading or wrote into prose is no carrier: on
+a page whose only carrier it was, the Accept takes the base path and that text
+stays as the model wrote it. After a rollback to a release before #1958, a
+suggestion generated by #1958 shows its `[[[CODE-META …]]]` and
 `CQ_CODE_PLACEHOLDER_<N>` lines as text and loses frozen blocks on Accept:
 regenerate suggestions after a rollback.
 
@@ -1704,10 +1744,10 @@ markup, macro text in raw text, a template or a comment the CDATA pass
 opens); raw markup Markdown writes as text, a fence showing macro syntax,
 escaped prose and `data-macro-name="code"` on an element the writer reads no
 macro name from are data. R3: a page whose own body yields a code macro
-outside the writer's shape cannot Accept. R4: a frozen code-carrying token
-without exactly one viable placement is appended once at the end with its
-metadata, no copy is made; when the suggestion holds no code carrier at all
-the Accept is refused instead (see "Suggestions across the release").
+outside the writer's shape cannot Accept. R4: on the #1958 path a frozen
+code-carrying token without exactly one viable placement is appended once at
+the end with its metadata, no copy is made; without any carrier the Accept
+takes the base path or is refused (see "Suggestions across the release").
 R5: a placeholder in `pre`/`code` is never replaced, and one the page itself
 spells is never placed (its medium is appended). R6: an original that does
 not verify refuses. R7 (Q8): a standalone Accept is refused when either
