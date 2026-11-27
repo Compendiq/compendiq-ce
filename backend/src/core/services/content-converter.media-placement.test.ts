@@ -82,6 +82,35 @@ describe('content-converter: #1955 media tokens are replaced only where they sta
     expect(restoreMedia(`<table><tr><td>${T}</td></tr></table>`, media)).toBe(`<table><tr><td>${IMG}</td></tr></table>`);
   });
 
+  // Review r1, R7: the tree builder moves a whole element out of a table, not only bare text. Its place in
+  // the tree (before the table, under no ancestor) is not where its source stands (inside the table).
+  it('takes an element the tree builder moved out of a table for no placement, with everything in it (R7)', () => {
+    const html = `<table class="generated"><div><p>${T}</p><span>a ${T1} b</span></div><tr><td>${T1}</td></tr></table>`;
+    // Only the ordinary cell: its chain is the one its source stands in.
+    expect(locateMediaTokens(html, media).map((placement) => [placement.token, chain(placement)]))
+      .toEqual([[T1, ['td', 'tr', 'tbody', 'table.generated']]]);
+    expect(restoreMedia(html, media))
+      .toBe(`<table class="generated"><div><p>${T}</p><span>a ${T1} b</span></div><tr><td>${DRAWIO}</td></tr></table>`);
+    // A caller that refuses everything in the marked container replaces nothing inside the table.
+    const outsideGenerated = (placement: MediaTokenPlacement): boolean => !chain(placement).includes('table.generated');
+    expect(restoreMedia(html, media, { accept: outsideGenerated })).toBe(html);
+    // Several moved elements, and one nested in a row group.
+    expect(locateMediaTokens(`<table><p>${T}</p><div>${T1}</div><tbody><section>${T}</section><tr><td>x</td></tr></tbody></table>`, media)).toEqual([]);
+  });
+
+  it('takes misnested formatting, which the tree builder rebuilds, for no placement (R7)', () => {
+    expect(locateMediaTokens(`<p><b><i>x</b>${T}</i></p>`, media)).toEqual([]);
+    expect(locateMediaTokens(`<b><p>${T}</b>y</p>`, media)).toEqual([]);
+  });
+
+  it('still places a token in elements the string never closes, and in cells whose end tags are left out', () => {
+    expect(locateMediaTokens(`<ul><li>${T}<li>b`, media).map(chain)).toEqual([['li', 'ul']]);
+    expect(locateMediaTokens(`<p>a</p><div>${T1}`, media).map(chain)).toEqual([['div']]);
+    expect(locateMediaTokens(`<table><tr><td>a<td>${T}</table>`, media).map(chain)).toEqual([['td', 'tr', 'tbody', 'table']]);
+    expect(locateMediaTokens(`<table><tr><td>${T}</td></tr></table><template><p>x ${T1}</p></template>`, media).map(chain))
+      .toEqual([['td', 'tr', 'tbody', 'table'], ['p', 'template']]);
+  });
+
   it('reports each placement by its range of the original string, in source order, never overlapping (W6)', () => {
     const html = `<p>a &amp; ${T} &lt;</p>\r\n<p> ${ESCAPED}\n</p><div>${T1}${T}</div>`;
     const placements = locateMediaTokens(html, media);

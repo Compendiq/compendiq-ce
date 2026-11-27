@@ -2430,6 +2430,55 @@ const MEDIA_OPAQUE_PARENTS = new Set([
 
 type Html5Node = DefaultTreeAdapterTypes.Node;
 
+/** A range of the source string. */
+interface SourceRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * The children the tree builder did not leave where their source stands
+ * (#1955): a child whose source lies outside `bounds`, the content of the
+ * nearest ancestor with a source range, and children whose ranges are not in
+ * source order one after the other. Of two that overlap, the one inside the
+ * other was moved (an element or text foster-parented out of a table, in
+ * front of it); when neither holds the other (misnested formatting rebuilt
+ * around a block), both are uncertain. Nothing under such a child is where
+ * the tree says it is. One pass: every child is compared with the kept
+ * children before it, and each of those is given up at most once.
+ */
+function displacedChildren(children: readonly Html5Node[], bounds: SourceRange | null): Set<Html5Node> {
+  const displaced = new Set<Html5Node>();
+  const kept: Array<SourceRange & { node: Html5Node }> = [];
+  for (const node of children) {
+    const location = node.sourceCodeLocation;
+    if (!location) continue;
+    const item = { node, start: location.startOffset, end: location.endOffset };
+    if (bounds && (item.start < bounds.start || item.end > bounds.end)) {
+      displaced.add(node);
+      continue;
+    }
+    let keep = true;
+    while (kept.length > 0) {
+      const last = kept[kept.length - 1]!;
+      if (item.start >= last.end) break;
+      if (last.start >= item.start && last.end <= item.end) {
+        // `last` was moved out of `item`, in front of it.
+        displaced.add(last.node);
+        kept.pop();
+        continue;
+      }
+      keep = false;
+      displaced.add(node);
+      if (item.start >= last.start && item.end <= last.end) break;
+      displaced.add(last.node);
+      kept.pop();
+    }
+    if (keep) kept.push(item);
+  }
+  return displaced;
+}
+
 /**
  * Where the tokens of `media` stand as content in `html` (#1955), in source
  * order. The HTML tokenizer decides, not a scan for `<` and `>`: a placement
@@ -2439,9 +2488,11 @@ type Html5Node = DefaultTreeAdapterTypes.Node;
  *
  * A spelling anywhere else is no placement: in an attribute value, a comment
  * (with `>` or an unmatched quote inside), a tag name, the text of a
- * `script`, `style`, `textarea` or `title`, and text the tree builder moved
- * or joined across markup (text directly inside a table), whose range is not
- * one run of text. Placements never overlap. Each carries the element it
+ * `script`, `style`, `textarea` or `title`, text the tree builder joined
+ * across markup, and anything the tree builder moved, with all it holds: text
+ * or an element directly inside a table (foster-parented in front of it) and
+ * misnested formatting it rebuilt. There the tree and the source disagree
+ * about the place. Placements never overlap. Each carries the element it
  * stands in with that element's attributes and ancestors, so a consumer can
  * refuse the ones in a code sample or a discarded container without parsing
  * the string a second way.
@@ -2460,38 +2511,41 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
   const spellings = new RegExp(alternatives.join('|'), 'g');
 
   const placements: MediaTokenPlacement[] = [];
-  const pending: Array<{ node: Html5Node; context: MediaTokenContext | null }> = [
-    { node: parseFragment(html, { sourceCodeLocationInfo: true }), context: null },
+  const pending: Array<{ node: Html5Node; context: MediaTokenContext | null; bounds: SourceRange | null }> = [
+    { node: parseFragment(html, { sourceCodeLocationInfo: true }), context: null, bounds: null },
   ];
   while (pending.length > 0) {
-    const { node, context } = pending.pop()!;
+    const { node, context, bounds } = pending.pop()!;
     if (!('childNodes' in node)) continue;
     let own = context;
+    let content = bounds;
     if ('tagName' in node) {
       const location = node.sourceCodeLocation;
       own = {
         tagName: node.tagName, attributes: node.attrs, parent: context,
         start: location?.startOffset ?? null, end: location?.endOffset ?? null,
       };
+      // What the element holds stands between its tags; an element the parser supplied has its parent's bounds.
+      if (location) {
+        content = { start: location.startTag?.endOffset ?? location.startOffset, end: location.endTag?.startOffset ?? location.endOffset };
+      }
     }
     // A template's children are its content fragment.
     const children = 'content' in node ? node.content.childNodes : node.childNodes;
+    // A child the tree builder moved is not at the place its ancestors name, and neither is anything in it.
+    const displaced = displacedChildren(children, content);
     for (let index = children.length - 1; index >= 0; index -= 1) {
       const child = children[index]!;
+      if (displaced.has(child)) continue;
       if (child.nodeName !== '#text') {
-        pending.push({ node: child, context: own });
+        pending.push({ node: child, context: own, bounds: content });
         continue;
       }
       const location = child.sourceCodeLocation;
       if (!location || (own && MEDIA_OPAQUE_PARENTS.has(own.tagName))) continue;
       const source = html.slice(location.startOffset, location.endOffset);
-      // One run of text: a range that holds markup, or that lies inside a sibling's range, is text
-      // the tree builder joined or moved (foster-parented out of a table), not text at that place.
-      const before = children[index - 1]?.sourceCodeLocation;
-      const after = children[index + 1]?.sourceCodeLocation;
-      if (source.includes('<') || (before && before.endOffset > location.startOffset) || (after && after.startOffset < location.endOffset)) {
-        continue;
-      }
+      // One run of text: a range that holds markup is text the tree builder joined across it.
+      if (source.includes('<')) continue;
       // `<p>TOKEN</p>`: Markdown wrapped the lone token in a paragraph, which goes with it.
       const paragraph = 'tagName' in node && node.tagName === 'p' && children.length === 1 && node.attrs.length === 0
         ? node.sourceCodeLocation
