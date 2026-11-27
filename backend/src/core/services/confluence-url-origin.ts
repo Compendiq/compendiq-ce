@@ -702,10 +702,13 @@ export function judgeStorageUrlLinks(
   const classOf = (claim: StorageLinkClaim): string => `${targetOf(claim)}:${bodyOf(claim)}`;
 
   // Indexes over everything that points somewhere, in both readings.
+  const unknownBody = numberOf('b', '');
   const storedAtPlace = new Map<number, StorageLinkClaim[]>();
   /** body → target → how many stored things with that body point there. */
   const storedByBody = new Map<number, Map<number, number>>();
-  const storedByTarget = new Map<number, number>();
+  /** For each stored thing whose body is not known: its target, and how many such stand at its target and place. */
+  const unknownStoredAt = new Map<string, { target: number; count: number }>();
+  const targetAndPlace = (claim: StorageLinkClaim): string => `${targetOf(claim)}:${placeOf(claim)}`;
   for (const claim of stored.claims) {
     charge();
     if (claim.place !== '') pushTo(storedAtPlace, placeOf(claim), claim);
@@ -713,16 +716,20 @@ export function judgeStorageUrlLinks(
     let targets = storedByBody.get(body);
     if (!targets) storedByBody.set(body, targets = new Map());
     count(targets, targetOf(claim));
-    count(storedByTarget, targetOf(claim));
+    if (body !== unknownBody) continue;
+    const key = targetAndPlace(claim);
+    const entry = unknownStoredAt.get(key);
+    if (entry) entry.count += 1;
+    else unknownStoredAt.set(key, { target: targetOf(claim), count: 1 });
   }
   const writtenAtPlace = new Map<number, number>();
   const writtenByClass = new Map<string, number>();
-  const writtenByTarget = new Map<number, number>();
+  const writtenByTargetAndPlace = new Map<string, number>();
   for (const claim of written.claims) {
     charge();
     if (claim.place !== '') count(writtenAtPlace, placeOf(claim));
     count(writtenByClass, classOf(claim));
-    count(writtenByTarget, targetOf(claim));
+    count(writtenByTargetAndPlace, targetAndPlace(claim));
   }
   /** The one stored thing that stood exactly where `link` stands, when the place names one thing on both sides. */
   const placeOwner = (link: StorageUrlLink): StorageLinkClaim | undefined => {
@@ -730,21 +737,27 @@ export function judgeStorageUrlLinks(
     const owners = storedAtPlace.get(place);
     return owners?.length === 1 && writtenAtPlace.get(place) === 1 ? owners[0] : undefined;
   };
-  const unknownBody = numberOf('b', '');
   /**
    * body → the stored targets with that body that are written less often than they are stored; made once a body.
-   * Review r5: a stored thing whose body is not known is still written when its target is written as often as it
-   * is stored, whatever body the writing shows (the editor shows that text otherwise than XML reads it).
+   * Coordinator decision D20 (review r6, R27): a stored thing whose body is not known is still written only when
+   * as many things point to its target from its own place, whatever body they show; never by a count of the
+   * things pointing to that target elsewhere.
    */
   const missingByBody = new Map<number, Set<number>>();
   const missingSources = (body: number): Set<number> => {
     let missing = missingByBody.get(body);
     if (missing) return missing;
     missing = new Set();
-    for (const [target, storedCount] of storedByBody.get(body) ?? []) {
-      charge();
-      const written = body === unknownBody ? writtenByTarget.get(target) ?? 0 : writtenByClass.get(`${target}:${body}`) ?? 0;
-      if (written < (body === unknownBody ? storedByTarget.get(target) ?? 0 : storedCount)) missing.add(target);
+    if (body === unknownBody) {
+      for (const [key, { target, count: storedCount }] of unknownStoredAt) {
+        charge();
+        if ((writtenByTargetAndPlace.get(key) ?? 0) < storedCount) missing.add(target);
+      }
+    } else {
+      for (const [target, storedCount] of storedByBody.get(body) ?? []) {
+        charge();
+        if ((writtenByClass.get(`${target}:${body}`) ?? 0) < storedCount) missing.add(target);
+      }
     }
     missingByBody.set(body, missing);
     return missing;

@@ -525,6 +525,25 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
         expect(oracleUrlLinks(htmlToConfluence(html, { previousStorage: storage }))).toHaveLength(1);
       },
     );
+
+    // Review r6, R27 and coordinator decision D20: a stored anchor whose text is not known is released only by an
+    // anchor to its target in its own place, never by how many anchors point there.
+    it.each([['the entity name', 'Ops&lang;guide'], ['the character the editor shows', 'Ops\u27E8guide']])(
+      'writes the moved URL link as text whatever ordinary anchor is written, the rival spelled with %s, on both Saves (R27)',
+      (_name, label) => {
+        const storage = `<p>${GUIDE}</p><p><a href="https://example.com/ops">${label}</a></p>`;
+        const moved = '<p>Moved here: <a href="#confluence-url:%2Fguide?body=plain">Ops\u27E8guide</a></p>';
+        for (const anchor of [
+          '',
+          '<p>See the <a href="https://example.com/ops">Calendar</a> today.</p>',
+          '<p>See the <a href="https://example.com/other">Calendar</a> today.</p>',
+        ]) {
+          const first = htmlToConfluence(`${moved}${anchor}`, { previousStorage: storage });
+          expect(oracleUrlLinks(first), anchor).toEqual([]);
+          expect(oracleUrlLinks(htmlToConfluence(`${moved}${anchor}`, { linkOrigin: first })), anchor).toEqual([]);
+        }
+      },
+    );
   });
 
   // Review r4, R22: no attribute of the input stands for a decision of the converter.

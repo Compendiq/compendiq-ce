@@ -439,10 +439,11 @@ describe('confluence-url-origin: every link shows what the forward pass shows (R
     expect(analyse(`<p>${mention}</p>`).claims.map((claim) => claim.body)).toEqual(['']);
     const stored = `<p>${genuine}</p><p>${mention}</p>`;
     expect(judge(stored, left)).toEqual(['ambiguous']);
-    // While it is still written, nothing changes: in place, and moved.
+    // While it is still written in its own place, nothing changes (coordinator decision D20, review r6 R27).
     expect(judge(stored, stored)).toEqual(['unchanged']);
+    // Moved, it is released by nothing: its own place no longer holds it.
     expect(judge(`${FILLER}<p>a</p><p>${genuine}</p><p>${mention}</p>`, `<p>${genuine}</p>${FILLER}<p>a</p><p>${mention}</p>`))
-      .toEqual(['unchanged']);
+      .toEqual(['ambiguous']);
   });
 });
 
