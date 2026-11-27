@@ -2501,12 +2501,12 @@ function ignoredStartTags(html: string, root: Html5Node): number[] {
   const pending: Html5Node[] = [root];
   while (pending.length > 0) {
     const node = pending.pop()!;
-    const location = node.sourceCodeLocation;
-    if (location && 'tagName' in node) {
-      if (location.startTag) covered.push([location.startTag.startOffset, location.startTag.endOffset]);
-      if (location.endTag) covered.push([location.endTag.startOffset, location.endTag.endOffset]);
-    } else if (location) {
-      covered.push([location.startOffset, location.endOffset]);
+    if ('tagName' in node) {
+      const { startTag, endTag } = node.sourceCodeLocation ?? {};
+      if (startTag) covered.push([startTag.startOffset, startTag.endOffset]);
+      if (endTag) covered.push([endTag.startOffset, endTag.endOffset]);
+    } else if (node.sourceCodeLocation) {
+      covered.push([node.sourceCodeLocation.startOffset, node.sourceCodeLocation.endOffset]);
     }
     if ('content' in node) pending.push(node.content);
     if ('childNodes' in node) pending.push(...node.childNodes);
