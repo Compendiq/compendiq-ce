@@ -446,6 +446,33 @@ describe('confluence-url-origin: every link shows what the forward pass shows (R
   });
 });
 
+// Review r3, R16. A label is compared in the text the editor shows. A page link without a body shows its title
+// with white space collapsed, and with the HTML reading of `&lang;`/`&rang;` that the XML reading cannot see: such a
+// title is a rival of unknown text, never one known to differ.
+describe('confluence-url-origin: a title is compared as the editor shows it (R16)', () => {
+  const guide = (shown: string): string => `<ac:link><ri:url ri:value="/guide"></ri:url>${text(shown)}</ac:link>`;
+  const page = (title: string, body = ''): string => `<ac:link><ri:page ri:content-title="${title}"></ri:page>${body}</ac:link>`;
+
+  it.each([
+    ['white space the editor collapses', 'Ops  guide', 'Ops guide'],
+    ['a disputed entity name', 'Ops&lang;guide', 'Ops\u27E8guide'],
+  ])('gives the URL link left of two the same verdict whether the page link with %s shows its title or a body', (_name, title, shown) => {
+    for (const other of [page(title), page(title, text(shown))]) {
+      for (const stored of [`<p>${guide(shown)}</p><p>${other}</p>`, `<p>${other}</p><p>${guide(shown)}</p>`]) {
+        expect(judge(stored, `<p>${guide(shown)}</p>`)).toEqual(['ambiguous']);
+        expect(judge(stored, stored)).toEqual(['unchanged']);
+      }
+    }
+  });
+
+  it('takes a title for its collapsed text, or for unknown text where the HTML reading may differ', () => {
+    expect(analyse(`<p>${page('Ops \t guide')}</p>`).claims[0]!.body).toBe(JSON.stringify(['Ops guide', []]));
+    for (const title of ['Ops&lang;guide', 'Ops&rang;', 'Ops&#9001;guide', 'Ops&#128;']) {
+      expect(analyse(`<p>${page(title)}</p>`).claims[0]!.body).toBe('');
+    }
+  });
+});
+
 // Review r1, R6. No cap of this module takes a link away: what cannot be judged within the work limit is refused.
 describe('confluence-url-origin: a long or rich body is evidence like any other (R6)', () => {
   it.each([4_096, 4_097, 100_000])('keeps an unchanged link whose plain body has %i characters', (length) => {

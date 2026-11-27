@@ -279,13 +279,24 @@ const RESOURCE_KIND: ReadonlyMap<string, ConfluenceLinkKind> = new Map(
 const UNKNOWN_SHOWN = '\uFFFC';
 
 /**
+ * Characters an HTML reading of a storage attribute may show where the XML
+ * reading has these: U+2329/U+232A (`&lang;`/`&rang;`, which HTML reads as
+ * U+27E8/U+27E9) and the C1 controls (a numeric reference HTML maps to a
+ * windows-1252 character).
+ */
+const HTML_READS_OTHERWISE = /[\u2329\u232A\u0080-\u009F]/;
+
+/**
  * What the forward pass shows for an `ac:link` that shows nothing of its own
  * (#1955, review r2 R11), read as `confluence-link.ts` reads one: the display
  * text of its kind's primary value (a page title, a space key, an anchor, a
  * URL). Its first `ri:*` child is the resource; with none it is an anchor.
- * Null when that is not known: the element is not written `ac:link`, it holds
- * text or an element that is no resource, its resource is of no kind the
- * forward pass carries (a mention), or the value is none the grammar takes.
+ * Review r3, R16: in the text an explicit body is compared in, white space
+ * collapsed and trimmed, as the editor shows it. Null when that is not known:
+ * the element is not written `ac:link`, it holds text or an element that is
+ * no resource, its resource is of no kind the forward pass carries (a
+ * mention), the value is none the grammar takes, or it holds a character the
+ * HTML reading the editor shows may read as another one.
  */
 function forwardLabel(element: StorageElement, others: readonly StorageElement[]): string | null {
   if (element.name !== 'ac:link') return null;
@@ -296,7 +307,8 @@ function forwardLabel(element: StorageElement, others: readonly StorageElement[]
   if (!kind) return null;
   const primary = CONFLUENCE_LINK_PRIMARY_ATTR[kind];
   const value = (resource ?? element).attributes.find((attribute) => attribute.name.toLowerCase() === primary)?.value;
-  return value !== undefined && isConfluenceLinkValue(value) ? confluenceLinkDisplayText({ kind, value }) : null;
+  if (value === undefined || !isConfluenceLinkValue(value) || HTML_READS_OTHERWISE.test(value)) return null;
+  return confluenceLinkDisplayText({ kind, value }).replace(/\s+/gu, ' ').trim();
 }
 
 /**
