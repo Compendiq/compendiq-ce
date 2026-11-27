@@ -387,13 +387,28 @@ any change to the existing conflict policy.
   HTML parser reads each value as XML reads it: `&lang;`/`&rang;` as the
   references of U+2329/U+232A, a C1 numeric reference as its own character
   (HTML would map it to windows-1252), a literal TAB, LF, CR or CR LF as a
-  space (XML's attribute normalisation). Those are the only places where the
-  two readings of a well-formed attribute value differ, so such a target is
-  written back with the value Confluence holds, however it is spelled, and
-  no write-time check is needed. Text, bodies and the three #1748 kinds are
-  read with the HTML values, as the base commit read them (pre-existing, not
-  changed here). A string the reader cannot read (not XML, or past its
-  limits) is read with the HTML values, as before #1955.
+  space (XML's attribute normalisation). Those are the places where the two
+  readings of a well-formed attribute value differ in spelling. They are not
+  the only way a target can change: the HTML reading of the whole page can
+  still differ (a literal `/>` inside a quoted value that the self-closing
+  expansion takes for the end of the element, two attribute names HTML folds
+  into one). So every writer checks at write time, from the stored storage
+  (owner decision D19): an outgoing link of the five kinds that carries the
+  forward carrier of a stored link must be written with that link's XML
+  target (resource, primary value, section and every carried attribute);
+  otherwise the write is refused before any effect with
+  `ConfluenceStorageRefusedError` `changed-link-target` (422, nothing sent,
+  intent not reserved, draft kept; restore recovery fences it as a changed
+  target). The stored link is identified by a mark the storage reader's tag
+  ranges put on it in a parse made exactly as the forward pass makes it. A
+  link with no stored counterpart (newly authored) is not refused. Stored
+  storage that is well-formed as far as read but past the reader's limits
+  has no XML target to keep: an outgoing link carried from it is refused with
+  the limit as the reason. Stored storage that is not well-formed is read and
+  written with the HTML values, as before #1955, and is not checked. Text,
+  bodies and the three #1748 kinds keep the HTML values, as the base commit
+  read them (pre-existing; the `/>` case applies to them too and is left to a
+  follow-up).
   The whole change is the storage-derivation feature `link-kinds` (#1953): a
   version restore reserved before it, or under a profile without it, derives
   the bytes of the base commit and never meets the judgement. Limits, all on
@@ -408,8 +423,8 @@ any change to the existing conflict policy.
   the two is deleted, the link is still kept where it stands in its own
   stored place and that place names it alone, but a link that has moved, or
   whose surroundings changed with the deletion, becomes text, since which one
-  is left cannot be told; a page link whose title, or any link or anchor
-  whose own body, holds U+2329, U+232A or a C1 control is such a rival of
+  is left cannot be told; a page link whose title, or any link or ordinary
+  anchor whose own body, holds U+2329, U+232A or a C1 control is such a rival of
   unknown text, never the same body as another; schemes are matched in
   lowercase only, so `HTTPS://…` is an inert carrier; a stored link with more
   attributes than the grammar carries is no

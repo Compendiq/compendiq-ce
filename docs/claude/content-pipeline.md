@@ -106,8 +106,12 @@ anything; create and relocation have no origin, so they write no unsafe
 `ri:url`. The forward pass reads the start tags of a link of the five kinds and
 of its resource as XML does (`keepXmlLinkValues`: the storage reader finds the
 tags; `&lang;`/`&rang;`, C1 numeric references and literal TAB/LF/CR are spelled
-so HTML reads XML's value), so a target is written back as Confluence holds
-it; text and the #1748 kinds keep the HTML values, as before #1955.
+so HTML reads XML's value); text and the #1748 kinds keep the HTML values, as
+before #1955. Where the HTML reading of a stored link of the five kinds still
+differs (a literal `/>` in a quoted value, folded attribute names), a write
+that would publish it with another target than the stored XML one is refused
+before any effect (422 `changed-link-target`, owner decision D19); so is one
+carried from stored storage past the reader's limits (the limit as reason).
 `restoreMedia` replaces a token only where it stands as content
 (`locateMediaTokens`, parse5): never in an attribute, a comment or raw text,
 never under an element the tree builder moved (out of a table, or misnested
