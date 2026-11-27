@@ -173,7 +173,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     if (inputHasLayoutTokens || /CQ\\?_MEDIA\\?_PLACEHOLDER/.test(markdown)) {
       systemPrompt += `\n\n${STRUCTURE_PRESERVATION_INSTRUCTION}`;
     }
-    if (/\[\[\[CODE-META[ \]]/.test(markdown)) {
+    if (/\[\[\[CODE-META[ \]]|CQ\\?_CODE\\?_PLACEHOLDER/.test(markdown)) {
       systemPrompt += `\n\n${CODE_META_PRESERVATION_INSTRUCTION}`;
     }
     if (sanitizedInstruction) {

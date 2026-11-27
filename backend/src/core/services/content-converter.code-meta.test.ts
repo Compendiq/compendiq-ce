@@ -14,7 +14,7 @@ import { JSDOM } from 'jsdom';
 import { Marked } from 'marked';
 import {
   admitLegacyCodeMetadata,
-  assertCodeMacroStorage,
+  assertCodeMacroStorage as assertCodeMacroStorageUnderTest,
   assertLocalCodeMacroProjections,
   beginCodeMetaAccept,
   codeBlockElements,
@@ -33,6 +33,7 @@ import {
   htmlToText,
   ImproveReplayBudgetError,
   ImproveReplayError,
+  ImproveSuggestionFormatError,
   isCodeMetaTitle,
   isDroppingContext,
   judgeCodeMacros,
@@ -41,15 +42,26 @@ import {
   parseCodeMetaAttrs,
   projectSourceCodeText,
   protectMedia,
+  readCodeMacroInventory,
   replayProtectedMedia,
   restoreMedia,
   type CodeMacroAllowance,
   type FinalizedCodeMetadata,
+  type HtmlToConfluenceOptions,
 } from './content-converter.js';
 import { ConfluenceStorageRefusedError, readConfluenceStorage, STORAGE_READER_LIMITS } from './confluence-storage-reader.js';
 import { oracleElements } from './__fixtures__/storage-oracle.js';
+import { oracleCodeMacros, oracleCodeMacroVerdict } from './__fixtures__/code-macro-oracle.js';
 import { collabExtensions, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { generateJSON } from '@tiptap/html';
+
+/** Every storage string this file hands to the judgement, with its units: the differential's fixture set (CM-8). */
+const judged: Array<{ storage: string; units: string[]; options: HtmlToConfluenceOptions }> = [];
+
+function assertCodeMacroStorage(storage: string, allowance: CodeMacroAllowance, options: HtmlToConfluenceOptions = {}): void {
+  judged.push({ storage, units: [...allowance.units], options });
+  assertCodeMacroStorageUnderTest(storage, allowance, options);
+}
 
 const LINENUMBERS = '{&quot;linenumbers&quot;:&quot;true&quot;}';
 const TITLED = ` data-title="Startup.cs" data-macro-params="${LINENUMBERS}"`;
@@ -99,7 +111,7 @@ async function improveChain(
   const rebuilt = await markdownToHtml(edit(markdown), {
     layoutSkeleton: extractLayoutSkeleton(protectedBody.html), protectedMedia: protectedBody.media, codeMeta,
   });
-  const replay = replayProtectedMedia(rebuilt, protectedBody.media, codeMeta, { replayBudget: options.replayBudget });
+  const replay = replayProtectedMedia(rebuilt, codeMeta, { replayBudget: options.replayBudget });
   const finalized = finalizeCodeMetadata(replay.html, codeMeta);
   const storage = htmlToConfluence(finalized.html, { previousStorage: options.previousStorage });
   assertCodeMacroStorage(storage, finalized.allowance, { previousStorage: options.previousStorage });
@@ -150,6 +162,7 @@ async function asyncRefusal(run: () => Promise<unknown>): Promise<string | null>
 }
 
 function judge(storage: string, allowance: CodeMacroAllowance, work?: number): string | null {
+  if (work === undefined) judged.push({ storage, units: [...allowance.units], options: {} });
   const read = readConfluenceStorage(storage);
   if (!read.ok) return read.reason;
   return refusal(() => judgeCodeMacros(read.tree, allowance, {}, work));
@@ -231,11 +244,13 @@ describe('#1958 emission and classification', () => {
     ['a placeholder in its title', pre('x', ' data-title="CQ_MEDIA_PLACEHOLDER_0"')],
     ['element children', '<pre data-title="T"><code class="language-js"><span>x</span></code></pre>'],
     ['a lossy projection', pre('a&#13;b', TITLED)],
-  ])('freezes an annotated block %s as one media entry; its macro keeps title and options', async (_name, html) => {
+  ])('freezes an annotated block %s as one code entry; its macro keeps title and options', async (_name, html) => {
     const protectedBody = protectMedia(`<p>a</p>${html}`);
     expect(protectedBody.carried).toBe(true);
-    expect(protectedBody.media).toHaveLength(1);
-    expect(protectedBody.media[0]).toMatchObject({ code: true });
+    // CM-1: never in the media ordinal space.
+    expect(protectedBody.media).toEqual([]);
+    expect(protectedBody.frozenCode).toHaveLength(1);
+    expect(protectedBody.frozenCode[0]).toMatchObject({ token: 'CQ_CODE_PLACEHOLDER_0', code: true });
     expect(protectedBody.html).not.toContain('<pre');
     const chain = await improveChain(`<p>a</p>${html}`);
     expect(codeMacros(chain.storage)).toEqual(codeMacros(htmlToConfluence(`<p>a</p>${html}`)));
@@ -255,8 +270,9 @@ describe('#1958 emission and classification', () => {
   it('freezes token blocks past the first 1,000', () => {
     const html = Array.from({ length: 1001 }, (_, i) => pre(`x${i}`, ' data-title="T"')).join('');
     const protectedBody = protectMedia(html);
-    expect(protectedBody.media).toHaveLength(1);
-    expect(protectedBody.media[0]!.html).toContain('x1000');
+    expect(protectedBody.media).toEqual([]);
+    expect(protectedBody.frozenCode).toHaveLength(1);
+    expect(protectedBody.frozenCode[0]!.html).toContain('x1000');
     expect(htmlToMarkdown(protectedBody.html, { layoutTokens: true })).toContain('[[[CODE-META n=999 title=T]]]');
   });
 
@@ -294,10 +310,35 @@ describe('#1958 identity through the chain (criteria 1, 2, 4)', () => {
     ]);
   });
 
-  it('pins a block in a panel: its token leaves the panel line and nothing token-shaped is saved', async () => {
-    const chain = await improveChain(`<div class="panel-info">${pre('x()', TITLED)}</div>`);
+  it.each([
+    ['first in an info panel', `<div class="panel-info">${pre('x()', TITLED)}<p>after</p></div>`],
+    ['after a paragraph in a panel', `<div class="panel-warning"><p>before</p>${pre('x()', TITLED)}</div>`],
+    ['first in an unchecked task item', `<ul data-type="taskList"><li data-type="taskItem" data-checked="false">${pre('x()', TITLED)}</li></ul>`],
+    ['first in a checked task item', `<ul data-type="taskList"><li data-type="taskItem" data-checked="true">${pre('x()', TITLED)}</li></ul>`],
+    ['after a paragraph in a task item', `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>a</p>${pre('x()', TITLED)}</li></ul>`],
+    ['first in an ordinary list item', `<ul><li>${pre('x()', TITLED)}</li></ul>`],
+  ])('keeps title and options of a block %s on a faithful echo (review r1 CM-4)', async (_name, html) => {
+    const chain = await improveChain(html);
+    // The token line stands directly above its fence (a list item's own marker may open the line).
+    expect(chain.markdown).toMatch(/^(?:-\s+)?\s*\[\[\[CODE-META n=0 [^\n]*\]\]\]\n\s*```js$/m);
+    expect(codeMacros(chain.storage)).toEqual([{ language: 'js', title: 'Startup.cs', params: { linenumbers: 'true' }, code: 'x()' }]);
+    expect(chain.report).toMatchObject({ bound: 1, orphan: 0, debris: 0 });
     expect(chain.storage).not.toContain('CODE-META');
-    expect(codeMacros(chain.storage).map((macro) => macro.code)).toEqual(['x()\n']);
+  });
+
+  it('keeps the task item and its checked state when the first block moves out of it', async () => {
+    const chain = await improveChain(`<ul data-type="taskList"><li data-type="taskItem" data-checked="true">${pre('x()', TITLED)}</li></ul>`);
+    expect(chain.markdown.startsWith('- [x] \n\n[[[CODE-META n=0 ')).toBe(true);
+    expect(chain.html).toContain('<li data-type="taskItem" data-checked="true">');
+  });
+
+  it('writes a panel or task item that does not open with a token block exactly as before', () => {
+    for (const html of [
+      `<div class="panel-info">${pre('x()')}</div>`, '<div class="panel-note"><p>[[[CODE-META n=0]]]</p></div>',
+      `<ul data-type="taskList"><li data-type="taskItem" data-checked="false">${pre('x()')}</li></ul>`,
+    ]) {
+      expect(htmlToMarkdown(html, { layoutTokens: true }), html).toBe(htmlToMarkdown(html));
+    }
   });
 
   it('saves edited code as written, without metadata (S5)', async () => {
@@ -636,18 +677,21 @@ describe('#1958 media replay (V4, X4, X5)', () => {
   const IMAGE = '<img src="/api/attachments/1/a.png" alt="a">';
 
   it('places an image at its token and appends a missing frozen code block once, with its metadata', async () => {
-    const html = `<p>x</p>${IMAGE}<table><tbody><tr><td>${pre('frozen()', TITLED)}</td></tr></tbody></table>`;
-    const chain = await improveChain(html, (markdown) => markdown.replace(/<table>.*<\/table>/, ''));
+    const cell = (code: string): string => `<table><tbody><tr><td>${pre(code, TITLED)}</td></tr></tbody></table>`;
+    const html = `<p>x</p>${IMAGE}${cell('kept()')}${cell('frozen()')}`;
+    const chain = await improveChain(html, (markdown) => markdown.replace(/<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_1<\/td><\/tr><\/tbody><\/table>/, ''));
     expect(chain.dropped).toBe(1);
     expect(chain.html.match(/<img/g)).toHaveLength(1);
-    expect(codeMacros(chain.storage)).toEqual([{ language: 'js', title: 'Startup.cs', params: { linenumbers: 'true' }, code: 'frozen()' }]);
+    expect(codeMacros(chain.storage).map((macro) => [macro.title, macro.code])).toEqual([
+      ['Startup.cs', 'kept()'], ['Startup.cs', 'frozen()'],
+    ]);
   });
 
   it('uses the one viable placement and removes the spelling in a discarded container (mixed)', async () => {
     const html = `<table><tbody><tr><td>${pre('frozen()', TITLED)}</td></tr></tbody></table>`;
-    const chain = await improveChain(html, (markdown) => `${markdown}\n\n<div class="figure-index">CQ_MEDIA_PLACEHOLDER_0</div>\n`);
+    const chain = await improveChain(html, (markdown) => `${markdown}\n\n<div class="figure-index">CQ_CODE_PLACEHOLDER_0</div>\n`);
     expect(chain.html.match(/<table/g)).toHaveLength(1);
-    expect(chain.html).not.toContain('CQ_MEDIA');
+    expect(chain.html).not.toContain('CQ_CODE');
     expect(chain.report.screened).toBe(1);
     expect(codeMacros(chain.storage)).toHaveLength(1);
   });
@@ -668,7 +712,7 @@ describe('#1958 media replay (V4, X4, X5)', () => {
   });
 
   it('removes a code-carrying spelling from an unsafe parse context and appends the block', async () => {
-    for (const unsafe of ['**CQ_MEDIA_PLACEHOLDER_0**', '[CQ_MEDIA_PLACEHOLDER_0](https://x.test)']) {
+    for (const unsafe of ['**CQ_CODE_PLACEHOLDER_0**', '[CQ_CODE_PLACEHOLDER_0](https://x.test)']) {
       const html = `<table><tbody><tr><td>${pre('frozen()', TITLED)}</td></tr></tbody></table>`;
       const chain = await improveChain(html, (markdown) => markdown.replace(/<table>.*<\/table>/, unsafe));
       expect(chain.html, unsafe).not.toMatch(/<(strong|a)[^>]*><table/);
@@ -721,7 +765,7 @@ describe('#1958 media replay (V4, X4, X5)', () => {
     const protectedBody = protectMedia(html);
     const codeMeta = beginCodeMetaAccept(protectedBody);
     const rebuilt = await markdownToHtml(htmlToMarkdown(protectedBody.html, { layoutTokens: true }), { protectedMedia: protectedBody.media, codeMeta });
-    const replay = replayProtectedMedia(rebuilt, protectedBody.media, codeMeta);
+    const replay = replayProtectedMedia(rebuilt, codeMeta);
     expect(() => finalizeCodeMetadata(replay.html.replace('frozen()', 'altered()'), codeMeta)).toThrow(ImproveReplayError);
     expect(() => finalizeCodeMetadata(replay.html.replace(/ data-cq-code-replay="[^"]*"/, ''), codeMeta)).toThrow(ImproveReplayError);
   });
@@ -876,5 +920,193 @@ describe('#1958 the forward pass is unchanged', () => {
   it('derives the same HTML for a stored code macro', () => {
     expect(confluenceToHtml('<ac:structured-macro ac:name="code"><ac:parameter ac:name="title">T</ac:parameter><ac:plain-text-body><![CDATA[x]]></ac:plain-text-body></ac:structured-macro>'))
       .toBe('<pre data-title="T"><code>x</code></pre>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR review r1 (CM-1…CM-8), coordinator ruling D23.
+// ---------------------------------------------------------------------------
+
+/** The reviewer's page: a titled sample in a table cell, then a diagram image. */
+const CM1_PAGE = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
+  + '<p>Diagram follows</p><img src="/api/attachments/1/d.png" alt="d"><p>End</p>';
+/** Generated by the release before #1958 (`a06f304c`, htmlToMarkdown(protectMedia(CM1_PAGE).html, { layoutTokens: true })). */
+const CM1_BASE_SUGGESTION = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
+  + '\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd';
+/** A page whose only annotated block travels as a token, and its suggestion from `a06f304c`. */
+const TOKEN_PAGE = '<p>Intro</p><pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;}"><code class="language-js">const a = 1;</code></pre>'
+  + '<p>Diagram follows</p><img src="/api/attachments/1/d.png" alt="d"><p>End</p>';
+const TOKEN_PAGE_BASE_SUGGESTION = 'Intro\n\n```js\nconst a = 1;\n```\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd';
+
+describe('#1958 r1 CM-1: media ordinals are the ones the previous release wrote', () => {
+  it('keeps every media token and its HTML as before; frozen code has its own namespace', () => {
+    const protectedBody = protectMedia(CM1_PAGE);
+    expect(protectedBody.media).toEqual([{ token: 'CQ_MEDIA_PLACEHOLDER_0', html: '<img src="/api/attachments/1/d.png" alt="d">' }]);
+    expect(protectedBody.frozenCode.map((entry) => entry.token)).toEqual(['CQ_CODE_PLACEHOLDER_0']);
+    expect(protectedBody.html).toBe('<table><tbody><tr><td> CQ_CODE_PLACEHOLDER_0 </td></tr></tbody></table>'
+      + '<p>Diagram follows</p> CQ_MEDIA_PLACEHOLDER_0 <p>End</p>');
+  });
+
+  it('does not freeze an annotated block that holds media, so that medium keeps its ordinal', () => {
+    const html = '<pre data-title="Pic"><code class="language-js">a<img src="/api/attachments/1/x.png" alt="x">b</code></pre>'
+      + '<img src="/api/attachments/1/d.png" alt="d">';
+    const protectedBody = protectMedia(html);
+    // Exactly what a06f304c wrote.
+    expect(protectedBody.media.map((entry) => entry.token)).toEqual(['CQ_MEDIA_PLACEHOLDER_0', 'CQ_MEDIA_PLACEHOLDER_1']);
+    expect(protectedBody.html).toBe('<pre data-title="Pic"><code class="language-js">a CQ_MEDIA_PLACEHOLDER_0 b</code></pre> CQ_MEDIA_PLACEHOLDER_1 ');
+    expect(protectedBody.frozenCode).toEqual([]);
+    expect(htmlToMarkdown(protectedBody.html, { layoutTokens: true })).toBe('```js\na CQ_MEDIA_PLACEHOLDER_0 b\n```\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_1');
+  });
+
+  it('refuses a suggestion the previous release made for a page with frozen code, before anything is built', async () => {
+    await expect(improveChain(CM1_PAGE, () => CM1_BASE_SUGGESTION)).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+  });
+
+  it('applies a suggestion the previous release made for a page without frozen code as before', async () => {
+    const chain = await improveChain(TOKEN_PAGE, () => TOKEN_PAGE_BASE_SUGGESTION);
+    // The image at its token, after "Diagram follows"; the fence without its title, as that release saved it.
+    expect(chain.html).toBe('<p>Intro</p>\n<pre><code class="language-js">const a = 1;\n</code></pre>\n<p>Diagram follows</p>\n'
+      + '<img src="/api/attachments/1/d.png" alt="d">\n<p>End</p>\n');
+    // Exactly what the previous release's Accept (restoreMedia + drop guard) made of it.
+    expect(chain.html).toBe(await headChain(TOKEN_PAGE, () => TOKEN_PAGE_BASE_SUGGESTION));
+    expect(chain.dropped).toBe(0);
+  });
+
+  it('still appends a frozen block the model dropped when another code carrier is present', async () => {
+    const html = `${CM1_PAGE}${pre('bound()', ' data-title="B"')}`;
+    const chain = await improveChain(html, (markdown) => markdown.replace(/<table>.*<\/table>/, ''));
+    expect(chain.dropped).toBe(1);
+    expect(codeMacros(chain.storage).map((macro) => macro.title)).toEqual(['B', 'Sample']);
+  });
+});
+
+describe('#1958 r1 CM-3: a replayed original is compared exactly', () => {
+  it('refuses an original one HTML parse cannot give back (a line feed before its code), on an unchanged echo', async () => {
+    await expect(improveChain('<p>a</p><pre data-title="Guide">\n\n<code>x</code></pre>')).rejects.toBeInstanceOf(ImproveReplayError);
+  });
+
+  it('refuses a CR outside code text (an attribute value): only code text may read CR as LF', async () => {
+    await expect(improveChain('<p>a</p><pre data-title="Gu&#13;ide"><code>x<b>y</b></code></pre>')).rejects.toBeInstanceOf(ImproveReplayError);
+  });
+
+  it('accepts a CR in the code text and returns the original bytes', async () => {
+    const chain = await improveChain('<p>a</p><pre data-title="Guide"><code>x<b>y&#13;z</b></code></pre>');
+    expect(chain.html).toBe('<p>a</p>\n<pre data-title="Guide"><code>x<b>y\rz</b></code></pre>\n');
+    expect(protectMedia('<pre data-title="G"><code>x<b>y&#13;z</b></code></pre>').frozenCode[0]!.lineEndForm)
+      .toBe('<pre data-title="G"><code>x<b>y\nz</b></code></pre>');
+  });
+});
+
+describe('#1958 r1 CM-5: only writer-recognised placeholders name a code macro', () => {
+  it.each([
+    '<p data-macro-name="code">Manual</p>', '<div data-macro-name="code"><p>Manual</p></div>', '<span data-macro-name=" CODE ">Manual</span>',
+  ])('keeps the inert annotation %s and writes no macro for it', async (markup) => {
+    const chain = await improveChain('<p>a</p>', (markdown) => `${markdown}\n\n${markup}\n`);
+    expect(chain.storage).toContain('Manual');
+    expect(codeMacros(chain.storage)).toEqual([]);
+  });
+});
+
+describe('#1958 r1 CM-6: bounded work', () => {
+  it('charges an inspected name and value before comparing it', () => {
+    const benign = `<ac:structured-macro ac:name="${'n'.repeat(260)}"><ac:rich-text-body><p>x</p></ac:rich-text-body></ac:structured-macro>`;
+    expect(refusal(() => readCodeMacroInventory(benign, 10))).toBe('unapproved-code-macro');
+    expect(readCodeMacroInventory(benign)).toEqual({ records: [], bareKeys: [] });
+    // A parameter name is charged as well as its text.
+    const named = M(PARAM('p'.repeat(200), 'v') + BODY('x'));
+    expect(refusal(() => readCodeMacroInventory(named, 150))).toBe('unapproved-code-macro');
+    expect(readCodeMacroInventory(named).records).toHaveLength(1);
+  });
+
+  it('analyses the echo without per-token rescans of the token lists', async () => {
+    const counts = async (blocks: number): Promise<{ splice: number; indexOf: number }> => {
+      const page = Array.from({ length: blocks }, (_, i) => pre(`x${i}()`, ` data-title="T${i}"`)).join('');
+      const protectedBody = protectMedia(page);
+      const markdown = `${htmlToMarkdown(protectedBody.html, { layoutTokens: true })}\n\n${'[[[CODE-META junk]]]\n\n'.repeat(blocks)}`;
+      const codeMeta = beginCodeMetaAccept(protectedBody, { witnesses: true });
+      const splice = vi.spyOn(Array.prototype, 'splice');
+      const indexOf = vi.spyOn(Array.prototype, 'indexOf');
+      await markdownToHtml(markdown, { codeMeta });
+      const result = { splice: splice.mock.calls.length, indexOf: indexOf.mock.calls.length };
+      splice.mockRestore();
+      indexOf.mockRestore();
+      return result;
+    };
+    const small = await counts(10);
+    const large = await counts(300);
+    expect(large.splice - small.splice).toBeLessThan(10);
+    expect(large.indexOf - small.indexOf).toBeLessThan(50);
+  });
+});
+
+describe('#1958 r1 CM-7: carrier debris in headings and tables', () => {
+  it('removes a token the model made a heading; the block is saved without metadata', async () => {
+    const page = `<p>Report</p>${pre('daily()', ' data-title="Daily Report"')}`;
+    const chain = await improveChain(page, (markdown) => markdown.replace('[[[CODE-META', '## [[[CODE-META'));
+    expect(chain.html).not.toContain('CODE-META');
+    expect(chain.html).not.toContain('<h2');
+    expect(codeMacros(chain.storage)).toEqual([{ language: 'js', title: null, params: {}, code: 'daily()\n' }]);
+  });
+
+  it('strips a token spelling from heading and table text and keeps authored escapes and code spans', async () => {
+    const chain = await improveChain('<p>a</p>', (markdown) => `${markdown}\n\n## Intro [[[CODE-META n=0]]] text\n\n`
+      + '| a | b |\n|---|---|\n| [[[CODE-META n=1]]] x | `[[[CODE-META n=2]]]` |\n\n'
+      + '## \\[\\[\\[CODE-META n=3\\]\\]\\] authored\n');
+    expect(chain.html).toContain('<h2>Intro  text</h2>');
+    expect(chain.html).toContain('<td> x</td>');
+    expect(chain.html).toContain('<code>[[[CODE-META n=2]]]</code>');
+    expect(chain.html).toContain('[[[CODE-META n=3]]] authored');
+    expect(chain.report.debris).toBe(2);
+  });
+});
+
+describe('#1958 r1 CM-8: projections and the independent differential', () => {
+  it('refuses a body whose second projection alone makes a titled block a twin (P2-only)', async () => {
+    const page = '<table><tbody><tr><td><pre data-title="Title"><code class="language-js">sample</code></pre></td></tr></tbody></table>';
+    const chain = await improveChain(page, (markdown) => `${markdown}\n\n<pre><code class="language-js"><textarea>\n\nsample</textarea></code></pre>\n`);
+    // P1 (and the remote exit) keep the bodies distinct …
+    expect(codeMacros(chain.storage).map((macro) => macro.code)).toEqual(['sample', '\nsample']);
+    // … one HTML re-serialisation (relocation) does not.
+    const reserialised = new JSDOM(`<body>${chain.html}</body>`).window.document.body.innerHTML;
+    expect(codeMacros(htmlToConfluence(reserialised)).map((macro) => macro.code)).toEqual(['sample', 'sample']);
+    expect(refusal(() => assertLocalCodeMacroProjections(chain.html, chain.allowance, { body_storage: null }))).toBe('unapproved-code-macro');
+  });
+
+  it('agrees with the independent XML oracle on every judged storage of this file, verdict and records', () => {
+    expect(judged.length).toBeGreaterThan(60);
+    let compared = 0;
+    for (const { storage, units, options } of judged) {
+      const oracle = oracleCodeMacros(storage);
+      if (!oracle.ok && oracle.reason === 'unreadable') {
+        // A string the oracle cannot read: the production judgement refuses it whenever it may hold a macro.
+        if (/<[^<> \t\r\n/]*macro[ \t\r\n\f/>]/i.test(storage)) expect(refusal(() => readCodeMacroInventory(storage)), storage).not.toBeNull();
+        continue;
+      }
+      const production = ((): { records: string[]; bareKeys: string[] } | string => {
+        try {
+          return readCodeMacroInventory(storage);
+        } catch (error) {
+          if (error instanceof ConfluenceStorageRefusedError) return error.reason;
+          throw error;
+        }
+      })();
+      if (oracle.ok) expect(production, storage).toEqual({ records: oracle.records, bareKeys: oracle.bareKeys });
+      else expect(production, storage).toBe(oracle.reason);
+      const reference = units.length === 0 ? '' : htmlToConfluence(units.join('\n'), options);
+      const allowance = allowanceOf('');
+      (allowance.units as string[]).push(...units);
+      const verdict = refusal(() => assertCodeMacroStorageUnderTest(storage, allowance, options)) ?? 'pass';
+      expect(verdict, storage).toBe(oracleCodeMacroVerdict(storage, reference));
+      compared += 1;
+    }
+    expect(compared).toBeGreaterThan(50);
+  });
+});
+
+describe('#1958 r1: admission runs once per finalized allowance', () => {
+  it('refuses a second call', async () => {
+    const chain = await improveChain(pre('p()'), (markdown) => markdown, { witnesses: true });
+    expect(admitLegacyCodeMetadata(chain.allowance, [])).toBe(0);
+    expect(() => admitLegacyCodeMetadata(chain.allowance, [{ ordinal: 0, title: 'T', macroParams: null }])).toThrow(/already called/);
   });
 });

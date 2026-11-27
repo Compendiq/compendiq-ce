@@ -322,7 +322,7 @@ describe('a stored AI Improve result published later by relocation (#1958)', () 
     const rebuilt = await markdownToHtml(htmlToMarkdown(protectedBody.html, { layoutTokens: true }), {
       layoutSkeleton: extractLayoutSkeleton(protectedBody.html), protectedMedia: protectedBody.media, codeMeta,
     });
-    const accepted = finalizeCodeMetadata(replayProtectedMedia(rebuilt, protectedBody.media, codeMeta).html, codeMeta);
+    const accepted = finalizeCodeMetadata(replayProtectedMedia(rebuilt, codeMeta).html, codeMeta);
     expect(() => assertLocalCodeMacroProjections(accepted.html, accepted.allowance, { body_storage: null })).not.toThrow();
 
     const { html: relocated, refs } = rewriteAttachmentRefs(accepted.html, ['/api/local-attachments/7/'], '/api/attachments/900001/', true);

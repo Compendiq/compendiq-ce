@@ -1210,11 +1210,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         expect(response.json()).toMatchObject({ reason: 'not_authorized' });
         expect(mockHttpRequest).not.toHaveBeenCalled();
         expect(await readPage(pageId)).toMatchObject({ version: 5, body_text: 'Shared runbook body' });
+        // #1958 r1 CM-2: denied before any evidence is read, so nothing is reserved at all.
         expect((await query(
           `SELECT status FROM page_write_intents
             WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
           [pageId],
-        )).rows).toEqual([{ status: 'cancelled' }]);
+        )).rows).toEqual([]);
       });
     });
 
@@ -1342,6 +1343,54 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         expect(response.statusCode, response.body).toBe(403);
         expect(response.json()).toMatchObject({ reason: 'not_authorized' });
         await expectNothingDispatched(pageId, before);
+      });
+
+      it('denies a deactivated actor with otherwise valid Markdown before any preparation or reservation (r1 CM-2)', async () => {
+        const { pageId, markdown } = await seed();
+        const before = await readPage(pageId);
+        await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+
+        const response = await apply({ pageId: 'page-code-meta', improvedMarkdown: markdown, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toMatchObject({ reason: 'not_authorized' });
+        await expectNothingDispatched(pageId, before);
+      });
+
+      it('denies a caller without page access whose Markdown the previous release generated, before the format check (r1 CM-2)', async () => {
+        const { pageId } = await seed();
+        const before = await readPage(pageId);
+        userId = otherUserId;
+        await setIntegration(otherUserId, true);
+
+        const response = await apply({ pageId: 'page-code-meta', improvedMarkdown: 'Plain text from anywhere', version: 7 });
+
+        expect(response.statusCode, response.body).toBe(403);
+        await expectNothingDispatched(pageId, before);
+      });
+
+      it('refuses a non-ASCII-prefixed code macro the CDATA pass would make live on a page without annotated blocks (r1 CM-8)', async () => {
+        const pageId = await insertConfluencePage('page-no-skeleton', 'Plain article', 'OPS');
+        const storage = '<p>Plain</p>';
+        const bodyHtml = confluenceToHtml(storage, 'page-no-skeleton', 'OPS');
+        await setPageContent(pageId, bodyHtml, 7, storage);
+        await enableConfluence(true);
+        const markdown = htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true });
+        const before = await readPage(pageId);
+        const prefix = 'a\u1680b';
+        const comment = `<!-- <ac:plain-text-body>&#45;&#45;&gt;&lt;${prefix}:structured-macro xmlns:${prefix}="urn:z" ${prefix}:name="code"&gt;`
+          + `&lt;ac:plain-text-body&gt;&lt;![CDATA[x</ac:plain-text-body></${prefix}:structured-macro> -->`;
+
+        const refused = await apply({ pageId: 'page-no-skeleton', improvedMarkdown: `${markdown}\n\n${comment}\n`, version: 7 });
+
+        expect(refused.statusCode, refused.body).toBe(422);
+        expect(refused.json()).toMatchObject({ reason: 'unapproved-code-macro' });
+        await expectNothingDispatched(pageId, before);
+
+        acceptNextConfluenceUpdate();
+        const clean = await apply({ pageId: 'page-no-skeleton', improvedMarkdown: markdown.replace('Plain', 'Clear'), version: 7 });
+        expect(clean.statusCode, clean.body).toBe(200);
+        expect(sentStorage()).toBe('<p>Clear</p>\n');
       });
 
       describe('the local write of a synced page while the integration is off', () => {

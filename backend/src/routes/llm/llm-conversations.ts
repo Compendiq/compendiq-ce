@@ -22,6 +22,7 @@ import {
   htmlToText,
   ImproveReplayBudgetError,
   ImproveReplayError,
+  ImproveSuggestionFormatError,
   LayoutRecoveryError,
   markdownToHtml,
   protectMedia,
@@ -429,6 +430,25 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     if (writeStaysLocal && !(await canWritePageLocally(existingPage.id))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    // #1958 (review r1 CM-2; the #1955 R4/W3 rule): the remote exit validates
+    // the active actor and page/space authority here, before the stored body
+    // supplies any evidence (media, skeleton, code metadata; from #1953-2 on,
+    // recovery evidence and witnesses), on the successful path as on every
+    // refusal. The admitted transaction's final fence before dispatch stays.
+    if (!writeStaysLocal) {
+      const actor = await query('SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL', [userId]);
+      if (actor.rowCount !== 1) {
+        throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+      }
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (
+        !existingPage.space_key ||
+        !accessibleSpaces.includes(existingPage.space_key) ||
+        !(await userCanAccessPage(userId, existingPage.id))
+      ) {
+        throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+      }
+    }
 
     await rejectIfLiveCollabRoom(
       existingPage.id,
@@ -510,30 +530,14 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw err;
     }
 
-    // #1958 (Y3): on the remote exit, page-level access is validated before a
-    // new content-dependent refusal is answered; the final authorization
-    // fence inside the admitted transaction stays as it is.
-    const assertRemoteApplyAccess = async (): Promise<void> => {
-      const actor = await query('SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL', [userId]);
-      if (actor.rowCount !== 1) {
-        throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
-      }
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (
-        !existingPage.space_key ||
-        !accessibleSpaces.includes(existingPage.space_key) ||
-        !(await userCanAccessPage(userId, existingPage.id))
-      ) {
-        throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
-      }
-    };
-    // A #1958 refusal: nothing is reserved, dispatched or stored.
-    const refuseImproveResult = async (error: unknown): Promise<never> => {
+    // A #1958 refusal: nothing is reserved, dispatched or stored. Remote
+    // authority was established before any evidence was read (above).
+    const refuseImproveResult = (error: unknown): never => {
       const reason = error instanceof ConfluenceStorageRefusedError ? error.reason
         : error instanceof ImproveReplayBudgetError ? 'replay-budget'
-          : error instanceof ImproveReplayError ? 'replay-integrity' : null;
+          : error instanceof ImproveReplayError ? 'replay-integrity'
+            : error instanceof ImproveSuggestionFormatError ? 'suggestion-format' : null;
       if (reason === null) throw error;
-      if (!writeStaysLocal) await assertRemoteApplyAccess();
       fastify.log.warn(
         { pageId: existingPage.id, reason, exit: writeStaysLocal ? 'local' : 'remote' },
         '#1958: AI Improve result refused before write',
@@ -544,10 +548,10 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     let finalized: FinalizedCodeMetadata;
     try {
-      const replay = replayProtectedMedia(bodyHtml, media, codeMeta);
+      const replay = replayProtectedMedia(bodyHtml, codeMeta);
       if (replay.dropped > 0) {
         fastify.log.warn(
-          { pageId, dropped: replay.dropped, total: media.length },
+          { pageId, dropped: replay.dropped, total: codeMeta.entries.length },
           '#723: re-appended media dropped during AI Improve',
         );
       }

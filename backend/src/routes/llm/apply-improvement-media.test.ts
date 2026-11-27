@@ -703,6 +703,77 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         expect(response.statusCode, response.body).toBe(422);
         await expectUnchanged(pageId, original);
       });
+
+      describe('review r1', () => {
+        // CM-1: suggestions the release before #1958 (a06f304c) generated, pinned as that release wrote them.
+        const CM1_PAGE = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
+          + '<p>Diagram follows</p><img src="/api/attachments/1/d.png" alt="d"><p>End</p>';
+        const CM1_BASE_SUGGESTION = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
+          + '\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd';
+        const TOKEN_PAGE = `<p>Intro</p>${TITLED}<p>Diagram follows</p><img src="/api/attachments/1/d.png" alt="d"><p>End</p>`;
+        const TOKEN_PAGE_BASE_SUGGESTION = 'Intro\n\n```js\nconst a = 1;\n```\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd';
+
+        async function pendingImprovement(pageId: number, improvedMarkdown: string): Promise<string> {
+          const inserted = await query<{ id: string }>(
+            `INSERT INTO llm_improvements
+               (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+             VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed')
+             RETURNING id`,
+            [userId, pageId, improvedMarkdown],
+          );
+          return inserted.rows[0]!.id;
+        }
+        const status = async (id: string): Promise<string | undefined> =>
+          (await query<{ status: string }>('SELECT status FROM llm_improvements WHERE id = $1', [id])).rows[0]?.status;
+
+        it('refuses a pending suggestion of the previous release for a page with a frozen code block (CM-1)', async () => {
+          const pageId = await seedPage(CM1_PAGE);
+          const improvementId = await pendingImprovement(pageId, CM1_BASE_SUGGESTION);
+
+          const response = await apply(pageId, CM1_BASE_SUGGESTION);
+
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.body).toMatch(/run AI Improve again/);
+          await expectUnchanged(pageId, CM1_PAGE);
+          expect(await status(improvementId)).toBe('completed');
+        });
+
+        it('applies a pending suggestion of the previous release for a page without frozen code as that release did (CM-1)', async () => {
+          const pageId = await seedPage(TOKEN_PAGE);
+          const improvementId = await pendingImprovement(pageId, TOKEN_PAGE_BASE_SUGGESTION);
+
+          const response = await apply(pageId, TOKEN_PAGE_BASE_SUGGESTION);
+
+          expect(response.statusCode, response.body).toBe(200);
+          expect((await readPage(pageId)).body_html).toBe(
+            '<p>Intro</p>\n<pre><code class="language-js">const a = 1;\n</code></pre>\n<p>Diagram follows</p>\n'
+            + '<img src="/api/attachments/1/d.png" alt="d">\n<p>End</p>\n',
+          );
+          expect(await status(improvementId)).toBe('applied');
+        });
+
+        it('refuses an unchanged echo whose frozen original one HTML parse cannot give back (CM-3)', async () => {
+          const original = '<p>a</p><pre data-title="Guide">\n\n<code>x</code></pre>';
+          const pageId = await seedPage(original);
+
+          const response = await apply(pageId, faithfulEcho(original));
+
+          expect(response.statusCode, response.body).toBe(422);
+          await expectUnchanged(pageId, original);
+        });
+
+        it('refuses a result only its relocation projection would publish with a twin, and writes nothing (CM-8)', async () => {
+          const original = '<table><tbody><tr><td><pre data-title="Title"><code class="language-js">sample</code></pre></td></tr></tbody></table>';
+          const pageId = await seedPage(original);
+          const echo = `${faithfulEcho(original)}\n\n<pre><code class="language-js"><textarea>\n\nsample</textarea></code></pre>\n`;
+
+          const response = await apply(pageId, echo);
+
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.json()).toMatchObject({ reason: 'unapproved-code-macro' });
+          await expectUnchanged(pageId, original);
+        });
+      });
     });
   },
 );

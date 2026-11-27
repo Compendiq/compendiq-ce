@@ -99,6 +99,13 @@ describe.skipIf(!available)('POST /api/llm/improve - instructions with real arti
     expect(system()).not.toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
     expect(fixture.requests[0]!.messages.find((m) => m.role === 'user')!.content).toContain('[[[CODE-META n=0 title=Startup%2Ecs]]]');
   });
+  it('names frozen code placeholders in the code-block instruction only (#1958 r1 CM-1)', async () => {
+    const content = '<table><tbody><tr><td><pre data-title="T"><code class="language-js">x()</code></pre></td></tr></tbody></table>';
+    expect((await post({ content })).statusCode).toBe(200);
+    expect(fixture.requests[0]!.messages.find((m) => m.role === 'user')!.content).toContain('CQ_CODE_PLACEHOLDER_0');
+    expect(system()).toContain(CODE_META_PRESERVATION_INSTRUCTION);
+    expect(system()).not.toContain(STRUCTURE_PRESERVATION_INSTRUCTION);
+  });
   it('adds both instructions when layout tokens and code-block metadata are present (#1958)', async () => {
     const content = confluenceToHtml('<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell><p>Prose</p>'
       + '<ac:structured-macro ac:name="code"><ac:parameter ac:name="title">T</ac:parameter><ac:plain-text-body><![CDATA[x()]]></ac:plain-text-body></ac:structured-macro>'
