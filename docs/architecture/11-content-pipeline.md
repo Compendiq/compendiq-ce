@@ -249,7 +249,9 @@ any change to the existing conflict policy.
   mark that excludes only itself, so the Link mark stays on code text and a
   link whose text mixes code and prose is one link; its Yjs key stays `code`.
   Code holding a backtick inside a link is escaped link text in Markdown, AI
-  Improve included (code mark lost for that span, D22). A line break inside a
+  Improve included (code mark lost for that span, D22); on Improve the escapes
+  are character references, so the label never spells a media placeholder
+  `restoreMedia` would replace. A line break inside a
   link survives a collaborative save: `yDocToHtml` gives a run of unmarked hard
   breaks between two text nodes with equal Link marks (every attribute, a
   missing one taking its schema default, an explicit null not) that mark
@@ -386,7 +388,9 @@ any change to the existing conflict policy.
   On Improve the Markdown destination of a `ri:url` link is always its
   carrier, so a model that keeps the link returns the carrier and
   `markdownToHtml` turns a navigable one back into the real href with its
-  class (`materializeConfluenceUrlLinks`). `restoreMedia` replaces a media
+  class (`materializeConfluenceUrlLinks`, which replaces only the changed
+  anchors' start tags and keeps the rest of the string as marked wrote it,
+  character references included; #1954). `restoreMedia` replaces a media
   token only where it stands as content (`locateMediaTokens`, parse5 source
   locations): a token spelled in an attribute value, a comment or raw text
   stays as written, so restoring media cannot rewrite an href or a class. A

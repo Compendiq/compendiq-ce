@@ -65,12 +65,16 @@ link and code takes bold, italic and the other marks (its Yjs key stays `code`; 
 excluding nothing would be stored under a hashed key). Its Markdown is
 `` [`code`](href) `` / `` [run `code` now](href) ``. Code inside a link that holds a
 backtick cannot be a code span in a link label (marked 15), so `htmlToMarkdown` writes
-it as link text with every ASCII punctuation character backslash-escaped. AI Improve
-sends the same Markdown, so an unchanged Accept brings the characters and the link
-back as link text: the code mark is lost for that span only (recorded limit; D22). It
-adds no media entry, so media placeholder numbers are those of images and macros as
-before. A media-placeholder spelling inside such a label is ordinary text to
-`restoreMedia`, as in any prose (#723). A line break inside a link survives a
+it as link text with every ASCII punctuation character escaped, each white-space boundary
+written once. On the Improve chain the escapes are decimal character references
+(`&#95;`, `&#96;`, …) instead of backslashes: marked passes them through, so the HTML
+never spells a media placeholder or layout token there and `restoreMedia` leaves the
+label alone, even when it spells the page's real `CQ_MEDIA_PLACEHOLDER_0`. An unchanged
+Accept brings the characters and the link back as link text: the code mark is lost for
+that span only (recorded limit; D22). It adds no media entry, so media placeholder
+numbers are those of images and macros as before. `materializeConfluenceUrlLinks`
+replaces only the start tags of the anchors it changes, so those references survive a
+`ri:url` link too. A line break inside a link survives a
 collaborative save (#1954): Yjs keeps marks on text only, so `yDocToHtml` gives a
 run of unmarked line breaks between two text pieces with the same Link mark (every
 attribute equal once the schema default fills a missing one; an explicit null is not
