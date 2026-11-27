@@ -1230,29 +1230,21 @@ function reconcileMarked(
   const unique = (key: string): boolean =>
     cUnits.counts.get(key) === 1 && lUnits.counts.get(key) === 1 && tUnits.counts.get(key) === 1;
 
-  // Ambiguity index (§3.5; review r1 CAR-4, r2 CAR-8). A record is told apart from another of its run only by the
-  // canonical identity the pairing proves: its own canonical tag and attributes and the run tokens over its range
-  // (formatting tags folded, attributes name-sorted, white space collapsed). Two records with the same identity and
-  // different carried values could have been swapped without changing any key, so both abstain. Each record is
+  // Status ambiguity (§3.5; review r1 CAR-4, r2 CAR-8, r3 CAR-12). Two statuses of one run are told apart only by
+  // what they are, their own canonical attributes and text, never by the marks around their positions (a swap
+  // moves the status, not the marks). Equal identities with different carried values both abstain. Each record is
   // indexed once, charged before, so planning a run of n records is linear in n.
   const shapes = new Map<RunInfo, Map<string, Set<string>>>();
   const shapeOf = new Map<ProjectedRecord, string>();
   for (const record of records) {
-    if (!record.element || (record.mark.k !== 'macro.status' && record.mark.k !== 'link')) continue;
+    if (!record.element || record.mark.k !== 'macro.status') continue;
     const run = runOf(cUnits, record.element);
-    const range = run?.ranges.get(record.element);
-    if (!run || !range) continue;
-    let size = range.t1 - range.t0 + 16;
+    if (!run) continue;
+    let size = (record.element.textContent ?? '').length + 16;
     for (const { name, value } of record.element.attributes) size += name.length + value.length + 4;
-    const value = JSON.stringify([record.record.attributes, record.record.label]);
+    const value = JSON.stringify(record.record.attributes);
     work.charge(size + value.length);
-    const tag = MARK_TAG[record.element.localName] ?? record.element.localName;
-    const own = JSON.stringify([tag, attributePairs(record.element, ctx, tag === 'a')]);
-    // A range opens before the collapsed space that precedes its first character is flushed: that space is the
-    // run's, not the record's, so leading space tokens are left out.
-    let t0 = range.t0;
-    while (t0 < range.t1 && run.tokens[t0]!.endsWith('| ')) t0 += 1;
-    const shape = `${record.kind.id}\u0000${own}\u0000${run.tokens.slice(t0, range.t1).join('\u0001')}`;
+    const shape = JSON.stringify([attributePairs(record.element, ctx, false), record.element.textContent ?? '']);
     shapeOf.set(record, shape);
     const groups = shapes.get(run) ?? new Map<string, Set<string>>();
     shapes.set(run, groups);
@@ -1260,6 +1252,24 @@ function reconcileMarked(
     groups.set(shape, values);
     values.add(value);
   }
+  // Link ambiguity (review r3 CAR-12/13, coordinator ruling on link identity). A link target is recovered only when
+  // its visible label is shown by no other link of any kind in L, in S (as the forward conversion shows it) or in T,
+  // whatever the marks, wrappers or positions; otherwise the record abstains page-wide. No finer identity proof is
+  // attempted: a link that needs no change is a rival as much as one that does.
+  const linkLabels = [lDoc, cDoc, tDoc].map((doc) => {
+    const counts = new Map<string, number>();
+    for (const a of doc.body.querySelectorAll('a')) {
+      const text = a.textContent ?? '';
+      work.charge(text.length + 1);
+      const label = text.replace(/[\t\n\f\r ]+/g, ' ').trim();
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return counts;
+  });
+  const labelShared = (el: Element): boolean => {
+    const label = (el.textContent ?? '').replace(/[\t\n\f\r ]+/g, ' ').trim();
+    return linkLabels.some((counts) => (counts.get(label) ?? 0) > 1);
+  };
   // Twin index (§3.5, Improve only): language class and rendered text of every effective code block of T.
   const twins = new Map<string, number>();
   if (options.codeWitnesses !== undefined) {
@@ -1302,6 +1312,7 @@ function reconcileMarked(
 
   function planRecord(record: ProjectedRecord): Planned | CarrierSkipReason {
     const { kind, mark } = record;
+    if (mark.k === 'link' && labelShared(record.element!)) return 'ambiguous';
     if (mark.k === 'macro.code' || mark.k === 'macro.toc') {
       const el = record.element!;
       const pair = corr.elements.get(el);
@@ -1364,8 +1375,8 @@ function reconcileMarked(
   }
 
   /**
-   * Two records of one unit with equal legacy shapes and different carried values cannot be told apart (§3.5):
-   * both are ambiguous. Emoticons have no legacy shape; their stored offset is their identity.
+   * Two statuses of one run with equal identities (status index above) and different carried values cannot be told
+   * apart (§3.5): both are ambiguous. Links use the page-wide label rule; emoticons are identified by their offset.
    */
   function ambiguousIn(record: ProjectedRecord, run: RunInfo): boolean {
     const shape = shapeOf.get(record);
@@ -1530,7 +1541,6 @@ function reconcileMarked(
     };
     const tAnchors = anchorsOver(tRun, cRange);
     const lAnchors = anchorsOver(lRun, cRange);
-    if (ambiguousIn(record, cRun)) return 'ambiguous';
 
     if (mark.h !== null) {
       // Element present: exactly one <a> of T over the record's range.

@@ -828,7 +828,8 @@ describe('links', () => {
   });
 
   it('a recovered page link is written back as the stored resource; a copy of it in the target is not', () => {
-    const copy = '<a href="#confluence-page:My Page" data-confluence-link="page">the page</a>';
+    // The copy has another label: a copy with the same label makes the link abstain (review r3 ruling).
+    const copy = '<a href="#confluence-page:My Page" data-confluence-link="page">a copy</a>';
     const target = F.pageLinkWithNeighbour.legacyHtml.replace('<p>Other text</p>', `<p>Other text ${copy}</p>`);
     const { html, report } = reconcile(F.pageLinkWithNeighbour, target);
     expect(report.recovered).toEqual({ link: 1 });
@@ -1177,30 +1178,82 @@ describe('review r2', () => {
     expect(title(writeBack(html, F.pageLinkPercentTitle))).toBe('a%20b');
   });
 
-  it('CAR-9: the next stored row of every fixture recovers nothing', () => {
-    let checked = 0;
-    for (const fixture of Object.values(F)) {
+  it('CAR-9: the next stored row of every fixture recovers nothing (review r3 CAR-14: every fixture writes)', () => {
+    for (const [name, fixture] of Object.entries(F)) {
       const first = reconcile(fixture);
-      let storage: string;
-      try {
-        storage = writeBack(first.html, fixture);
-      } catch {
-        continue;
-      }
+      const storage = writeBack(first.html, fixture);
       for (const stored of [first.html, confluenceToHtml(storage)]) {
         const next = reconcileConfluenceCarriers(stored, storage, stored, { marker: MARKER });
-        expect({ fixture: Object.keys(F).find((name) => F[name as keyof typeof F] === fixture), recovered: next.report.recovered })
-          .toEqual({ fixture: Object.keys(F).find((name) => F[name as keyof typeof F] === fixture), recovered: {} });
+        expect({ name, recovered: next.report.recovered }).toEqual({ name, recovered: {} });
         expect(next.html).toBe(stored);
       }
-      checked += 1;
     }
-    expect(checked).toBeGreaterThan(80);
   });
 
   it('CAR-10: start tags with no rewritten run cost no containment work; a mixed run costs one search', () => {
     expect(reconcile(F.statusRun32).report).toMatchObject({ recovered: { 'macro.status': 32 }, work: { containment: 0 } });
     // One run region and one start tag: ⌈log2(1 + 1)⌉ = 1 step each.
     expect(reconcile(F.statusThenEmoticon).report).toMatchObject({ recovered: { 'macro.status': 1, emoticon: 1 }, work: { containment: 2 } });
+  });
+});
+
+/** T with the first two elements matching `selector` swapped. */
+function swapFirstTwo(html: string, selector: string): string {
+  const doc = new JSDOM(`<body>${html}</body>`).window.document;
+  const [first, second] = [...doc.querySelectorAll(selector)];
+  const marker = doc.createElement('i');
+  first!.replaceWith(marker);
+  second!.replaceWith(first!);
+  marker.replaceWith(second!);
+  return doc.body.innerHTML;
+}
+
+describe('review r3', () => {
+  const spaces = (storage: string) => oracleElements(storage, 'ri', 'page').map((page) => page.getAttribute('ri:space-key'));
+
+  it('CAR-12: links with one visible label abstain when an outer mark tells their positions apart, swapped or not', () => {
+    for (const fixture of [F.linksEquivalentUnderEm, F.linksIdenticalUnderEm]) {
+      for (const target of [fixture.legacyHtml, swapFirstTwo(fixture.legacyHtml, 'a')]) {
+        const result = reconcile(fixture, target);
+        expect(result).toMatchObject({ html: target, report: { outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 2 } } } });
+        expect(spaces(writeBack(result.html, fixture))).toEqual([null, null]);
+      }
+    }
+  });
+
+  it('CAR-12: statuses are told apart by what they are, not by the marks around their positions', () => {
+    for (const target of [F.statusesUnderEm.legacyHtml, swapFirstTwo(F.statusesUnderEm.legacyHtml, 'span.confluence-status')]) {
+      const result = reconcile(F.statusesUnderEm, target);
+      expect(result).toMatchObject({ html: target, report: { outcome: 'evaluated', recovered: {}, skipped: { 'macro.status': { ambiguous: 2 } } } });
+      expect(parameters(writeBack(result.html, F.statusesUnderEm), 'status')).not.toHaveProperty('subtle');
+    }
+  });
+
+  it('CAR-13: a link that needs no change is still a rival: the edit abstains and nothing is published', () => {
+    for (const fixture of [F.linksNoopRival, F.linksNoopRivalIdentical]) {
+      for (const target of [fixture.legacyHtml, swapFirstTwo(fixture.legacyHtml, 'a')]) {
+        const result = reconcile(fixture, target);
+        expect(result).toMatchObject({ html: target, report: { outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 1 } } } });
+        expect(spaces(writeBack(result.html, fixture))).toEqual([null, null]);
+      }
+    }
+  });
+
+  it('CAR-13: an unopposed cross-space link still recovers its space', () => {
+    const { html, report } = reconcile(F.linkUnopposedCrossSpace);
+    expect(report).toMatchObject({ outcome: 'recovered', recovered: { link: 1 }, skipped: {} });
+    expect(spaces(writeBack(html, F.linkUnopposedCrossSpace))).toEqual(['A']);
+  });
+
+  it('ruling: a link abstains page-wide when any link of any kind in L, S or T shows its label', () => {
+    // In storage and in the stored body: a page link and an anchor link elsewhere, both shown as `X`.
+    const { html, report } = reconcile(F.linkLabelElsewhere);
+    expect(report).toMatchObject({ outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 2 } } });
+    expect(spaces(writeBack(html, F.linkLabelElsewhere))).toEqual([null]);
+    // Only in the target: an external link the user added with the same label.
+    const target = `${F.pageLink.legacyHtml}<p><a href="https://example.com/"><em>the page</em></a></p>`;
+    expect(reconcile(F.pageLink, target)).toMatchObject({ html: target, report: { skipped: { link: { ambiguous: 1 } } } });
+    // Different labels keep recovering.
+    expect(reconcile(F.linksDistinct).report).toMatchObject({ recovered: { link: 2 }, skipped: {} });
   });
 });

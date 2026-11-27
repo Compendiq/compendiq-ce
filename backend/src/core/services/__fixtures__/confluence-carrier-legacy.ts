@@ -420,6 +420,34 @@ export const LEGACY_CARRIER_FIXTURES = {
     storage: '<p>See <ac:link><ri:page ri:content-title="a%20b" /></ac:link>.</p>',
     legacyHtml: '<p>See <a href="#confluence-page:a%20b" data-confluence-link="page">a%20b</a>.</p>',
   },
+  linksEquivalentUnderEm: {
+    storage: '<p><ac:link><ri:page ri:content-title="X" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and <em><ac:link><ri:page ri:content-title="X" ri:space-key="B" /><ac:link-body><strong>X</strong></ac:link-body></ac:link></em></p>',
+    legacyHtml: '<p><a href="#confluence-page:X" data-confluence-link="page"><b>X</b></a> and <em><a href="#confluence-page:X" data-confluence-link="page"><strong>X</strong></a></em></p>',
+  },
+  linksIdenticalUnderEm: {
+    storage: '<p><ac:link><ri:page ri:content-title="X" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and <em><ac:link><ri:page ri:content-title="X" ri:space-key="B" /><ac:link-body><b>X</b></ac:link-body></ac:link></em></p>',
+    legacyHtml: '<p><a href="#confluence-page:X" data-confluence-link="page"><b>X</b></a> and <em><a href="#confluence-page:X" data-confluence-link="page"><b>X</b></a></em></p>',
+  },
+  linksNoopRival: {
+    storage: '<p><ac:link><ri:page ri:content-title="My Page" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and <ac:link><ri:page ri:content-title="My Page" /><ac:link-body><strong>X</strong></ac:link-body></ac:link></p>',
+    legacyHtml: '<p><a href="#confluence-page:My Page" data-confluence-link="page"><b>X</b></a> and <a href="#confluence-page:My Page" data-confluence-link="page"><strong>X</strong></a></p>',
+  },
+  linksNoopRivalIdentical: {
+    storage: '<p><ac:link><ri:page ri:content-title="My Page" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and <ac:link><ri:page ri:content-title="My Page" /><ac:link-body><b>X</b></ac:link-body></ac:link></p>',
+    legacyHtml: '<p><a href="#confluence-page:My Page" data-confluence-link="page"><b>X</b></a> and <a href="#confluence-page:My Page" data-confluence-link="page"><b>X</b></a></p>',
+  },
+  linkUnopposedCrossSpace: {
+    storage: '<p><ac:link><ri:page ri:content-title="My Page" ri:space-key="A" /><ac:link-body><b>X</b></ac:link-body></ac:link> and plain text</p>',
+    legacyHtml: '<p><a href="#confluence-page:My Page" data-confluence-link="page"><b>X</b></a> and plain text</p>',
+  },
+  linkLabelElsewhere: {
+    storage: '<p><ac:link><ri:page ri:content-title="P" ri:space-key="A" /><ac:link-body>X</ac:link-body></ac:link></p><h2><ac:link ac:anchor="x"><ac:plain-text-link-body><![CDATA[X]]></ac:plain-text-link-body></ac:link></h2>',
+    legacyHtml: '<p><a href="#confluence-page:P" data-confluence-link="page">X</a></p><h2><a>X</a></h2>',
+  },
+  statusesUnderEm: {
+    storage: '<p><ac:structured-macro ac:name="status"><ac:parameter ac:name="title">OK</ac:parameter><ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro> and <em><ac:structured-macro ac:name="status"><ac:parameter ac:name="title">OK</ac:parameter><ac:parameter ac:name="subtle">false</ac:parameter></ac:structured-macro></em></p>',
+    legacyHtml: '<p><span class="confluence-status" data-color="grey">OK</span> and <em><span class="confluence-status" data-color="grey">OK</span></em></p>',
+  },
   markerSpelled: {
     storage: '<p>data-cq-0123456789abcdef0123456789abcdef <ac:emoticon ac:name="tick" /> b</p>',
     legacyHtml: '<p>data-cq-0123456789abcdef0123456789abcdef  b</p>',

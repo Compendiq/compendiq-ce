@@ -363,8 +363,10 @@ changed around an emoticon, repeated blocks, emoticon-only blocks outside an
 unchanged table grid, and the #1955 link
 kinds; the editor's table projection (`colgroup`, cell paragraphs) and its
 white-space collapse therefore lose a table's carriers and a doubled-space
-emoticon. Re-sync stays the remedy. The writers and the room seed call it in
-#1953-2.
+emoticon. A link target is recovered only when no other link of any kind in
+the stored body, the storage or the target shows the same visible label, so a
+page with two links labelled alike recovers neither. Re-sync stays the remedy.
+The writers and the room seed call it in #1953-2.
 
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
