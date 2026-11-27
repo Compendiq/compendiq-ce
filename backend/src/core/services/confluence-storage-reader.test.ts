@@ -21,6 +21,7 @@ import {
   type StorageTree,
 } from './confluence-storage-reader.js';
 import { oracleLocalNameCount, oracleReads, storageOracle } from './__fixtures__/storage-oracle.js';
+import { STORAGE_READER_CORPUS } from './__fixtures__/storage-reader-corpus.js';
 import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
 
 function read(storage: string): StorageTree {
@@ -318,6 +319,30 @@ describe('confluence-storage-reader: against the independent oracle (#1955)', ()
       expect(reason(storage)).toBe('not-well-formed');
       expect(oracleReads(storage)).toBe(false);
     }
+  });
+});
+
+describe('confluence-storage-reader: the acceptance corpus (#1955)', () => {
+  const expanded = (uri: string | null, local: string): string => {
+    const prefix = (['ac', 'ri'] as const).find((candidate) => CONFLUENCE_STORAGE_NAMESPACES[candidate] === uri);
+    return `{${prefix ?? uri ?? ''}}${local}`;
+  };
+
+  it.each(STORAGE_READER_CORPUS.map((entry) => [entry.name, entry] as const))('reads %s as the corpus states, and as an XML parser does', (_name, entry) => {
+    const result = readConfluenceStorage(entry.storage);
+    expect(result.ok ? 'ok' : result.reason).toBe(entry.read);
+    expect(oracleReads(entry.storage)).toBe(entry.read === 'ok' && !entry.undeclaredPrefix);
+    if (!result.ok) return;
+    expect([...storageElements(result.tree)].map((element) => expanded(element.uri, element.local))).toEqual(entry.elements);
+    expect(storageText(result.tree.root)).toBe(entry.text);
+    if (entry.undeclaredPrefix) return;
+    const oracle = storageOracle(entry.storage).documentElement;
+    expect([...oracle.getElementsByTagName('*')].map((element) => expanded(element.namespaceURI, element.localName))).toEqual(entry.elements);
+    expect(oracle.textContent).toBe(entry.text);
+  });
+
+  it('holds unique names', () => {
+    expect(new Set(STORAGE_READER_CORPUS.map((entry) => entry.name)).size).toBe(STORAGE_READER_CORPUS.length);
   });
 });
 
