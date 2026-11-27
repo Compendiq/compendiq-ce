@@ -1807,6 +1807,64 @@ a frozen original one HTML parse cannot give back (a line feed before the
 `code` of a `pre`, a CR outside code text) refuses every Accept of that page
 until it is edited.
 
+## Carrier recovery on pages synced before v0.10.0 (#1953)
+
+Before v0.10.0, sync stored `body_html` without some Confluence carriers:
+code-block title and options, status and TOC macro parameters, internal page
+and attachment link destinations, and emoticons. The first save of such a page
+wrote the stored HTML back and dropped them in Confluence. The pure matcher
+(`confluence-carrier-reconcile.ts`, #1953-1) takes the stored HTML L, the
+stored storage S and the writer's target HTML T, re-renders S, pairs each
+carrier of L with the re-rendered one by its text and position, and writes a
+carrier into T only where that pairing is unambiguous; anything else is a
+counted skip (`no_element`, `ambiguous`, `changed`, …). It never reads the
+network or the database.
+
+The writers (#1953-2, `confluence-carrier-recovery.ts`) run it only while the
+row is in lockstep: a Confluence row with storage and HTML, no
+`local_modified_at`, no collaborative document, and no draw.io block in L.
+Otherwise the row is excluded and T is written unchanged.
+
+| Writer | When | Eligibility at reservation |
+| --- | --- | --- |
+| PUT `/api/pages/:id` | after the content authorization, before image planning | 409 `stale_content_revision` |
+| Draft publish | before `assignTaskIds`, remote publish only | 409 `stale_content_revision` |
+| AI Improve Apply | after finalize, remote exit only; code via #1958 witnesses | 409 `stale_content_revision` |
+| Collaborative seed | writable load of a missing document, same transaction | no pending intent on the page |
+
+A version restore runs no recovery (D9 R1): it publishes the snapshot as it
+was stored. A changed result is re-checked under the reservation locks, so a
+row that moved since it was read refuses rather than writing carriers from
+another storage. On Apply, the legacy code metadata the matcher found is
+admitted through `admitLegacyCodeMetadata`, and the attributes actually
+applied per ordinal are compared with the reported operations
+(`legacyCodeApplicationHolds`); a mismatch refuses the Apply
+(`unapproved-code-macro`).
+
+Each writer logs `Confluence carriers reconciled (#1953)` with the page id,
+the writer, the outcome and per-kind counts, after the reservation commits.
+An excluded row logs the kinds its storage may carry, and a stale or refused
+write logs only its outcome. Lines never carry content, titles, link targets
+or the marker. Outcome `none` is not logged.
+
+Scoped exceptions (maintainer decision D9): version restore recovers nothing
+(R1); a collaborative Save over a room without the `confluenceCarriers` key
+writes what the room holds and logs `collab.commit_carriers_unproven` (R2);
+an existing room lineage is never replaced (R3); a row or block without proof
+is skipped and counted (R4). Limits (design reductions R6-5, R6-6, R7-1 to
+R7-6): a page whose storage the two readers do not read alike anywhere
+recovers nothing; a container whose child blocks changed recovers nothing
+inside it, except the one trailing empty paragraph the editor appends; links
+of the #1955 kinds (blog post, space, shortcut, content entity, url) are not
+recovered; a page with a non-flat task list recovers nothing (`bound`); a
+reservation that finds a room or a local edit answers 409 and the retry writes
+without recovery; a seed under the page's own pending collaborative Save, or
+one that ends on a bound or a failure, writes no key; a kind with a skipped
+record stays out of the key, so later Saves of that room keep logging it.
+Re-sync restores the carriers to `body_html` while Confluence still holds
+them; after a save that wrote the page without them, only Confluence's page
+history does.
+
 ## AI Improve layout preservation — boundary tokens (#765)
 
 Confluence row/column layouts (modern `ac:layout` grids and the legacy
