@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
 import * as Y from 'yjs';
 import {
+  _confluenceToHtmlWithForTest,
   MAX_TASK_LIST_NESTING,
   assignTaskIds,
   confluenceToHtml,
@@ -54,6 +55,18 @@ const BASE_R2 = {
   mixedRawWriteSha: '40205edeb6c294cf5d367b0a6484525cf5294c65cc9f3dd904693a2bd4ade631',
   draftSentSha: '5a68727a9b4e101795eecc0b0a722cea2f1ff4bc56a97ee32d3e597375023982',
   draftIds: ['1', '134', ...Array.from({ length: 33 }, (_, index) => String(101 + index))],
+};
+
+/**
+ * What bff6d4ec wrote for the review-r3 inputs, captured at that commit
+ * (`$EPIC/evidence/1957/capture-r3.mts.txt`).
+ */
+const BASE_R3 = {
+  shallowCodeForward: '2c1c13125136827c05ac1f24f5d283ec0c5dbde66e03b8db94d18f1764b522ce',
+  toc32Forward: '21483a0f1398b5bb38055e5eb3a517f392c1d2479c3595e320c10beeda222cd0',
+  panel32Forward: 'df7bebd4be8030a733097ce2ea409b65b05d67e4026948d1fcba11577d02cef1',
+  tocWrite: 'bc932bcd18b3795e5e3e5012bdda7da1ca45a70fd6d3f7b19ceb1347506a5f5f',
+  wrap33Write: 'ae5d0bed50f28a56827c14b9160801ae79e172503b610997f43e9dbf607eb6b6',
 };
 
 function sha256(value: string): string {
@@ -405,7 +418,7 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
     });
   });
 
-  describe('one limit decision on what reaches the output (review r2, decision D13a)', () => {
+  describe('one limit decision per document, shared by every writer (review r2, decision D13a)', () => {
     const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'tasks-list-before-own-body')!;
     const previousStorage = entry.previousStorage!;
     const RAW_133 = '<ac:task-list><ac:task><ac:task-id>133</ac:task-id><ac:task-status>incomplete</ac:task-status>'
@@ -463,6 +476,134 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       expect(sha256(htmlToConfluence(assigned.html))).toBe(BASE_R2.draftSentSha);
       expect(storedTasks(htmlToConfluence(draft, { previousStorage })).map((t) => t.id)).toEqual(BASE_R2.draftIds);
     });
+  });
+
+  describe('the limit is syntactic: it may overcount, never undercount (review r3, decision D13b)', () => {
+    const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'tasks-list-before-own-body')!;
+    const opts = { previousStorage: entry.previousStorage!, legacyTasks: false };
+    const BASE_OPTS = { ...opts, derivationFeatures: NO_STORAGE_DERIVATION_FEATURES };
+    const plain = (id: string, body: string) => task(id, 'incomplete', body);
+    /** `depth` tasks, each in the previous one's body; `innermost` ends the deepest body (as captured at bff6d4ec). */
+    const deep = (depth: number, innermost = '') => {
+      let storage = '';
+      for (let level = depth; level >= 1; level -= 1) {
+        storage = list(plain(String(level), `t${level}${level === depth ? innermost : ''}${storage}`));
+      }
+      return storage;
+    };
+    const macro = (name: string, rich: string) => `<ac:structured-macro ac:name="${name}"><ac:rich-text-body>${rich}</ac:rich-text-body></ac:structured-macro>`;
+    const code = (inner: string) => '<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[documented text]]></ac:plain-text-body>'
+      + `${inner}</ac:structured-macro>`;
+    /** `depth` editor lists, each directly in the previous ul after its li. */
+    const wrappers = (depth: number, idBase: number) => {
+      let html = '';
+      for (let level = depth; level >= 1; level -= 1) {
+        html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${idBase + level}"><p>w${level}</p></li>${html}</ul>`;
+      }
+      return html;
+    };
+    const editorTask = (id: number, text: string) => `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${id}"><p>${text}</p></li></ul>`;
+    const ownIds = (storage: string) => storedTasks(storage).filter((t) => t.depth === 1).slice(0, 2).map((t) => t.id);
+    /** Task-list nesting by ancestry: editor and raw lists, outside the indexes write-back removes. */
+    const syntacticDepth = (html: string) => {
+      let deepest = 0;
+      const doc = new JSDOM(`<body>${html}</body>`).window.document;
+      for (const el of doc.body.getElementsByTagName('*')) {
+        if (el.localName !== 'ac:task-list' && !el.matches('ul[data-type="taskList"]')) continue;
+        if (el.closest('div.figure-index, div.table-index')) continue;
+        let depth = 0;
+        for (let up: Element | null = el; up; up = up.parentElement) {
+          if (up.localName === 'ac:task-list' || up.matches('ul[data-type="taskList"]')) depth += 1;
+        }
+        deepest = Math.max(deepest, depth);
+      }
+      return deepest;
+    };
+    const storageDepth = (storage: string) => Math.max(0, ...storedTasks(storage).map((t) => t.depth));
+    const htmlDepth = (html: string) => Math.max(0, ...items(html).map((item) => item.depth));
+
+    it('never brings back a task the code step discards (bff6d4ec)', () => {
+      const storage = list(plain('1', 'keep'), code(list(plain('2', 'discard'))));
+      const html = confluenceToHtml(storage);
+      expect(sha256(html)).toBe(BASE_R3.shallowCodeForward);
+      expect(items(html).map(({ id, text }) => [id, text])).toEqual([['1', 'keep']]);
+    });
+
+    it('counts a list a macro discards or keeps alike: 32 levels and one more in a toc or a panel convert as before (bff6d4ec)', () => {
+      expect(sha256(confluenceToHtml(deep(MAX_TASK_LIST_NESTING, macro('toc', list(plain('33', 'in toc')))))))
+        .toBe(BASE_R3.toc32Forward);
+      expect(sha256(confluenceToHtml(deep(MAX_TASK_LIST_NESTING, macro('info', list(plain('33', 'in panel')))))))
+        .toBe(BASE_R3.panel32Forward);
+    });
+
+    it('writes a page with one more level in a toc placeholder exactly as before #1957, ids included (bff6d4ec)', () => {
+      const toc = `<div class="confluence-toc">${editorTask(133, 'in toc')}</div>`;
+      const written = htmlToConfluence(`${entry.targetHtml}${editorChain(MAX_TASK_LIST_NESTING, toc, 100)}`, opts);
+      expect(sha256(written)).toBe(BASE_R3.tocWrite);
+      expect(ownIds(written)).toEqual(['1', '134']);
+      // Within the limit, the #1957 profile gives the same two tasks other ids.
+      expect(ownIds(htmlToConfluence(`${entry.targetHtml}${editorChain(MAX_TASK_LIST_NESTING, '', 100)}`, opts))).toEqual(['2', '1']);
+    });
+
+    it('counts lists placed directly in a list on write-back: 33 of them write as before #1957 (bff6d4ec)', () => {
+      const written = htmlToConfluence(`${entry.targetHtml}${wrappers(MAX_TASK_LIST_NESTING + 1, 100)}`, opts);
+      expect(sha256(written)).toBe(BASE_R3.wrap33Write);
+      expect(ownIds(written)).toEqual(['1', '134']);
+      expect(ownIds(htmlToConfluence(`${entry.targetHtml}${wrappers(MAX_TASK_LIST_NESTING, 100)}`, opts))).toEqual(['2', '1']);
+    });
+
+    it('decides write-back on syntactic depth: past 32 the base output, within it no deeper output than counted', () => {
+      const shapes: Record<string, (depth: number) => string> = {
+        chain: (depth) => editorChain(depth, '', 100),
+        toc: (depth) => editorChain(depth - 1, `<div class="confluence-toc">${editorTask(200, 'toc')}</div>`, 100),
+        panel: (depth) => editorChain(depth - 1, `<div class="panel-info">${editorTask(200, 'panel')}</div>`, 100),
+        expand: (depth) => editorChain(depth - 1, `<details data-macro-name="expand"><summary></summary>${editorTask(200, 'expand')}</details>`, 100),
+        code: (depth) => editorChain(depth - 1, `<pre><code>${editorTask(200, 'code')}</code></pre>`, 100),
+        raw: (depth) => editorChain(depth - 1, list(plain('200', 'raw')), 100),
+        wrappers: (depth) => wrappers(depth, 100),
+        comment: (depth) => editorChain(depth, '<!-- <ul data-type="taskList"><ul data-type="taskList"> -->', 100),
+        index: (depth) => `${editorChain(2, '', 300)}<div class="figure-index">${editorChain(depth, '', 100)}</div>`,
+      };
+      for (const [name, shape] of Object.entries(shapes)) {
+        for (const depth of [MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1]) {
+          const html = `${entry.targetHtml}${shape(depth)}`;
+          const counted = syntacticDepth(html);
+          const written = htmlToConfluence(html, opts);
+          const label = `${name} ${depth} (counted ${counted})`;
+          if (counted > MAX_TASK_LIST_NESTING) {
+            expect(written, label).toBe(htmlToConfluence(html, BASE_OPTS));
+            expect(assignTaskIds(html, opts).taskIds, label).toEqual(assignTaskIds(html, BASE_OPTS).taskIds);
+          } else {
+            expect(storageDepth(written), label).toBeLessThanOrEqual(counted);
+          }
+        }
+      }
+    }, 300_000);
+
+    it('decides the forward pass on the lists it parses: past 32 the base output, within it no deeper output than counted', () => {
+      const shapes: Record<string, (depth: number) => string> = {
+        chain: (depth) => deep(depth),
+        toc: (depth) => deep(depth - 1, macro('toc', list(plain('200', 'toc')))),
+        panel: (depth) => deep(depth - 1, macro('info', list(plain('200', 'panel')))),
+        code: (depth) => deep(depth - 1, code(list(plain('200', 'code')))),
+        comment: (depth) => deep(depth, '<!-- <ac:task-list><ac:task-list> -->'),
+        siblings: (depth) => deep(depth - 1, siblingChain(4)),
+      };
+      for (const [name, shape] of Object.entries(shapes)) {
+        for (const depth of [MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1]) {
+          const storage = shape(depth);
+          const counted = measureTaskListConversion(storage).depth;
+          const html = confluenceToHtml(storage);
+          const label = `${name} ${depth} (counted ${counted})`;
+          if (counted > MAX_TASK_LIST_NESTING) {
+            expect(html, label).toBe(_confluenceToHtmlWithForTest(storage, NO_STORAGE_DERIVATION_FEATURES));
+          } else {
+            expect(htmlDepth(html), label).toBeLessThanOrEqual(counted);
+            expect(new JSDOM(`<body>${html}</body>`).window.document.getElementsByTagName('ac:task-list'), label).toHaveLength(0);
+          }
+        }
+      }
+    }, 300_000);
   });
 
   describe('collab TipTap schema and a collaborative round trip', () => {

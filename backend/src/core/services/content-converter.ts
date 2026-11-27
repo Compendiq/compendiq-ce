@@ -315,6 +315,15 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
 }
 
 /**
+ * Test seam (#1957): {@link confluenceToHtml} with a stated feature set, so a
+ * test can compare a conversion with the one the empty set (the pre-#1957
+ * derivation) gives.
+ */
+export function _confluenceToHtmlWithForTest(storageXhtml: string, features: StorageDerivationFeatures): string {
+  return confluenceToHtmlWith(storageXhtml, undefined, undefined, features);
+}
+
+/**
  * {@link confluenceToHtml} with a stated set of storage-derivation features
  * (#1953): every forward conversion says which set it derives with. A
  * write-back that converts stored storage itself ({@link storedTasks}) passes
@@ -639,11 +648,13 @@ export function _setForwardDerivationStepForTest(step: ForwardDerivationStep | u
 export const MAX_TASK_LIST_NESTING = 32;
 
 /**
- * How deep the task hierarchy of HTML being written back nests (#1957): only
- * what reaches storage counts. The editor's lists (`ul[data-type="taskList"]`)
- * and the raw `ac:task-list` a body synced before #1957 still holds count
- * together; a generated figure or table index, which write-back removes, does
- * not. One walk of the already-parsed page, before anything is restructured.
+ * How deep the task lists of HTML being written back nest (#1957, decision
+ * D13b): editor lists (`ul[data-type="taskList"]`) and the raw `ac:task-list`
+ * a body synced before #1957 still holds, by ancestry, outside the generated
+ * figure and table indexes write-back removes. Syntactic: a list inside a
+ * macro placeholder write-back drops, or placed directly in a list, counts
+ * too, so this may overcount the written hierarchy and never undercounts it.
+ * One walk of the already-parsed page, before anything is restructured.
  */
 function htmlTaskNesting(doc: Document): number {
   const depthOf = new Map<Element, number>();
@@ -669,11 +680,13 @@ function htmlTaskNesting(doc: Document): number {
 
 /**
  * The features one write-back of `doc` derives with (#1957, coordinator
- * decision D13a): the caller's set, without `nested-tasks` when the hierarchy
- * that reaches storage nests deeper than {@link MAX_TASK_LIST_NESTING}. Id
+ * decisions D13a, D13b): the caller's set, without `nested-tasks` when the
+ * task lists of `doc` nest deeper than {@link MAX_TASK_LIST_NESTING}. Id
  * assignment ({@link assignTaskIds}) and serialisation
- * ({@link htmlToConfluence}) both take it, so every writer gives a deep page
- * the ids and bytes of before #1957.
+ * ({@link htmlToConfluence}) both take it, so every writer derives a page
+ * with the same profile, and a deep page gets the ids and bytes of before
+ * #1957. (Ids of tasks write-back drops can still differ between writers:
+ * `assignTaskIds` numbers them before the generated indexes are removed.)
  */
 function writeBackProfile(doc: Document, options: HtmlToConfluenceOptions): StorageDerivationFeatures {
   const features = writeBackFeatures(options);
@@ -719,8 +732,9 @@ interface TaskListIndex {
  * outside its body) is not Confluence's nesting: its tasks join the nearest
  * kept list in source order, as they always have, and it adds no depth. The
  * walk sees elements only, so a comment or CDATA text spelling a task list
- * counts for nothing. `deepest` decides the limit; `null` when the page has no
- * task list.
+ * counts for nothing. `deepest` decides the limit on the first pass's parse,
+ * a list inside any macro included (syntactic, D13b); the conversion indexes
+ * again after the code step. `null` when the page has no task list.
  */
 function indexTaskLists(doc: Document): TaskListIndex | null {
   if (doc.getElementsByTagName('ac:task-list').length === 0) return null;
@@ -905,18 +919,16 @@ function confluenceToHtmlPass(
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   forwardDerivationStepForTest?.(doc, features);
-  // #1957 (decision D13a): the first pass decides on the tree it just parsed,
-  // with the conversion's own index (one walk, before anything moves); later
-  // passes keep that decision. Code blocks below hold text only, so the index
-  // still describes the task lists when their step runs.
+  // #1957 (decisions D13a, D13b): the first pass decides on the tree it just
+  // parsed, before anything moves; later passes keep that decision. The count
+  // is syntactic: the subtask nesting of every task list parsed, inside a
+  // macro that later keeps, flattens or drops it included, so it may
+  // overcount the output (the page then converts as before #1957) and never
+  // undercounts it.
   let nest = nestTasks;
-  let taskIndex: TaskListIndex | null = null;
   if (nest === undefined) {
-    nest = derivationHas(features, 'nested-tasks');
-    if (nest) {
-      taskIndex = indexTaskLists(doc);
-      nest = (taskIndex?.deepest ?? 0) <= MAX_TASK_LIST_NESTING;
-    }
+    nest = derivationHas(features, 'nested-tasks')
+      && (indexTaskLists(doc)?.deepest ?? 0) <= MAX_TASK_LIST_NESTING;
   }
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
   const macrosBefore = countRawStructuredMacros(doc.body);
@@ -962,7 +974,9 @@ function confluenceToHtmlPass(
   // `nested-tasks` feature, the page within MAX_TASK_LIST_NESTING); otherwise
   // the pre-#1957 loop runs verbatim.
   if (nest) {
-    convertTaskLists(doc, taskIndex ?? indexTaskLists(doc));
+    // Indexed again here, after the code step: a task list inside a code
+    // macro went with it and must not come back from an earlier index.
+    convertTaskLists(doc, indexTaskLists(doc));
   } else {
     convertTaskListsBeforeNesting(doc);
   }
