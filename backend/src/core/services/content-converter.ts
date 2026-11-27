@@ -667,6 +667,21 @@ function taskItemContent(li: Element): Element {
   return li;
 }
 
+/** A step inside the forward pass: the parsed storage and the features the pass derives with. */
+type ForwardDerivationStep = (doc: Document, features: StorageDerivationFeatures) => void;
+
+let forwardDerivationStepForTest: ForwardDerivationStep | undefined;
+
+/**
+ * Test seam (#1953). Runs `step` at the start of every forward pass, where a
+ * feature's gated step runs, with the set that pass derives with. No forward
+ * step is gated yet, so this is how a test sees which set reaches the pass a
+ * write-back runs on `previousStorage`. `undefined` removes the step.
+ */
+export function _setForwardDerivationStepForTest(step: ForwardDerivationStep | undefined): void {
+  forwardDerivationStepForTest = step;
+}
+
 /**
  * Run one static-snapshot conversion pass. The steps gated on a
  * storage-derivation feature read `derivationHas` on this pass's set (#1953):
@@ -681,6 +696,7 @@ function confluenceToHtmlPass(
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
+  forwardDerivationStepForTest?.(doc, features);
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
   const macrosBefore = countRawStructuredMacros(doc.body);
 

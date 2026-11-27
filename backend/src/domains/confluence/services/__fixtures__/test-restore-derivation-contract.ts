@@ -9,6 +9,9 @@
  * registers a feature runs to prove a restore reserved before its feature and
  * one reserved with it are both recovered, once, without another provider PUT.
  * {@link useRestoreDerivationHarness} is the same fixture for other cases.
+ *
+ * Test support only: `__fixtures__` is outside the production build
+ * (tsconfig.build.json) and inside the ordinary typecheck.
  */
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -16,17 +19,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
-import { isRedisAvailable } from '../../../test-redis-helper.js';
-import { query } from '../../../core/db/postgres.js';
-import { reconcilePageWriteIntent } from '../../../core/services/page-write-admission.js';
-import { setPageBaselineCreationEnabled } from '../../../core/services/page-baseline-service.js';
+import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../../test-db-helper.js';
+import { isRedisAvailable } from '../../../../test-redis-helper.js';
+import { query } from '../../../../core/db/postgres.js';
+import { reconcilePageWriteIntent } from '../../../../core/services/page-write-admission.js';
+import { setPageBaselineCreationEnabled } from '../../../../core/services/page-baseline-service.js';
 import {
   PAGE_WRITER_ENFORCEMENT_VERSION,
   registerPageBaselineEnforcementReadiness,
   setPageBaselineReadinessProvider,
-} from '../../../core/services/page-baseline-governance.js';
-import { setRedisClient } from '../../../core/services/redis-cache.js';
+} from '../../../../core/services/page-baseline-governance.js';
+import { setRedisClient } from '../../../../core/services/redis-cache.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   NO_STORAGE_DERIVATION_FEATURES,
@@ -34,16 +37,16 @@ import {
   encodeStorageDerivationFeatures,
   type StorageDerivationFeature,
   type StorageDerivationFeatures,
-} from '../../../core/services/storage-derivation.js';
-import type { StorageDerivationBaseEntry } from '../../../core/services/__fixtures__/storage-derivation-base-corpus.js';
-import { encryptPat } from '../../../core/utils/crypto.js';
-import { ConfluenceHttpFixture } from '../../../routes/knowledge/confluence-http-fixture.test-helpers.js';
-import { setRateLimit } from './confluence-rate-limiter.js';
+} from '../../../../core/services/storage-derivation.js';
+import type { StorageDerivationBaseEntry } from '../../../../core/services/__fixtures__/storage-derivation-base-corpus.js';
+import { encryptPat } from '../../../../core/utils/crypto.js';
+import { ConfluenceHttpFixture } from '../../../../routes/knowledge/confluence-http-fixture.test-helpers.js';
+import { setRateLimit } from '../confluence-rate-limiter.js';
 import {
   confluencePagePutDigest,
   deriveVersionRestoreStorage,
   registerConfluencePagePutIntentReconcilers,
-} from './page-put-intent-reconciler.js';
+} from '../page-put-intent-reconciler.js';
 
 /** Whether the test PostgreSQL and Redis are reachable; the contract is skipped without them. */
 export const restoreDerivationStackAvailable = (await isDbAvailable()) && (await isRedisAvailable());
@@ -63,6 +66,17 @@ export interface SeededRestore {
   confluenceId: string;
 }
 
+/** Who owns an intent and what recovery has recorded on it. */
+export interface RestoreIntentOwnership {
+  runtimeId: string;
+  /** Whether the owning runtime has a server-proven fence. */
+  ownerFenced: boolean;
+  /** Whether a recovery has claimed the intent (`recovery_started_at`). */
+  recoveryStarted: boolean;
+  /** The claims in the intent's recovery history, oldest first. */
+  attempts: Array<Record<string, unknown>>;
+}
+
 export interface RestoreDerivationHarness {
   /** The loopback Confluence; `confluence.sent('update')` are the PUTs the backend issued. */
   readonly confluence: ConfluenceHttpFixture;
@@ -73,7 +87,12 @@ export interface RestoreDerivationHarness {
     pageId: number;
     confluenceId: string;
   }>;
-  /** A pending intent of a fenced runtime: its request died after the provider call was sent. */
+  /**
+   * A pending intent of a fenced runtime whose request died after the
+   * provider call was sent and before its answer was recorded: both start
+   * markers are set, as the route commits them before `updatePage`, and
+   * neither completion nor receipt is.
+   */
   insertPendingIntent(input: {
     kind: 'page.version_restore' | 'page.ai_apply';
     pageId: number;
@@ -93,6 +112,7 @@ export interface RestoreDerivationHarness {
   /** Run the operator recovery of the intent. */
   recover(intentId: string): Promise<{ intentId: string; status: string }>;
   intentStatus(intentId: string): Promise<string>;
+  intentOwnership(intentId: string): Promise<RestoreIntentOwnership>;
   page(pageId: number): Promise<{ title: string; body_storage: string | null; version: number; remote_version: number | null }>;
 }
 
@@ -213,8 +233,10 @@ export function useRestoreDerivationHarness(): RestoreDerivationHarness {
       const intentId = randomUUID();
       await query(
         `INSERT INTO page_write_intents
-           (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect)
-         VALUES ($1, $2, $3, $4, ARRAY[$5]::integer[], $6::jsonb, 'remote_conditional', $7::jsonb)`,
+           (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+            effect_started_at, remote_effect_started_at)
+         VALUES ($1, $2, $3, $4, ARRAY[$5]::integer[], $6::jsonb, 'remote_conditional', $7::jsonb,
+                 NOW(), NOW())`,
         [
           intentId,
           runtimeId,
@@ -282,6 +304,29 @@ export function useRestoreDerivationHarness(): RestoreDerivationHarness {
     async intentStatus(intentId) {
       const result = await query<{ status: string }>('SELECT status FROM page_write_intents WHERE id = $1', [intentId]);
       return result.rows[0]!.status;
+    },
+
+    async intentOwnership(intentId) {
+      const result = await query<{
+        runtime_id: string;
+        owner_fenced: boolean;
+        recovery_started: boolean;
+        recovery_history: Array<Record<string, unknown>>;
+      }>(
+        `SELECT i.runtime_id, r.fenced_at IS NOT NULL AS owner_fenced,
+                i.recovery_started_at IS NOT NULL AS recovery_started, i.recovery_history
+           FROM page_write_intents i
+           JOIN page_writer_runtimes r ON r.runtime_id = i.runtime_id
+          WHERE i.id = $1`,
+        [intentId],
+      );
+      const row = result.rows[0]!;
+      return {
+        runtimeId: row.runtime_id,
+        ownerFenced: row.owner_fenced,
+        recoveryStarted: row.recovery_started,
+        attempts: row.recovery_history,
+      };
     },
 
     async page(pageId) {

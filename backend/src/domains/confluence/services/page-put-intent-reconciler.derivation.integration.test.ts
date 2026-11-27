@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { query } from '../../../core/db/postgres.js';
 import { STORAGE_DERIVATION_BASE_CORPUS } from '../../../core/services/__fixtures__/storage-derivation-base-corpus.js';
+import { reconcilePageWriteIntent } from '../../../core/services/page-write-admission.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   NO_STORAGE_DERIVATION_FEATURES,
@@ -15,7 +16,7 @@ import {
   expectRestoreRecoveredOnce,
   restoreDerivationStackAvailable,
   useRestoreDerivationHarness,
-} from './test-restore-derivation-contract.js';
+} from './__fixtures__/test-restore-derivation-contract.js';
 
 function corpusEntry(name: string) {
   const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === name);
@@ -126,12 +127,45 @@ describe.skipIf(!restoreDerivationStackAvailable)('recovery of a version restore
     expect(harness.confluence.sent('update')).toHaveLength(0);
   });
 
-  it('leaves a restore that records a feature this release does not register pending, without reading Confluence', async () => {
+  it('refuses a restore that records a feature this release does not register before taking ownership, without reading Confluence', async () => {
     const entry = corpusEntry('combined-restore-target');
     for (const recordedFeatures of [['never-registered-feature'], ['a-first', 'never-registered-feature']]) {
       const seeded = await harness.seedRestore({ ...entry, reservedStorage: entry.storage, recordedFeatures });
+      const reserved = await harness.intentOwnership(seeded.intentId);
+      expect(reserved).toMatchObject({ ownerFenced: true, recoveryStarted: false, attempts: [] });
       await expectRestoreFenced(harness, seeded, 'intent_restore_derivation_unsupported');
+      // Still the fenced runtime's, with no recovery attempt: a runtime that
+      // registers the feature claims it as if this one had never been asked.
+      expect(await harness.intentOwnership(seeded.intentId)).toEqual(reserved);
     }
+    expect(harness.confluence.requests).toHaveLength(0);
+  });
+
+  it('checks the administrator and the owner\'s fence before it answers that the derivation is unsupported', async () => {
+    const entry = corpusEntry('combined-restore-target');
+    const seeded = await harness.seedRestore({
+      ...entry,
+      reservedStorage: entry.storage,
+      recordedFeatures: ['never-registered-feature'],
+    });
+    const reserved = await harness.intentOwnership(seeded.intentId);
+    await expect(reconcilePageWriteIntent(seeded.intentId, {
+      actorId: harness.actorId,
+      reason: 'A writer without the administrator role asks for the recovery',
+    })).rejects.toMatchObject({ statusCode: 403, reason: 'recovery_admin_required' });
+
+    await query(
+      `UPDATE page_writer_runtimes
+          SET fenced_at = NULL, fenced_by = NULL, fence_reason = NULL, fence_proof = NULL
+        WHERE runtime_id = $1`,
+      [reserved.runtimeId],
+    );
+    await expect(harness.recover(seeded.intentId)).rejects.toMatchObject({
+      statusCode: 409,
+      reason: 'runtime_not_safely_fenced',
+    });
+    expect(await harness.intentOwnership(seeded.intentId)).toEqual({ ...reserved, ownerFenced: false });
+    expect(await harness.intentStatus(seeded.intentId)).toBe('pending');
     expect(harness.confluence.requests).toHaveLength(0);
   });
 

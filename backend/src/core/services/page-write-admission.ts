@@ -403,8 +403,22 @@ export type PageWriteIntentReconciler = (
 
 export type PageWriteIntentRepairer = (intent: PageWriteRecoveryIntent) => Promise<void>;
 
+/**
+ * A refusal that must come before recovery takes ownership of an intent
+ * (#1953): this runtime cannot verify what the intent recorded, another one
+ * can. `reconcilePageWriteIntent` runs it in the claim transaction on the
+ * locked durable row, after the original runtime's fence, the page state and
+ * the acting administrator were checked and before the claim is written. A
+ * throw leaves the owner, `recovery_started_at` and the recovery history as
+ * they were, so the other runtime still finds the intent with its fenced
+ * owner. It reads the intent only: every other refusal is the reconciler's,
+ * after the claim.
+ */
+export type PageWriteIntentPreflight = (intent: PageWriteRecoveryIntent) => void;
+
 const intentReconcilers = new Map<IntentKind, PageWriteIntentReconciler>();
 const intentRepairers = new Map<IntentKind, PageWriteIntentRepairer>();
+const intentPreflights = new Map<IntentKind, PageWriteIntentPreflight>();
 let generatedLabelCompensator: PageWriteIntentRepairer | undefined;
 let canonicalLabelRepairer: PageWriteIntentRepairer | undefined;
 let committedPolicyLabelDispatcher: PageWriteIntentRepairer | undefined;
@@ -466,6 +480,14 @@ export function registerPageWriteIntentReconciler(
   }
   intentReconcilers.set(kind, reconciler);
   if (repairer) intentRepairers.set(kind, repairer);
+}
+
+/** Register the {@link PageWriteIntentPreflight} of one closed intent kind. */
+export function registerPageWriteIntentPreflight(kind: IntentKind, preflight: PageWriteIntentPreflight): void {
+  if (intentPreflights.has(kind)) {
+    throw new PageWriteError(409, 'reconciler_already_registered', `A preflight is already registered for ${kind}`);
+  }
+  intentPreflights.set(kind, preflight);
 }
 
 export type PageWriteRecoveryState = {
@@ -3264,6 +3286,10 @@ export async function reconcilePageWriteIntent(
       assertExpectedRevisions(rows, intentFromRow(durable).revisions);
       await assertNoCompetingIntent(client, durable.page_ids, durable.id);
       await assertActiveRecoveryAdmin(client, authorization.actorId);
+      // Every fence and authorization check above has passed and nothing is
+      // written yet: a runtime that cannot verify this intent must not become
+      // its owner, or the one that can would first need this epoch fenced.
+      intentPreflights.get(durable.kind as IntentKind)?.(recoveryIntentFromRow(durable));
       // Commit the acting administrator before trusted verification or repair
       // can mutate external state. The current segment stays bounded for token
       // readers; a rollover archives the complete prior segment in this same
