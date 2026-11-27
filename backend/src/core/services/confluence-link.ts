@@ -487,47 +487,20 @@ const URL_CARRIER_PREFIX = '#confluence-url:';
  * holding a quote, `&` or markup is serialised in context; carrier text in
  * prose, code or another attribute stays what it is. An `<a>` that already
  * has a class, and a carrier whose value is not navigable, are left alone.
- * The string is returned as it came unless an anchor changed, and then only
- * the start tags of the changed anchors are replaced (#1954): text elsewhere
- * keeps its character references, so a literal the Improve chain wrote as a
- * reference (a media-placeholder spelling in linked code) is not turned back
- * into a spelling `restoreMedia` would replace. When the tree builder made an
- * anchor itself (no source tag of its own: a reconstructed formatting
- * element shares the tag it was cloned from), the whole string is serialised.
+ * The string is returned as it came unless an anchor changed.
  */
 export function materializeConfluenceUrlLinks(html: string): string {
   if (!html.includes(URL_CARRIER_PREFIX)) return html;
-  const BODY_START = '<body>';
-  const dom = new JSDOM(`${BODY_START}${html}</body>`, { contentType: 'text/html', includeNodeLocations: true });
-  const doc = dom.window.document;
-  const changed: Element[] = [];
+  const doc = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+  let changed = false;
   for (const a of doc.querySelectorAll(`a[href^="${URL_CARRIER_PREFIX}"]:not([class])`)) {
     const attributes = confluenceLinkHrefAttributes(a.getAttribute('href')!);
     if (!attributes || attributes.className === null) continue;
     a.setAttribute('href', attributes.href);
     a.setAttribute('class', attributes.className);
-    changed.push(a);
+    changed = true;
   }
-  if (changed.length === 0) return html;
-  const tags = changed.map((a) => {
-    // parse5's element location: the source span of the element's own start tag, when it has one.
-    const location = dom.nodeLocation(a) as { startTag?: { startOffset: number; endOffset: number } } | null;
-    return { a, tag: location?.startTag };
-  });
-  // Source order: an anchor the tree builder moved (out of a table) comes earlier in the tree than in the string.
-  tags.sort((x, y) => (x.tag?.startOffset ?? -1) - (y.tag?.startOffset ?? -1));
-  if (tags.some(({ tag }, index) => !tag || (index > 0 && tags[index - 1]!.tag!.startOffset === tag.startOffset))) {
-    return doc.body.innerHTML;
-  }
-  const parts: string[] = [];
-  let at = 0;
-  for (const { a, tag } of tags) {
-    const outer = (a.cloneNode(false) as Element).outerHTML;
-    parts.push(html.slice(at, tag!.startOffset - BODY_START.length), outer.slice(0, outer.length - '</a>'.length));
-    at = tag!.endOffset - BODY_START.length;
-  }
-  parts.push(html.slice(at));
-  return parts.join('');
+  return changed ? doc.body.innerHTML : html;
 }
 
 /**
