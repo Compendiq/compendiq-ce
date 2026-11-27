@@ -173,6 +173,11 @@ interface OpenLink {
   bodyEnd: number;
   scope: string;
   live: boolean;
+  /**
+   * Review r9, R33 (D21 disposition): false for a stored link in a context the forward pass reads that it did not
+   * deliver as a link (`shown`). Such a link is a competitor only, never matched by a written link, dormant or not.
+   */
+  eligible: boolean;
   /** False while a link encloses it outside that link's body. */
   placed: boolean;
   /** Its position among the links and anchors, in document order. */
@@ -320,9 +325,11 @@ function forwardLabel(element: StorageElement, others: readonly StorageElement[]
  * Every link-like element and anchor of `tree`, described for a judgement.
  * One pass over the tree; throws {@link StorageLinkBudgetError} past the work
  * limit, so a caller refuses rather than judges half a string. `shown`, given
- * for stored storage (D21 fallback, review r8 R32), tells whether the forward
- * pass delivered a link-like element to the editor as a link: one it did not
- * is dormant, so it is competing evidence and never a source.
+ * for stored storage (D21 fallback, reviews r8 R32, r9 R33), tells whether the
+ * forward pass delivered a link-like element to the editor as a link: one
+ * outside every dormant context that it did not deliver is ineligible, a
+ * competitor that no written link matches. A dormant one (a template, a
+ * style, …) is never delivered and keeps its own round trip.
  */
 export function analyseStorageLinks(
   tree: StorageTree,
@@ -470,8 +477,9 @@ export function analyseStorageLinks(
     }
     let target: string;
     if (canonical) {
-      // Attribute order is not part of what a link points at.
-      target = `url|${Number(link.live)}|${JSON.stringify([value, [...linkAttrs!.carried].sort(), [...urlAttrs!.carried].sort()])}`;
+      // Attribute order is not part of what a link points at. An ineligible source has a target no written link has.
+      const context = link.eligible ? String(Number(link.live)) : 'unshown';
+      target = `url|${context}|${JSON.stringify([value, [...linkAttrs!.carried].sort(), [...urlAttrs!.carried].sort()])}`;
     } else {
       const shape = structure(others);
       target = `link|${JSON.stringify([element.name, element.uri, sortedAttributes(element.attributes), shape])}`;
@@ -563,7 +571,8 @@ export function analyseStorageLinks(
         const link: OpenLink = {
           element: child, anchor: isAnchor, ordinal: isLink ? linkLike : -1, inBody: Number(isAnchor), urls: [], hasUser: false,
           media: [], start: stream.length, end: -1, bodyStart: isAnchor ? stream.length : -1, bodyEnd: -1,
-          scope: scopes[scopes.length - 1] ?? '', live: dormant === 0 && (isAnchor || shown(child)), placed: outsideBody === 0,
+          scope: scopes[scopes.length - 1] ?? '', live: dormant === 0, eligible: dormant > 0 || isAnchor || shown(child),
+          placed: outsideBody === 0,
           sequence: open.length + closed.length, described: null, uncertain: false,
         };
         if (isLink) {

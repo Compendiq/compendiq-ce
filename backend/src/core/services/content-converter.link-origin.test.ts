@@ -719,6 +719,23 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       // With no stored source the same link is text.
       for (const saved of twoSaves(`${FILLER}${moved}`, FILLER)) expect(oracleUrlLinks(saved)).toEqual([]);
     });
+
+    // Review r9, R33 and the D21 disposition: a stored link the forward pass did not show is a competitor only. It
+    // grants no written link, in a template either; a stored link that is dormant itself still round-trips there.
+    const statusParam = `<ac:structured-macro ac:name="status"><ac:parameter ac:name="title">${GUIDE}</ac:parameter></ac:structured-macro>`;
+    const template = `<template><p>t ${raw('/guide', 'Guide')} u</p></template>`;
+    it.each([
+      ['a discarded status parameter, into an ordinary paragraph', statusParam, (shown: string) => `${shown}${moved}`, 0],
+      ['a discarded status parameter, into a new template paragraph', statusParam, (shown: string) => `${shown}${template}`, 0],
+      ['no source, into the same template paragraph', FILLER, (shown: string) => `${shown}${template}`, 0],
+      ['a stored template occurrence, into itself', `<template><p>t ${written('/guide', 'Guide')} u</p></template>`, () => template, 1],
+      ['a visible original with nothing competing, moved into an ordinary paragraph', `<p>${GUIDE}</p>${FILLER}`, () => `${FILLER}${moved}`, 1],
+    ])('writes %s with as many url resources on both Saves as its source proves (R33)', (_case, storage, outgoing, urls) => {
+      for (const saved of twoSaves(outgoing(confluenceToHtml(storage)), storage)) {
+        expect(oracleLocalNameCount(saved, 'url')).toBe(urls);
+        expect(saved).toContain('Guide');
+      }
+    });
   });
 
   // Review r4, R22: no attribute of the input stands for a decision of the converter.
