@@ -94,7 +94,7 @@ Custom turndown rules handle Confluence-specific macros:
 | Confluence macro                     | HTML form                                                    | Markdown form                 |
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
 | `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block — the language survives Improve; `data-title` / `data-macro-params` do not (#1749, out of scope) |
-| `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751); a subtask's `ac:task-list` in its `ac:task-body` becomes a `ul` inside the parent's `li`, at most 32 levels (#1957) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged; nested tasks are flattened |
+| `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751); a subtask's `ac:task-list` in its `ac:task-body` becomes a `ul` inside the parent's `li` within 32 levels; deeper pages convert as before (#1957) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged; nested tasks are flattened |
 | `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
@@ -418,25 +418,30 @@ any change to the existing conflict policy.
   the mirror image of the #1220 bug: it converted the outer `ac:task-list`
   first and took every descendant `ac:task`, so a subtask was cloned raw into
   its parent's body *and* listed beside it, and each level re-cloned the
-  levels below it (17 s at 100 levels, out of memory by 150).
+  levels below it (17 s at 100 levels).
   `convertTaskLists` now indexes each element's nearest enclosing task list,
   task and task body in one preorder pass; a list inside the body of a task of
   its enclosing list is kept one level below and converted where it stands,
-  innermost first, and each body node and each `li` moves once, with the page
-  detached from the document (JSDOM walks the whole subtree of a node moved in
-  a connected tree, which made those moves quadratic in depth). Lists in a
-  list but not in a task body stay flat in source order, as before. Nesting is
-  refused past `MAX_TASK_LIST_NESTING` = 32 (`ConfluenceTaskNestingError`,
-  422 on a request), never flattened, on both sides: sync skips such a page
-  and keeps its row, the attachment repair skips it, the lazy history view
-  shows no body, and `htmlToConfluence` refuses editor HTML nested deeper
-  before any write, so Confluence never holds a page this release cannot read
-  back. The number comes from the reverse pass, whose per-level re-parse makes
-  it superlinear: with a status and a toc macro in every task it writes 32
-  levels in about 0.2 s, 64 in 1.5 s and 100 in 5–10 s, while both TipTap
-  schemas and the collaborative document stay under 0.2 s at 100. The stored
-  tasks write-back reads (`storedTasks`) are converted at any depth. The
-  editor schemas read a task item's content the way write-back does
+  innermost first, and each task gets its `li` once in its final list, each
+  body node and `li` moving once, with the page detached from the document
+  (JSDOM walks the whole subtree of a node moved in a connected tree). A move
+  is one DOM call, not constant time: JSDOM still walks the moved node's
+  ancestors. Lists in a list but not in a task body stay flat in source order,
+  as before. Nesting applies only within `MAX_TASK_LIST_NESTING` = 32, decided
+  before any conversion work and as a pure function of the input, so a
+  recorded restore derivation still reproduces its bytes: the forward pass
+  scans the storage string (`storageTaskNesting`: every `ac:task-list` inside
+  another, CDATA as text, one look per tag), write-back counts the hierarchy it
+  writes (editor lists and raw `ac:task-list` a pre-#1957 body still holds).
+  Deeper, the page converts exactly as before #1957 on both passes (the
+  pre-#1957 forward loop; write-back reads the stored tasks with it too):
+  nothing is refused, sync, history, Save, draft publish and restore behave as
+  before, and such a page keeps the duplicated pre-#1957 shape — #1957 is not
+  fixed for it. The number comes from the reverse pass, whose per-level
+  re-parse makes it superlinear: with a status and a toc macro in every task
+  it writes 32 levels in about 0.2 s, 64 in 1.5 s and 100 in 5–10 s, while
+  both TipTap schemas and the collaborative document stay under 0.2 s at 100.
+  The editor schemas read a task item's content the way write-back does
   (`taskItemContent`): from TipTap's `label` + `div` only when the `li` is
   exactly that, else from the `li`. TaskItem's stock `querySelector('div')`
   took the first `div` at any depth, so a block macro in a task or subtask
@@ -732,8 +737,10 @@ split into consecutive runs: a task list holds task items only, and
 `htmlToConfluence` rebuilds `ac:task-list` from `li[data-type="taskItem"]`
 alone, so a plain item left inside one would vanish on write-back. A task item
 whose content holds a `<div>` stays a plain item with its `[x]` / `[ ]` kept
-as text, because TipTap's TaskItem parses its content from the first
-descendant `div` and would drop the rest. That covers raw HTML (`<div/>`
+as text. The rule dates from TipTap's stock TaskItem, which parsed its content
+from the first descendant `div` and dropped the rest; since #1957 both schemas
+read a task's content the way write-back does and keep such a block, and the
+fallback is unchanged only to keep this path's output stable. That covers raw HTML (`<div/>`
 included), a draw.io fence, and — on AI Improve Accept, which passes its
 protectMedia map as `protectedMedia` — a placeholder whose original HTML holds
 a div (a draw.io or mermaid diagram, a macro placeholder). Inline placeholders
