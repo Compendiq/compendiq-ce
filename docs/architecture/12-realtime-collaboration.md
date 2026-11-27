@@ -653,6 +653,22 @@ every 2 s and that column cannot tell. Best effort as above: a refusal logs
 Save takes the ids back from `body_storage` while the tasks' text is
 unchanged.
 
+**Link bodies (#1954).** The image node carries the link of a Confluence link
+whose body is an image as two optional Yjs attributes of the `image` element,
+`href` and `linkClass` (the class carrier of a navigable `ri:url`); `yDocToHtml`
+renders them as the wrapper `<a>` only when they pass the Link mark's
+`isAllowedUri` and `isConfluenceUrlClassCarrierFor` again, so a value a client
+writes into the element directly never renders a link the parse would refuse.
+A document persisted before #1954 has neither attribute and loads unchanged:
+`collab-schema.pre-1954-snapshot.test.ts` loads a `Y.encodeStateAsUpdate`
+captured with the schema of `bff6d4ec` (`__fixtures__/collab-pre-1954.ts`) and
+compares its HTML with the HTML that schema produced. A room seeded before
+#1954 has already lost such a link inside its document (and its persist wrote
+`body_html` without it); the link comes back when the page is re-derived from
+Confluence (Re-sync or Pull), not by a backfill. A browser still running the
+previous bundle does not know the attributes and drops them from an image it
+edits.
+
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with
 `collabExtensions()`, persist, keep the doc in the in-memory room.
