@@ -129,11 +129,13 @@ never under an element the tree builder moved (out of a table, or misnested
 formatting), and never where a reparse would drop or move what is spliced in
 (a `select`, SVG or MathML, an element holding a start tag the tree builder
 ignored, also inside text joined across it). The change is the
-storage-derivation feature `link-kinds`. Owner decision D21 (fallback): a
-non-web `ri:url` occurrence whose origin is not proven becomes its text on
-every Save; a stored link is a source only if the forward pass delivered it to
-the editor as a link (a link only a discarded macro parameter held is not), and
-an ordinary anchor in any letter case competes but never grants. Limits,
+storage-derivation feature `link-kinds`. Owner decision D21 (fallback) narrows
+what may grant, without proving every unproven non-web occurrence becomes text:
+a stored link the forward pass did not deliver to the editor as a link (one
+only a discarded macro parameter held) is a competitor only and matches no
+written link, ordinary or dormant; a stored link that is itself dormant (in a
+template, a style, …) keeps its own round trip; an ordinary anchor in any
+letter case competes but never grants. Limits,
 all declining: a link the editor splits keeps at most one piece as an unsafe
 (not navigable) `ri:url` link; a link both moved and relabelled, one of several
 identical links, and a link left when a stored thing with its body and another

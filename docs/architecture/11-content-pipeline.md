@@ -426,13 +426,18 @@ any change to the existing conflict policy.
   The whole change is the storage-derivation feature `link-kinds` (#1953): a
   version restore reserved before it, or under a profile without it, derives
   the bytes of the base commit and never meets the judgement. Owner decision
-  D21 (fallback after review r8): a non-web `ri:url` occurrence whose origin
-  is not proven is written as its text (its label, no `ri:url`), on every Save.
-  A stored link is a source only if the forward pass delivered it to the
-  editor as a link (its emitted anchor is still in the completed result of
-  the same witness run as the D19 check); one only a macro parameter or
-  another discarded part held grants nothing. An ordinary anchor the editor
-  shows (`a` or `A`, `href` or `HREF`) is competing evidence, never a source.
+  D21 (fallback after reviews r8 and r9) narrows what the `ri:url` judgement
+  may grant; it does not prove that every unproven non-web occurrence becomes
+  text. A stored link outside every dormant context is eligible as a source
+  only if the forward pass delivered it to the editor as a link (its emitted
+  anchor is still in the completed result of the same witness run as the D19
+  check); one only a macro parameter or another discarded part held is a
+  competitor only, matched by no written link, ordinary or dormant (a new
+  template's link included), so that written link keeps its label and no
+  `ri:url`. A stored link that is itself dormant (inside a template, a style,
+  …) is never delivered and keeps its own round trip in its own place. An
+  ordinary anchor the editor shows (`a` or `A`, `href` or `HREF`) is
+  competing evidence, never a source.
   Limits, all on
   the declining side: a link the editor splits (around inline code, an image,
   a line break on a collaborative Save) keeps at most one piece as an unsafe
