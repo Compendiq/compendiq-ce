@@ -5,7 +5,7 @@ import { llmImproveRoutes } from './llm-improve.js';
 import { ArticleRouteFixture, sseEvents } from './article-route-test-fixture.js';
 
 const available = await isDbAvailable() && await isRedisAvailable();
-import { confluenceToHtml } from '../../core/services/content-converter.js';
+import { canAcceptImproveOutput, confluenceToHtml } from '../../core/services/content-converter.js';
 const LAYOUT_CONTENT = confluenceToHtml('<ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><p>Left prose</p></ac:layout-cell><ac:layout-cell><p>Right prose</p></ac:layout-cell></ac:layout-section></ac:layout>');
 const TOKENS = '[[[LAYOUT]]]\n\n[[[LAYOUT-SECTION two_equal]]]\n\n[[[LAYOUT-CELL]]]\n\nLeft prose\n\n[[[/LAYOUT-CELL]]]\n\n[[[LAYOUT-CELL]]]\n\nRight prose\n\n[[[/LAYOUT-CELL]]]\n\n[[[/LAYOUT-SECTION]]]\n\n[[[/LAYOUT]]]';
 
@@ -74,32 +74,44 @@ describe.skipIf(!available)('POST /api/llm/improve - layout-token cache guard', 
   });
 });
 
-// #1958 (review r4 CM4-4): a titled code block in a table cell is frozen as CQ_CODE_PLACEHOLDER_0. An output that
-// does not carry that placeholder exactly once can only be refused on Accept, so it is never cached: running AI
-// Improve again reaches the provider until a usable output comes back, which is cached as before.
+// #1958 (reviews r4 CM4-4, r5 CM5-2): the generator caches only an output the Accept's own conversion takes
+// (canAcceptImproveOutput, the convertImproveOutput the Apply route runs). An output the Accept refuses is never
+// cached: running AI Improve again reaches the provider until a usable output comes back, which is cached and
+// replayed as before, and which the Accept takes.
 describe.skipIf(!available)('POST /api/llm/improve - frozen code-block cache guard (#1958)', () => {
   const fixture = new ArticleRouteFixture();
   beforeAll(() => fixture.start(llmImproveRoutes));
   beforeEach(() => fixture.reset());
   afterAll(() => fixture.close());
   const FROZEN_CONTENT = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">x()</code></pre></td></tr></tbody></table><p>Prose</p>';
-  const improve = () => fixture.post('improve', { pageId: fixture.pageId, content: FROZEN_CONTENT, type: 'grammar', model: 'llama3' });
+  const WRAPPER_CONTENT = '<div class="confluence-macro-unknown" data-macro-name="foo"><pre data-title="Sample"><code class="language-js">w()</code></pre></div><p>Prose</p>';
+  const improve = (content: string) => fixture.post('improve', { pageId: fixture.pageId, content, type: 'grammar', model: 'llama3' });
   const keys = () => fixture.redis.keys('kb:llm:*');
 
-  it('calls the provider anew while the output cannot place the frozen block, then caches a usable one', async () => {
-    fixture.output = 'Prose improved, the sample left out.';
-    expect((await improve()).statusCode).toBe(200);
-    expect((await improve()).statusCode).toBe(200);
+  it.each([
+    ['the frozen block left out', FROZEN_CONTENT, 'Prose improved, the sample left out.',
+      '<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_0</td></tr></tbody></table>\n\nProse improved.'],
+    ['the frozen placeholder made bold (an unsafe context)', FROZEN_CONTENT, '**CQ_CODE_PLACEHOLDER_0**\n\nProse improved.',
+      '<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_0</td></tr></tbody></table>\n\nProse improved.'],
+    ['a code-carrying macro wrapper left out', WRAPPER_CONTENT, 'Prose improved, the macro left out.',
+      'CQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nProse improved.'],
+  ])('calls the provider anew while the Accept would refuse the output (%s), then caches a usable one', async (_name, content, unusable, usable) => {
+    fixture.output = unusable;
+    expect(await canAcceptImproveOutput(content, unusable)).toBe(false);
+    expect((await improve(content)).statusCode).toBe(200);
+    expect((await improve(content)).statusCode).toBe(200);
     expect(fixture.requests).toHaveLength(2);
     expect(await keys()).toHaveLength(0);
 
-    fixture.output = '<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_0</td></tr></tbody></table>\n\nProse improved.';
-    expect((await improve()).statusCode).toBe(200);
+    fixture.output = usable;
+    expect((await improve(content)).statusCode).toBe(200);
     expect(fixture.requests).toHaveLength(3);
     expect(await keys()).toHaveLength(1);
-    const replayed = await improve();
+    const replayed = await improve(content);
     expect(replayed.statusCode).toBe(200);
     expect(fixture.requests).toHaveLength(3);
-    expect(sseEvents(replayed.body).map((event) => event.content ?? '').join('')).toContain('CQ_CODE_PLACEHOLDER_0');
+    const text = sseEvents(replayed.body).map((event) => event.content ?? '').join('');
+    expect(text).toBe(usable);
+    expect(await canAcceptImproveOutput(content, text)).toBe(true);
   });
 });

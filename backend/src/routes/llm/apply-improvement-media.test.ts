@@ -987,6 +987,38 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
             expect(await status(row)).toBe('completed');
           });
         });
+
+        describe('review r5: a placeholder the page writes is authored, whatever markup splits it', () => {
+          it.each([
+            ['an inline element', '<p>CQ_CODE_<span>PLACEHOLDER_0</span></p>'],
+            ['a comment', '<p>CQ_CODE_<!-- c -->PLACEHOLDER_0</p>'],
+          ])('refuses every suggestion that could only place the block at the authored spelling split by %s (CM5-1)', async (_name, paragraph) => {
+            const page = `${BOLD_TABLE}${paragraph}`;
+            // Generated on a06f304c and on this release (disposable worktree): both write the paragraph as one escaped spelling.
+            const old = `${BOLD_TABLE}\n\nCQ\\_CODE\\_PLACEHOLDER\\_0`;
+            const current = '<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_0</td></tr></tbody></table>\n\nCQ\\_CODE\\_PLACEHOLDER\\_0';
+            expect(faithfulEcho(page)).toBe(current);
+            const pageId = await seedPage(page);
+            const legacy = await storedImprovement(pageId, old, null);
+            const fresh = await storedImprovement(pageId, current, 1);
+            const before = await readPage(pageId);
+
+            const attempts: Array<[string, Record<string, unknown>]> = [
+              [old, { improvementId: legacy }],
+              [`${old}\n\nRevised.`, {}],
+              // The model dropped the structural placeholder from the table; only the authored spelling is left.
+              [current.replace('<td>CQ_CODE_PLACEHOLDER_0</td>', '<td></td>'), { improvementId: fresh }],
+              [`${current.replace('<td>CQ_CODE_PLACEHOLDER_0</td>', '<td></td>')}\n\nRevised.`, {}],
+            ];
+            for (const [markdown, extra] of attempts) {
+              const response = await apply(pageId, markdown, extra);
+              expect(response.statusCode, `${markdown}: ${response.body}`).toBe(422);
+              // Text, metadata, block count and place, version: all as they were.
+              expect(await readPage(pageId)).toEqual(before);
+            }
+            expect([await status(legacy), await status(fresh)]).toEqual(['completed', 'completed']);
+          });
+        });
       });
     });
   },

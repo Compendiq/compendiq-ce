@@ -15,9 +15,7 @@ import {
 import {
   assertCodeMacroStorage,
   assertLocalCodeMacroProjections,
-  beginCodeMetaAccept,
-  extractLayoutSkeleton,
-  finalizeCodeMetadata,
+  convertImproveOutput,
   htmlToConfluence,
   htmlToText,
   ImproveCodePlacementError,
@@ -26,11 +24,7 @@ import {
   ImproveReplayError,
   ImproveSuggestionFormatError,
   LayoutRecoveryError,
-  markdownToHtml,
-  protectMedia,
-  replayProtectedMedia,
-  type CodeMetaAccept,
-  type FinalizedCodeMetadata,
+  type ConvertedImproveOutput,
   type ImproveSuggestionProvenance,
 } from '../../core/services/content-converter.js';
 import { ConfluenceStorageRefusedError } from '../../core/services/confluence-storage-reader.js';
@@ -505,35 +499,6 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
     }
 
-    // #723: re-derive the same media tokens from the page's CURRENT body_html
-    // (deterministic, document order) and re-inject originals verbatim so AI
-    // Improve can never strip images/draw.io.
-    //
-    // The Improve-time token set (derived from the editor `content`) and this
-    // Accept-time token set (derived from `body_html`) are decoupled, so they
-    // can diverge — the LLM may also drop tokens entirely. #1958: the replay
-    // below plans by screened placement: a medium with no placement it can
-    // take is appended once and never silently lost; a code-carrying original
-    // without exactly one is refused (422), never duplicated.
-    const protectedBody = protectMedia(existingPage.body_html ?? '');
-    const { html: protectedCurrentHtml, media } = protectedBody;
-
-    // #781: derive the expected layout-token skeleton and let markdownToHtml
-    // align the LLM's — possibly mangled — boundary tokens against it. When the
-    // layout is unrecoverable (e.g. the model merged two cells' prose or
-    // dropped every token), the apply is REJECTED with a 422 instead of
-    // silently flattening the page and pushing the flattened body back to
-    // Confluence.
-    //
-    // The source is `protectedCurrentHtml`, NOT `body_html`: whatever
-    // protectMedia froze emits no boundary tokens, so a skeleton derived from
-    // the raw document would expect tokens the markdown cannot carry and
-    // rebuild a duplicate macro around the frozen subtree. Deterministic either
-    // way — same re-derivation idea as the media tokens above — but only the
-    // protected form agrees with what the model was shown. Pinned by
-    // apply-improvement-media.test.ts.
-    const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
-
     // A #1958 refusal: nothing is reserved, dispatched or stored. Remote
     // authority was established before any evidence was read (above).
     const refuseImproveResult = (error: unknown): never => {
@@ -551,20 +516,27 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.unprocessableEntity((error as Error).message);
     };
 
-    // #1958: code-block title and options travel as CODE-META echo tokens and
-    // are re-attached from this stored body only on exact identity. A
-    // pre-#1958 suggestion for a page with annotated code is refused here.
-    let codeMeta: CodeMetaAccept;
+    // The conversion half of the Accept (#1958 `convertImproveOutput`; the
+    // Improve generator caches only output it accepts):
+    // - #723: the media tokens are re-derived from the page's CURRENT
+    //   body_html (deterministic, document order) and the originals re-injected
+    //   verbatim, so AI Improve can never strip images/draw.io. The Improve-time
+    //   token set (from the editor `content`) and this one can diverge, and the
+    //   LLM may drop tokens: a medium with no placement it can take is appended
+    //   once; a code-carrying original without exactly one is refused (422),
+    //   never duplicated.
+    // - #781: the layout skeleton is derived from the PROTECTED body (whatever
+    //   protectMedia froze emits no boundary tokens) and markdownToHtml aligns
+    //   the LLM's boundary tokens against it; an unrecoverable layout is
+    //   rejected with 422 instead of flattening the page.
+    // - #1752: `protectedMedia` names the tokens the replay turns back into
+    //   block HTML, so a task item holding one stays a plain item.
+    // - #1958: code-block title and options travel as CODE-META echo tokens
+    //   and are re-attached from this stored body only on exact identity; a
+    //   pre-#1958 suggestion for a page with annotated code is refused first.
+    let finalized: ConvertedImproveOutput;
     try {
-      codeMeta = beginCodeMetaAccept(protectedBody, { provenance });
-    } catch (error) {
-      return refuseImproveResult(error);
-    }
-    let bodyHtml: string;
-    try {
-      // #1752: `protectedMedia` names the tokens restoreMedia turns back into
-      // block HTML below, so a task item holding one stays a plain item.
-      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: media, codeMeta });
+      finalized = await convertImproveOutput(existingPage.body_html ?? '', improvedMarkdown, { provenance });
     } catch (err) {
       if (err instanceof LayoutRecoveryError) {
         fastify.log.warn(
@@ -577,23 +549,15 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
           "The AI response lost this page's structure (columns or collapsible sections) and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
         );
       }
-      throw err;
+      return refuseImproveResult(err);
     }
-
-    let finalized: FinalizedCodeMetadata;
-    try {
-      const replay = replayProtectedMedia(bodyHtml, codeMeta);
-      if (replay.dropped > 0) {
-        fastify.log.warn(
-          { pageId, dropped: replay.dropped, total: codeMeta.entries.length },
-          '#723: re-appended media dropped during AI Improve',
-        );
-      }
-      finalized = finalizeCodeMetadata(replay.html, codeMeta);
-    } catch (error) {
-      return refuseImproveResult(error);
+    if (finalized.dropped > 0) {
+      fastify.log.warn(
+        { pageId, dropped: finalized.dropped, total: finalized.entries },
+        '#723: re-appended media dropped during AI Improve',
+      );
     }
-    bodyHtml = finalized.html;
+    const bodyHtml = finalized.html;
     const { report } = finalized;
     if (Object.values(report).some((count) => count > 0)) {
       const lossy = report.screened + report.stripped + report.forged + report.twins + report.appended > 0;

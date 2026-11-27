@@ -2599,15 +2599,23 @@ export function protectMedia(html: string): ProtectedBody {
     return entry;
   });
   if (media.length > 0 || frozenCode.length > 0) {
-    // #1958 (review r4 CM4-2): each authored text node on its own, as the replay sees text runs; never the
-    // flattened body text, whose node joins would hide a spelling standing alone in its own paragraph.
+    // #1958 (review r5 CM5-1, coordinator direction): a token the page's authored text spells anywhere is authored,
+    // whatever inline element, comment or block boundary splits or surrounds it (Markdown conversion can join such
+    // pieces into one run): each authored text node, and all of them joined. Inserted placeholders never count.
     const texts: string[] = [];
+    const joined: string[] = [];
     const walker = doc.createTreeWalker(doc.body, dom.window.NodeFilter.SHOW_TEXT);
     for (let text = walker.nextNode(); text; text = walker.nextNode()) {
-      if (!synthesized.has(text)) texts.push(text.nodeValue ?? '');
+      if (synthesized.has(text)) {
+        joined.push('\u0000');
+      } else {
+        texts.push(text.nodeValue ?? '');
+        joined.push(text.nodeValue ?? '');
+      }
     }
+    texts.push(joined.join(''));
     markLiteralTokens(texts, MEDIA_TOKEN_PREFIX, media);
-    markLiteralTokens(texts, CODE_TOKEN_PREFIX, frozenCode, true);
+    markLiteralTokens(texts, CODE_TOKEN_PREFIX, frozenCode);
   }
   return { html: doc.body.innerHTML, media, frozenCode, carried };
 }
@@ -3228,21 +3236,19 @@ function codeTextLineEndForm(el: Element): string | null {
 }
 
 /**
- * #1958 (X4, review r4 CM4-2): an entry is `literal` when an authored text
- * node of the protected body (never a placeholder protectMedia inserted)
- * spells its token, either spelling, digit boundary: the page itself writes
- * the token, so no spelling of it can be told for a placement. Each node is
- * scanned on its own, as the replay reads a text run; for code entries
- * (`identifier`) a spelling inside a longer identifier within that node
- * (`CQ_CODE_PLACEHOLDER_0_COUNT`) is not one, as in the replay
- * (isIdentifierPart). A token whose node ends where an identifier goes on in
- * the next one (`CQ_CODE_PLACEHOLDER_0<!---->_COUNT`) counts: refusal, never a guess.
+ * #1958 (X4, reviews r4 CM4-2 and r5 CM5-1): an entry is `literal` when the
+ * page's authored text spells its token anywhere (either spelling; only the
+ * ordinal's digits bound it, so `CQ_CODE_PLACEHOLDER_0_COUNT` and a spelling
+ * split by inline markup count too). `texts` are each authored text node and
+ * their join. The page itself writes the token, so no spelling of it in a
+ * suggestion can be told for a placement: a literal entry never places, and a
+ * code-carrying one then refuses the Accept. One pass per prefix over text
+ * the size of the page's text, twice.
  */
-function markLiteralTokens(texts: readonly string[], prefix: string, entries: ProtectedMedia[], identifier = false): void {
+function markLiteralTokens(texts: readonly string[], prefix: string, entries: ProtectedMedia[]): void {
   if (entries.length === 0) return;
   const counts = new Map<string, number>();
-  const spelled = `(?:${escapeRegExp(prefix)}|${escapeRegExp(prefix.replace(/_/g, '\\_'))})(\\d+)`;
-  const spelling = new RegExp(identifier ? `(?<![A-Za-z0-9_])${spelled}(?![A-Za-z0-9_]|\\\\_)` : spelled, 'g');
+  const spelling = new RegExp(`(?:${escapeRegExp(prefix)}|${escapeRegExp(prefix.replace(/_/g, '\\_'))})(\\d+)`, 'g');
   for (const text of texts) {
     for (const match of text.matchAll(spelling)) {
       counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
@@ -3994,6 +4000,58 @@ interface CodeMacroAllowanceState extends CodeMacroAllowance {
 
 function allowanceState(allowance: CodeMacroAllowance): CodeMacroAllowanceState {
   return allowance as CodeMacroAllowanceState;
+}
+
+/** What {@link convertImproveOutput} returns: the finalized Accept and how many media were re-appended. */
+export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
+  readonly dropped: number;
+  readonly entries: number;
+}
+
+/**
+ * #1958 (review r5 CM5-2): the conversion half of an Improve Accept, from the
+ * page's body and the model's Markdown to the finalized HTML, shared by the
+ * Apply route and by the Improve generator's cache rule, so an output the
+ * Accept refuses is never cached: protectMedia → layout skeleton →
+ * beginCodeMetaAccept(provenance) → markdownToHtml → replayProtectedMedia →
+ * finalizeCodeMetadata. Throws what those throw (LayoutRecoveryError,
+ * ImproveSuggestionFormatError, ImproveCodePlacementError,
+ * ImproveReplayError, ImproveReplayBudgetError,
+ * ConfluenceStorageRefusedError). The storage judges of the two exits run
+ * after it, on the page state of the exit.
+ */
+export async function convertImproveOutput(
+  bodyHtml: string,
+  improvedMarkdown: string,
+  options: { provenance?: ImproveSuggestionProvenance; witnesses?: boolean } = {},
+): Promise<ConvertedImproveOutput> {
+  const protectedBody = protectMedia(bodyHtml);
+  const layoutSkeleton = extractLayoutSkeleton(protectedBody.html);
+  const codeMeta = beginCodeMetaAccept(protectedBody, options);
+  const html = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
+  const replay = replayProtectedMedia(html, codeMeta);
+  return { ...finalizeCodeMetadata(replay.html, codeMeta), dropped: replay.dropped, entries: codeMeta.entries.length };
+}
+
+/**
+ * #1958 (review r5 CM5-2): would an Accept of `improvedMarkdown` for a page
+ * with body `bodyHtml` succeed? The Improve generator caches only such an
+ * output. It runs {@link convertImproveOutput}, the function the Apply route
+ * runs, as the #1958 generator's own suggestion, then both exits' storage
+ * judges on the result without a stored storage (remote: the string
+ * htmlToConfluence writes; local: both publication projections). Any refusal,
+ * or any error, answers false. Only what the page's stored storage at Apply
+ * time adds (#1955 link origins, R3) is not foreseen.
+ */
+export async function canAcceptImproveOutput(bodyHtml: string, improvedMarkdown: string): Promise<boolean> {
+  try {
+    const converted = await convertImproveOutput(bodyHtml, improvedMarkdown, { provenance: 'code-meta' });
+    assertCodeMacroStorage(htmlToConfluence(converted.html), converted.allowance);
+    assertLocalCodeMacroProjections(converted.html, converted.allowance, { body_storage: null });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** What {@link finalizeCodeMetadata} returns. */
@@ -5507,38 +5565,6 @@ function wrapProseInSingleSlot(markdown: string, skeleton: LayoutSkeletonToken[]
  */
 export function hasRecoverableLayoutTokens(markdown: string): boolean {
   return scanLooseLayoutTokens(markdown).length > 0;
-}
-
-/**
- * #1958 (review r4 CM4-4): can an Improve output still place every frozen
- * code block the input Markdown carried? Each `CQ_CODE_PLACEHOLDER_<N>` the
- * input spells outside Markdown code (either spelling, identifier
- * boundaries, as the Accept reads it) must be spelled there exactly once in
- * the input and exactly once in the output. An output that fails can only
- * be refused on Accept (ImproveCodePlacementError), so the generator never
- * caches it and "run AI Improve again" reaches the provider anew. A pass is
- * no promise the Accept succeeds (the placement's context still decides).
- */
-export function placesFrozenCodeTokens(input: string, output: string): boolean {
-  const spelling = new RegExp(
-    `(?<![A-Za-z0-9_])(?:${escapeRegExp(CODE_TOKEN_PREFIX)}|${escapeRegExp(CODE_TOKEN_PREFIX.replace(/_/g, '\\_'))})(\\d+)(?![A-Za-z0-9_]|\\\\_)`,
-    'g',
-  );
-  const count = (markdown: string): Map<string, number> => {
-    const counts = new Map<string, number>();
-    transformOutsideMarkdownCode(markdown, (segment) => {
-      for (const match of segment.matchAll(spelling)) counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
-      return segment;
-    });
-    return counts;
-  };
-  const expected = count(input);
-  if (expected.size === 0) return true;
-  const found = count(output);
-  for (const [ordinal, times] of expected) {
-    if (times !== 1 || found.get(ordinal) !== 1) return false;
-  }
-  return true;
 }
 
 /**
