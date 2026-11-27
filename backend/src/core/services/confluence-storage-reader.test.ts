@@ -433,3 +433,19 @@ describe('ConfluenceStorageRefusedError (#1955)', () => {
     }
   });
 });
+
+describe('confluence-storage-reader: where each start tag stands (#1955, r4 R21)', () => {
+  it('gives every element the range of its start tag, past instructions, comments, CDATA and a chunk boundary', () => {
+    // The reader feeds the parser 65,536 units at a time; the link's start tag straddles the first boundary.
+    const head = '<?meta data="<style>"?><!-- <ac:link> --><p><![CDATA[<b>]]>';
+    const lead = `${head}${'x'.repeat(65_530 - head.length - '</p>'.length)}</p>`;
+    const storage = `${lead}<ac:link ac:anchor="a>b"><ri:space ri:space-key="K&lang;"/></ac:link>`;
+    expect(lead.length).toBe(65_530);
+    const read = readConfluenceStorage(storage);
+    if (!read.ok) throw new Error(read.reason);
+    expect([...storageElements(read.tree)].map((element) => storage.slice(...element.tag))).toEqual([
+      '<p>', '<ac:link ac:anchor="a>b">', '<ri:space ri:space-key="K&lang;"/>',
+    ]);
+    expect(read.tree.root.tag).toEqual([0, 0]);
+  });
+});

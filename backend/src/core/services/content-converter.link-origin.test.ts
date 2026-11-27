@@ -9,7 +9,8 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
-import { encodeConfluenceLinkValue } from './confluence-link.js';
+import { JSDOM } from 'jsdom';
+import { confluenceLinkAnchor, confluenceLinkCarrier, encodeConfluenceLinkValue } from './confluence-link.js';
 import { ConfluenceStorageRefusedError } from './confluence-storage-reader.js';
 import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
 import { htmlToYDoc, yDocToHtml } from './collab-schema.js';
@@ -393,13 +394,21 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       }
     });
 
-    it('writes a link whose key the HTML reading changes, and no reading confirms, as its text, never with another key (R17)', () => {
-      // XML reads a literal TAB in an attribute value as a space; HTML keeps the TAB.
-      const storage = '<p>see <ac:link><ri:space ri:space-key="A\tB" /></ac:link> and <ac:link><ri:space ri:space-key="ENG" /></ac:link></p>';
-      const html = confluenceToHtml(storage);
-      expect(html).toBe('<p>see A B and <a href="#confluence-space:ENG" data-confluence-link="space">ENG</a></p>');
-      expect(htmlToConfluence(html, { previousStorage: storage }))
-        .toBe('<p>see A B and <ac:link><ri:space ri:space-key="ENG"></ri:space></ac:link></p>');
+    // Review r4, R21: a target is never dropped for a difference between the two readings. The forward pass
+    // spells each start tag of a #1955 link so that HTML reads what XML reads; nothing is left to disagree.
+    it.each([
+      ['a literal TAB, which XML reads as a space', 'Release\tnotes'],
+      ['a literal CR LF', 'Release\r\nnotes'],
+      ['a C1 numeric reference, which HTML maps to a windows-1252 character', 'Release&#146;s notes'],
+      ['a hexadecimal C1 reference', 'Release&#x92;s notes'],
+      ['a disputed entity name', 'Release &lang;notes&rang;'],
+    ])('writes back both blog links, the second titled with %s, with the XML values, on both Saves (R21)', (_name, title) => {
+      const storage = '<p><ac:link><ri:blog-post ri:content-title="Editor\u2019s guide" ri:posting-day="2024/05/01" ri:space-key="ENG" /></ac:link>'
+        + ` and <ac:link><ri:blog-post ri:content-title="${title}" ri:posting-day="2024/05/02" ri:space-key="ENG" /></ac:link></p>`;
+      const projected = yDocToHtml(htmlToYDoc(confluenceToHtml(storage)));
+      const first = htmlToConfluence(projected, { previousStorage: storage });
+      expect(values(first)).toEqual(values(storage));
+      expect(htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(first))), { previousStorage: first })).toBe(first);
     });
   });
 

@@ -65,6 +65,12 @@ export interface StorageElement extends StorageName {
   readonly parent: StorageElement | null;
   /** Elements and text in document order. CDATA is text; adjacent runs are one string. Comments and processing instructions are not kept. */
   readonly children: ReadonlyArray<StorageElement | string>;
+  /**
+   * Its start tag's range `[start, end)` in the string read (`[0, 0]` for the
+   * synthetic root). A forward pass uses it to read a link's tag as XML does
+   * (#1955, review r4 R21).
+   */
+  readonly tag: readonly [start: number, end: number];
 }
 
 export interface StorageTree {
@@ -182,6 +188,7 @@ interface MutableElement extends StorageName {
   attributes: StorageAttribute[];
   parent: MutableElement | null;
   children: Array<MutableElement | string>;
+  tag: readonly [number, number];
 }
 
 /**
@@ -205,7 +212,7 @@ export function readConfluenceStorage(
   limits: StorageReaderLimits = STORAGE_READER_LIMITS,
 ): StorageReadResult {
   if (storage.length > limits.length) return { ok: false, reason: 'too-large' };
-  const root: MutableElement = { name: '', prefix: '', local: '', uri: '', attributes: [], parent: null, children: [] };
+  const root: MutableElement = { name: '', prefix: '', local: '', uri: '', attributes: [], parent: null, children: [], tag: [0, 0] };
   let current = root;
   let depth = 0;
   let nodes = 0;
@@ -254,8 +261,12 @@ export function readConfluenceStorage(
           name: attribute.name, prefix: attribute.prefix, local: attribute.local, uri: attribute.uri, value: attribute.value,
         });
       }
+      // The parser stands just past the tag's `>`. No `<` can stand inside a well-formed start tag, so its last
+      // `<` before that point opens it.
+      const end = parser.position;
       const element: MutableElement = {
         name: tag.name, prefix: tag.prefix, local: tag.local, uri: tag.uri, attributes, parent: current, children: [],
+        tag: [storage.lastIndexOf('<', end - 1), end],
       };
       current.children.push(element);
       current = element;

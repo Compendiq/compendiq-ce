@@ -248,8 +248,7 @@ export interface ConfluenceLinkCarrier {
  */
 export function confluenceLinkCarrier(acLink: Element): ConfluenceLinkCarrier | null {
   const built = buildLink(acLink, CONFLUENCE_LINK_KINDS);
-  // Review r3, R17: a target the HTML reading may have changed is no carrier.
-  if (!built || acLink.hasAttribute(UNCERTAIN_READING)) return null;
+  if (!built) return null;
   const { href, className } = confluenceLinkHrefAttributes(built.carrier)!;
   return { kind: built.kind, carrier: built.carrier, href, className, value: built.value, text: built.text, dropped: built.dropped };
 }
@@ -267,17 +266,11 @@ export function confluenceLinkCarrier(acLink: Element): ConfluenceLinkCarrier | 
  * container whose name is over 32 characters, is logged, never dropped
  * silently. `features` are the storage-derivation features of the conversion
  * (#1953): without `link-kinds` only a page, an attachment and an anchor are
- * read. A link {@link markUncertainLinkReadings} marked is replaced by what it
- * shows, without the link (review r3, R17): its target is never carried.
+ * read.
  */
 export function confluenceLinkAnchor(acLink: Element, features?: StorageDerivationFeatures): Node[] | null {
   const built = buildLink(acLink, linkKinds(features));
   if (!built) return null;
-  if (acLink.hasAttribute(UNCERTAIN_READING)) {
-    return built.bodyEl?.tagName.toLowerCase() === 'ac:link-body'
-      ? [...built.bodyEl.childNodes]
-      : [acLink.ownerDocument.createTextNode(built.text)];
-  }
   const a = acLink.ownerDocument.createElement('a');
   if (built.bodyEl?.tagName.toLowerCase() === 'ac:link-body') {
     // Server-side JSDOM only (see the SECURITY note in content-converter.ts).
@@ -364,149 +357,58 @@ export function isConfluenceLinkTargetWithoutFile(el: Element): boolean {
   return [...parent.children].find((child) => child.tagName.toLowerCase().startsWith('ri:')) === el;
 }
 
-/** The two entity names whose XHTML 1.0 value (Confluence storage) is not their HTML5 value, as XHTML references. */
-const XHTML_REFERENCE: Readonly<Record<string, string>> = { '&lang;': '&#9001;', '&rang;': '&#9002;' };
-const DISPUTED_REFERENCE = /&(?:lang|rang);/g;
+/** A start tag may hold a link of one of the five kinds: only then is the string read. */
+const NON_FILE_RESOURCE_TAG = /<ri:(?:space|blog-post|shortcut|content-entity|url)\b/i;
 
 /**
- * Something the scan steps over (a comment, a processing instruction, a declaration), or a tag as storage
- * writes it: `[whole, '/' of an end tag, name, attributes, '/' of an empty tag]`. Review r3, R17: a processing
- * instruction's data is no markup, whatever it spells.
+ * What an HTML parser reads otherwise than XML in an attribute value: the
+ * two entity names whose XHTML 1.0 value is not their HTML5 one, a numeric
+ * reference HTML maps (C1: windows-1252), and literal TAB, LF, CR and CR LF,
+ * which XML reads as one space.
  */
-const STORAGE_MARKUP = /<!--[\s\S]*?(?:-->|$)|<\?[\s\S]*?(?:\?>|$)|<![^>]*>|<(\/?)([A-Za-z][^\s/>]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?)*)\s*(\/?)>/g;
+const HTML_READS_OTHERWISE = /&(?:lang|rang);|&#(?:[0-9]+|x[0-9a-fA-F]+);|\r\n|[\t\n\r]/g;
 
-/** Elements whose text the HTML parser reads raw: a link spelled inside one is text to the forward pass. */
-const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
-  'script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext',
-]);
-/** HTML void elements: a start tag of one encloses nothing. */
-const VOID_ELEMENTS: ReadonlySet<string> = new Set([
-  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
-]);
+function asXmlReadsIt(spelling: string): string {
+  if (spelling === '&lang;') return '&#9001;';
+  if (spelling === '&rang;') return '&#9002;';
+  if (!spelling.startsWith('&#')) return ' ';
+  const code = spelling[2] === 'x' ? Number.parseInt(spelling.slice(3, -1), 16) : Number(spelling.slice(2, -1));
+  return code >= 0x80 && code <= 0x9f ? String.fromCharCode(code) : spelling;
+}
 
 /**
- * `storage` (CDATA already turned into text) with `&lang;` and `&rang;`
- * spelled as the references of their XHTML 1.0 characters (U+2329, U+232A)
- * in the start tags of every link to a blog post, a space, a shortcut, a
- * content entity or a URL: the `ac:link` and its resource (#1955, review r2
- * R12). An HTML parser reads the names as U+27E8 and U+27E9, so the forward
- * pass would otherwise carry, and write back, a different target. XML reads
- * the two spellings alike, so the storage means what it meant. Nothing else
- * is touched: text, a body, comments, raw text, other elements, and the three
- * #1748 kinds, which the base commit already read with the HTML values. One
- * pass; a string without either name is returned as it came. A lexical scan
- * proves nothing: {@link markUncertainLinkReadings} checks what the HTML
- * parser read against the XML reading afterwards.
+ * `storage` (CDATA already turned into text) with the start tag of every link
+ * to a blog post, a space, a shortcut, a content entity or a URL, and of its
+ * resource (its first `ri:*` child), spelled so that an HTML parser reads
+ * each attribute value as XML reads it (#1955, reviews r2 R12, r4 R21):
+ * `&lang;`/`&rang;` as the references of U+2329/U+232A, a C1 numeric
+ * reference as its character, and a literal TAB, LF or CR as a space. XML
+ * reads the result as it read `storage`. The tags are those the storage
+ * reader finds, by their ranges in the string, so a comment, a processing
+ * instruction or raw text is never taken for one. Nothing else is touched:
+ * text, bodies, other elements, and the three #1748 kinds, which the base
+ * commit read with the HTML values. A string the reader cannot read (not
+ * XML, or past a limit) is returned as it came: it has no XML value to keep.
  */
-export function keepXhtmlLinkReferences(storage: string): string {
-  if (!/&(?:lang|rang);/.test(storage)) return storage;
+export function keepXmlLinkValues(storage: string): string {
+  if (!NON_FILE_RESOURCE_TAG.test(storage)) return storage;
+  const read = readConfluenceStorage(storage);
+  if (!read.ok) return storage;
   const tags: Array<readonly [number, number]> = [];
-  const markup = new RegExp(STORAGE_MARKUP);
-  // The open link whose resource is not found yet, and how deep the scan is below it.
-  let link: readonly [number, number] | null = null;
-  let depth = 0;
-  for (let match = markup.exec(storage); match; match = markup.exec(storage)) {
-    const [whole, close, written, , empty] = match;
-    if (written === undefined) continue;
-    const name = written.toLowerCase();
-    const range = [match.index, match.index + whole.length] as const;
-    if (!close && RAW_TEXT_ELEMENTS.has(name)) {
-      const end = new RegExp(`</${name}`, 'gi');
-      end.lastIndex = range[1];
-      markup.lastIndex = end.exec(storage)?.index ?? storage.length;
-      link = null;
-      continue;
-    }
-    if (!close && name === 'ac:link') {
-      link = empty ? null : range;
-      depth = 0;
-      continue;
-    }
-    if (!link) continue;
-    if (close) {
-      if (depth === 0) link = null;
-      else depth -= 1;
-      continue;
-    }
-    // The link's resource is its first `ri:*` child, as {@link confluenceLinkAnchor} reads it.
-    if (depth === 0 && name.startsWith('ri:')) {
-      if (NON_FILE_RESOURCES.has(name)) tags.push(link, range);
-      link = null;
-      continue;
-    }
-    if (!empty && !VOID_ELEMENTS.has(name)) depth += 1;
+  for (const element of storageElements(read.tree)) {
+    if (element.name.toLowerCase() !== 'ac:link') continue;
+    const resource = element.children
+      .find((child): child is StorageElement => typeof child !== 'string' && child.name.toLowerCase().startsWith('ri:'));
+    if (resource && NON_FILE_RESOURCES.has(resource.name.toLowerCase())) tags.push(element.tag, resource.tag);
   }
+  tags.sort((a, b) => a[0] - b[0]);
   let out = '';
   let at = 0;
   for (const [start, end] of tags) {
-    out += storage.slice(at, start) + storage.slice(start, end).replace(DISPUTED_REFERENCE, (reference) => XHTML_REFERENCE[reference]!);
+    out += storage.slice(at, start) + storage.slice(start, end).replace(HTML_READS_OTHERWISE, asXmlReadsIt);
     at = end;
   }
   return out + storage.slice(at);
-}
-
-/** Set by {@link markUncertainLinkReadings} on a link whose target the HTML reading may have changed. */
-const UNCERTAIN_READING = 'data-cq-uncertain-link-reading';
-
-/**
- * Characters an HTML reading of an attribute value can hold where the XML
- * reading of the same source holds another: U+27E8/U+27E9 (`&lang;`/
- * `&rang;`), a TAB, LF or CR (XML reads a literal one as a space), U+FFFD,
- * and the characters HTML maps a C1 numeric reference to (windows-1252).
- * Wherever the two readings of a value differ, the HTML one holds one of
- * these: a value without any is the value XML reads.
- */
-const HTML_ONLY_READING = /[\t\n\r\u27E8\u27E9\uFFFD\u20AC\u201A\u0192\u201E\u2026\u2020\u2021\u02C6\u2030\u0160\u2039\u0152\u017D\u2018\u2019\u201C\u201D\u2022\u2013\u2014\u02DC\u2122\u0161\u203A\u0153\u017E\u0178]/;
-
-/** A link of a #1955 kind as one reading holds it: its resource and every attribute (lower-case name, value), in order. */
-function linkReading(
-  name: string,
-  attributes: ReadonlyArray<{ name: string; value: string }>,
-  children: readonly { name: string; attributes: ReadonlyArray<{ name: string; value: string }> }[],
-): string | null {
-  if (name.toLowerCase() !== 'ac:link') return null;
-  const resource = children.find((child) => child.name.toLowerCase().startsWith('ri:'));
-  if (!resource || !NON_FILE_RESOURCES.has(resource.name.toLowerCase())) return null;
-  const own = (list: ReadonlyArray<{ name: string; value: string }>): Array<[string, string]> => list
-    .filter(({ name: attribute }) => attribute !== 'xmlns' && !attribute.toLowerCase().startsWith('xmlns:'))
-    .map(({ name: attribute, value }) => [attribute.toLowerCase(), value]);
-  return JSON.stringify([resource.name.toLowerCase(), own(attributes), own(resource.attributes)]);
-}
-
-/**
- * Review r3, R17: mark every link of a #1955 kind in `doc` (the forward pass's
- * HTML reading of `storage`, before any conversion) whose target the HTML
- * reading may have changed and the XML reading does not confirm, so the
- * forward pass shows it as text and never carries, or writes back, another
- * target. The two readings agree when they hold the same links of these
- * kinds, in the same order, with the same attribute values; then nothing is
- * marked. Otherwise (the XML reader refuses the string, or a link, a value
- * or the order differs) a link is marked when one of its values holds a
- * character only an HTML reading produces ({@link HTML_ONLY_READING}); a link
- * without one holds what XML reads. The #1748 kinds are not read here.
- */
-export function markUncertainLinkReadings(doc: Document, storage: string): void {
-  const html: Array<{ element: Element; reading: string; fragile: boolean }> = [];
-  for (const element of doc.getElementsByTagName('ac:link')) {
-    const children = [...element.children].map((child) => ({ name: child.tagName, attributes: [...child.attributes] }));
-    const reading = linkReading(element.tagName, [...element.attributes], children);
-    if (reading === null) continue;
-    const values = [element, ...element.children].flatMap((owner) => [...owner.attributes].map(({ value }) => value));
-    html.push({ element, reading, fragile: values.some((value) => HTML_ONLY_READING.test(value)) });
-  }
-  const fragile = html.filter((link) => link.fragile);
-  if (fragile.length === 0) return;
-  const read = readConfluenceStorage(storage);
-  if (read.ok) {
-    const xml: string[] = [];
-    for (const element of storageElements(read.tree)) {
-      const children = element.children.filter((child): child is StorageElement => typeof child !== 'string');
-      const reading = linkReading(element.name, element.attributes, children);
-      if (reading !== null) xml.push(reading);
-    }
-    if (xml.length === html.length && xml.every((reading, index) => reading === html[index]!.reading)) return;
-  }
-  for (const { element } of fragile) element.setAttribute(UNCERTAIN_READING, '');
 }
 
 /** The string every `ri:url` carrier starts with. */
