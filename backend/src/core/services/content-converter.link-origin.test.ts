@@ -673,6 +673,54 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
     );
   });
 
+  // Review r8 and the D21 fallback: an occurrence that cannot be shown to supply the link the editor holds grants
+  // nothing, and an anchor the editor shows competes whatever its spelling; an unproven non-web link becomes text.
+  describe('an unproven non-web link is written as its text (R31, R32)', () => {
+    const GUIDE = '<ac:link><ri:url ri:value="/guide" /><ac:plain-text-link-body><![CDATA[Guide]]></ac:plain-text-link-body></ac:link>';
+    const moved = '<p>Moved here: <a href="#confluence-url:%2Fguide?body=plain">Guide</a></p>';
+    const twoSaves = (html: string, storage: string): string[] => {
+      const first = htmlToConfluence(html, { previousStorage: storage });
+      return [first, htmlToConfluence(html, { linkOrigin: first })];
+    };
+
+    it.each([
+      ['`a` with `href`', '<a href="https://example.com/">Guide</a>'],
+      ['`A` with `href`', '<A href="https://example.com/">Guide</A>'],
+      ['`a` with `HREF`', '<a HREF="https://example.com/">Guide</a>'],
+    ])('writes the moved link as text once an ordinary anchor spelled %s and showing the same text is deleted (R31)', (_name, anchor) => {
+      const storage = `<p>${GUIDE}</p>${FILLER}<p>Web ${anchor}.</p>`;
+      expect(confluenceToHtml(storage)).toBe(confluenceToHtml(`<p>${GUIDE}</p>${FILLER}<p>Web <a href="https://example.com/">Guide</a>.</p>`));
+      for (const saved of twoSaves(`${moved}${FILLER}`, storage)) {
+        expect(oracleUrlLinks(saved)).toEqual([]);
+        expect(saved).toContain('Moved here: Guide');
+      }
+    });
+
+    it.each([
+      ['status', ''],
+      ['code', '<ac:plain-text-body><![CDATA[echo hello]]></ac:plain-text-body>'],
+      ['toc', ''],
+      ['expand', '<ac:rich-text-body><p>inside</p></ac:rich-text-body>'],
+    ])('grants nothing for a stored link in a parameter of a %s macro, which the editor never shows (R32)', (name, body) => {
+      const storage = `<ac:structured-macro ac:name="${name}"><ac:parameter ac:name="title">${GUIDE}</ac:parameter>${body}</ac:structured-macro>`;
+      const shown = confluenceToHtml(storage);
+      expect(new JSDOM(`<body>${shown}</body>`).window.document.querySelectorAll('a[href]')).toHaveLength(0);
+      for (const saved of twoSaves(`${shown}${moved}`, storage)) {
+        expect(oracleUrlLinks(saved)).toEqual([]);
+        expect(saved).toContain('Moved here: Guide');
+      }
+    });
+
+    it('keeps a visible stored link that moved, with nothing competing, on both Saves', () => {
+      const storage = `<p>${GUIDE}</p>${FILLER}`;
+      for (const saved of twoSaves(`${FILLER}${moved}`, storage)) {
+        expect(oracleUrlLinks(saved).map((link) => link.value)).toEqual(['/guide']);
+      }
+      // With no stored source the same link is text.
+      for (const saved of twoSaves(`${FILLER}${moved}`, FILLER)) expect(oracleUrlLinks(saved)).toEqual([]);
+    });
+  });
+
   // Review r4, R22: no attribute of the input stands for a decision of the converter.
   describe('an attribute of the stored link is no decision (R22)', () => {
     const STORAGE = '<p><ac:link data-cq-uncertain-link-reading=""><ri:page ri:content-title="Guide" /></ac:link></p>';

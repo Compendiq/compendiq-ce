@@ -319,9 +319,16 @@ function forwardLabel(element: StorageElement, others: readonly StorageElement[]
 /**
  * Every link-like element and anchor of `tree`, described for a judgement.
  * One pass over the tree; throws {@link StorageLinkBudgetError} past the work
- * limit, so a caller refuses rather than judges half a string.
+ * limit, so a caller refuses rather than judges half a string. `shown`, given
+ * for stored storage (D21 fallback, review r8 R32), tells whether the forward
+ * pass delivered a link-like element to the editor as a link: one it did not
+ * is dormant, so it is competing evidence and never a source.
  */
-export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits = STORAGE_LINK_LIMITS): StorageLinkAnalysis {
+export function analyseStorageLinks(
+  tree: StorageTree,
+  limits: StorageLinkLimits = STORAGE_LINK_LIMITS,
+  shown: (element: StorageElement) => boolean = () => true,
+): StorageLinkAnalysis {
   let work = 0;
   const charge = (steps = 1): void => {
     work += steps;
@@ -392,8 +399,11 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     charge(bodyLength);
     const bodyText = bodyLength === 0 ? '' : stream.slice(link.bodyStart, link.bodyEnd).trim();
     if (link.anchor) {
-      const href = element.attributes.find((attribute) => attribute.name === 'href')!.value;
-      const className = element.attributes.find((attribute) => attribute.name === 'class')?.value ?? null;
+      // Review r8, R31: the anchor the editor shows, whatever the case of its name and attribute names.
+      const named = (name: string): string | undefined =>
+        element.attributes.find((attribute) => attribute.name.toLowerCase() === name)?.value;
+      const href = named('href')!;
+      const className = named('class') ?? null;
       charge(href.length + (className?.length ?? 0));
       return {
         described: {
@@ -546,12 +556,14 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
         entered.scoped = true;
       }
       const isLink = resemblesStorageName(child, 'link');
-      const isAnchor = !isLink && child.name === 'a' && child.attributes.some((attribute) => attribute.name === 'href');
+      // Review r8, R31: an HTML parser reads `A` and `HREF` as an anchor too; it competes, and never grants.
+      const isAnchor = !isLink && child.name.toLowerCase() === 'a'
+        && child.attributes.some((attribute) => attribute.name.toLowerCase() === 'href');
       if (isLink || isAnchor) {
         const link: OpenLink = {
           element: child, anchor: isAnchor, ordinal: isLink ? linkLike : -1, inBody: Number(isAnchor), urls: [], hasUser: false,
           media: [], start: stream.length, end: -1, bodyStart: isAnchor ? stream.length : -1, bodyEnd: -1,
-          scope: scopes[scopes.length - 1] ?? '', live: dormant === 0, placed: outsideBody === 0,
+          scope: scopes[scopes.length - 1] ?? '', live: dormant === 0 && (isAnchor || shown(child)), placed: outsideBody === 0,
           sequence: open.length + closed.length, described: null, uncertain: false,
         };
         if (isLink) {

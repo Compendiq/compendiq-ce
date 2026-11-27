@@ -3109,6 +3109,34 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       }
       editor.ws.close();
     });
+
+    // Review r8 (R31, R32) and the D21 fallback: a relative link the room holds that no visible stored occurrence
+    // proves is dispatched as its text, on both Saves: beside a deleted ordinary anchor spelled `A` or `HREF`, which
+    // the editor showed as an anchor with the same text, and from a link only a status macro's parameter held.
+    const guideLink = '<ac:link><ri:url ri:value="/guide" /><ac:plain-text-link-body><![CDATA[Guide]]></ac:plain-text-link-body></ac:link>';
+    const movedGuide = '<p>Moved here: <a href="#confluence-url:%2Fguide?body=plain">Guide</a></p>';
+    const prose = `<p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3)}</p>`;
+    it.each([
+      ['an ordinary anchor spelled `A` (R31)', `<p>${guideLink}</p>${prose}<p>Web <A href="https://example.com/">Guide</A>.</p>`, `${movedGuide}${prose}`],
+      ['an ordinary anchor spelled `HREF` (R31)', `<p>${guideLink}</p>${prose}<p>Web <a HREF="https://example.com/">Guide</a>.</p>`, `${movedGuide}${prose}`],
+      ['a status macro parameter (R32)', `<ac:structured-macro ac:name="status"><ac:parameter ac:name="title">${guideLink}</ac:parameter></ac:structured-macro>`, null],
+    ])('dispatches an unproven relative link as its text beside %s, twice', async (_case, storage, edited) => {
+      const bodyHtml = edited ?? `${confluenceToHtml(storage)}${movedGuide}`;
+      const { token, pageId, confluenceId } = await seedLinkPage(bodyHtml, storage);
+      const editor = await joinEditor(pageId, token);
+      const provider = mockProvider(confluenceId);
+
+      for (const label of ['Save 1', 'Save 2']) {
+        const response = await save(pageId, token, commitPayload(editor.ws, label, Y.snapshot(editor.doc)));
+        expect(response.statusCode, response.body).toBe(200);
+      }
+      expect(provider.storages).toHaveLength(2);
+      for (const dispatched of provider.storages) {
+        expect(oracleUrlLinks(dispatched)).toEqual([]);
+        expect(dispatched).toContain('Moved here: Guide');
+      }
+      editor.ws.close();
+    });
   });
 
   describe('task ids after a collaborative Save (#1751)', () => {

@@ -1717,7 +1717,9 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     ? 'a[href^="#confluence-"], a[href][class^="#confluence-url:"]'
     : 'a[href^="#confluence-"]';
   const linkOrigin = options.linkOrigin === undefined ? options.previousStorage : options.linkOrigin;
-  let checkCarrier: ((carrier: string) => void) | undefined;
+  // One forward pass over the stored storage, when something needs it: the D19 check and the D21 fallback's `shown`.
+  let stored: StoredLinkWitness | undefined;
+  const storedLinks = (): StoredLinkWitness => (stored ??= witnessStoredLinks(linkOrigin!, writeBackFeatures(options)));
   for (const a of doc.querySelectorAll(linkAnchors)) {
     const acLink = confluenceLinkElement(a, options.derivationFeatures);
     if (!acLink) continue;
@@ -1727,8 +1729,7 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     const carrier = linkKinds && linkOrigin ? confluenceLinkCarrierOf(a) : null;
     const kind = carrier === null ? undefined : parseConfluenceLinkHref(carrier)?.kind;
     if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) {
-      checkCarrier ??= emittedStoredLinks(linkOrigin!, writeBackFeatures(options));
-      checkCarrier(carrier);
+      storedLinks().check(carrier);
     }
     a.replaceWith(acLink);
   }
@@ -1788,7 +1789,7 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // would carry one past the check is refused. The check may change the
   // document and serialise it again; nothing follows it.
   if (!linkKinds) return serialiseStorage(doc);
-  return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin);
+  return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin, (element) => storedLinks().shown(element));
 }
 
 /**
@@ -1801,8 +1802,11 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
 interface EmittedLinkWitness {
   readonly marker: string;
   links: readonly StorageElement[] | StorageReadFailure;
-  /** Each emitted link of the five kinds: the carrier it was emitted with, and whether that keeps its XML target. */
-  readonly emissions: Array<{ carrier: string; faithful: boolean }>;
+  /**
+   * Each emitted link of the five kinds: the carrier it was emitted with, whether that keeps its XML target, and
+   * the stored link the reader read at its tag, if any.
+   */
+  readonly emissions: Array<{ carrier: string; faithful: boolean; stored: StorageElement | undefined }>;
 }
 
 /**
@@ -1818,31 +1822,42 @@ function witnessEmittedLink(witness: EmittedLinkWitness, acLink: Element, a: Ele
   const index = acLink.getAttribute(witness.marker);
   const stored = typeof links === 'string' || index === null ? undefined : links[Number(index)];
   a.setAttribute(witness.marker, String(witness.emissions.length));
-  witness.emissions.push({ carrier: built.carrier, faithful: stored !== undefined && storedLinkKeepsTarget(stored, built) });
+  witness.emissions.push({ carrier: built.carrier, faithful: stored !== undefined && storedLinkKeepsTarget(stored, built), stored });
+}
+
+/** What the forward pass over a page's stored storage tells a write-back about its stored links of the five kinds. */
+interface StoredLinkWitness {
+  /** Refuse the write when an outgoing link carrying `carrier` would change a stored link's XML target (D19). */
+  check(carrier: string): void;
+  /** Whether the stored link-like element reached the editor as a link (D21 fallback, review r8 R32). */
+  shown(element: StorageElement): boolean;
 }
 
 /**
  * Owner decisions D19/D21, coordinator decision D20 (#1955): run the forward pass itself over the page's stored
- * storage, with the features of this write-back and a witness, and give the check of an outgoing carrier. Only an
- * emitted link still in the completed result is an occurrence; it is faithful when it still carries the carrier it
- * was emitted with and that keeps its stored XML target. A carrier only faithful occurrences carry, or none (a new
- * link, or a candidate the pass discarded), passes. One an unfaithful occurrence carries is refused
- * (`changed-link-target`, or the limit the reader stopped at); when a faithful occurrence carries it too, which of
- * them the outgoing link is cannot be told, and it is refused alike, logged `ambiguous`. Storage the reader knows
- * is not well-formed is not checked.
+ * storage, with the features of this write-back and a witness. Only an emitted link still in the completed result
+ * is an occurrence. For `check`, it is faithful when it still carries the carrier it was emitted with and that
+ * keeps its stored XML target. A carrier only faithful occurrences carry, or none (a new link, or a candidate the
+ * pass discarded), passes. One an unfaithful occurrence carries is refused (`changed-link-target`, or the limit the
+ * reader stopped at); when a faithful occurrence carries it too, which of them the outgoing link is cannot be told,
+ * and it is refused alike, logged `ambiguous`. Storage the reader knows is not well-formed is not checked. `shown`
+ * holds the stored links that have an occurrence (by their tag in the stored string): any other stored link, one
+ * a macro discarded with its parameter for instance, never was a link in the editor and is no source.
  */
-function emittedStoredLinks(storage: string, features: StorageDerivationFeatures): (carrier: string) => void {
+function witnessStoredLinks(storage: string, features: StorageDerivationFeatures): StoredLinkWitness {
   const marker = `data-cq-stored-link-${randomBytes(8).toString('hex')}`;
   const witness: EmittedLinkWitness = { marker, links: [], emissions: [] };
   const html = confluenceToHtmlWith(storage, undefined, undefined, features, witness);
   const { links } = witness;
   const occurrences = new Map<string, { faithful: boolean; unfaithful: boolean }>();
+  const shown = new Set<number>();
   if (typeof links !== 'string' || isStorageLimitStop(links)) {
     const result = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
     for (const a of result.querySelectorAll(`a[${marker}]`)) {
       const emission = witness.emissions[Number(a.getAttribute(marker))];
       const carrier = confluenceLinkCarrierOf(a);
       if (!emission || carrier === null) continue;
+      if (emission.stored) shown.add(emission.stored.tag[0]);
       const verdict = occurrences.get(carrier) ?? { faithful: false, unfaithful: false };
       if (emission.faithful && emission.carrier === carrier) verdict.faithful = true;
       else verdict.unfaithful = true;
@@ -1850,9 +1865,12 @@ function emittedStoredLinks(storage: string, features: StorageDerivationFeatures
     }
   }
   const reason = typeof links === 'string' ? links : 'changed-link-target';
-  return (carrier) => {
-    const verdict = occurrences.get(carrier);
-    if (verdict?.unfaithful) refuseConfluenceStorage(reason, verdict.faithful ? 'ambiguous' : undefined);
+  return {
+    check: (carrier) => {
+      const verdict = occurrences.get(carrier);
+      if (verdict?.unfaithful) refuseConfluenceStorage(reason, verdict.faithful ? 'ambiguous' : undefined);
+    },
+    shown: (element) => shown.has(element.tag[0]),
   };
 }
 

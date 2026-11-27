@@ -585,12 +585,15 @@ function unwrapUrlLink(element: Element, shown: { label: string } | { bodies: St
  *   it is not an element of the document, it may show something outside its
  *   bodies, the text shown differs after the repair, or it is still there.
  *
- * A refusal is logged here, once, with its reason only.
+ * A refusal is logged here, once, with its reason only. `shown` tells which
+ * link-like elements of `evidence` the forward pass delivered to the editor as
+ * links (D21 fallback, review r8 R32); any other is never a source.
  */
 export function enforceConfluenceUrlLinkOrigin(
   body: ParentNode,
   serialise: () => string,
   evidence: string | null | undefined,
+  shown: (element: StorageElement) => boolean,
 ): string {
   const first = serialise();
   if (!URL_START_TAG.test(first)) return first;
@@ -602,7 +605,7 @@ export function enforceConfluenceUrlLinkOrigin(
     const read = evidence ? readConfluenceStorage(evidence) : null;
     if (read?.ok) {
       try {
-        storedCache = analyseStorageLinks(read.tree);
+        storedCache = analyseStorageLinks(read.tree, undefined, shown);
       } catch (error) {
         if (!(error instanceof StorageLinkBudgetError)) throw error;
         return refuse('too-many-nodes');
