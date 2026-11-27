@@ -1518,8 +1518,9 @@ On `POST /llm/improvements/apply` the route:
    (`locateMediaTokens`, #1955, with the current grammar: a token ends before a
    run of complete tokens or where no identifier character or escaped `\_`
    follows, so none is read at the start of a longer one, reviews r7 CM7-1 and
-   r8 CM8-2; the base path and every other caller keep the `(?![0-9])` end of
-   the release before, r8 CM8-1): a token is a placement only where it stands
+   r8 CM8-2, decided once per run of adjacent tokens so the work is linear in
+   the run, r9 CM9-1; the base path and every other caller keep the `(?![0-9])`
+   end of the release before, r8 CM8-1): a token is a placement only where it stands
    as content, never inside an attribute value, a comment, raw text, a
    `select`, SVG or MathML, a subtree the tree builder moved or an element
    holding a start tag it ignored. Every placement is screened before
@@ -1609,9 +1610,11 @@ nonce can place a protected block, so nothing the page writes itself and
 nothing another generation wrote can. An Accept whose final HTML or text
 projection (`body_text`) still holds the bound nonce as one contiguous string
 (a placeholder the model quoted, in code, in an attribute, or split by inline
-markup) is refused (422, reviews r7 CM7-2 and r8 CM8-3). That is the whole
-guarantee: a rendering that joins text both projections keep apart can still
-reconstruct a nonce in a later prompt. Every other media entry keeps exactly the
+markup) is refused (422, reviews r7 CM7-2 and r8 CM8-3); Apply publishes that
+checked text projection as `body_text` instead of projecting the same HTML
+again (r9 CM9-2). That is the whole guarantee: a rendering that joins text
+both projections keep apart can still reconstruct a nonce in a later prompt.
+Every other media entry keeps exactly the
 token, ordinal and HTML the release before #1958 wrote (`media`), and a
 frozen-class block that holds a media node is not frozen (its medium keeps
 its ordinal; the block loses its metadata as before). `protectMedia` also

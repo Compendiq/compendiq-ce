@@ -379,9 +379,10 @@ panel line quoted); every other annotated block is frozen by `protectMedia` (as 
 blocks past 1,000) as a `CQ_CODE_PLACEHOLDER_<nonce>_<N>` code entry (a media
 entry holding annotated code is `CQ_MACRO_PLACEHOLDER_<nonce>_<N>`: no token may
 be a prefix of another; on the #1958 path `locateMediaTokens` and the task-item
-pattern end a token before a run of complete tokens or a non-identifier, while
-the D26 base path and every other caller keep the legacy `(?![0-9])` end,
-`MediaTokenGrammar`, reviews r7 CM7-1, r8 CM8-1/CM8-2). **Media
+pattern end a token before a run of complete tokens or a non-identifier (one
+memoized pass per run, `currentTokenEnds`, never a lookahead that rescans the
+run: r9 CM9-1), while the D26 base path and every other caller keep the legacy
+`(?![0-9])` end, `MediaTokenGrammar`, reviews r7 CM7-1, r8 CM8-1/CM8-2). **Media
 tokens and ordinals stay exactly those of the release before #1958**; never put
 frozen code into the `CQ_MEDIA_PLACEHOLDER` ordinal space. On Accept the
 remote exit first authorizes the actor and the page in one transaction that
@@ -415,7 +416,8 @@ against stored rows, and never add an "authored literal" rule: only a token
 spelled with the bound nonce places a protected block, so whatever the page
 spells itself is text. Protocol 1 → the #1958 path; no bound nonce on a page
 with protected code → 422 (`ImproveSuggestionUnboundError`); a result whose HTML or
-`htmlToText` still holds the bound nonce contiguously → 422 (r7 CM7-2, r8 CM8-3); no bound row
+`htmlToText` still holds the bound nonce contiguously → 422 (r7 CM7-2, r8 CM8-3; Apply reuses that checked
+`text` as `body_text`, r9 CM9-2); no bound row
 otherwise → the #1958 path (no status change); a row without a protocol →
 422 on a page with any annotated code, else the pre-#1958 replay byte for byte
 (`restoreMedia` + `includes` guard, no CODE-META analysis) with the trust
