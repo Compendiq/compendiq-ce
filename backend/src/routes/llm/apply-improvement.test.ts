@@ -1645,8 +1645,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       it('combined (#1955 + #1958 + #1953): a page holding an https ri:url link with a body abstains whole; the link label and the code are written as #1955 and #1958 write them', async () => {
         const storage = `${LEGACY.storage}<p>Web: <ac:link><ri:url ri:value="https://example.com/a" />`
           + '<ac:plain-text-link-body><![CDATA[site]]></ac:plain-text-link-body></ac:link>.</p>';
-        // Before #1955 sync stored a ri:url link as its text (no element): the realistic legacy body.
-        const legacyHtml = `${LEGACY.legacyHtml}<p>Web: site.</p>`;
+        // What v0.9.x sync stored for this storage (the converter before #1955 kept an attribute-less <a> around the
+        // link body): the authentic historical body.
+        const legacyHtml = `${LEGACY.legacyHtml}<p>Web: <a>site</a>.</p>`;
         const { pageId, markdown } = await seedLegacy('page-legacy-combined', { storage, legacyHtml });
         acceptNextConfluenceUpdate();
         const info = vi.spyOn(logger, 'info');
@@ -1658,9 +1659,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           info.mockRestore();
         }
         const sent = sentStorage();
-        // The independent oracle: the code macro as #1958 writes an unannotated fence; the URL link a row synced
-        // before #1955 holds as text stays its visible label in its paragraph (#1955: only a re-sync brings the link
-        // back, #1953 recovers no ri:url link); the text around both is kept.
+        // The independent oracle: the code macro as #1958 writes an unannotated fence; the historical attribute-less
+        // <a> carries no target, so the Improve projection keeps only its visible label in its paragraph (#1955: only
+        // a re-sync brings the link back, #1953 recovers no ri:url link); the text around both is kept.
         expect(codeMacros(sent)).toEqual([[['language', 'java']]]);
         expect(oracleUrlLinks(sent)).toEqual([]);
         expect(oracleElements(sent, 'ac', 'link')).toEqual([]);
@@ -1853,8 +1854,14 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         expect(saved.body_text).toBe(htmlToText(saved.body_html));
       });
 
-      it('Z6: a finalized string past the bound runs nothing of #1953 though the stored body and storage are within it', async () => {
-        const { pageId, markdown } = await seedLegacy();
+      it.each([
+        ['an otherwise recoverable row', undefined],
+        ['a row the draw.io wrapper would exclude', {
+          storage: `${LEGACY.storage}<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">Arch</ac:parameter></ac:structured-macro>`,
+          legacyHtml: `${LEGACY.legacyHtml}<div class="confluence-drawio" data-diagram-name="Arch"></div>`,
+        }],
+      ] as const)('Z6/CW-6: a finalized string past the bound runs nothing of #1953 for %s, though the stored body and storage are within it', async (_row, fixture) => {
+        const { pageId, markdown } = await seedLegacy('page-legacy-code', fixture ?? LEGACY);
         // `&` is one character of Markdown and five of HTML: the finalized HTML outgrows the bound.
         const grown = `${markdown}\n\n${'&'.repeat(Math.ceil(CARRIER_RECONCILE_MAX_UNITS / 4))}\n`;
         acceptNextConfluenceUpdate();
