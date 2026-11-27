@@ -6,6 +6,7 @@
  * can refuse more of them without reading the HTML a second way.
  */
 import { describe, it, expect } from 'vitest';
+import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
 import {
   locateMediaTokens,
   restoreMedia,
@@ -109,6 +110,49 @@ describe('content-converter: #1955 media tokens are replaced only where they sta
     expect(locateMediaTokens(`<table><tr><td>a<td>${T}</table>`, media).map(chain)).toEqual([['td', 'tr', 'tbody', 'table']]);
     expect(locateMediaTokens(`<table><tr><td>${T}</td></tr></table><template><p>x ${T1}</p></template>`, media).map(chain))
       .toEqual([['td', 'tr', 'tbody', 'table'], ['p', 'template']]);
+  });
+
+  // Review r2, R14. Two places where the tree a reparse builds does not hold what is spliced in where the
+  // locator says: a `select` drops every element inserted into it, and a start tag the tree builder ignores
+  // (a `div` in a `select`, a cell outside a table) holds nothing in the tree, so the context a placement
+  // reports would hide it. The proof is the media a reparse of the result holds, not the bytes.
+  const survivors = (html: string): number => {
+    let count = 0;
+    const pending: DefaultTreeAdapterTypes.Node[] = [parseFragment(html)];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if ('tagName' in node && (node.tagName === 'img' || node.attrs.some((attribute) => attribute.value === 'confluence-drawio'))) count += 1;
+      if ('content' in node) pending.push(node.content);
+      if ('childNodes' in node) pending.push(...node.childNodes);
+    }
+    return count;
+  };
+  const outsideIndex = (placement: MediaTokenPlacement): boolean => !chain(placement).some((name) => name.endsWith('.figure-index'));
+
+  it.each([
+    ['a select, inside a container the select ignores', `<select><div class="figure-index">${T}</div></select>`],
+    ['an option of a select', `<select><option>a ${T}</option></select>`],
+    ['a cell outside a table, a tag the tree builder ignores', `<div><td class="figure-index"><p>a ${T}</p></td></div>`],
+    ['svg', `<svg><text>${T}</text></svg>`],
+    ['MathML', `<math><mi>${T}</mi></math>`],
+  ])('places no token in %s, so nothing is spliced where a reparse would drop or move it (R14)', (_where, html) => {
+    expect(locateMediaTokens(html, media)).toEqual([]);
+    expect(restoreMedia(html, media, { accept: outsideIndex })).toBe(html);
+    expect(restoreMedia(html, media)).toBe(html);
+  });
+
+  it('still places tokens where a reparse keeps what is spliced in, and in the context it reports (R14)', () => {
+    const html = `<div class="figure-note"><p>a ${T}</p></div><ul><li>${T1}</li></ul><table><tr><td>${T}</td></tr></table>`
+      + `<p>${T1}</p><select><option>x</option></select><p>b ${T}</p>`;
+    expect(locateMediaTokens(html, media).map(chain)).toEqual([
+      ['p', 'div.figure-note'], ['li', 'ul'], ['td', 'tr', 'tbody', 'table'], [], ['p'],
+    ]);
+    const restored = restoreMedia(html, media, { accept: outsideIndex });
+    expect(survivors(restored)).toBe(5);
+  });
+
+  it('keeps a placement past an end tag the tree builder ignores: it hides no container', () => {
+    expect(locateMediaTokens(`<div></span><p>b ${T}</p></div>`, media).map(chain)).toEqual([['p', 'div']]);
   });
 
   it('reports each placement by its range of the original string, in source order, never overlapping (W6)', () => {

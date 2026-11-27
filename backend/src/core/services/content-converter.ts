@@ -2484,6 +2484,59 @@ function displacedChildren(children: readonly Html5Node[], bounds: SourceRange |
   return displaced;
 }
 
+/** The namespace of HTML elements; anything else (SVG, MathML) is foreign content. */
+const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+
+/**
+ * Where the tree builder dropped a start tag (#1955, review r2 R14): the
+ * offsets of every stretch of `html` that no node accounts for (no start or
+ * end tag of an element, no text, no comment) and that holds a start tag. A
+ * start tag the tree builder ignores (a cell outside a table, a `div` in a
+ * `select`) has no node, so whatever it was written to hold stands in the
+ * tree under something else. An ignored end tag closes nothing and is not
+ * counted. Sorted.
+ */
+function ignoredStartTags(html: string, root: Html5Node): number[] {
+  const covered: Array<readonly [number, number]> = [];
+  const pending: Html5Node[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    const location = node.sourceCodeLocation;
+    if (location && 'tagName' in node) {
+      if (location.startTag) covered.push([location.startTag.startOffset, location.startTag.endOffset]);
+      if (location.endTag) covered.push([location.endTag.startOffset, location.endTag.endOffset]);
+    } else if (location) {
+      covered.push([location.startOffset, location.endOffset]);
+    }
+    if ('content' in node) pending.push(node.content);
+    if ('childNodes' in node) pending.push(...node.childNodes);
+  }
+  covered.sort((a, b) => a[0] - b[0]);
+  const ignored: number[] = [];
+  let at = 0;
+  // What no node accounts for after the last one is a tag the string ends in: it holds nothing.
+  for (const [start, end] of covered) {
+    if (start > at && /<[A-Za-z]/.test(html.slice(at, start))) ignored.push(at);
+    at = Math.max(at, end);
+  }
+  return ignored;
+}
+
+/** How many of the sorted `offsets` lie in `[start, end)`. */
+function countWithin(offsets: readonly number[], start: number, end: number): number {
+  const firstAtOrAfter = (value: number): number => {
+    let low = 0;
+    let high = offsets.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (offsets[middle]! < value) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return firstAtOrAfter(end) - firstAtOrAfter(start);
+}
+
 /**
  * Where the tokens of `media` stand as content in `html` (#1955), in source
  * order. The HTML tokenizer decides, not a scan for `<` and `>`: a placement
@@ -2497,10 +2550,15 @@ function displacedChildren(children: readonly Html5Node[], bounds: SourceRange |
  * across markup, and anything the tree builder moved, with all it holds: text
  * or an element directly inside a table (foster-parented in front of it) and
  * misnested formatting it rebuilt. There the tree and the source disagree
- * about the place. Placements never overlap. Each carries the element it
- * stands in with that element's attributes and ancestors, so a consumer can
- * refuse the ones in a code sample or a discarded container without parsing
- * the string a second way.
+ * about the place. Review r2, R14: nor anywhere a reparse would not keep what
+ * is spliced in where the placement says: in a `select` (it drops every
+ * element inserted into it), in SVG or MathML (an inserted image leaves it),
+ * and under an element whose own content holds a start tag the tree builder
+ * ignored (what that tag held stands under another element in the tree).
+ * Placements never overlap. Each carries the element it stands in with that
+ * element's attributes and ancestors, so a consumer can refuse the ones in a
+ * code sample or a discarded container without parsing the string a second
+ * way.
  */
 export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]): MediaTokenPlacement[] {
   const tokenOf = new Map<string, string>();
@@ -2516,8 +2574,10 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
   const spellings = new RegExp(alternatives.join('|'), 'g');
 
   const placements: MediaTokenPlacement[] = [];
+  const root = parseFragment(html, { sourceCodeLocationInfo: true });
+  const ignored = ignoredStartTags(html, root);
   const pending: Array<{ node: Html5Node; context: MediaTokenContext | null; bounds: SourceRange | null }> = [
-    { node: parseFragment(html, { sourceCodeLocationInfo: true }), context: null, bounds: null },
+    { node: root, context: null, bounds: null },
   ];
   while (pending.length > 0) {
     const { node, context, bounds } = pending.pop()!;
@@ -2525,6 +2585,8 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
     let own = context;
     let content = bounds;
     if ('tagName' in node) {
+      // Nothing spliced into a `select` or into foreign content stays where it was put.
+      if (node.namespaceURI !== HTML_NAMESPACE || node.tagName === 'select') continue;
       const location = node.sourceCodeLocation;
       own = {
         tagName: node.tagName, attributes: node.attrs, parent: context,
@@ -2537,6 +2599,16 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
     }
     // A template's children are its content fragment.
     const children = 'content' in node ? node.content.childNodes : node.childNodes;
+    if (ignored.length > 0) {
+      // A start tag the tree builder ignored stands in this element's own content, not in one of its children.
+      const range = content ?? { start: 0, end: html.length };
+      let inChildren = 0;
+      for (const child of children) {
+        const location = child.sourceCodeLocation;
+        if (location) inChildren += countWithin(ignored, location.startOffset, location.endOffset);
+      }
+      if (countWithin(ignored, range.start, range.end) > inChildren) continue;
+    }
     // A child the tree builder moved is not at the place its ancestors name, and neither is anything in it.
     const displaced = displacedChildren(children, content);
     for (let index = children.length - 1; index >= 0; index -= 1) {
