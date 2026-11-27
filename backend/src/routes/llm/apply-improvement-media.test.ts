@@ -797,6 +797,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         const MENTION_MD = 'Inspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.';
         const IDENTIFIER_TABLE = `<table><tbody><tr><td><pre data-title="Sample"${LN}><code class="language-js">const n = CQ_CODE_PLACEHOLDER_0_COUNT;</code></pre></td></tr></tbody></table>`;
         const BOLD_TABLE = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">x()</code></pre></td></tr></tbody></table>';
+        const DRAWIO = '<div class="confluence-drawio" data-diagram-name="flow"><img src="/api/attachments/1/flow.png" alt="flow"></div>';
         const ANNOTATED: ReadonlyArray<[string, string, string]> = [
           ['r2 CM2-1 literal mention, frozen code', `${SAMPLE_TABLE}${MENTION}<p>Diagram follows</p>${IMG('d')}<p>End</p>`,
             `${SAMPLE_TABLE}\n\n${MENTION_MD}\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`],
@@ -849,6 +850,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           ['a literal placeholder mention', `${MENTION}<pre><code class="language-js">const x = 1;</code></pre><p>Diagram follows</p>${IMG('d')}<p>End</p>`,
             `${MENTION_MD}\n\n\`\`\`js\nconst x = 1;\n\`\`\`\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`,
             `${MENTION}\n<pre><code class="language-js">const x = 1;\n</code></pre>\n<p>Diagram follows</p>\n${IMG('d')}\n<p>End</p>\n`],
+          // Review r8 CM8-1: model outputs a06f304c's generator stored, with that release's Accept bytes.
+          ['a token run into its caption', `<p>${IMG('d')}Figure 1.</p><p>End.</p>`,
+            'CQ_MEDIA_PLACEHOLDER_0Figure 1.\n\nEnd.',
+            `<p>${IMG('d')}Figure 1.</p>\n<p>End.</p>\n`],
+          ['a block-media token run into a word in a task item', `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>Step</p>${DRAWIO}</li></ul><p>End</p>`,
+            '- [ ] Step\n\n  CQ\\_MEDIA\\_PLACEHOLDER\\_0see\n\nEnd',
+            `<ul>\n<li><p>[ ] Step</p>\n<p>${DRAWIO}see</p>\n</li>\n</ul>\n<p>End</p>\n`],
         ])('(b) applies a pending pre-#1958 suggestion on a page without annotated code as that release did: %s', async (_name, page, suggestion, base) => {
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, null);
@@ -1102,6 +1110,32 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
             expect(response.statusCode, response.body).toBe(422);
             await expectUnchanged(pageId, page);
             expect((await readPage(pageId)).body_text).not.toContain(NONCE);
+            expect(await status(improvementId)).toBe('completed');
+          });
+
+          it('keeps prose that only starts like two tokens as text, with the page\'s one image (r8 CM8-2)', async () => {
+            const page = `<p>Intro</p>${IMG('d')}<p>End</p>`;
+            const suggestion = `${faithfulEcho(page)}\n\nPrefix example: CQ_MEDIA_PLACEHOLDER_0CQ_MEDIA_PLACEHOLDER_COUNT`;
+            const pageId = await seedPage(page);
+
+            const response = await apply(pageId, suggestion);
+
+            expect(response.statusCode, response.body).toBe(200);
+            const saved = (await readPage(pageId)).body_html;
+            expect(saved.match(/<img /g)).toHaveLength(1);
+            expect(saved).toContain('<p>Prefix example: CQ_MEDIA_PLACEHOLDER_0CQ_MEDIA_PLACEHOLDER_COUNT</p>');
+          });
+
+          it('refuses a placeholder whose nonce inline markup splits in the HTML but not in the text (r8 CM8-3)', async () => {
+            const page = `${SAMPLE_TABLE}<p>End</p>`;
+            const split = `${faithfulEcho(page, NONCE)}\n\nSee CQ\\_CODE\\_PLACEHOLDER\\_${NONCE.slice(0, 8)}<span>${NONCE.slice(8)}</span>\\_0 here.`;
+            const pageId = await seedPage(page);
+            const improvementId = await storeCodeMetaRow(pageId, split);
+
+            const response = await apply(pageId, split, { improvementId });
+
+            expect(response.statusCode, response.body).toBe(422);
+            await expectUnchanged(pageId, page);
             expect(await status(improvementId)).toBe('completed');
           });
         });

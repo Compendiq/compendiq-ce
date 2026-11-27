@@ -1213,14 +1213,29 @@ describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never i
     const withForeign = await convertImproveOutput(page, foreign, { provenance: 'code-meta', codeNonce: second });
     expect(withForeign.html).toContain(`Archived CQ_MEDIA_PLACEHOLDER_${overlap}_1`);
     expect(withForeign.html.match(/<img/g)).toHaveLength(1);
-    // Tokens written back to back are still two tokens (#1955).
-    const placements = locateMediaTokens('<p>CQ_MEDIA_PLACEHOLDER_1CQ_MEDIA_PLACEHOLDER_0</p>', [
+  });
+
+  it('ends a token only before a complete token or a non-identifier on the #1958 path; elsewhere as the release before (r8 CM8-1, CM8-2)', async () => {
+    const media = [
       { token: 'CQ_MEDIA_PLACEHOLDER_0', html: '<img src="/0.png">' }, { token: 'CQ_MEDIA_PLACEHOLDER_1', html: '<img src="/1.png">' },
-    ]);
-    expect(placements.map((placement) => placement.token)).toEqual(['CQ_MEDIA_PLACEHOLDER_1', 'CQ_MEDIA_PLACEHOLDER_0']);
-    expect(locateMediaTokens('<p>CQ_MEDIA_PLACEHOLDER_0abc and CQ\\_MEDIA\\_PLACEHOLDER\\_0\\_x</p>', [
-      { token: 'CQ_MEDIA_PLACEHOLDER_0', html: '<img src="/0.png">' },
-    ])).toEqual([]);
+    ];
+    const tokens = (html: string, grammar?: 'legacy' | 'current'): string[] =>
+      locateMediaTokens(html, media, grammar).map((placement) => placement.token);
+    // A true adjacent pair, bare or escaped, is two tokens under both grammars (#1955).
+    for (const grammar of ['legacy', 'current'] as const) {
+      expect(tokens('<p>CQ_MEDIA_PLACEHOLDER_1CQ_MEDIA_PLACEHOLDER_0 x</p>', grammar)).toEqual(['CQ_MEDIA_PLACEHOLDER_1', 'CQ_MEDIA_PLACEHOLDER_0']);
+      expect(tokens('<p>CQ\\_MEDIA\\_PLACEHOLDER\\_1CQ\\_MEDIA\\_PLACEHOLDER\\_0.</p>', grammar)).toEqual(['CQ_MEDIA_PLACEHOLDER_1', 'CQ_MEDIA_PLACEHOLDER_0']);
+    }
+    // An identifier that only starts like a token is no neighbour on the current grammar.
+    expect(tokens('<p>CQ_MEDIA_PLACEHOLDER_0CQ_MEDIA_PLACEHOLDER_COUNT and CQ_MEDIA_PLACEHOLDER_0abc and CQ\\_MEDIA\\_PLACEHOLDER\\_0\\_x</p>', 'current')).toEqual([]);
+    // The legacy grammar (default: #1955's locator, the D26 base path) is a06f304c's `(?![0-9])`.
+    expect(tokens('<p>CQ_MEDIA_PLACEHOLDER_0abc CQ_MEDIA_PLACEHOLDER_10</p>')).toEqual(['CQ_MEDIA_PLACEHOLDER_0']);
+    // Through the #1958 Accept: the page's one image, and authored prose that starts like two tokens.
+    const page = `<p>Intro</p>${IMG('a')}<p>End</p>`;
+    const prose = `${generated(page)}\n\nPrefix example: CQ_MEDIA_PLACEHOLDER_0CQ_MEDIA_PLACEHOLDER_COUNT`;
+    const accepted = await convertImproveOutput(page, prose, { provenance: 'unmatched' });
+    expect(accepted.html.match(/<img/g)).toHaveLength(1);
+    expect(accepted.html).toContain('Prefix example: CQ_MEDIA_PLACEHOLDER_0CQ_MEDIA_PLACEHOLDER_COUNT');
   });
 
   it('refuses a result that still spells the generation\'s nonce, so it never reaches the stored page (r7 CM7-2)', async () => {
@@ -1231,6 +1246,10 @@ describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never i
     // Another generation's nonce is page text.
     const kept = await convertImproveOutput(table, `${echo}\n\nUse \`CQ_CODE_PLACEHOLDER_${OTHER_NONCE}_0\` here.`, { provenance: 'code-meta', codeNonce: NONCE });
     expect(kept.html).toContain(`<code>CQ_CODE_PLACEHOLDER_${OTHER_NONCE}_0</code>`);
+    // r8 CM8-3: inline markup splitting the nonce in the HTML does not hide it from the page's text.
+    const split = `${echo}\n\nSee CQ\\_CODE\\_PLACEHOLDER\\_${NONCE.slice(0, 8)}<span>${NONCE.slice(8)}</span>\\_0 here.`;
+    await expect(convertImproveOutput(table, split, { provenance: 'code-meta', codeNonce: NONCE }))
+      .rejects.toBeInstanceOf(ImproveCodePlacementError);
   });
 
   it('tells the generator whether the Accept would take an output, by the Accept\'s own conversion (r5 CM5-2)', async () => {
