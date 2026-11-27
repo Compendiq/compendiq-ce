@@ -474,7 +474,10 @@ hold across all five:
    user's row is a 404. Pinned in `improve-readmit.db.test.ts`. The legacy
    Apply consumer (`POST /llm/improvements/apply`, the route aggregator)
    still accepts bare `improvedMarkdown`; a client that applies a stored
-   improvement must readmit first and apply the text the readmit returned.
+   improvement must readmit first and apply the text the readmit returned,
+   naming the row as `improvementId` (#1958, D27): the route binds the
+   suggestion's provenance and its `applied` status to that row only, never
+   to a row whose text matches.
 
 All valid recorded providers are checked for availability before comparing
 history with the current destination. Missing recorded authority yields 503,

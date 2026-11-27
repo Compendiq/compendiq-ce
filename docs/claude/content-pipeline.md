@@ -399,15 +399,21 @@ from). A replayed original must come back exactly (only CR → LF in its code
 text is allowed). A placeholder spelled in `pre`/`code`, one the page itself
 spells, or a frozen one inside a longer identifier stays text; a code-carrying
 original without exactly one viable placement refuses the Accept (422), never
-appended or copied. **Provenance decides the path, never the text (D26):** the
-Improve generator writes `llm_improvements.improve_protocol = 1`
-(`IMPROVE_CODE_META_PROTOCOL`, migration 161) on its row, and Apply reads the
-row its Markdown matches exactly. Protocol 1 or no row → the #1958 path; a
-row without a protocol → 422 on a page with any annotated code, else the
-pre-#1958 replay byte for byte (`restoreMedia` + `includes` guard, no
-CODE-META analysis) with the trust boundary kept (foreign `pre` metadata
-stripped, code-named markup refused, storage rules). Never infer provenance
-from CODE-META lines or placeholder spellings.
+appended or copied. **Provenance decides the path, never the text (D26,
+D27):** the Improve generator writes `llm_improvements.improve_protocol = 1`
+(`IMPROVE_CODE_META_PROTOCOL`, migration 161) on its row; the Apply request
+carries the selected `improvementId`, and the route binds provenance and the
+`applied` status to that row only (owner, page, `completed`). Never match the
+text against stored rows. Protocol 1, no id or a row that fails the checks →
+the #1958 path (no status change without a bound row); a row without a
+protocol → 422 on a page with any annotated code, else the pre-#1958 replay
+byte for byte (`restoreMedia` + `includes` guard, no CODE-META analysis) with
+the trust boundary kept (foreign `pre` metadata stripped, code-named markup
+refused, storage rules). Never infer provenance from CODE-META lines or
+placeholder spellings. `literal` is read per authored text node, with the
+replay's boundaries, never from the flattened body text. The generator never
+caches an output that cannot place every frozen block
+(`placesFrozenCodeTokens`).
 Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
 "AI Improve code-block metadata". #1953-2 consumes `witnesses`,
 `codeBlockElements` and `admitLegacyCodeMetadata` (once per allowance) after
