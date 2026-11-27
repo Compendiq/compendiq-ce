@@ -174,10 +174,11 @@ interface OpenLink {
   scope: string;
   live: boolean;
   /**
-   * Review r9, R33 (D21 disposition): false for a stored link in a context the forward pass reads that it did not
-   * deliver as a link (`shown`). Such a link is a competitor only, never matched by a written link, dormant or not.
+   * Review r9, R33 (D21 disposition): a stored link outside every dormant context, not an anchor. When it is canonical
+   * and `shown` says the forward pass did not deliver it as a link, it is ineligible: a competitor only, never matched
+   * by a written link, dormant or not. `shown` is asked only once the whole tree is charged (W5).
    */
-  eligible: boolean;
+  needsShown: boolean;
   /** False while a link encloses it outside that link's body. */
   placed: boolean;
   /** Its position among the links and anchors, in document order. */
@@ -477,9 +478,8 @@ export function analyseStorageLinks(
     }
     let target: string;
     if (canonical) {
-      // Attribute order is not part of what a link points at. An ineligible source has a target no written link has.
-      const context = link.eligible ? String(Number(link.live)) : 'unshown';
-      target = `url|${context}|${JSON.stringify([value, [...linkAttrs!.carried].sort(), [...urlAttrs!.carried].sort()])}`;
+      // Attribute order is not part of what a link points at.
+      target = `url|${Number(link.live)}|${JSON.stringify([value, [...linkAttrs!.carried].sort(), [...urlAttrs!.carried].sort()])}`;
     } else {
       const shape = structure(others);
       target = `link|${JSON.stringify([element.name, element.uri, sortedAttributes(element.attributes), shape])}`;
@@ -571,7 +571,7 @@ export function analyseStorageLinks(
         const link: OpenLink = {
           element: child, anchor: isAnchor, ordinal: isLink ? linkLike : -1, inBody: Number(isAnchor), urls: [], hasUser: false,
           media: [], start: stream.length, end: -1, bodyStart: isAnchor ? stream.length : -1, bodyEnd: -1,
-          scope: scopes[scopes.length - 1] ?? '', live: dormant === 0, eligible: dormant > 0 || isAnchor || shown(child),
+          scope: scopes[scopes.length - 1] ?? '', live: dormant === 0, needsShown: dormant === 0 && !isAnchor,
           placed: outsideBody === 0,
           sequence: open.length + closed.length, described: null, uncertain: false,
         };
@@ -617,6 +617,8 @@ export function analyseStorageLinks(
   // The text stream is complete now, so every place can be read.
   const links: StorageUrlLink[] = [];
   const claims: StorageLinkClaim[] = [];
+  /** The canonical links `shown` decides, with their places in `claims` and `links`. */
+  const undecided: Array<{ link: OpenLink; claim: number; url: number }> = [];
   closed.sort((a, b) => a.sequence - b.sequence);
   for (const link of closed) {
     charge();
@@ -638,8 +640,18 @@ export function analyseStorageLinks(
       navigable: canonical && isNavigableConfluenceUrl(value!),
       live: link.live,
     };
+    if (canonical && link.needsShown) undecided.push({ link, claim: claims.length, url: links.length });
     claims.push(found);
     links.push(found);
+  }
+  // Every limit is decided above; only now is `shown` asked, which may run the forward pass over the storage (W5).
+  // An ineligible source gets a target no written link has.
+  for (const { link, claim, url } of undecided) {
+    if (shown(link.element)) continue;
+    const found = links[url]!;
+    const ineligible: StorageUrlLink = { ...found, target: `url|unshown|${found.target.slice('url|1|'.length)}` };
+    claims[claim] = ineligible;
+    links[url] = ineligible;
   }
   return { links, claims, linkLike, text: stream };
 }
