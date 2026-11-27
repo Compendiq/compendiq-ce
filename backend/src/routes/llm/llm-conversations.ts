@@ -20,6 +20,8 @@ import {
   finalizeCodeMetadata,
   htmlToConfluence,
   htmlToText,
+  ImproveCodePlacementError,
+  IMPROVE_CODE_META_PROTOCOL,
   ImproveReplayBudgetError,
   ImproveReplayError,
   ImproveSuggestionFormatError,
@@ -27,7 +29,9 @@ import {
   markdownToHtml,
   protectMedia,
   replayProtectedMedia,
+  type CodeMetaAccept,
   type FinalizedCodeMetadata,
+  type ImproveSuggestionProvenance,
 } from '../../core/services/content-converter.js';
 import { ConfluenceStorageRefusedError } from '../../core/services/confluence-storage-reader.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
@@ -481,8 +485,8 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // effect now, before conversion/remote latency can make a newer unrelated
     // improvement look like the row this request accepted. An exact content
     // match preserves direct/manual Apply calls, which have no history row.
-    const linkedImprovement = await query<{ id: string }>(
-      `SELECT id
+    const linkedImprovement = await query<{ id: string; improveProtocol: number | null }>(
+      `SELECT id, improve_protocol AS "improveProtocol"
          FROM llm_improvements
         WHERE user_id = $1
           AND page_id = $2
@@ -493,6 +497,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       [userId, existingPage.id, improvedMarkdown.slice(0, 50000)],
     );
     const improvementId = linkedImprovement.rows[0]?.id ?? null;
+    // #1958 (D26 item 2): the suggestion's provenance is the matched row's
+    // protocol, never its text. No row (a direct or edited Apply) takes the
+    // #1958 path, where only exact-grammar carriers bind.
+    const linkedRow = linkedImprovement.rows[0];
+    const provenance: ImproveSuggestionProvenance = !linkedRow ? 'unmatched'
+      : linkedRow.improveProtocol === IMPROVE_CODE_META_PROTOCOL ? 'code-meta' : 'legacy';
 
     if (version !== undefined && version < currentVersion) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -505,9 +515,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // The Improve-time token set (derived from the editor `content`) and this
     // Accept-time token set (derived from `body_html`) are decoupled, so they
     // can diverge — the LLM may also drop tokens entirely. #1958: the replay
-    // below plans by screened placement, so an original with no placement it
-    // can take (none, or only in code, a discarded container or an unsafe
-    // place for a code block) is appended once and never silently lost.
+    // below plans by screened placement: a medium with no placement it can
+    // take is appended once and never silently lost; a code-carrying original
+    // without exactly one is refused (422), never duplicated.
     const protectedBody = protectMedia(existingPage.body_html ?? '');
     const { html: protectedCurrentHtml, media } = protectedBody;
 
@@ -526,9 +536,33 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // protected form agrees with what the model was shown. Pinned by
     // apply-improvement-media.test.ts.
     const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
+
+    // A #1958 refusal: nothing is reserved, dispatched or stored. Remote
+    // authority was established before any evidence was read (above).
+    const refuseImproveResult = (error: unknown): never => {
+      const reason = error instanceof ConfluenceStorageRefusedError ? error.reason
+        : error instanceof ImproveReplayBudgetError ? 'replay-budget'
+          : error instanceof ImproveReplayError ? 'replay-integrity'
+            : error instanceof ImproveSuggestionFormatError ? 'suggestion-format'
+              : error instanceof ImproveCodePlacementError ? 'code-placement' : null;
+      if (reason === null) throw error;
+      fastify.log.warn(
+        { pageId: existingPage.id, reason, provenance, exit: writeStaysLocal ? 'local' : 'remote' },
+        '#1958: AI Improve result refused before write',
+      );
+      if (error instanceof ConfluenceStorageRefusedError) throw error;
+      throw fastify.httpErrors.unprocessableEntity((error as Error).message);
+    };
+
     // #1958: code-block title and options travel as CODE-META echo tokens and
-    // are re-attached from this stored body only on exact identity.
-    const codeMeta = beginCodeMetaAccept(protectedBody);
+    // are re-attached from this stored body only on exact identity. A
+    // pre-#1958 suggestion for a page with annotated code is refused here.
+    let codeMeta: CodeMetaAccept;
+    try {
+      codeMeta = beginCodeMetaAccept(protectedBody, { provenance });
+    } catch (error) {
+      return refuseImproveResult(error);
+    }
     let bodyHtml: string;
     try {
       // #1752: `protectedMedia` names the tokens restoreMedia turns back into
@@ -548,22 +582,6 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       }
       throw err;
     }
-
-    // A #1958 refusal: nothing is reserved, dispatched or stored. Remote
-    // authority was established before any evidence was read (above).
-    const refuseImproveResult = (error: unknown): never => {
-      const reason = error instanceof ConfluenceStorageRefusedError ? error.reason
-        : error instanceof ImproveReplayBudgetError ? 'replay-budget'
-          : error instanceof ImproveReplayError ? 'replay-integrity'
-            : error instanceof ImproveSuggestionFormatError ? 'suggestion-format' : null;
-      if (reason === null) throw error;
-      fastify.log.warn(
-        { pageId: existingPage.id, reason, exit: writeStaysLocal ? 'local' : 'remote' },
-        '#1958: AI Improve result refused before write',
-      );
-      if (error instanceof ConfluenceStorageRefusedError) throw error;
-      throw fastify.httpErrors.unprocessableEntity((error as Error).message);
-    };
 
     let finalized: FinalizedCodeMetadata;
     try {

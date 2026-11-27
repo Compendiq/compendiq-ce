@@ -31,6 +31,7 @@ import {
   htmlToConfluence,
   htmlToMarkdown,
   htmlToText,
+  ImproveCodePlacementError,
   ImproveReplayBudgetError,
   ImproveReplayError,
   ImproveSuggestionFormatError,
@@ -48,6 +49,7 @@ import {
   type CodeMacroAllowance,
   type FinalizedCodeMetadata,
   type HtmlToConfluenceOptions,
+  type ImproveSuggestionProvenance,
 } from './content-converter.js';
 import { ConfluenceStorageRefusedError, readConfluenceStorage, STORAGE_READER_LIMITS } from './confluence-storage-reader.js';
 import { oracleElements } from './__fixtures__/storage-oracle.js';
@@ -127,15 +129,18 @@ interface Chain extends FinalizedCodeMetadata {
   dropped: number;
 }
 
-/** The Accept of llm-conversations.ts on `bodyHtml`, with `edit` standing in for the model. */
+/**
+ * The Accept of llm-conversations.ts on `bodyHtml`, with `edit` standing in for the model. `provenance` is what
+ * the route reads from the matched row (D26): by default a row the #1958 generator wrote.
+ */
 async function improveChain(
   bodyHtml: string,
   edit: (markdown: string) => string = (markdown) => markdown,
-  options: { witnesses?: boolean; previousStorage?: string | null; replayBudget?: number } = {},
+  options: { witnesses?: boolean; previousStorage?: string | null; replayBudget?: number; provenance?: ImproveSuggestionProvenance } = {},
 ): Promise<Chain> {
   const protectedBody = protectMedia(bodyHtml);
   const markdown = htmlToMarkdown(protectedBody.html, { layoutTokens: true });
-  const codeMeta = beginCodeMetaAccept(protectedBody, { witnesses: options.witnesses });
+  const codeMeta = beginCodeMetaAccept(protectedBody, { witnesses: options.witnesses, provenance: options.provenance ?? 'code-meta' });
   const rebuilt = await markdownToHtml(edit(markdown), {
     layoutSkeleton: extractLayoutSkeleton(protectedBody.html), protectedMedia: protectedBody.media, codeMeta,
   });
@@ -722,11 +727,12 @@ describe('#1958 trust: model-written markup', () => {
 describe('#1958 media replay (V4, X4, X5)', () => {
   const IMAGE = '<img src="/api/attachments/1/a.png" alt="a">';
 
-  it('places an image at its token and appends a missing frozen code block once, with its metadata', async () => {
+  it('places an image at its token and refuses a frozen code block the model dropped, instead of appending it (D26 item 3)', async () => {
     const cell = (code: string): string => `<table><tbody><tr><td>${pre(code, TITLED)}</td></tr></tbody></table>`;
     const html = `<p>x</p>${IMAGE}${cell('kept()')}${cell('frozen()')}`;
-    const chain = await improveChain(html, (markdown) => markdown.replace(/<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_1<\/td><\/tr><\/tbody><\/table>/, ''));
-    expect(chain.dropped).toBe(1);
+    await expect(improveChain(html, (markdown) => markdown.replace(/<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_1<\/td><\/tr><\/tbody><\/table>/, '')))
+      .rejects.toBeInstanceOf(ImproveCodePlacementError);
+    const chain = await improveChain(html);
     expect(chain.html.match(/<img/g)).toHaveLength(1);
     expect(codeMacros(chain.storage).map((macro) => [macro.title, macro.code])).toEqual([
       ['Startup.cs', 'kept()'], ['Startup.cs', 'frozen()'],
@@ -750,21 +756,17 @@ describe('#1958 media replay (V4, X4, X5)', () => {
     expect(oracleElements(chain.storage, 'ac', 'image').length + (chain.storage.match(/<img /g)?.length ?? 0)).toBe(1);
   });
 
-  it('appends a frozen code block the model duplicated once at the end, with its metadata and no copy', async () => {
+  it('refuses a frozen code block the model duplicated, never writing a copy (D26 item 3)', async () => {
     const frozen = `<div class="confluence-macro-unknown" data-macro-name="foo">${pre('frozen()', TITLED)}<p>opaque &amp; owned</p></div>`;
-    const chain = await improveChain(`<p>x</p>${frozen}${ANCHOR}`, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`);
-    expect(chain.html.match(/confluence-macro-unknown/g)).toHaveLength(1);
-    expect(chain.html.endsWith(new JSDOM(`<body>${frozen}</body>`).window.document.body.innerHTML)).toBe(true);
-    expect(codeMacros(chain.storage).map((macro) => [macro.title, macro.code])).toEqual([['Anchor', 'anchor()'], ['Startup.cs', 'frozen()']]);
+    await expect(improveChain(`<p>x</p>${frozen}${ANCHOR}`, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`))
+      .rejects.toBeInstanceOf(ImproveCodePlacementError);
   });
 
-  it('removes a code-carrying spelling from an unsafe parse context and appends the block', async () => {
+  it('refuses a code-carrying spelling left only in an unsafe parse context (D26 item 3)', async () => {
     for (const unsafe of ['**CQ_CODE_PLACEHOLDER_0**', '[CQ_CODE_PLACEHOLDER_0](https://x.test)']) {
       const html = `<table><tbody><tr><td>${pre('frozen()', TITLED)}</td></tr></tbody></table>`;
-      const chain = await improveChain(html, (markdown) => markdown.replace(/<table>.*<\/table>/, unsafe));
-      expect(chain.html, unsafe).not.toMatch(/<(strong|a)[^>]*><table/);
-      expect(chain.dropped, unsafe).toBe(1);
-      expect(codeMacros(chain.storage)[0]!.title, unsafe).toBe('Startup.cs');
+      await expect(improveChain(html, (markdown) => markdown.replace(/<table>.*<\/table>/, unsafe)), unsafe)
+        .rejects.toBeInstanceOf(ImproveCodePlacementError);
     }
   });
 
@@ -1005,87 +1007,130 @@ describe('#1958 r1 CM-1: media ordinals are the ones the previous release wrote'
     expect(htmlToMarkdown(protectedBody.html, { layoutTokens: true })).toBe('```js\na CQ_MEDIA_PLACEHOLDER_0 b\n```\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_1');
   });
 
-  it('refuses a suggestion the previous release made for a page with frozen code, before anything is built', async () => {
-    await expect(improveChain(CM1_PAGE, () => CM1_BASE_SUGGESTION)).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+  it('refuses a stored suggestion of the previous release for a page with frozen code, before anything is built (D26 2(b))', async () => {
+    await expect(improveChain(CM1_PAGE, () => CM1_BASE_SUGGESTION, { provenance: 'legacy' })).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+    // The same Markdown with no stored row takes the #1958 path, which cannot place the frozen block.
+    await expect(improveChain(CM1_PAGE, () => CM1_BASE_SUGGESTION, { provenance: 'unmatched' })).rejects.toBeInstanceOf(ImproveCodePlacementError);
   });
 
-  it('applies a suggestion the previous release made for a page without frozen code as before', async () => {
-    const chain = await improveChain(TOKEN_PAGE, () => TOKEN_PAGE_BASE_SUGGESTION);
-    // The image at its token, after "Diagram follows"; the fence without its title, as that release saved it.
-    expect(chain.html).toBe('<p>Intro</p>\n<pre><code class="language-js">const a = 1;\n</code></pre>\n<p>Diagram follows</p>\n'
-      + '<img src="/api/attachments/1/d.png" alt="d">\n<p>End</p>\n');
-    // Exactly what the previous release's Accept (restoreMedia + drop guard) made of it.
-    expect(chain.html).toBe(await headChain(TOKEN_PAGE, () => TOKEN_PAGE_BASE_SUGGESTION));
-    expect(chain.dropped).toBe(0);
+  it('refuses a stored suggestion of the previous release for a page with annotated code that is not frozen (D26 2(b))', async () => {
+    await expect(improveChain(TOKEN_PAGE, () => TOKEN_PAGE_BASE_SUGGESTION, { provenance: 'legacy' }))
+      .rejects.toBeInstanceOf(ImproveSuggestionFormatError);
   });
 
-  it('still appends a frozen block the model dropped when another code carrier is present', async () => {
+  it('refuses a frozen block the model dropped even when another code carrier is present (D26 item 3)', async () => {
     const html = `${CM1_PAGE}${pre('bound()', ' data-title="B"')}`;
-    const chain = await improveChain(html, (markdown) => markdown.replace(/<table>.*<\/table>/, ''));
-    expect(chain.dropped).toBe(1);
-    expect(codeMacros(chain.storage).map((macro) => macro.title)).toEqual(['B', 'Sample']);
+    await expect(improveChain(html, (markdown) => markdown.replace(/<table>.*<\/table>/, ''))).rejects.toBeInstanceOf(ImproveCodePlacementError);
   });
 });
 
 /** Pages and suggestions generated on a06f304c (disposable worktree), with that release's Accept result. */
 const IMG = (name: string): string => `<img src="/api/attachments/1/${name}.png" alt="${name}">`;
-const BASE_FIXTURES = {
-  // r2 CM2-1: a literal mention of the placeholder prefix inside inline code, on a page with frozen code.
-  literalMentionFrozen: {
+const LN = ' data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;}"';
+const HISTORICAL = {
+  // Pages without annotated code: the base path.
+  imageInCodePlain: {
+    page: `<pre><code class="language-js">a${IMG('x')}b</code></pre><p>Then</p>${IMG('d')}<p>End</p>`,
+    suggestion: '```js\na CQ_MEDIA_PLACEHOLDER_0 b\n```\n\nThen\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_1\n\nEnd',
+    base: `<pre><code class="language-js">a ${IMG('x')} b\n</code></pre>\n<p>Then</p>\n${IMG('d')}\n<p>End</p>\n`,
+  },
+  mentionPlain: {
+    page: `<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p><pre><code class="language-js">const x = 1;</code></pre><p>Diagram follows</p>${IMG('d')}<p>End</p>`,
+    suggestion: 'Inspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.\n\n```js\nconst x = 1;\n```\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd',
+    base: '<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p>\n<pre><code class="language-js">const x = 1;\n</code></pre>\n'
+      + `<p>Diagram follows</p>\n${IMG('d')}\n<p>End</p>\n`,
+  },
+  // Pages with annotated code: review r2 CM2-1/CM2-2 and r3 CM3-1…CM3-4.
+  mentionFrozen: {
     page: '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
       + `<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p><p>Diagram follows</p>${IMG('d')}<p>End</p>`,
     suggestion: '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre></td></tr></tbody></table>'
       + '\n\nInspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd',
   },
-  // The same mention on a page without frozen code.
-  literalMentionPlain: {
-    page: `<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p><pre data-title="Sample"><code class="language-js">const x = 1;</code></pre><p>Diagram follows</p>${IMG('d')}<p>End</p>`,
-    suggestion: 'Inspect `CQ_CODE_PLACEHOLDER_COUNT` in diagnostics.\n\n```js\nconst x = 1;\n```\n\nDiagram follows\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd',
-    base: '<p>Inspect <code>CQ_CODE_PLACEHOLDER_COUNT</code> in diagnostics.</p>\n<pre><code class="language-js">const x = 1;\n</code></pre>\n'
-      + `<p>Diagram follows</p>\n${IMG('d')}\n<p>End</p>\n`,
-  },
-  // r2 CM2-2: an image inside an annotated code block (not frozen: it holds media), then a separate image.
-  imageInCode: {
+  imageInAnnotatedCode: {
     page: `<pre data-title="Pic"><code class="language-js">a${IMG('x')}b</code></pre><p>Then</p>${IMG('d')}<p>End</p>`,
     suggestion: '```js\na CQ_MEDIA_PLACEHOLDER_0 b\n```\n\nThen\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_1\n\nEnd',
-    base: `<pre><code class="language-js">a ${IMG('x')} b\n</code></pre>\n<p>Then</p>\n${IMG('d')}\n<p>End</p>\n`,
+  },
+  drawio: {
+    page: `<p>Flow</p><pre data-title="Flow"><code class="language-drawio">Build CQ_CODE_PLACEHOLDER_0 chart</code></pre>${IMG('d')}`,
+    suggestion: 'Flow\n\n```drawio\nBuild CQ_CODE_PLACEHOLDER_0 chart\n```\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0',
+  },
+  identifier: {
+    page: `<table><tbody><tr><td><pre data-title="Sample"${LN}><code class="language-js">const n = CQ_CODE_PLACEHOLDER_0_COUNT;</code></pre></td></tr></tbody></table><p>Notes</p>`,
+    suggestion: `<table><tbody><tr><td><pre data-title="Sample"${LN}><code class="language-js">const n = CQ_CODE_PLACEHOLDER_0_COUNT;</code></pre></td></tr></tbody></table>`
+      + '\n\nNotes\n\nUse CQ_CODE_PLACEHOLDER_0_COUNT to size the buffer.',
+  },
+  bold: {
+    page: '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">x()</code></pre></td></tr></tbody></table><p>See <strong>CQ_CODE_PLACEHOLDER_0</strong> here.</p>',
+    suggestion: '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">x()</code></pre></td></tr></tbody></table>\n\nSee **CQ\\_CODE\\_PLACEHOLDER\\_0** here.',
+  },
+  rawCellImage: {
+    page: `<table><tbody><tr><td><pre data-title="How to wire"${LN}><code class="language-js">a${IMG('x')}b</code></pre></td></tr></tbody></table><p>End</p>`,
+    suggestion: `<table><tbody><tr><td><pre data-title="How to wire"${LN}><code class="language-js">a CQ_MEDIA_PLACEHOLDER_0 b</code></pre></td></tr></tbody></table>\n\nEnd`,
+  },
+  mixedMacro: {
+    page: '<div class="confluence-macro-unknown" data-macro-name="foo"><pre data-title="Titled"><code class="language-js">run()</code></pre><pre><code class="language-js">run()</code></pre></div><p>End</p>',
+    suggestion: 'CQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd',
   },
 };
 
-describe('#1958 r2 (D25 item 1): one structural rule for suggestions across the release', () => {
-  it('(c) refuses a carrier-free suggestion on a page with frozen code, whatever its text mentions (CM2-1)', async () => {
-    const { page, suggestion } = BASE_FIXTURES.literalMentionFrozen;
-    await expect(improveChain(page, () => suggestion)).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never its text', () => {
+  it('(b) refuses every stored suggestion of the previous release for a page with annotated code (r2 CM2-1/2, r3 CM3-1…4)', async () => {
+    for (const [name, { page, suggestion }] of Object.entries(HISTORICAL).filter(([name]) => !name.endsWith('Plain'))) {
+      expect(protectMedia(page).carried, name).toBe(true);
+      await expect(improveChain(page, () => suggestion, { provenance: 'legacy' }), name).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+    }
   });
 
-  it('(b) applies a carrier-free suggestion on a page without frozen code exactly as a06f304c did', async () => {
-    for (const { page, suggestion, base } of [BASE_FIXTURES.literalMentionPlain, BASE_FIXTURES.imageInCode]) {
-      const chain = await improveChain(page, () => suggestion);
+  it('(b) applies a stored suggestion of the previous release on a page without annotated code exactly as a06f304c did', async () => {
+    for (const { page, suggestion, base } of [HISTORICAL.imageInCodePlain, HISTORICAL.mentionPlain]) {
+      const chain = await improveChain(page, () => suggestion, { provenance: 'legacy' });
       expect(chain.html, suggestion).toBe(base);
       expect(chain.html, suggestion).toBe(await headChain(page, () => suggestion));
     }
   });
 
   it('(b) keeps the trust boundary: injected code metadata is stripped and a code-named placeholder refused', async () => {
-    const { page, suggestion, base } = BASE_FIXTURES.imageInCode;
-    const injected = await improveChain(page, () => `${suggestion}\n\n<pre data-title="Evil" data-macro-params="{&quot;a&quot;:&quot;b&quot;}"><code>raw()</code></pre>\n`);
+    const { page, suggestion, base } = HISTORICAL.imageInCodePlain;
+    const injected = await improveChain(page, () => `${suggestion}\n\n<pre data-title="Evil" data-macro-params="{&quot;a&quot;:&quot;b&quot;}"><code>raw()</code></pre>\n`, { provenance: 'legacy' });
     expect(injected.html).toBe(`${base}<pre><code>raw()</code></pre>\n`);
     expect(injected.report.stripped).toBe(1);
-    expect(await asyncRefusal(() => improveChain(page, () => `${suggestion}\n\n<div class="confluence-macro-unknown" data-macro-name="code">x</div>\n`)))
+    expect(await asyncRefusal(() => improveChain(page, () => `${suggestion}\n\n<div class="confluence-macro-unknown" data-macro-name="code">x</div>\n`, { provenance: 'legacy' })))
       .toBe('unapproved-code-macro');
   });
 
-  it('(b) keeps every copy of a code-carrying original the old replay writes, verified and accounted for', async () => {
-    const frozen = `<div class="confluence-macro-unknown" data-macro-name="foo">${pre('frozen()', TITLED)}</div>`;
-    const page = `<p>x</p>${frozen}`;
-    const chain = await improveChain(page, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`);
-    expect(chain.html).toBe(await headChain(page, (markdown) => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`));
-    expect(chain.html.match(/confluence-macro-unknown/g)).toHaveLength(2);
-    expect(codeMacros(chain.storage).map((macro) => macro.title)).toEqual(['Startup.cs', 'Startup.cs']);
-    expect(chain.allowance.units).toHaveLength(2);
+  it('(c) takes unmatched Markdown down the #1958 path: the historical cases refuse or keep text, never duplicate', async () => {
+    // No code-carrying original can be placed exactly once: refused.
+    for (const name of ['mentionFrozen', 'drawio', 'bold', 'identifier'] as const) {
+      const { page, suggestion } = HISTORICAL[name];
+      await expect(improveChain(page, () => suggestion, { provenance: 'unmatched' }), name).rejects.toBeInstanceOf(ImproveCodePlacementError);
+    }
+    // The image goes to its token inside the raw pre; the model's pre is not an original, so it loses its metadata.
+    const raw = await improveChain(HISTORICAL.rawCellImage.page, () => HISTORICAL.rawCellImage.suggestion, { provenance: 'unmatched' });
+    expect(raw.html).not.toMatch(/data-title|data-macro-params/);
+    // The macro holding a titled and a bare twin comes back once, verified; R1 then drops the title of both twins.
+    const mixed = await improveChain(HISTORICAL.mixedMacro.page, () => HISTORICAL.mixedMacro.suggestion, { provenance: 'unmatched' });
+    expect(mixed.html.match(/confluence-macro-unknown/g)).toHaveLength(1);
+    expect(mixed.report.twins).toBe(1);
+    expect(codeMacros(mixed.storage).map((macro) => macro.title)).toEqual([null, null]);
   });
 
-  it('(a) needs a CODE-META line by the exact grammar, standing alone, directly above a fence', async () => {
+  it('(a) a #1958 suggestion on the same pages keeps the blocks; a spelling inside a longer identifier is text', async () => {
+    const drawio = await improveChain(HISTORICAL.drawio.page);
+    expect(drawio.html).toContain('data-title="Flow"');
+    const identifier = await improveChain(HISTORICAL.identifier.page, (markdown) => `${markdown}\n\nUse CQ_CODE_PLACEHOLDER_0_COUNT to size the buffer.`);
+    expect(identifier.html).toContain('Use CQ_CODE_PLACEHOLDER_0_COUNT to size the buffer.');
+    expect(codeMacros(identifier.storage).map((macro) => [macro.title, macro.params])).toEqual([['Sample', { linenumbers: 'true' }]]);
+    expect(protectMedia(`${HISTORICAL.identifier.page}<p>See CQ_CODE_PLACEHOLDER_0_COUNT</p>`).frozenCode[0]!.literal).toBeUndefined();
+  });
+
+  it('(a) a placement the page itself spells never authorizes replay: the collision is refused (CM3-2 control)', async () => {
+    const { page } = HISTORICAL.bold;
+    expect(protectMedia(page).frozenCode[0]).toMatchObject({ literal: true });
+    await expect(improveChain(page)).rejects.toBeInstanceOf(ImproveCodePlacementError);
+  });
+
+  it('(a)/(c) bind only exact-grammar CODE-META lines standing alone directly above a fence', async () => {
     const page = `<p>Intro</p>${pre('x()', ' data-title="T"')}${IMG('d')}`;
     for (const [name, edit] of [
       ['inside code', (md: string) => `\`\`\`text\n[[[CODE-META n=0 title=T]]]\n\`\`\`\n\n${md.replace(/\[\[\[CODE-META[^\n]*\n/, '')}`],
@@ -1093,42 +1138,24 @@ describe('#1958 r2 (D25 item 1): one structural rule for suggestions across the 
       ['away from a fence', (md: string) => md.replace(/(\[\[\[CODE-META[^\n]*)\n/, '$1\n\n')],
       ['not the grammar', (md: string) => md.replace('[[[CODE-META n=0', '[[[CODE-META n=00')],
     ] as const) {
-      const protectedBody = protectMedia(page);
-      const codeMeta = beginCodeMetaAccept(protectedBody);
-      const markdown = edit(htmlToMarkdown(protectedBody.html, { layoutTokens: true }));
-      const rebuilt = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedBody.html), protectedMedia: protectedBody.media, codeMeta });
-      replayProtectedMedia(rebuilt, codeMeta);
-      expect(codeMeta.mode, name).toBe('base');
+      const chain = await improveChain(page, edit, { provenance: 'unmatched' });
+      expect(chain.report.bound, name).toBe(0);
+      expect(chain.html, name).not.toContain('data-title');
     }
-    const faithful = protectMedia(page);
-    const codeMeta = beginCodeMetaAccept(faithful);
-    const rebuilt = await markdownToHtml(htmlToMarkdown(faithful.html, { layoutTokens: true }), { protectedMedia: faithful.media, codeMeta });
-    replayProtectedMedia(rebuilt, codeMeta);
-    expect(codeMeta.mode).toBe('meta');
+    const faithful = await improveChain(page, undefined, { provenance: 'unmatched' });
+    expect(faithful.report.bound).toBe(1);
   });
 
-  it('(a) takes a frozen code placeholder outside code; one the page spells itself only as a run of its own', async () => {
-    const page = `<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table>${IMG('d')}`;
-    for (const markdown of ['`CQ_CODE_PLACEHOLDER_0`', '```\nCQ_CODE_PLACEHOLDER_0\n```']) {
-      await expect(improveChain(page, () => `${markdown}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0`), markdown).rejects.toBeInstanceOf(ImproveSuggestionFormatError);
-    }
-    for (const markdown of ['CQ\\_CODE\\_PLACEHOLDER\\_0 CQ\\_MEDIA\\_PLACEHOLDER\\_0', 'See CQ\\_CODE\\_PLACEHOLDER\\_0 here\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0']) {
-      const chain = await improveChain(page, () => markdown);
-      expect(codeMacros(chain.storage).map((macro) => macro.title), markdown).toEqual(['Startup.cs']);
-    }
-    // Faithful echoes where the generator writes the token beside text (a cell, a list item) are on the #1958 path.
-    for (const adjacent of [
-      `<table><tbody><tr><td>Run:${pre('x()', TITLED)}</td></tr></tbody></table>`,
-      `<ul><li>Run:${pre('\n', TITLED)}</li></ul>`,
-    ]) {
-      const chain = await improveChain(adjacent);
-      expect(chain.report.appended, adjacent).toBe(0);
-    }
-    // A token the page writes itself is no evidence beside text.
-    const literal = `<p>Write CQ_CODE_PLACEHOLDER_0 here</p>${page}`;
-    expect(protectMedia(literal).frozenCode[0]).toMatchObject({ literal: true });
-    await expect(improveChain(literal, () => 'Write CQ\\_CODE\\_PLACEHOLDER\\_0 here\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0'))
-      .rejects.toBeInstanceOf(ImproveSuggestionFormatError);
+  it('charges the replay plan, marker text included, before anything is built (CM3-5)', async () => {
+    // Base path: the upper bound (every placement, every entry without one) is charged first.
+    const { page, suggestion } = HISTORICAL.imageInCodePlain;
+    const sizes = protectMedia(page).media.reduce((sum, entry) => sum + entry.html.length, 0);
+    await expect(improveChain(page, () => suggestion, { provenance: 'legacy', replayBudget: sizes - 1 })).rejects.toBeInstanceOf(ImproveReplayBudgetError);
+    expect((await improveChain(page, () => suggestion, { provenance: 'legacy', replayBudget: sizes })).html).toBe(HISTORICAL.imageInCodePlain.base);
+    // #1958 path: a code-carrying original's marker is part of the charge.
+    const frozen = `<table><tbody><tr><td>${pre('frozen()', TITLED)}</td></tr></tbody></table>`;
+    const original = protectMedia(frozen).frozenCode[0]!.html.length;
+    await expect(improveChain(frozen, undefined, { replayBudget: original })).rejects.toBeInstanceOf(ImproveReplayBudgetError);
   });
 });
 

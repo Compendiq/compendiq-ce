@@ -17,6 +17,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
+import { IMPROVE_CODE_META_PROTOCOL } from '../../core/services/content-converter.js';
 import { ArticleRouteFixture, sseEvents } from './article-route-test-fixture.js';
 import { llmImproveRoutes } from './llm-improve.js';
 
@@ -81,6 +82,9 @@ describe.skipIf(!available)('Improve retains durable transitive provenance on th
     });
     // Exactly one grounding page: the row names nothing it was not fed.
     expect((stored[0]!.ai_provenance as { pages: unknown[] }).pages).toHaveLength(1);
+    // #1958 (D26): the row names the converter protocol its Markdown was generated with.
+    expect((await query<{ improve_protocol: number | null }>('SELECT improve_protocol FROM llm_improvements')).rows)
+      .toEqual([{ improve_protocol: IMPROVE_CODE_META_PROTOCOL }]);
 
     // The durable row and the cache entry describe the same generation.
     const keys = await fixture.redis.keys('kb:llm:*');

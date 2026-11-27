@@ -17,7 +17,7 @@ import { ConversationTurnAiProvenanceSchema, ImproveRequestSchema, ImprovementId
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
-import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
+import { hasRecoverableLayoutTokens, IMPROVE_CODE_META_PROTOCOL } from '../../core/services/content-converter.js';
 import {
   resolveReadablePageRef,
   resolveSystemPrompt,
@@ -238,10 +238,13 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     if (body.pageId) {
       const page = await resolveReadablePageRef(userId, body.pageId);
       if (page) {
+        // #1958 (D26): the Markdown above came from this release's converter
+        // (CODE-META lines, CQ_CODE_PLACEHOLDER tokens); Apply classifies the
+        // suggestion by this column, never by its text.
         const insertResult = await query<{ id: string }>(
-          `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
-           VALUES ($1, $2, $3, $4, $5, '', 'streaming') RETURNING id`,
-          [userId, page.id, type, resolvedModel, content.slice(0, 10000)],
+          `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status, improve_protocol)
+           VALUES ($1, $2, $3, $4, $5, '', 'streaming', $6) RETURNING id`,
+          [userId, page.id, type, resolvedModel, content.slice(0, 10000), IMPROVE_CODE_META_PROTOCOL],
         );
         improvementId = insertResult.rows[0]?.id;
       }

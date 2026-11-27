@@ -2595,7 +2595,7 @@ export function protectMedia(html: string): ProtectedBody {
   if (media.length > 0 || frozenCode.length > 0) {
     const text = doc.body.textContent ?? '';
     markLiteralTokens(text, MEDIA_TOKEN_PREFIX, media);
-    markLiteralTokens(text, CODE_TOKEN_PREFIX, frozenCode);
+    markLiteralTokens(text, CODE_TOKEN_PREFIX, frozenCode, true);
   }
   return { html: doc.body.innerHTML, media, frozenCode, carried };
 }
@@ -3219,12 +3219,15 @@ function codeTextLineEndForm(el: Element): string | null {
  * #1958 (X4): an entry is `literal` when the protected body's text spells its
  * token (either spelling, digit boundary) more often than the one node
  * protectMedia inserted: the page itself writes the token, so no spelling of
- * it can be told for a placement.
+ * it can be told for a placement. For code entries (`identifier`) a spelling
+ * inside a longer identifier (`CQ_CODE_PLACEHOLDER_0_COUNT`) is not one, as in
+ * the replay (isIdentifierPart).
  */
-function markLiteralTokens(text: string, prefix: string, entries: ProtectedMedia[]): void {
+function markLiteralTokens(text: string, prefix: string, entries: ProtectedMedia[], identifier = false): void {
   if (entries.length === 0) return;
   const counts = new Map<string, number>();
-  const spelling = new RegExp(`(?:${escapeRegExp(prefix)}|${escapeRegExp(prefix.replace(/_/g, '\\_'))})(\\d+)`, 'g');
+  const spelled = `(?:${escapeRegExp(prefix)}|${escapeRegExp(prefix.replace(/_/g, '\\_'))})(\\d+)`;
+  const spelling = new RegExp(identifier ? `(?<![A-Za-z0-9_])${spelled}(?![A-Za-z0-9_]|\\\\_)` : spelled, 'g');
   for (const match of text.matchAll(spelling)) {
     counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
   }
@@ -3320,28 +3323,43 @@ export interface CodeMetaAccept {
   /** How many of `entries` are frozen code entries (at the end). */
   readonly frozenCode: number;
   /**
-   * Set by markdownToHtml (review r2 CM2-1, D25 1(a)): the suggestion holds a well-formed CODE-META line by the
-   * exact grammar, standing alone (a paragraph or item text), outside code, directly above a fence.
+   * D26 item 2, fixed at the start of the Accept from the suggestion's provenance: `meta`, the #1958 path (a row
+   * the #1958 generator wrote, or Markdown no stored row matches); `base`, the Accept of the release before #1958
+   * for a pre-#1958 row on a page without annotated code.
    */
-  codeMetaEvidence: boolean;
-  /**
-   * Set by replayProtectedMedia (D25 item 1): `meta`, the #1958 path (structural carrier evidence); `base`, the
-   * Accept of the release before #1958 with the trust boundary kept (no carrier, no frozen code on the page).
-   */
-  mode: 'meta' | 'base' | null;
+  readonly mode: 'meta' | 'base';
   /** Filled by markdownToHtml, in document order. */
   readonly fences: CodeMetaFence[];
-  /** Marker id (`<k>` or, on the base path, `<k>-<copy>`) → entry index of every original inserted with a marker. */
-  readonly replayed: Map<string, number>;
+  /** Entry indices of the code-carrying originals inserted with a marker. */
+  readonly replayed: Set<number>;
   readonly report: CodeMetaReport;
 }
+
+/** `llm_improvements.improve_protocol` the #1958 generator writes on every row it stores (migration 161). */
+export const IMPROVE_CODE_META_PROTOCOL = 1;
+
+/**
+ * Where an applied suggestion comes from (D26 item 2), decided by the route
+ * from the stored row its exact text matches, never from the text itself:
+ * `code-meta`, a row with {@link IMPROVE_CODE_META_PROTOCOL}; `legacy`, a row
+ * written before #1958 (no protocol); `unmatched`, no row (a direct or
+ * user-edited Apply).
+ */
+export type ImproveSuggestionProvenance = 'code-meta' | 'legacy' | 'unmatched';
 
 /**
  * Starts one Accept's code-metadata state from protectMedia's whole return
  * value. `witnesses` asks finalizeCodeMetadata for the lexer text of every
- * unchanged plain fence (#1953).
+ * unchanged plain fence (#1953). `provenance` (default `unmatched`) fixes the
+ * mode; a `legacy` suggestion for a page holding annotated code throws
+ * ImproveSuggestionFormatError before anything is parsed (D26 item 2(b)).
  */
-export function beginCodeMetaAccept(protectedBody: ProtectedBody, options: { witnesses?: boolean } = {}): CodeMetaAccept {
+export function beginCodeMetaAccept(
+  protectedBody: ProtectedBody,
+  options: { witnesses?: boolean; provenance?: ImproveSuggestionProvenance } = {},
+): CodeMetaAccept {
+  const legacy = options.provenance === 'legacy';
+  if (legacy && (protectedBody.carried || protectedBody.frozenCode.length > 0)) throw new ImproveSuggestionFormatError();
   return {
     carried: protectedBody.carried,
     witnesses: options.witnesses === true,
@@ -3349,10 +3367,9 @@ export function beginCodeMetaAccept(protectedBody: ProtectedBody, options: { wit
     nonce: randomBytes(16).toString('hex'),
     entries: [...protectedBody.media, ...protectedBody.frozenCode],
     frozenCode: protectedBody.frozenCode.length,
-    codeMetaEvidence: false,
-    mode: null,
+    mode: legacy ? 'base' : 'meta',
     fences: [],
-    replayed: new Map(),
+    replayed: new Set(),
     report: {
       bound: 0, orphan: 0, malformed: 0, invalid: 0, duplicate: 0, mismatch: 0, debris: 0,
       stripped: 0, forged: 0, twins: 0, appended: 0, screened: 0, literal: 0,
@@ -3362,32 +3379,6 @@ export function beginCodeMetaAccept(protectedBody: ProtectedBody, options: { wit
 
 function needsCodeMetaAnalysis(accept: CodeMetaAccept, markdown: string): boolean {
   return accept.witnesses || accept.skeleton.some((block) => block.token !== null) || CODE_META_MARKDOWN_HINT.test(markdown);
-}
-
-/**
- * D25 1(a): does the lexed suggestion hold a well-formed CODE-META line (exact grammar, canonical attributes) that
- * stands alone as a paragraph or item text, outside code, directly above a fenced code token in the same list?
- * Reads only; a spelling inside code, inside other text or away from a fence is no evidence.
- */
-function hasCodeMetaEvidence(tokens: Token[]): boolean {
-  const pending: Token[][] = [tokens];
-  while (pending.length > 0) {
-    const array = pending.pop()!;
-    for (let index = 0; index < array.length; index += 1) {
-      const token = array[index]!;
-      if (token.type === 'paragraph' || token.type === 'text') {
-        const match = CODE_META_TOKEN_LINE.exec((token as Tokens.Paragraph).text);
-        const next = array[index + 1];
-        if (match && parseCodeMetaAttrs(match[1]!) !== null && next?.type === 'code'
-          && (next as Tokens.Code).codeBlockStyle !== 'indented') return true;
-      } else if (token.type === 'blockquote') {
-        pending.push((token as Tokens.Blockquote).tokens);
-      } else if (token.type === 'list') {
-        for (const item of (token as Tokens.List).items) pending.push(item.tokens);
-      }
-    }
-  }
-  return false;
 }
 
 const CODE_RENDERER = new Renderer();
@@ -3686,62 +3677,62 @@ export class ImproveReplayError extends Error {
 }
 
 /**
- * #1958 (review r1 CM-1, r2 CM2-1, D25 1(c)): the page has frozen code blocks
- * and the suggestion holds no structural #1958 carrier (no CODE-META line the
- * generator would write, no `CQ_CODE_PLACEHOLDER_<k>` of this page standing
- * alone outside code). Such a suggestion was generated before #1958, which
- * wrote those blocks as editable Markdown, or the model dropped every carrier:
- * the two cannot be told apart, and appending the originals would duplicate
- * the first. Refused before anything is built or written.
+ * #1958 (coordinator decision D26 item 2(b)): the suggestion is bound to a
+ * stored Improve row written before #1958 (no `improve_protocol`), and the
+ * page holds annotated code. That release wrote such blocks as editable
+ * Markdown without their title and options, so the suggestion cannot be
+ * applied without losing them or duplicating a frozen block. Refused before
+ * anything is built or written.
  */
 export class ImproveSuggestionFormatError extends Error {
   constructor() {
-    super('This AI suggestion does not carry the protected code blocks of this page (it may have been made before an update). The page is unchanged — run AI Improve again.');
+    super('This AI suggestion was made before an update and cannot keep the code block titles and options of this page. The page is unchanged — run AI Improve again.');
     this.name = 'ImproveSuggestionFormatError';
   }
 }
 
 /**
- * D25 1(a): a placement of a frozen code entry is evidence when it stands outside `pre`/`code` and could only have
- * come from the generator. A release before #1958 never wrote `CQ_CODE_PLACEHOLDER_<k>`, so a spelling of a token
- * the page itself never writes (not `literal`) is generator output wherever it stands as content: protectMedia
- * writes ` TOKEN ` in the frozen block's place, which shares a text run with text next to that block (`<td>Run:
- * TOKEN</td>`, `- Run: TOKEN`). A token the page spells itself counts only as a run of its own (a wrapped
- * `<p>TOKEN</p>`, or a text run that holds nothing but this page's placeholder spellings and white space).
+ * #1958 (D26 item 3): on the #1958 path a frozen or code-carrying original has
+ * no single placement it can take: the suggestion dropped, repeated or moved
+ * its placeholder into code, or the page itself spells that placeholder.
+ * Appending it could duplicate the block, so the Accept is refused instead.
  */
-function isPlaceholderEvidence(
-  html: string, placement: MediaTokenPlacement, entry: ProtectedMedia, flags: ContextFlags, spellings: RegExp,
-): boolean {
-  if (flags.code) return false;
-  if (!entry.literal || placement.wrapped) return true;
-  const before = html.lastIndexOf('>', placement.start - 1);
-  const after = html.indexOf('<', placement.end);
-  return html.slice(before + 1, after === -1 ? html.length : after).replace(spellings, '').trim() === '';
+export class ImproveCodePlacementError extends Error {
+  constructor() {
+    super('This AI suggestion dropped, repeated or moved a protected code block of this page, so it cannot be applied without losing or duplicating it. The page is unchanged — run AI Improve again, or edit the page directly (a page that spells CQ_CODE_PLACEHOLDER_<number> in its own text cannot take such a suggestion until that text is changed).');
+    this.name = 'ImproveCodePlacementError';
+  }
+}
+
+/** A code entry's spelling inside a longer identifier (`CQ_CODE_PLACEHOLDER_0_COUNT`, `xCQ_CODE_PLACEHOLDER_0`). */
+function isIdentifierPart(html: string, placement: MediaTokenPlacement): boolean {
+  if (placement.wrapped) return false;
+  return /[A-Za-z0-9_]/.test(html[placement.start - 1] ?? '')
+    || /[A-Za-z0-9_]/.test(html[placement.end] ?? '') || html.startsWith('\\_', placement.end);
 }
 
 /**
- * #1958: re-inject protected media and frozen code blocks. First the Accept
- * is classified from structural evidence only (D25 item 1, never a
- * substring): a CODE-META line the generator would write (markdownToHtml), or
- * a frozen code entry's token outside code (isPlaceholderEvidence) → `meta`; neither
- * and no frozen code on the page → `base`; neither but frozen code →
- * ImproveSuggestionFormatError (422).
+ * #1958: re-inject protected media and frozen code blocks, by the mode
+ * beginCodeMetaAccept took from the suggestion's provenance (D26 item 2).
  *
- * `meta` (replaces the restoreMedia + `includes` drop guard of the Accept):
- * one locator pass; every placement screened before counting: a spelling in
- * `pre`/`code`, or of an entry the page spells itself (`literal`), stays as
- * written; one in a container the reverse pass drops, or a code-carrying
- * entry's one in a context that does not keep a block intact, is removed.
- * An entry without code goes to every viable placement; a code-carrying
- * entry to its single viable placement, marked. An entry with no placement it
- * can take is appended once. The plan is budgeted before anything is built;
- * one splice. Media entries keep the tokens and ordinals of the release
- * before #1958; frozen code entries have their own.
+ * `base` (a pre-#1958 row on a page without annotated code): what the
+ * release before #1958 wrote, restoreMedia at every placement and the
+ * `includes` drop guard. Such a page has no code-carrying entry.
  *
- * `base` (D25 1(b), ruling Option B): the replay of the release before #1958
- * byte for byte (every placement replaced, the `includes` drop guard), with
- * each copy of a code-carrying original marked so finalizeCodeMetadata can
- * verify it and keep the trust boundary; the markers are removed again.
+ * `meta` (a #1958 row, or Markdown no row matches): one locator pass; every
+ * placement screened before counting: a spelling in `pre`/`code`, of an entry
+ * the page spells itself (`literal`), or of a code entry inside a longer
+ * identifier, stays as written; one in a container the reverse pass drops, or
+ * a code-carrying entry's one in a context that does not keep a block intact,
+ * is removed. An entry without code goes to every viable placement and is
+ * appended once when it has none; a code-carrying entry needs exactly one
+ * viable placement, where it goes marked, else ImproveCodePlacementError
+ * (D26 item 3: refusal, never a duplicate). Media entries keep the tokens and
+ * ordinals of the release before #1958; frozen code entries have their own.
+ *
+ * Both: the work is charged against the budget before anything is built (on
+ * `base` an upper bound: every placement plus every entry without one), then
+ * one splice.
  */
 export function replayProtectedMedia(
   html: string,
@@ -3749,54 +3740,32 @@ export function replayProtectedMedia(
   options: { replayBudget?: number } = {},
 ): { html: string; dropped: number } {
   const entries = codeMeta.entries;
-  const placements = entries.length > 0 ? locateMediaTokens(html, entries) : [];
-  const entryOf = new Map(entries.map((entry, index) => [entry.token, index] as const));
-  const cache = new Map<MediaTokenContext, ContextFlags>();
-  const flagsOf = placements.map((placement) => contextFlags(placement.context, cache));
-  const spellings = new RegExp(entries.flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
-    .map((spelling) => `${escapeRegExp(spelling)}(?![0-9])`).join('|') || '(?!)', 'g');
-  const placeholderEvidence = placements.some((placement, index) => {
-    const k = entryOf.get(placement.token)!;
-    return k >= entries.length - codeMeta.frozenCode && isPlaceholderEvidence(html, placement, entries[k]!, flagsOf[index]!, spellings);
-  });
-  if (codeMeta.codeMetaEvidence || placeholderEvidence) codeMeta.mode = 'meta';
-  else if (codeMeta.frozenCode > 0) throw new ImproveSuggestionFormatError();
-  else codeMeta.mode = 'base';
   if (entries.length === 0) return { html, dropped: 0 };
+  const placements = locateMediaTokens(html, entries);
+  const entryOf = new Map(entries.map((entry, index) => [entry.token, index] as const));
   const budget = options.replayBudget
     ?? MEDIA_REPLAY_FACTOR * entries.reduce((sum, entry) => sum + entry.html.length, 0) + MEDIA_REPLAY_SLACK;
-  const markedCopy = (k: number, id: string): string => {
-    const entry = entries[k]!;
-    const at = entry.html.search(/[\s/>]/);
-    codeMeta.replayed.set(id, k);
-    return `${entry.html.slice(0, at)} ${REPLAY_MARKER}="${codeMeta.nonce}-${id}"${entry.html.slice(at)}`;
-  };
+  const report = codeMeta.report;
   if (codeMeta.mode === 'base') {
-    // Exactly what restoreMedia + the `includes` drop guard wrote, decided on the unmarked result.
-    const unmarked = splicePlacements(html, placements, (placement) => entries[entryOf.get(placement.token)!]!.html);
-    const appended = entries.flatMap((entry, k) => (unmarked.includes(entry.html) ? [] : [k]));
+    const placed = new Set(placements.map((placement) => entryOf.get(placement.token)!));
     const cost = placements.reduce((sum, placement) => sum + entries[entryOf.get(placement.token)!]!.html.length, 0)
-      + appended.reduce((sum, k) => sum + entries[k]!.html.length, 0);
+      + entries.reduce((sum, entry, k) => sum + (placed.has(k) ? 0 : entry.html.length + 1), 0);
     if (cost > budget) throw new ImproveReplayBudgetError();
-    const copies = new Map<number, number>();
-    const copyOf = (k: number): string => {
-      if (!entries[k]!.code) return entries[k]!.html;
-      const copy = copies.get(k) ?? 0;
-      copies.set(k, copy + 1);
-      return markedCopy(k, `${k}-${copy}`);
-    };
-    const spliced = splicePlacements(html, placements, (placement) => copyOf(entryOf.get(placement.token)!));
-    codeMeta.report.appended += appended.length;
+    const spliced = splicePlacements(html, placements, (placement) => entries[entryOf.get(placement.token)!]!.html);
+    const appended = entries.filter((entry) => !spliced.includes(entry.html));
+    report.appended += appended.length;
     return {
-      html: appended.length > 0 ? spliced + appended.map((k) => copyOf(k)).join('\n') : spliced,
+      html: appended.length > 0 ? spliced + appended.map((entry) => entry.html).join('\n') : spliced,
       dropped: appended.length,
     };
   }
-  const report = codeMeta.report;
-  const verdicts = placements.map((placement, index): 'keep' | 'remove' | 'viable' => {
-    const entry = entries[entryOf.get(placement.token)!]!;
-    const flags = flagsOf[index]!;
+  const cache = new Map<MediaTokenContext, ContextFlags>();
+  const verdicts = placements.map((placement): 'keep' | 'remove' | 'viable' => {
+    const k = entryOf.get(placement.token)!;
+    const entry = entries[k]!;
+    const flags = contextFlags(placement.context, cache);
     if (entry.literal || flags.code) return 'keep';
+    if (k >= entries.length - codeMeta.frozenCode && isIdentifierPart(html, placement)) return 'keep';
     if (flags.dropping) return 'remove';
     if (entry.code && flags.unsafe) return 'remove';
     return 'viable';
@@ -3805,24 +3774,30 @@ export function replayProtectedMedia(
   placements.forEach((placement, index) => {
     if (verdicts[index] === 'viable') viable[entryOf.get(placement.token)!]! += 1;
   });
-  const marked = entries.map((entry, k) => (entry.code ? markedCopy(k, String(k)) : entry.html));
+  if (entries.some((entry, k) => entry.code && viable[k] !== 1)) throw new ImproveCodePlacementError();
+  const marked = entries.map((entry, k) => {
+    if (!entry.code) return entry.html;
+    const at = entry.html.search(/[\s/>]/);
+    return `${entry.html.slice(0, at)} ${REPLAY_MARKER}="${codeMeta.nonce}-${k}"${entry.html.slice(at)}`;
+  });
   const replacements = placements.map((placement, index): string | null => {
-    const k = entryOf.get(placement.token)!;
     if (verdicts[index] === 'keep') return null;
     if (verdicts[index] === 'remove') return '';
-    if (!entries[k]!.code) return entries[k]!.html;
-    return viable[k] === 1 ? marked[k]! : '';
+    return marked[entryOf.get(placement.token)!]!;
   });
-  const appended = entries.flatMap((entry, k) => (viable[k] === 0 || (entry.code && viable[k] !== 1) ? [k] : []));
+  const appended = entries.flatMap((_entry, k) => (viable[k] === 0 ? [k] : []));
 
-  // Budget from the plan alone, before anything is built.
+  // Budget from the plan alone (marker text included), before anything is built.
   const cost = replacements.reduce((sum, value) => sum + (value?.length ?? 0), 0)
-    + appended.reduce((sum, k) => sum + marked[k]!.length, 0);
+    + appended.reduce((sum, k) => sum + marked[k]!.length + 1, 0);
   if (cost > budget) throw new ImproveReplayBudgetError();
 
   report.screened += verdicts.filter((verdict) => verdict === 'remove').length;
   report.literal += verdicts.filter((verdict) => verdict === 'keep').length;
   report.appended += appended.length;
+  entries.forEach((entry, k) => {
+    if (entry.code) codeMeta.replayed.add(k);
+  });
   const spliced = splicePlacements(html, placements, (_placement, index) => replacements[index]!);
   return {
     html: appended.length > 0 ? spliced + appended.map((k) => marked[k]!).join('\n') : spliced,
@@ -3951,12 +3926,9 @@ function outerHtmlWithout(el: Element, attribute: string): string {
   return copy.outerHTML;
 }
 
-/**
- * Elements carrying `attribute="<nonce>-<id>"` exactly once, by `id` (`<i>`, or `<k>-<copy>` for a base-path
- * copy), for the ids `known` accepts.
- */
-function authenticMarkers(doc: Document, attribute: string, nonce: string, known: (id: string) => boolean): Map<string, Element> {
-  const pattern = new RegExp(`^${nonce}-((?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*))?)$`);
+/** Elements carrying `attribute="<nonce>-<i>"` exactly once, by `i`, for the indices `known` accepts. */
+function authenticMarkers(doc: Document, attribute: string, nonce: string, known: (index: number) => boolean): Map<number, Element> {
+  const pattern = new RegExp(`^${nonce}-(0|[1-9]\\d*)$`);
   const byValue = new Map<string, Element[]>();
   for (const el of doc.body.querySelectorAll(`[${attribute}]`)) {
     const value = el.getAttribute(attribute)!;
@@ -3964,10 +3936,10 @@ function authenticMarkers(doc: Document, attribute: string, nonce: string, known
     if (elements) elements.push(el);
     else byValue.set(value, [el]);
   }
-  const authentic = new Map<string, Element>();
+  const authentic = new Map<number, Element>();
   for (const [value, elements] of byValue) {
     const match = pattern.exec(value);
-    if (match && elements.length === 1 && known(match[1]!)) authentic.set(match[1]!, elements[0]!);
+    if (match && elements.length === 1 && known(Number(match[1]))) authentic.set(Number(match[1]), elements[0]!);
   }
   return authentic;
 }
@@ -3998,11 +3970,6 @@ interface CodeMacroAllowanceState extends CodeMacroAllowance {
   readonly references: Map<string, CodeMacroInventory>;
   /** admitLegacyCodeMetadata ran on this allowance. */
   admitted: boolean;
-  /**
-   * Rule (iii) applies. Off only on the base path of D25 1(b), where nothing binds; an admitted #1953 unit binds
-   * metadata to a block, so admission switches it back on.
-   */
-  checkTwins: boolean;
 }
 
 function allowanceState(allowance: CodeMacroAllowance): CodeMacroAllowanceState {
@@ -4035,10 +4002,10 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
 
   // 1–2. Authentic markers; every marked original verified before anything changes: exactly as written,
   // or with nothing but the CR / CR LF of its code text read as LF (review r1 CM-3). Anything else refuses.
-  const fenceMarkers = authenticMarkers(doc, FENCE_MARKER, nonce, (j) => /^\d+$/.test(j) && Number(j) < fences.length);
-  const replayMarkers = authenticMarkers(doc, REPLAY_MARKER, nonce, (id) => codeMeta.replayed.has(id));
-  for (const [id, k] of codeMeta.replayed) {
-    const root = replayMarkers.get(id);
+  const fenceMarkers = authenticMarkers(doc, FENCE_MARKER, nonce, (j) => j < fences.length);
+  const replayMarkers = authenticMarkers(doc, REPLAY_MARKER, nonce, (k) => codeMeta.replayed.has(k));
+  for (const k of codeMeta.replayed) {
+    const root = replayMarkers.get(k);
     const entry = codeMeta.entries[k]!;
     const marked = root ? outerHtmlWithout(root, REPLAY_MARKER) : null;
     if (marked === null || (marked !== entry.html && marked !== entry.lineEndForm)) throw new ImproveReplayError();
@@ -4070,9 +4037,9 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
   }
 
   // 4. Bind: the marked fence still in the exact shape marked rendered, outside every dropping container.
-  const boundFences = new Map<string, Element>();
+  const boundFences = new Map<number, Element>();
   for (const [j, pre] of fenceMarkers) {
-    const fence = fences[Number(j)]!;
+    const fence = fences[j]!;
     if (fence.bound === null) continue;
     const block = skeleton[fence.bound]!;
     const code = onlyCodeChild(pre);
@@ -4086,15 +4053,14 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
     changed = true;
   }
 
-  // 5. Twin rule: equal effective blocks keep metadata only when all carry identical metadata. On the base path
-  // (D25 1(b)) nothing binds, so metadata comes only from verified originals and the rule does not apply.
+  // 5. Twin rule: equal effective blocks keep metadata only when all carry identical metadata.
   const groups = new Map<string, Element[]>();
   for (const { pre, key } of effectiveCodeBlocks(doc.body, facts)) {
     const members = groups.get(key);
     if (members) members.push(pre);
     else groups.set(key, [pre]);
   }
-  for (const members of codeMeta.mode === 'base' ? [] : groups.values()) {
+  for (const members of groups.values()) {
     if (members.length < 2) continue;
     const metadata = (pre: Element): string => JSON.stringify([pre.getAttribute('data-title'), pre.getAttribute('data-macro-params')]);
     const first = metadata(members[0]!);
@@ -4136,7 +4102,7 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
   const boundElements = new Set([...boundFences.keys()].map((j) => finalFences.get(j)!));
   const witnessOf = new Map<Element, LexerCodeText>();
   for (const [j, pre] of finalFences) {
-    const fence = fences[Number(j)]!;
+    const fence = fences[j]!;
     const code = onlyCodeChild(pre);
     if (fence.bound !== null || pre.attributes.length !== 1 || !code || finalFacts.trusted.has(pre)
       || code.getAttribute('class') !== fence.className || code.attributes.length !== (fence.className === null ? 0 : 1)
@@ -4166,7 +4132,6 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
   ]);
   const allowance: CodeMacroAllowanceState = {
     carried: codeMeta.carried, units, blocks, keyCount, references: new Map(), admitted: false,
-    checkTwins: codeMeta.mode !== 'base',
   };
   return { html: out, witnesses: codeMeta.witnesses ? blocks.map((block) => block.witness) : [], allowance, report };
 }
@@ -4179,7 +4144,7 @@ export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): Fi
 function removeMarkerTexts(html: string, nonce: string, texts: readonly string[]): string {
   if (texts.length === 0) return html;
   const seen = new Map<string, number>(texts.map((text) => [text, 0] as const));
-  const out = html.replace(new RegExp(` (?:${FENCE_MARKER}|${REPLAY_MARKER})="${nonce}-\\d+(?:-\\d+)?"`, 'g'), (text) => {
+  const out = html.replace(new RegExp(` (?:${FENCE_MARKER}|${REPLAY_MARKER})="${nonce}-\\d+"`, 'g'), (text) => {
     const count = seen.get(text);
     if (count === undefined) return text;
     seen.set(text, count + 1);
@@ -4233,7 +4198,6 @@ export function admitLegacyCodeMetadata(allowance: CodeMacroAllowance, ops: Read
     state.units.push(pre.outerHTML);
     admitted += 1;
   }
-  if (admitted > 0) state.checkTwins = true;
   return admitted;
 }
 
@@ -4404,7 +4368,7 @@ export function judgeCodeMacros(
   const reference = referenceInventory(allowance, options);
   if (written.records.length !== reference.records.length
     || written.records.some((record, index) => record !== reference.records[index])) refuseCodeMacro();
-  if (allowanceState(allowance).checkTwins && written.bareKeys.some((key) => reference.recordKeys.has(key))) refuseCodeMacro();
+  if (written.bareKeys.some((key) => reference.recordKeys.has(key))) refuseCodeMacro();
 }
 
 /**
@@ -5965,12 +5929,10 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
   const parser = blockMediaToken ? createEditorMarked(blockMediaToken) : EDITOR_MARKED;
   let html: string;
   const codeMeta = options?.codeMeta;
-  if (codeMeta) codeMeta.codeMetaEvidence = false;
   if (codeMeta && needsCodeMetaAnalysis(codeMeta, markdown)) {
     const tokens = parser.lexer(normalized);
-    codeMeta.codeMetaEvidence = hasCodeMetaEvidence(tokens);
-    // D25: a page with frozen code never takes the base path, so the #1958 analysis runs in full there.
-    analyseCodeMetaEcho(tokens, codeMeta, codeMeta.codeMetaEvidence || codeMeta.frozenCode > 0);
+    // D26: the #1958 analysis runs in full on the #1958 path; on the base path only fences are recorded (#1953).
+    analyseCodeMetaEcho(tokens, codeMeta, codeMeta.mode === 'meta');
     html = parser.parser(tokens);
   } else {
     html = await parser.parse(normalized) as string;
