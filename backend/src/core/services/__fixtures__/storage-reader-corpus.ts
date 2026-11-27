@@ -4,6 +4,10 @@
  * shared contract of every consumer of the reader (#1958, #1953):
  * `confluence-storage-reader.test.ts` holds the reader to it and holds each
  * entry against an independent XML parser. Entries are appended, never edited.
+ *
+ * What it proves is what it states: elements, text and, where an entry gives
+ * them, attributes of strings the reader reads. It says nothing about what a
+ * lexical scan may conclude from a string the reader cannot read.
  */
 import type { StorageReadFailure } from '../confluence-storage-reader.js';
 
@@ -20,6 +24,21 @@ export interface StorageReaderCorpusEntry {
   readonly elements?: readonly string[];
   /** For a string that is read: the text an XML consumer reads from it. */
   readonly text?: string;
+  /**
+   * For a string that is read: every attribute of every element in document
+   * order as `{namespace URI}local=value`, namespace declarations left out,
+   * `ac` / `ri` standing for the Confluence namespaces and `{}` for no
+   * namespace. The value is what an XML consumer reads: references decoded,
+   * a literal tab or line feed normalised to a space.
+   */
+  readonly attributes?: readonly string[];
+  /**
+   * For a string that is read: how many elements could be read as `url` by
+   * some consumer (recognition: any prefix, any case, any binding), and how
+   * many are the storage name `ri:url` (authority: that prefix, bound to the
+   * Confluence namespace). The two are never the same question.
+   */
+  readonly urls?: { readonly resembling: number; readonly storage: number };
   /**
    * The string uses a prefix nothing declares and Confluence does not bind. A
    * strict XML parser refuses it; the reader reads it, in a namespace of its
@@ -129,4 +148,63 @@ export const STORAGE_READER_CORPUS: readonly StorageReaderCorpusEntry[] = [
   { name: 'unknown-entity', storage: '<p>&bogus;</p>', read: 'not-well-formed' },
   { name: 'double-hyphen-in-comment', storage: '<p><!-- a -- b --></p>', read: 'not-well-formed' },
   { name: 'unclosed-element', storage: '<p><ac:link><ri:url ri:value="/x" /></p>', read: 'not-well-formed' },
+  // Review r1, R8: attribute names and values, as literals.
+  {
+    // XHTML 1.0 declares `lang` and `rang` as U+2329 and U+232A; HTML5 reads them as U+27E8 and U+27E9.
+    name: 'entities-in-attribute-values',
+    storage: '<p title="&lang;x&rang;" data-n="&nbsp;&mdash;&amp;&lt;&quot;&apos;&euro;">t&lang;&rang;</p>',
+    read: 'ok',
+    elements: ['{}p'],
+    text: 't\u2329\u232a',
+    attributes: ['{}title=\u2329x\u232a', '{}data-n=\u00a0\u2014&<"\'\u20ac'],
+  },
+  {
+    // A referenced tab, line feed or carriage return is itself; a literal one is a space.
+    name: 'numeric-references-and-literal-white-space-in-attribute-values',
+    storage: '<p title="a&#9;b&#10;c&#13;d&#x20;e&#x2329;" data-raw="a\tb\nc">x</p>',
+    read: 'ok',
+    elements: ['{}p'],
+    text: 'x',
+    attributes: ['{}title=a\tb\nc\rd e\u2329', '{}data-raw=a b c'],
+  },
+  {
+    name: 'link-attributes-conventional',
+    storage: '<ac:link ac:anchor="top" ac:card-appearance="inline"><ri:url ri:value="/x?a=1&amp;b=2" /></ac:link>',
+    read: 'ok',
+    elements: ['{ac}link', '{ri}url'],
+    text: '',
+    attributes: ['{ac}anchor=top', '{ac}card-appearance=inline', '{ri}value=/x?a=1&b=2'],
+    urls: { resembling: 1, storage: 1 },
+  },
+  {
+    // The same expanded names under other prefixes: recognised, never the storage name.
+    name: 'link-attributes-aliased',
+    storage: '<x:link xmlns:x="http://atlassian.com/content" xmlns:y="http://atlassian.com/resource/identifier" x:anchor="top">'
+      + '<y:url y:value="/x" /></x:link>',
+    read: 'ok',
+    elements: ['{ac}link', '{ri}url'],
+    text: '',
+    attributes: ['{ac}anchor=top', '{ri}value=/x'],
+    urls: { resembling: 1, storage: 0 },
+  },
+  {
+    // The conventional prefix bound elsewhere, and an attribute without a prefix: neither is `ri:value`.
+    name: 'link-attributes-rebound-and-unprefixed',
+    storage: '<ac:link xmlns:ri="urn:other"><ri:url ri:value="/x" value="/y" /></ac:link><ac:link><ri:url value="/z" /></ac:link>',
+    read: 'ok',
+    elements: ['{ac}link', '{urn:other}url', '{ac}link', '{ri}url'],
+    text: '',
+    attributes: ['{urn:other}value=/x', '{}value=/y', '{}value=/z'],
+    urls: { resembling: 2, storage: 1 },
+  },
+  {
+    name: 'link-attributes-upper-case-prefix',
+    storage: '<ac:link><ri:url RI:VALUE="/x" /></ac:link><ac:link><RI:url ri:value="/y" /></ac:link>',
+    read: 'ok',
+    elements: ['{ac}link', '{ri}url', '{ac}link', '{urn:x-compendiq:undeclared-prefix:RI}url'],
+    text: '',
+    attributes: ['{urn:x-compendiq:undeclared-prefix:RI}VALUE=/x', '{ri}value=/y'],
+    urls: { resembling: 2, storage: 1 },
+    undeclaredPrefix: true,
+  },
 ];

@@ -20,7 +20,7 @@ import {
   type StorageElement,
   type StorageTree,
 } from './confluence-storage-reader.js';
-import { oracleLocalNameCount, oracleReads, storageOracle } from './__fixtures__/storage-oracle.js';
+import { ORACLE_ENTITIES, oracleLocalNameCount, oracleReads, storageOracle } from './__fixtures__/storage-oracle.js';
 import { STORAGE_READER_CORPUS } from './__fixtures__/storage-reader-corpus.js';
 import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
 
@@ -380,12 +380,40 @@ describe('confluence-storage-reader: the acceptance corpus (#1955)', () => {
     expect(result.ok ? 'ok' : result.reason).toBe(entry.read);
     expect(oracleReads(entry.storage)).toBe(entry.read === 'ok' && !entry.undeclaredPrefix);
     if (!result.ok) return;
-    expect([...storageElements(result.tree)].map((element) => expanded(element.uri, element.local))).toEqual(entry.elements);
+    const elements = [...storageElements(result.tree)];
+    expect(elements.map((element) => expanded(element.uri, element.local))).toEqual(entry.elements);
     expect(storageText(result.tree.root)).toBe(entry.text);
+    if (entry.attributes) {
+      expect(elements.flatMap((element) => element.attributes.map((attribute) => `${expanded(attribute.uri, attribute.local)}=${attribute.value}`)))
+        .toEqual(entry.attributes);
+    }
+    if (entry.urls) {
+      // Recognition and authority, each against its own literal.
+      expect(elements.filter((element) => resemblesStorageName(element, 'url'))).toHaveLength(entry.urls.resembling);
+      expect(elements.filter((element) => isStorageName(element, 'ri', 'url'))).toHaveLength(entry.urls.storage);
+    }
     if (entry.undeclaredPrefix) return;
     const oracle = storageOracle(entry.storage).documentElement;
-    expect([...oracle.getElementsByTagName('*')].map((element) => expanded(element.namespaceURI, element.localName))).toEqual(entry.elements);
+    const oracleElements = [...oracle.getElementsByTagName('*')];
+    expect(oracleElements.map((element) => expanded(element.namespaceURI, element.localName))).toEqual(entry.elements);
     expect(oracle.textContent).toBe(entry.text);
+    if (entry.attributes) {
+      expect(oracleElements.flatMap((element) => [...element.attributes]
+        .filter((attribute) => attribute.name !== 'xmlns' && attribute.prefix !== 'xmlns')
+        .map((attribute) => `${expanded(attribute.namespaceURI, attribute.localName)}=${attribute.value}`)))
+        .toEqual(entry.attributes);
+    }
+    if (entry.urls) expect(oracleLocalNameCount(entry.storage, 'url')).toBe(entry.urls.resembling);
+  });
+
+  // Review r1, R8: the oracle's entity values are its own, and they are the XHTML 1.0 ones.
+  it('is held against an oracle whose entity table is pinned on its own, and agrees with it name by name', () => {
+    expect(new Map(ORACLE_ENTITIES)).toEqual(new Map(STORAGE_ENTITIES));
+    expect(ORACLE_ENTITIES.get('lang')).toBe('\u2329');
+    expect(ORACLE_ENTITIES.get('rang')).toBe('\u232a');
+    const title = storageOracle('<p title="&lang;&rang;">x</p>').documentElement.firstElementChild!.getAttribute('title');
+    expect(title).toBe('\u2329\u232a');
+    expect(read('<p title="&lang;&rang;">x</p>').root.children[0]).toMatchObject({ attributes: [{ name: 'title', value: '\u2329\u232a' }] });
   });
 
   it('holds unique names', () => {
