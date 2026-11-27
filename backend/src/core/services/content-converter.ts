@@ -25,7 +25,12 @@ import {
   refuseConfluenceStorage,
   storedLinkKeepsTarget,
 } from './confluence-link.js';
-import { isStorageLimitStop, type StorageElement, type StorageReadFailure } from './confluence-storage-reader.js';
+import {
+  ConfluenceStorageRefusedError,
+  isStorageLimitStop,
+  type StorageElement,
+  type StorageReadFailure,
+} from './confluence-storage-reader.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   assertStorageDerivationFeatures,
@@ -1720,20 +1725,44 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // One forward pass over the stored storage, when something needs it: the D19 check and the D21 fallback's `shown`.
   let stored: StoredLinkWitness | undefined;
   const storedLinks = (): StoredLinkWitness => (stored ??= witnessStoredLinks(linkOrigin!, writeBackFeatures(options)));
+  /** The carriers of the outgoing links of the five #1955 kinds, checked at the end (D19). */
+  const carriers: string[] = [];
   for (const a of doc.querySelectorAll(linkAnchors)) {
     const acLink = confluenceLinkElement(a, options.derivationFeatures);
     if (!acLink) continue;
-    // Owner decision D19, coordinator decision D20 (#1955, reviews r5 R24, r6 R25/R26): a link of a #1955 kind
-    // that carries a carrier the forward pass emitted from a stored link is written with that link's XML target,
-    // or the write is refused here, before any effect.
     const carrier = linkKinds && linkOrigin ? confluenceLinkCarrierOf(a) : null;
     const kind = carrier === null ? undefined : parseConfluenceLinkHref(carrier)?.kind;
-    if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) {
-      storedLinks().check(carrier);
-    }
+    if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) carriers.push(carrier);
     a.replaceWith(acLink);
   }
 
+  // Review r11, R34: the D19 check runs last (W5), so an error of a later step that is not a refusal (an
+  // attachment `src` `decodeURIComponent` cannot read) never stands in for D19's typed refusal of the same write.
+  let written: string;
+  try {
+    written = finishStorage(doc, linkOrigin, linkKinds, (element) => storedLinks().shown(element));
+  } catch (error) {
+    if (!(error instanceof ConfluenceStorageRefusedError)) for (const carrier of carriers) storedLinks().check(carrier);
+    throw error;
+  }
+  // Owner decision D19, coordinator decision D20 (#1955, reviews r5 R24, r6 R25/R26): a link of a #1955 kind that
+  // carries a carrier the forward pass emitted from a stored link is written with that link's XML target, or the
+  // write is refused here, before any effect. It runs last so that every cheaper refusal, the work limit of the
+  // `ri:url` judgement first, is decided before the forward pass over the stored storage runs (W5).
+  for (const carrier of carriers) storedLinks().check(carrier);
+  return written;
+}
+
+/**
+ * The last steps of {@link htmlToConfluence}: attachment images and emoticons written back, then, with
+ * `link-kinds`, the `ri:url` judgement on the serialised string.
+ */
+function finishStorage(
+  doc: Document,
+  linkOrigin: string | null | undefined,
+  linkKinds: boolean,
+  shown: (element: StorageElement) => boolean,
+): string {
   // Convert images with attachment references back
   for (const img of doc.querySelectorAll('img[src^="/api/attachments/"]')) {
     const src = img.getAttribute('src') ?? '';
@@ -1787,9 +1816,9 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // XML (confluence-link.ts): a link to a value that is not a navigable URL
   // stays only where the stored page holds that occurrence, and a string that
   // would carry one past the check is refused. The check may change the
-  // document and serialise it again; nothing follows it.
+  // document and serialise it again; nothing follows it but the D19 check.
   if (!linkKinds) return serialiseStorage(doc);
-  return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin, (element) => storedLinks().shown(element));
+  return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin, shown);
 }
 
 /**

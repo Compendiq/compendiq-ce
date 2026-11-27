@@ -8,7 +8,7 @@
  * independent XML reading of it (`__fixtures__/storage-oracle.ts`).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
+import { _setForwardDerivationStepForTest, confluenceToHtml, htmlToConfluence } from './content-converter.js';
 import { JSDOM } from 'jsdom';
 import { confluenceLinkAnchor, confluenceLinkCarrier, encodeConfluenceLinkValue } from './confluence-link.js';
 import { ConfluenceStorageRefusedError, STORAGE_READER_LIMITS } from './confluence-storage-reader.js';
@@ -487,6 +487,29 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       expect(htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(first))), { previousStorage: first })).toBe(first);
     });
 
+    // Review r11, R34: an error of a later, unrelated step (an attachment `src` ending in a literal `%`, which
+    // `decodeURIComponent` cannot read) never masks the typed D19 refusal; a `ri:url` refusal still comes first.
+    it('refuses a changed target as `changed-link-target` beside an attachment whose src cannot be decoded (R34)', () => {
+      const outcome = (html: string, storage: string): string => {
+        try {
+          htmlToConfluence(html, { previousStorage: storage });
+          return 'written';
+        } catch (error) {
+          return error instanceof ConfluenceStorageRefusedError ? error.reason : (error as Error).name;
+        }
+      };
+      const changed = inPanel('info');
+      const kept = `<p>see ${release} now</p>`;
+      const image = '<p><img src="/api/attachments/1/100%.png"></p>';
+      const carried = '<p><img src="/api/attachments/1/100%.png" data-confluence-filename="100%.png"></p>';
+      expect(outcome(`${confluenceToHtml(changed)}${image}`, changed)).toBe('changed-link-target');
+      expect(outcome(`${confluenceToHtml(changed)}${carried}`, changed)).toBe('changed-link-target');
+      expect(outcome(`${confluenceToHtml(changed)}<script>${raw()}</script>`, changed)).toBe('unapproved-link');
+      // Without a D19 change the same image behaves as before: the undecodable src throws, the carried name is written.
+      expect(outcome(`${confluenceToHtml(kept)}${image}`, kept)).toBe('URIError');
+      expect(htmlToConfluence(`${confluenceToHtml(kept)}${carried}`, { previousStorage: kept })).toContain('ri:filename="100%.png"');
+    });
+
     it('refuses a link the forward pass emitted from well-formed storage past the limits, in a panel too, and nothing else (R25)', () => {
       const deep = `${'<div>'.repeat(1_100)}x${'</div>'.repeat(1_100)}`;
       for (const where of [`<p>see ${release} now</p>`, inPanel('info')]) {
@@ -808,8 +831,16 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       const depth = 400;
       const nested = `${'<ac:link><ri:url ri:value="/r"></ri:url><ac:link-body>'.repeat(depth)}${'x'.repeat(25_000)}${'</ac:link-body></ac:link>'.repeat(depth)}`;
       expect(refusal(`<p>${nested}</p>`)).toBe('too-many-nodes');
-      // The stored storage is evidence or the write is refused: it is never silently no evidence.
-      expect(refusal(`<p>${carrier()}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('too-many-nodes');
+      // The stored storage is evidence or the write is refused: it is never silently no evidence. The refusal is
+      // decided before any forward pass over that storage (W5: a refusal for work is cheap): no pass runs at all.
+      let passes = 0;
+      _setForwardDerivationStepForTest(() => { passes += 1; });
+      try {
+        expect(refusal(`<p>${carrier()}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('too-many-nodes');
+      } finally {
+        _setForwardDerivationStepForTest(undefined);
+      }
+      expect(passes).toBe(0);
       expect(refusal(`<p>${raw('https://example.com/')}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('written');
     });
   });
