@@ -382,7 +382,7 @@ frozen code into the `CQ_MEDIA_PLACEHOLDER` ordinal space. On Accept the
 remote exit first authorizes the actor and the page in one transaction that
 locks the row, fences its content/lifecycle revisions (409) and reads spaces
 and access uncached (403/404); then the route runs
-`beginCodeMetaAccept` → `markdownToHtml(…, { codeMeta })` →
+`beginCodeMetaAccept(…, { provenance })` → `markdownToHtml(…, { codeMeta })` →
 `replayProtectedMedia(html, codeMeta)` → `finalizeCodeMetadata` → (local)
 `assertLocalCodeMacroProjections` or (remote) `htmlToConfluence` +
 `assertCodeMacroStorage`. Metadata returns only to a fence whose language and
@@ -396,18 +396,18 @@ the writer's exact shape and accounted for by the page, else 422
 Model-written code markup that is not a fence or a plain `pre` is refused (R2;
 `data-macro-name="code"` counts only on a placeholder the writer names a macro
 from). A replayed original must come back exactly (only CR → LF in its code
-text is allowed). A placeholder spelled in `pre`/`code`, or one the page itself
-spells, stays text; a code-carrying original without exactly one viable
-placement is appended once. The Accept is classified structurally, never by
-a substring (D25 item 1): a standalone CODE-META line directly above a fence,
-or a frozen code placeholder of the page outside code (one the page itself
-spells only in a run of its own) →
-the #1958 path; no such carrier and no frozen code → the base path, the
+text is allowed). A placeholder spelled in `pre`/`code`, one the page itself
+spells, or a frozen one inside a longer identifier stays text; a code-carrying
+original without exactly one viable placement refuses the Accept (422), never
+appended or copied. **Provenance decides the path, never the text (D26):** the
+Improve generator writes `llm_improvements.improve_protocol = 1`
+(`IMPROVE_CODE_META_PROTOCOL`, migration 161) on its row, and Apply reads the
+row its Markdown matches exactly. Protocol 1 or no row → the #1958 path; a
+row without a protocol → 422 on a page with any annotated code, else the
 pre-#1958 replay byte for byte (`restoreMedia` + `includes` guard, no
-CODE-META analysis, no twin rule, storage rule (iii) off until a #1953 unit is
-admitted) with the trust boundary kept (foreign `pre` metadata stripped,
-code-named markup refused, copies of originals verified); no carrier but
-frozen code → 422.
+CODE-META analysis) with the trust boundary kept (foreign `pre` metadata
+stripped, code-named markup refused, storage rules). Never infer provenance
+from CODE-META lines or placeholder spellings.
 Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
 "AI Improve code-block metadata". #1953-2 consumes `witnesses`,
 `codeBlockElements` and `admitLegacyCodeMetadata` (once per allowance) after

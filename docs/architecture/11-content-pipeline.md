@@ -1504,10 +1504,12 @@ On `POST /llm/improvements/apply` the route:
    same `body_html` (#781, see "Skeleton-guided token recovery" below). An
    unrecoverable layout throws and the apply is rejected with **422** —
    nothing is saved or pushed. `codeMeta` (#1958) is the Accept's code
-   metadata state from `beginCodeMetaAccept(protectMedia(body_html))`.
+   metadata state from `beginCodeMetaAccept(protectMedia(body_html), {
+   provenance })`, the provenance read from the stored Improve row the
+   Markdown matches (see "Suggestions across the release"); a pre-#1958 row
+   for a page with annotated code is refused (**422**) here, before parsing.
 3. Calls `replayProtectedMedia(html, codeMeta)` (#1958; it replaced
-   `restoreMedia` plus the `includes` drop guard). It first classifies the
-   Accept (see "Suggestions across the release"): on the **base path** it
+   `restoreMedia` plus the `includes` drop guard). On the **base path** it
    writes exactly what `restoreMedia` plus the drop guard wrote; on the
    **#1958 path** it replays as follows. The tokens of the media
    entries and of the frozen code entries (and their turndown-escaped
@@ -1517,7 +1519,8 @@ On `POST /llm/improvements/apply` the route:
    `select`, SVG or MathML, a subtree the tree builder moved or an element
    holding a start tag it ignored. Every placement is screened before
    anything is counted (each context element evaluated once): a spelling
-   inside `pre`/`code`, or of an entry the page itself spells (`literal`),
+   inside `pre`/`code`, of an entry the page itself spells (`literal`), or of
+   a frozen code entry inside a longer identifier (`CQ_CODE_PLACEHOLDER_0_COUNT`)
    stays as written; one inside a container the reverse pass drops
    (`isDroppingContext`: `div.figure-index`, `div.table-index`, `summary`,
    `template`, the atomic macro placeholders, draw.io, a plain item of a task
@@ -1525,13 +1528,16 @@ On `POST /llm/improvements/apply` the route:
    one in a context that does not keep a spliced block intact (outside `p div
    li ul ol blockquote table thead tbody tfoot tr td th details section
    article span h1–h6`) is removed too. An entry without code goes to every
-   viable placement; a code-carrying entry to its single viable placement,
-   marked; any entry left without a viable placement is **appended once** at
-   the end (logged `#723: re-appended media dropped during AI Improve`). The
-   plan is budgeted before anything is built (`2 × Σ originals + 65,536`
-   UTF-16 units, else **422**; on either path). With no screened placement,
-   no literal or code-carrying entry and every entry placed, the result is
-   byte-identical to the former `restoreMedia` + drop guard.
+   viable placement and, left without one, is **appended once** at the end
+   (logged `#723: re-appended media dropped during AI Improve`). A
+   code-carrying entry needs exactly one viable placement, where it goes
+   marked; with none or several the Accept is refused (**422**, coordinator
+   decision D26 item 3: refusal, never a duplicate or a silent loss). The
+   plan, marker text included, is charged before anything is built (`2 × Σ
+   originals + 65,536` UTF-16 units, else **422**; on the base path the upper
+   bound of every placement plus every entry without one). With no screened
+   placement, no literal or code-carrying entry and every entry placed, the
+   result is byte-identical to the former `restoreMedia` + drop guard.
 4. Calls `finalizeCodeMetadata` (#1958, see "AI Improve code-block metadata"),
    then derives `body_text`; the local exit judges the publication
    projections before the write transaction, the remote exit judges the
@@ -1628,10 +1634,9 @@ path. The analysis records each fence's position once and filters each token
 list once (linear in the tokens).
 
 **HTML stage (`finalizeCodeMetadata`).** Markers (`data-cq-code-fence`,
-`data-cq-code-replay`, value `<nonce>-<index>`, on the base path
-`<nonce>-<index>-<copy>` for each copy of an original; the nonce 128 random
-bits made at Accept) are authentic when they name a fence or a replayed copy
-of this Accept and occur once. Each replayed code-carrying copy must come back
+`data-cq-code-replay`, value `<nonce>-<index>`, the nonce 128 random bits made
+at Accept) are authentic when they name a fence or a replayed entry of this
+Accept and occur once. Each replayed code-carrying original must come back
 exactly as written; the one allowed difference is that CR / CR LF in the text
 of its `code` elements reads as LF (one HTML parse does that; `lineEndForm`).
 Anything else (a line feed before the `code` of a `pre`, a CR in an attribute
@@ -1645,9 +1650,7 @@ attribute on any other element is an inert annotation and stays; every other
 `pre` outside a verified original loses `data-title`/`data-macro-params`;
 forged `data-cq-*` attributes are removed; a marked fence still in marked's
 exact shape, outside every dropping container, gets the stored values.
-**Twin rule** (#1958 path; on the base path nothing binds, so it is off, and
-so is storage rule (iii) until #1953-2 admits a unit): effective code blocks
-(every `pre` with a `code` descendant)
+**Twin rule:** effective code blocks (every `pre` with a `code` descendant)
 with one key (the language the writer emits, the class or else a carried
 `language`, and the code text with XML line ends) keep metadata only when all
 carry identical metadata; otherwise every member loses it (content kept),
@@ -1684,44 +1687,38 @@ write transaction re-checks the `body_storage` used. A refusal is **422**
 dispatched or stored.
 
 **Suggestions across the release.** A suggestion is Markdown the model
-returned; nothing records which converter produced it, and no substring of it
-decides anything (coordinator decision D25 item 1). The Accept is classified
-once, structurally:
+returned, and nothing in it is evidence of which converter produced it
+(coordinator decision D26). The Improve generator records its protocol on
+the row it stores (`llm_improvements.improve_protocol`, migration 161; `1` =
+CODE-META lines and `CQ_CODE_PLACEHOLDER_<N>` tokens), and Apply binds its
+Markdown to the caller's row by exact content, as it already did for the
+row's status. The Accept is classified once, from that row:
 
-- **#1958 path** when the suggestion holds a carrier: a CODE-META line by the
-  exact grammar, standing alone (paragraph or list-item text), directly above a
-  fence, outside code; or a `CQ_CODE_PLACEHOLDER_<k>` of a frozen entry of this
-  page as content outside `pre`/`code`. No release before #1958 wrote that
-  namespace, so a token the page never spells is generator output wherever it
-  stands (the generator writes it beside text next to the frozen block, as in
-  `<td>Run: TOKEN</td>`); a token the page spells itself counts only in a run
-  of its own (a wrapped `<p>`, or a text run holding nothing but this page's
-  placeholder spellings and white space). Everything above applies.
-- **Base path** when it holds none and the page has no frozen code block: the
-  Accept of the release before #1958, byte for byte (`restoreMedia` at every
-  placement, no screening, the `includes` drop guard on the unmarked result,
-  no CODE-META analysis, no twin rule). The trust boundary stays (owner
-  ruling, Option B): `data-title`/`data-macro-params` on any `pre` outside a
-  verified original are stripped, a code-named placeholder or raw code macro
-  markup is refused (**422** `unapproved-code-macro`), each copy of a
-  code-carrying original is marked and verified, storage rules (i) and (ii)
-  apply, and R7/R8 read failures refuse. A pending suggestion generated
-  before #1958 (an `llm_improvements` row or a direct Apply) therefore
-  applies as it did, also with an image inside a code block or a literal
-  `CQ_CODE_PLACEHOLDER_…` mention in its text.
-- **Refused (422,** "run AI Improve again") when it holds none and the page has
-  a frozen code block: the previous release wrote that block as editable
-  Markdown while this release writes `CQ_CODE_PLACEHOLDER_<N>`, and such a
-  suggestion cannot be told from one whose model dropped every carrier;
-  appending the originals would duplicate the block. Nothing is built or
-  written.
+- **#1958 path:** a row with protocol `1`, or no row at all (a direct or
+  user-edited Apply). Everything above applies; only CODE-META lines by the
+  exact grammar, standing alone directly above a fence, bind metadata.
+- **Refused (422,** "made before an update … run AI Improve again"): a row
+  without a protocol (generated before #1958) for a page that holds annotated
+  code anywhere (`data-title`/`data-macro-params`, frozen blocks included).
+  That release wrote such blocks as editable Markdown without their title and
+  options; applying it would lose them or duplicate a frozen block. Nothing is
+  built or written; the row stays `completed`. This is the recorded release
+  limit for pending suggestions: regenerate them.
+- **Base path:** a row without a protocol for a page without annotated code:
+  the Accept of the release before #1958, byte for byte (`restoreMedia` at
+  every placement, the `includes` drop guard, no CODE-META analysis). Such a
+  page has no code-carrying original. The trust boundary stays: `pre`
+  metadata in the suggestion is stripped, a code-named placeholder or raw code
+  macro markup is refused (**422** `unapproved-code-macro`), the storage rules
+  and R7/R8 apply.
 
-A token the model turned into a heading or wrote into prose is no carrier: on
-a page whose only carrier it was, the Accept takes the base path and that text
-stays as the model wrote it. After a rollback to a release before #1958, a
-suggestion generated by #1958 shows its `[[[CODE-META …]]]` and
-`CQ_CODE_PLACEHOLDER_<N>` lines as text and loses frozen blocks on Accept:
-regenerate suggestions after a rollback.
+Byte parity with the previous release is promised only on the base path. On
+the #1958 path a page whose own text spells the placeholder of one of its
+frozen blocks cannot take a suggestion (the placement is authored, so it never
+places the block): change that text, or edit the page directly. After a
+rollback to a release before #1958, a suggestion generated by #1958 shows its
+`[[[CODE-META …]]]` and `CQ_CODE_PLACEHOLDER_<N>` lines as text and loses
+frozen blocks on Accept: regenerate suggestions after a rollback.
 
 **#1953-2 interface.** The remote Apply's authorization point (above) precedes
 every evidence read; #1953-2 reads recovery evidence only after it.
@@ -1744,12 +1741,12 @@ markup, macro text in raw text, a template or a comment the CDATA pass
 opens); raw markup Markdown writes as text, a fence showing macro syntax,
 escaped prose and `data-macro-name="code"` on an element the writer reads no
 macro name from are data. R3: a page whose own body yields a code macro
-outside the writer's shape cannot Accept. R4: on the #1958 path a frozen
-code-carrying token without exactly one viable placement is appended once at
-the end with its metadata, no copy is made; without any carrier the Accept
-takes the base path or is refused (see "Suggestions across the release").
+outside the writer's shape cannot Accept. R4: on the #1958 path a frozen or
+code-carrying original without exactly one viable placement refuses the
+Accept (422), never appended or copied; a pre-#1958 suggestion for a page
+with annotated code refuses (see "Suggestions across the release").
 R5: a placeholder in `pre`/`code` is never replaced, and one the page itself
-spells is never placed (its medium is appended). R6: an original that does
+spells is never placed (a medium is appended, a code block refuses). R6: an original that does
 not verify refuses. R7 (Q8): a standalone Accept is refused when either
 projection is unreadable, with or without code: such a page cannot Accept an
 Improve result until it is edited. R8: on the remote exit a result whose
