@@ -69,7 +69,8 @@ import {
 } from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
-import { yDocToHtml } from '../../core/services/collab-schema.js';
+import { applyHtmlToYDoc, yDocToHtml } from '../../core/services/collab-schema.js';
+import { LEGACY_CARRIER_FIXTURES } from '../../core/services/__fixtures__/confluence-carrier-legacy.js';
 import { confluenceToHtml } from '../../core/services/content-converter.js';
 import { oracleElements, oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import { encryptPat } from '../../core/utils/crypto.js';
@@ -2633,6 +2634,100 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       }
     },
   );
+
+  describe('carriers of a page synced before v0.10.0 (#1953, D9 R2/R3)', () => {
+    const LEGACY = LEGACY_CARRIER_FIXTURES.ac1;
+
+    async function saveLegacyRoom(opts: { keylessLineage: boolean }) {
+      let upstream: ReturnType<typeof createServer> | null = null;
+      let ws: WebSocket | null = null;
+      const info = vi.spyOn(logger, 'info');
+      try {
+        const { token, userId, pageId, confluenceId } = await seedConfluencePage({ version: 4, bodyHtml: LEGACY.legacyHtml });
+        await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, LEGACY.storage]);
+        if (opts.keylessLineage) {
+          // A lineage seeded by a release before #1953: the ordinary HTML, no key.
+          const doc = new Y.Doc();
+          applyHtmlToYDoc(doc, LEGACY.legacyHtml);
+          await query(
+            `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version, updated_at)
+             VALUES ($1, $2, $3, 1, NOW())`,
+            [pageId, Buffer.from(Y.encodeStateAsUpdate(doc)), Buffer.from(Y.encodeStateVector(doc))],
+          );
+          doc.destroy();
+        }
+        const pagePuts: string[] = [];
+        upstream = createServer(async (request, response) => {
+          const urlPath = new URL(request.url ?? '/', 'http://fixture.test').pathname;
+          response.setHeader('content-type', 'application/json');
+          if (urlPath !== `/rest/api/content/${confluenceId}`) {
+            response.writeHead(404).end();
+            return;
+          }
+          if (request.method === 'GET') {
+            response.end(JSON.stringify({
+              id: confluenceId, title: 'Conf page', type: 'page', status: 'current',
+              version: { number: 4, when: '2026-09-20T00:00:00Z' },
+              body: { storage: { value: LEGACY.storage } },
+            }));
+            return;
+          }
+          let bytes = '';
+          for await (const chunk of request) bytes += String(chunk);
+          const sent = JSON.parse(bytes);
+          pagePuts.push(sent.body.storage.value);
+          response.end(JSON.stringify({
+            ...sent, id: confluenceId, status: 'current', version: { number: 5, when: '2026-09-20T00:00:02Z' },
+          }));
+        });
+        await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
+        const baseUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1', [userId, baseUrl]);
+
+        ws = await openAndSync(pageId, token);
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: commitPayload(ws, 'Legacy commit'),
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        const unproven = info.mock.calls.filter((call) => call[1] === 'collab.commit_carriers_unproven').map((call) => call[0]);
+        const seeded = info.mock.calls.filter((call) => call[1] === 'Confluence carriers reconciled (#1953)').map((call) => call[0]);
+        return { pageId, pagePuts, unproven, seeded };
+      } finally {
+        info.mockRestore();
+        ws?.close();
+        if (upstream) {
+          upstream.closeAllConnections();
+          await new Promise<void>((resolve) => upstream!.close(() => resolve()));
+        }
+      }
+    }
+
+    const codeTitle = (storage: string) => oracleElements(storage, 'ac', 'parameter')
+      .find((parameter) => parameter.getAttribute('ac:name') === 'title' && parameter.parentElement?.getAttribute('ac:name') === 'code')
+      ?.textContent ?? null;
+
+    it('a Save from a room seeded after the release writes the carriers its seed recovered, with no unproven line for those kinds', async () => {
+      const { pageId, pagePuts, unproven, seeded } = await saveLegacyRoom({ keylessLineage: false });
+      expect(seeded).toEqual([expect.objectContaining({ pageId, writer: 'collab_seed', outcome: 'recovered' })]);
+      expect(pagePuts).toHaveLength(1);
+      expect(codeTitle(pagePuts[0]!)).toBe('Main');
+      expect(pagePuts[0]).toContain('ri:space-key="ENG"');
+      expect(unproven).toEqual([]);
+    });
+
+    it('D9 R2: a Save from a key-less room writes what the room holds and logs carriers_unproven with kind names only', async () => {
+      const { pageId, pagePuts, unproven, seeded } = await saveLegacyRoom({ keylessLineage: true });
+      // D9 R3: the existing lineage is neither replaced nor reconciled.
+      expect(seeded).toEqual([]);
+      expect(pagePuts).toHaveLength(1);
+      expect(codeTitle(pagePuts[0]!)).toBeNull();
+      expect(pagePuts[0]).not.toContain('ri:space-key="ENG"');
+      expect(unproven).toEqual([{ pageId, kinds: ['macro.code', 'macro.status', 'macro.toc', 'link', 'emoticon'] }]);
+    });
+  });
 
   describe('pasted images after a collaborative Save (#1764)', () => {
     const IMAGE_SRC = '/api/attachments/local-src/x.png';

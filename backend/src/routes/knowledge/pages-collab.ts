@@ -34,6 +34,7 @@ import {
   type CollabRuntime,
 } from '../../core/services/collab-room-service.js';
 import { assignTaskIds, htmlToConfluence, htmlToText } from '../../core/services/content-converter.js';
+import { logCollabCarriersUnproven } from '../../core/services/confluence-carrier-recovery.js';
 import type { CollabTaskItem } from '../../core/services/collab-schema.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -208,13 +209,15 @@ async function commitConfluencePage(args: {
   html: string;
   taskItems: CollabTaskItem[];
   taskIdsCarried: boolean;
+  carrierKinds: ReadonlySet<string>;
   docEpoch: string;
   runtime: CollabRuntime;
   admission: PageRuntimeAdmission;
   outcome: CollabCommitOutcome;
 }) {
   const {
-    fastify, request, pageId, userId, existing, body, html, taskItems, taskIdsCarried, docEpoch, runtime, admission,
+    fastify, request, pageId, userId, existing, body, html, taskItems, taskIdsCarried, carrierKinds, docEpoch, runtime,
+    admission,
     outcome,
   } = args;
   if (!existing.confluence_id) {
@@ -234,6 +237,10 @@ async function commitConfluencePage(args: {
   // #1955: the stored storage is the evidence for the room's ri:url links; a
   // body the write-back refuses throws here, before the intent is reserved.
   const storageBody = htmlToConfluence(assigned.html, { linkOrigin: existing.body_storage });
+  // #1953 (D9 R2): a collaborative Save does not reconcile. A room whose seed did not fully evaluate a kind the
+  // storage may carry (every lineage that predates the release, a seed without lockstep evidence, a kind it skipped)
+  // saves as today; the line names those kinds, nothing else.
+  logCollabCarriersUnproven(pageId, existing.body_storage, carrierKinds);
   const taskIdMarkers = assigned.taskIds.length === taskItems.length
     ? taskItems.flatMap((item, index) => {
       const taskId = assigned.taskIds[index]!;
@@ -667,6 +674,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           html,
           taskItems: snapshot.taskItems,
           taskIdsCarried: snapshot.taskIdsCarried,
+          carrierKinds: snapshot.carrierKinds,
           docEpoch: snapshot.docEpoch,
           runtime,
           admission,

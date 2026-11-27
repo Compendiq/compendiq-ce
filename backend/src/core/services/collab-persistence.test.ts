@@ -24,7 +24,10 @@ import {
   persistCollabDocState,
   readCollabDocEpoch,
 } from './collab-persistence.js';
-import { yDocToHtml } from './collab-schema.js';
+import { applyHtmlToYDoc, collabSeededCarrierKinds, yDocToHtml } from './collab-schema.js';
+import { confluenceToHtml } from './content-converter.js';
+import { LEGACY_CARRIER_FIXTURES as LEGACY } from './__fixtures__/confluence-carrier-legacy.js';
+import { logger } from '../utils/logger.js';
 import {
   admitPageRuntime,
   releasePageRuntime,
@@ -535,6 +538,196 @@ describe.skipIf(!canRun)('document epoch at the persistence boundary (#2034)', (
       expect(marked.rows[0]!.doc_state.equals(seeded.rows[0]!.doc_state)).toBe(false);
     } finally {
       await releasePageRuntime(request);
+    }
+  });
+});
+
+describe.skipIf(!canRun)('seed of a page synced before v0.10.0 (#1953, Z5, Z6)', () => {
+  const LOG = 'Confluence carriers reconciled (#1953)';
+  const ALL_KINDS = ['emoticon', 'link', 'macro.code', 'macro.status', 'macro.toc'];
+
+  async function insertLegacyPage(owner: string, fixture: { storage: string; legacyHtml: string } = LEGACY.ac1, localModified = false): Promise<number> {
+    const r = await query<{ id: number }>(
+      `INSERT INTO pages (
+          confluence_id, space_key, title, body_storage, body_html, body_text, version, source, visibility,
+          created_by_user_id, page_type, embedding_dirty, local_modified_at
+       ) VALUES ('legacy-seed', 'OPS', 'Legacy', $1, $2, 'x', 1, 'confluence', 'shared', $3, 'page', FALSE,
+                 CASE WHEN $4 THEN NOW() ELSE NULL END)
+       RETURNING id`,
+      [fixture.storage, fixture.legacyHtml, owner, localModified],
+    );
+    return r.rows[0]!.id;
+  }
+
+  /** The document an `applyHtmlToYDoc` of `html` alone gives, as HTML: one copy, nothing merged twice. */
+  function documentOf(html: string, carrierKinds?: string[]): { html: string; kinds: ReadonlySet<string> } {
+    const doc = new Y.Doc();
+    try {
+      applyHtmlToYDoc(doc, html, carrierKinds ? { carrierKinds } : {});
+      return { html: yDocToHtml(doc), kinds: collabSeededCarrierKinds(doc) };
+    } finally {
+      doc.destroy();
+    }
+  }
+
+  async function writableLoad(pageId: number, owner: string, doc: Y.Doc) {
+    const admission = await admitPageRuntime(pageId, owner, 'collab_room');
+    try {
+      return await loadOrInitCollabDoc(pageId, doc, admission);
+    } finally {
+      await releasePageRuntime(admission);
+    }
+  }
+
+  const carrierLines = (spy: { mock: { calls: unknown[][] } }): unknown[] =>
+    spy.mock.calls.filter((call) => call[1] === LOG).map((call) => call[0]);
+
+  it('seeds a legacy Confluence page with its carriers and the confluenceCarriers key in one update, and logs after the insert', async () => {
+    const owner = await insertUser('carrier_seed');
+    const pageId = await insertLegacyPage(owner);
+    const doc = new Y.Doc();
+    const info = vi.spyOn(logger, 'info');
+    try {
+      expect(await writableLoad(pageId, owner, doc)).toMatchObject({ hasPersistedDoc: true });
+      const expected = documentOf(confluenceToHtml(LEGACY.ac1.storage, 'legacy-seed', 'OPS'), ALL_KINDS);
+      expect(yDocToHtml(doc)).toBe(expected.html);
+      expect([...collabSeededCarrierKinds(doc)]).toEqual(ALL_KINDS);
+      expect(fragmentText(doc).match(/Jump/g)).toHaveLength(1);
+      expect(carrierLines(info)).toEqual([{
+        pageId, writer: 'collab_seed', outcome: 'recovered',
+        recovered: { emoticon: 2, 'macro.code': 1, 'macro.toc': 1, 'macro.status': 1, link: 3 }, skipped: {},
+      }]);
+      // The persisted bytes are that one update.
+      const persisted = new Y.Doc();
+      Y.applyUpdate(persisted, new Uint8Array((await collabRow(pageId)).rows[0]!.doc_state));
+      expect(yDocToHtml(persisted)).toBe(expected.html);
+      expect(yDocToHtml(persisted)).not.toContain('data-cq-');
+      persisted.destroy();
+    } finally {
+      info.mockRestore();
+      doc.destroy();
+    }
+  });
+
+  it('Z6: a seed whose every record of a kind is skipped leaves that kind out of the key and logs evaluated', async () => {
+    const owner = await insertUser('carrier_seed_skips');
+    const pageId = await insertLegacyPage(owner, LEGACY.twoLookalikeLinks);
+    const doc = new Y.Doc();
+    const info = vi.spyOn(logger, 'info');
+    try {
+      await writableLoad(pageId, owner, doc);
+      expect([...collabSeededCarrierKinds(doc)]).toEqual(ALL_KINDS.filter((kind) => kind !== 'link'));
+      expect(yDocToHtml(doc)).toBe(documentOf(LEGACY.twoLookalikeLinks.legacyHtml).html);
+      expect(carrierLines(info)).toEqual([{
+        pageId, writer: 'collab_seed', outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 2 } },
+      }]);
+    } finally {
+      info.mockRestore();
+      doc.destroy();
+    }
+  });
+
+  it('a seed whose reconcile ends on a bound writes no key and logs that outcome', async () => {
+    const owner = await insertUser('carrier_seed_bound');
+    const pageId = await insertLegacyPage(owner, LEGACY.taskInTask);
+    const doc = new Y.Doc();
+    const info = vi.spyOn(logger, 'info');
+    try {
+      await writableLoad(pageId, owner, doc);
+      expect(collabSeededCarrierKinds(doc).size).toBe(0);
+      expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
+      expect(yDocToHtml(doc)).toBe(documentOf(LEGACY.taskInTask.legacyHtml).html);
+      expect(carrierLines(info)).toEqual([{ pageId, writer: 'collab_seed', outcome: 'bound' }]);
+    } finally {
+      info.mockRestore();
+      doc.destroy();
+    }
+  });
+
+  it('a writable load of a locally modified page seeds the ordinary HTML once, without recovery and without the key', async () => {
+    const owner = await insertUser('carrier_seed_local');
+    const pageId = await insertLegacyPage(owner, LEGACY.ac1, true);
+    const doc = new Y.Doc();
+    try {
+      await writableLoad(pageId, owner, doc);
+      expect(yDocToHtml(doc)).toBe(documentOf(LEGACY.ac1.legacyHtml).html);
+      expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
+    } finally {
+      doc.destroy();
+    }
+  });
+
+  it('a read-only load of a missing document applies the ordinary HTML, inserts no row and writes no key', async () => {
+    const owner = await insertUser('carrier_seed_readonly');
+    const pageId = await insertLegacyPage(owner);
+    const doc = new Y.Doc();
+    try {
+      expect(await loadOrInitCollabDoc(pageId, doc)).toMatchObject({ hasPersistedDoc: false });
+      expect(yDocToHtml(doc)).toBe(documentOf(LEGACY.ac1.legacyHtml).html);
+      expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
+      expect((await collabRow(pageId)).rows).toHaveLength(0);
+    } finally {
+      doc.destroy();
+    }
+  });
+
+  it('a persisted document is loaded with its bytes only, writable and read-only: no reconcile, no second line', async () => {
+    const owner = await insertUser('carrier_seed_persisted');
+    const pageId = await insertLegacyPage(owner);
+    const first = new Y.Doc();
+    await writableLoad(pageId, owner, first);
+    const stored = (await collabRow(pageId)).rows[0]!.doc_state;
+    const info = vi.spyOn(logger, 'info');
+    const writable = new Y.Doc();
+    const readOnly = new Y.Doc();
+    try {
+      await writableLoad(pageId, owner, writable);
+      await loadOrInitCollabDoc(pageId, readOnly);
+      expect(yDocToHtml(writable)).toBe(yDocToHtml(first));
+      expect(yDocToHtml(readOnly)).toBe(yDocToHtml(first));
+      expect((await collabRow(pageId)).rows[0]!.doc_state.equals(stored)).toBe(true);
+      expect(carrierLines(info)).toEqual([]);
+    } finally {
+      info.mockRestore();
+      first.destroy();
+      writable.destroy();
+      readOnly.destroy();
+    }
+  });
+
+  it('reserve → seed: a seed under the page\'s own pending collaborative Save runs unrecovered and writes no key', async () => {
+    const owner = await insertUser('carrier_seed_pending');
+    const pageId = await insertLegacyPage(owner);
+    const admission = await admitPageRuntime(pageId, owner, 'collab_room');
+    const doc = new Y.Doc();
+    try {
+      await query(
+        `INSERT INTO page_write_intents (runtime_id, kind, page_ids, revisions, recovery_mode, effect)
+         VALUES ($2, 'collab.commit.confluence', ARRAY[$1]::integer[], '{}', 'remote_conditional',
+                 jsonb_build_object('effectClass', 'remote', 'pageId', $1::integer, 'confluenceId', 'legacy-seed',
+                                    'expectedRemoteVersion', '1', 'intendedStateDigest', repeat('a', 64)))`,
+        [pageId, admission.runtimeId],
+      );
+      await loadOrInitCollabDoc(pageId, doc, admission);
+      expect(yDocToHtml(doc)).toBe(documentOf(LEGACY.ac1.legacyHtml).html);
+      expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
+    } finally {
+      await query('DELETE FROM page_write_intents WHERE page_ids = ARRAY[$1]::integer[]', [pageId]);
+      await releasePageRuntime(admission);
+      doc.destroy();
+    }
+  });
+
+  it('seeds a standalone room exactly as before', async () => {
+    const owner = await insertUser('carrier_seed_standalone');
+    const pageId = await insertPage({ ownerId: owner, html: `<p>${UNIQUE}</p>` });
+    const doc = new Y.Doc();
+    try {
+      await writableLoad(pageId, owner, doc);
+      expect(yDocToHtml(doc)).toBe(documentOf(`<p>${UNIQUE}</p>`).html);
+      expect(doc.getMap('compendiq.meta').has('confluenceCarriers')).toBe(false);
+    } finally {
+      doc.destroy();
     }
   });
 });
