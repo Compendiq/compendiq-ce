@@ -674,7 +674,9 @@ an old room's code runs read back unchanged. A line break inside a link is a
 `hardBreak` element, and y-prosemirror keeps no mark on an element, so the
 link survives in the document only on the text around the break.
 `yDocToHtml` therefore gives every run of unmarked hard breaks between two
-text nodes with the same Link mark (all attributes equal) that mark again
+text nodes with the same Link mark (every attribute equal as the schema
+creates the mark: a missing attribute takes its default, an explicit null
+stays null) that mark again
 before it serialises: the 2 s snapshot, the Save snapshot and everything
 downstream see one `<a>`, and write-back one `ac:link`. A room persisted
 before #1954 gets its split links joined the same way on its next
