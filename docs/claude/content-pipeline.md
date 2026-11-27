@@ -68,10 +68,17 @@ backtick cannot be a code span in a link label (marked 15), so `htmlToMarkdown` 
 it as link text with every ASCII punctuation character backslash-escaped (characters
 kept, code formatting lost), and AI Improve freezes such code whole like media
 (`protectMedia`), so an Accept restores the original element and a placeholder
-spelling inside it is never replayed. Deferred, unchanged by #1748 (the converters
-and Improve keep these links): on a collaborative save a link is split around a
-line break (Yjs keeps marks on text only). Pinned by
-`content-converter.links.test.ts`.
+spelling inside it is never replayed. A line break inside a link survives a
+collaborative save (#1954): Yjs keeps marks on text only, so `yDocToHtml` gives a
+run of unmarked line breaks between two text pieces with the same Link mark (every
+attribute equal) that mark again, and write-back writes one `ac:link`; links with a
+different href, class or title are never joined. Limits: a break at the start or
+end of a link body leaves the link, and two separate links to the same target
+around a break cannot be told apart after a collaborative session and become one
+(the converter and an ordinary editor Save keep them apart). Deferred, unchanged
+by #1748: on a collaborative save a mention, status or emoticon inside a link
+still splits it. Pinned by `content-converter.links.test.ts` and
+`content-converter.link-bodies.test.ts`.
 
 **Five more link kinds, and one rule for `ri:url` (#1955).** `ri:space`,
 `ri:blog-post`, `ri:shortcut`, `ri:content-entity` and `ri:url` links are

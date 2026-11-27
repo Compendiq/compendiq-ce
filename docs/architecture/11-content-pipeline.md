@@ -249,10 +249,16 @@ any change to the existing conflict policy.
   mark that excludes only itself, so the Link mark stays on code text and a
   link whose text mixes code and prose is one link; its Yjs key stays `code`.
   Code holding a backtick inside a link is escaped link text in Markdown and
-  frozen whole on AI Improve. Deferred, unchanged since before #1748 (the
-  converters and Improve keep all of these but the mention): on a collaborative
-  save, a line break, mention, status or emoticon inside a link is left out of
-  it, splitting the link around it (Yjs keeps marks on text only). A mention
+  frozen whole on AI Improve. A line break inside a link survives a
+  collaborative save: `yDocToHtml` gives a run of unmarked hard breaks between
+  two text nodes with equal Link marks (all attributes) that mark again, so the
+  HTML has one `<a>` and write-back one `ac:link`; a break at either end of a
+  link body stays outside it, and two separate same-target links around a
+  break become one after a collaborative session (documented limit). Deferred,
+  unchanged since before #1748 (the converters and Improve keep all of these
+  but the mention): on a collaborative save, a mention, status or emoticon
+  inside a link is left out of it, splitting the link around it (Yjs keeps
+  marks on text only). A mention
   inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
   replacing the whole outer link, text included, with the mention (#314);
   Confluence never writes that nesting.
