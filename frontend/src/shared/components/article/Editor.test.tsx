@@ -546,6 +546,15 @@ describe('Editor', () => {
       return editor!;
     }
 
+    it('mounts inline code that excludes only itself, as the collab schema does', async () => {
+      const editor = await mounted('<p>x</p>');
+      const { code, link, bold } = editor.schema.marks;
+      expect(code!.spec.excludes).toBe('code');
+      expect(code!.excludes(code!)).toBe(true);
+      expect(code!.excludes(link!)).toBe(false);
+      expect(code!.excludes(bold!)).toBe(false);
+    });
+
     it('keeps a link on inline code and on mixed code text as one <a> each', async () => {
       const editor = await mounted(
         '<p>Call <a href="#confluence-page:Runbook" data-confluence-link="page"><code>deploy()</code></a> first.</p>'

@@ -2454,22 +2454,6 @@ function isMacroParamsObject(raw: string): boolean {
 }
 
 /**
- * #1954: inline code that a link holds and that itself holds a backtick. Its
- * Markdown cannot be a code span inside the link label (escapeLinkedCodeText),
- * so AI Improve freezes it whole (protectMedia): the Accept restores the
- * original element, and its text is never re-read as Markdown or as media
- * tokens (a literal placeholder spelling inside it stays text).
- */
-function isLinkedBacktickCode(node: Node): boolean {
-  if (node.nodeName !== 'CODE') return false;
-  const element = node as Element;
-  return !element.closest('pre') && element.closest('a[href]') !== null && (element.textContent ?? '').includes('`');
-}
-
-/** Where protectMedia looks for linked code (isLinkedBacktickCode decides). */
-const LINKED_CODE_SELECTOR = 'a[href] code';
-
-/**
  * #723: Replace rich/media nodes with opaque text tokens before the lossy
  * HTML→Markdown→HTML round-trip used by AI Improve. Document order makes the
  * tokens deterministic, so the same source HTML re-protected at Accept time
@@ -2482,10 +2466,8 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
   // Outermost-first: a div.confluence-drawio contains an <img>; protect the
   // wrapper and skip its descendants. Same for frozen legacy section/column
   // wrappers (#765 review), which may contain media or further nested columns.
-  const nodes = Array.from(doc.body.querySelectorAll(`${MEDIA_SELECTOR},${LEGACY_WRAPPER_SELECTOR},${LINKED_CODE_SELECTOR}`))
+  const nodes = Array.from(doc.body.querySelectorAll(`${MEDIA_SELECTOR},${LEGACY_WRAPPER_SELECTOR}`))
     .filter((n) => {
-      // #1954: of the code inside links, only code holding a backtick is frozen.
-      if (n.nodeName === 'CODE' && !isLinkedBacktickCode(n)) return false;
       // Legacy section/column wrappers freeze ONLY when nested inside a
       // markdown-constrained container; elsewhere they use boundary tokens.
       if (isLegacyWrapper(n) && !isFrozenLegacyWrapper(n)) return false;
@@ -2839,12 +2821,18 @@ export interface HtmlToMarkdownOptions {
  * become spaces (as turndown's code rule does) and every ASCII punctuation
  * character, CommonMark's backslash-escapable set, is backslash-escaped, so no
  * raw HTML, entity, emphasis, autolink, image or nested link can form from it.
- * The link and the characters are kept; the code formatting is not. On AI
- * Improve such code is frozen instead (protectMedia), so this text never meets
- * a media replay.
+ * The link and the characters are kept; the code formatting is not. AI Improve
+ * sends the same Markdown, so an Accept brings the characters back as link text.
  */
 function escapeLinkedCodeText(text: string): string {
   return text.replace(/\r\n|\r|\n/g, ' ').replace(/[!-/:-@[-`{-~]/g, '\\$&');
+}
+
+/** #1954: inline code that a link holds and that itself holds a backtick (escapeLinkedCodeText). */
+function isLinkedBacktickCode(node: Node): boolean {
+  if (node.nodeName !== 'CODE') return false;
+  const element = node as Element;
+  return !element.closest('pre') && element.closest('a[href]') !== null && (element.textContent ?? '').includes('`');
 }
 
 /**
