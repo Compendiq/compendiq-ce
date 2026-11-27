@@ -2811,6 +2811,16 @@ export interface HtmlToMarkdownOptions {
    * page's output and build layout that never existed on the parent.
    */
   layoutTokens?: boolean;
+  /**
+   * #1954: write inline code that a link holds and that itself holds a
+   * backtick as escaped link text (escapeLinkedCodeText). Opt-in, set only by
+   * callers whose Markdown never reaches an AI Improve prompt (quality score,
+   * auto-tagging, version-compare summaries, diagram context, document text).
+   * Everything that can feed Improve (the page itself and its sub-page
+   * context, built by assembleContextIfNeeded / assembleSubPageContext) keeps
+   * the Markdown it had before #1954 (D24).
+   */
+  linkedCodeAsText?: boolean;
 }
 
 /**
@@ -2826,8 +2836,8 @@ export interface HtmlToMarkdownOptions {
  * Turndown puts the node's flanking white space around the replacement, so the
  * text is trimmed here and each boundary is written once.
  *
- * Plain Markdown only (D24): the AI Improve chain (`layoutTokens`) writes such
- * code exactly as before #1954, so an Accept behaves as it did.
+ * Only with `linkedCodeAsText` (D24): every Markdown that reaches an AI Improve
+ * prompt, parent or sub-page, writes such code exactly as before #1954.
  */
 function escapeLinkedCodeText(text: string): string {
   return text.trim().replace(/\r\n|\r|\n/g, ' ').replace(/[!-/:-@[-`{-~]/g, '\\$&');
@@ -2870,8 +2880,8 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     },
   });
 
-  // #1954: inline code inside a link that holds a backtick (escapeLinkedCodeText); not on the Improve chain (D24).
-  if (!layoutTokens) {
+  // #1954: inline code inside a link that holds a backtick (escapeLinkedCodeText); never for an Improve prompt (D24).
+  if (options?.linkedCodeAsText === true) {
     turndownService.addRule('linkedCodeWithBacktick', {
       filter: (node) => isLinkedBacktickCode(node),
       replacement: (_content, node) => escapeLinkedCodeText((node as HTMLElement).textContent ?? ''),
