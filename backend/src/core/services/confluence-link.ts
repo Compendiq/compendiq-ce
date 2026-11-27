@@ -230,7 +230,7 @@ export interface ConfluenceLinkCarrier {
   className: string | null;
   /** The kind's primary value. */
   value: string;
-  /** The text an `<a>` without markup shows: the plain body, or what a link without a body shows. */
+  /** The plain body; with a rich body or none, what the link shows without a body. */
   text: string;
   /** The names of the attributes the carrier does not hold. */
   dropped: readonly string[];
@@ -239,7 +239,9 @@ export interface ConfluenceLinkCarrier {
 /**
  * The carrier of a stored `<ac:link>`, or null when it has none (#1955). Pure:
  * the same reading {@link confluenceLinkAnchor} makes, with nothing logged and
- * nothing changed.
+ * nothing changed. `acLink` is an element of the document the forward pass
+ * reads (CDATA as text, self-closing tags expanded), not of a bare HTML parse
+ * of the storage, where a CDATA body is a comment.
  */
 export function confluenceLinkCarrier(acLink: Element): ConfluenceLinkCarrier | null {
   const built = buildLink(acLink, CONFLUENCE_LINK_KINDS);

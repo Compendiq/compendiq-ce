@@ -20,6 +20,7 @@ import {
   restoreMedia,
 } from './content-converter.js';
 import { htmlToYDoc, yDocToHtml } from './collab-schema.js';
+import { confluenceLinkCarrier, confluenceLinkCarrierOf, confluenceLinkHrefAttributes } from './confluence-link.js';
 import { logger } from '../utils/logger.js';
 
 // Storage as Confluence writes it: self-closing resource elements, CDATA plain bodies.
@@ -722,6 +723,90 @@ describe('content-converter: #1955 blog-post, space, shortcut, content-entity an
     ])('leaves an href with %s as the <a> it is', (_case, href) => {
       const html = `<p><a href="${href}">x</a></p>`;
       expect(htmlToConfluence(html)).toBe(html);
+    });
+  });
+
+  // What #1953 reconciles a row synced before #1955 with: the carrier of a link its body_storage holds.
+  describe('the carrier of a stored link', () => {
+    // The document the forward pass reads: resource elements with an end tag, CDATA as text.
+    const acLinks = (storage: string): Element[] => {
+      const prepared = out(storage).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+      return [...new JSDOM(`<body>${prepared}</body>`).window.document.getElementsByTagName('ac:link')];
+    };
+
+    it('is the kind, href and class confluenceToHtml writes for every link of the page', () => {
+      const anchors = [...new JSDOM(KINDS_HTML).window.document.querySelectorAll('a')];
+      const carriers = acLinks(KINDS_PAGE).map((link) => confluenceLinkCarrier(link)!);
+
+      expect(carriers.map((carrier) => [carrier.kind, carrier.href, carrier.className]))
+        .toEqual(anchors.map((a) => [a.getAttribute('data-confluence-link'), a.getAttribute('href'), a.getAttribute('class')]));
+      carriers.forEach((carrier, index) => {
+        expect(carrier.carrier).toBe(carrier.className ?? carrier.href);
+        expect(confluenceLinkCarrierOf(anchors[index]!)).toBe(carrier.carrier);
+      });
+      expect(carriers[0]).toEqual({
+        kind: 'blog-post',
+        carrier: '#confluence-blog-post:Q3%20Update?ri:posting-day=2024%2F05%2F01&ri:space-key=ENG&body=plain',
+        href: '#confluence-blog-post:Q3%20Update?ri:posting-day=2024%2F05%2F01&ri:space-key=ENG&body=plain',
+        className: null,
+        value: 'Q3 Update',
+        text: 'read the update',
+        dropped: [],
+      });
+      expect(carriers[4]).toEqual({
+        kind: 'url',
+        carrier: '#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain',
+        href: 'https://example.com/a?b=1&c=2',
+        className: '#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain',
+        value: 'https://example.com/a?b=1&c=2',
+        text: 'example',
+        dropped: [],
+      });
+      // Without a plain body the text is what the link shows without one; a rich body is the element's own.
+      expect(carriers.map((carrier) => carrier.text))
+        .toEqual(['read the update', 'OPS', 'ABC-1', '12345', 'example', 'mailto:a@b.c', 'docs', 'click', '(empty link)']);
+    });
+
+    it('is pure: nothing is logged and the link is not changed, even with an attribute the href cannot carry', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const attrs = Array.from({ length: 17 }, (_, i) => `ri:x-${i}="${i}"`).join(' ');
+      const [link] = acLinks(`<p><ac:link><ri:shortcut ri:key="jira" ${attrs} /></ac:link></p>`);
+      const before = link!.outerHTML;
+
+      const carrier = confluenceLinkCarrier(link!)!;
+
+      expect(carrier.dropped).toEqual(['ri:x-16']);
+      expect(carrier.carrier.split('&')).toHaveLength(16);
+      expect(link!.outerHTML).toBe(before);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a mention', '<ac:link><ri:user ri:userkey="u1" /></ac:link>'],
+      ['a resource without its value', '<ac:link><ri:space /></ac:link>'],
+      ['a value XML cannot hold in the cap', `<ac:link><ri:url ri:value="${'a'.repeat(1025)}" /></ac:link>`],
+    ])('is none for %s', (_case, storage) => {
+      expect(confluenceLinkCarrier(acLinks(storage)[0]!)).toBeNull();
+    });
+
+    it('gives the href and class of a carrier, and reads the carrier back from them alone', () => {
+      const web = '#confluence-url:https%3A%2F%2Fexample.com%2F';
+      const odd = '#confluence-url:javascript%3Aalert%281%29';
+      expect(confluenceLinkHrefAttributes(web)).toEqual({ href: 'https://example.com/', className: web });
+      expect(confluenceLinkHrefAttributes(odd)).toEqual({ href: odd, className: null });
+      expect(confluenceLinkHrefAttributes('#confluence-space:ENG')).toEqual({ href: '#confluence-space:ENG', className: null });
+      expect(confluenceLinkHrefAttributes('https://example.com/')).toBeNull();
+
+      const element = (attributes: string): Element =>
+        new JSDOM(`<a ${attributes}>x</a>`).window.document.querySelector('a')!;
+      expect(confluenceLinkCarrierOf(element(`href="https://example.com/" class="${web}"`))).toBe(web);
+      expect(confluenceLinkCarrierOf(element(`href="${odd}"`))).toBe(odd);
+      // A class is a carrier only for its own element's href, and only as the whole class.
+      expect(confluenceLinkCarrierOf(element(`href="https://example.com/other" class="${web}"`))).toBeNull();
+      expect(confluenceLinkCarrierOf(element(`href="https://example.com/" class="x ${web}"`))).toBeNull();
+      expect(confluenceLinkCarrierOf(element(`href="javascript:alert(1)" class="${odd}"`))).toBeNull();
+      expect(confluenceLinkCarrierOf(element(`class="${web}"`))).toBeNull();
+      expect(confluenceLinkCarrierOf(element('href="https://example.com/"'))).toBeNull();
     });
   });
 
