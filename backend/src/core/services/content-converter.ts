@@ -2498,7 +2498,9 @@ const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
  * start tag the tree builder ignores (a cell outside a table, a `div` in a
  * `select`) has no node, so whatever it was written to hold stands in the
  * tree under something else. An ignored end tag closes nothing and is not
- * counted. Sorted.
+ * counted. Review r3, R18: a text node whose source holds `<` is text the tree
+ * builder joined across markup it dropped; it accounts for none of its
+ * source, so a start tag in it counts. Sorted.
  */
 function ignoredStartTags(html: string, root: Html5Node): number[] {
   const covered: Array<readonly [number, number]> = [];
@@ -2510,7 +2512,8 @@ function ignoredStartTags(html: string, root: Html5Node): number[] {
       if (startTag) covered.push([startTag.startOffset, startTag.endOffset]);
       if (endTag) covered.push([endTag.startOffset, endTag.endOffset]);
     } else if (node.sourceCodeLocation) {
-      covered.push([node.sourceCodeLocation.startOffset, node.sourceCodeLocation.endOffset]);
+      const { startOffset, endOffset } = node.sourceCodeLocation;
+      if (node.nodeName !== '#text' || !html.slice(startOffset, endOffset).includes('<')) covered.push([startOffset, endOffset]);
     }
     if ('content' in node) pending.push(node.content);
     if ('childNodes' in node) pending.push(...node.childNodes);
@@ -2607,8 +2610,9 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
       // A start tag the tree builder ignored stands in this element's own content, not in one of its children.
       const range = content ?? { start: 0, end: html.length };
       let inChildren = 0;
+      // Only an element child is visited as a container of its own; what lies in a text child is this element's.
       for (const child of children) {
-        const location = child.sourceCodeLocation;
+        const location = 'tagName' in child ? child.sourceCodeLocation : null;
         if (location) inChildren += countWithin(ignored, location.startOffset, location.endOffset);
       }
       if (countWithin(ignored, range.start, range.end) > inChildren) continue;

@@ -135,6 +135,10 @@ describe('content-converter: #1955 media tokens are replaced only where they sta
     ['a cell outside a table, a tag the tree builder ignores', `<div><td class="figure-index"><p>a ${T}</p></td></div>`],
     ['svg', `<svg><text>${T}</text></svg>`],
     ['MathML', `<math><mi>${T}</mi></math>`],
+    // Review r3, R18: prose on both sides of the ignored tag joins into one text node whose source holds the tag.
+    ['a paragraph after a cell outside a table with prose around its start tag',
+      `<div>before<td class="figure-index">inside<p>${T}</p></td></div>`],
+    ['the cell outside a table with prose before its start tag only', `<div>before<td class="figure-index"><p>a ${T}</p></td></div>`],
   ])('places no token in %s, so nothing is spliced where a reparse would drop or move it (R14)', (_where, html) => {
     expect(locateMediaTokens(html, media)).toEqual([]);
     expect(restoreMedia(html, media, { accept: outsideIndex })).toBe(html);
