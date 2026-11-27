@@ -748,6 +748,13 @@ function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlig
   // declaration (`!IMPORTANT`, `! important` are declined) before the CSSOM is asked.
   if (mentions.length !== 1 || mentions[0] !== 'text-align' || /["'\\]|\/\*|--|url\(/i.test(style)) return 'other';
   if (/!(?!important\s*(?:;|$))/.test(style)) return 'other';
+  // Brackets, braces or unbalanced parentheses make the hosts split the declarations differently.
+  let depth = 0;
+  for (const ch of style) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')' && --depth < 0) return 'other';
+  }
+  if (depth !== 0 || /[{}[\]]/.test(style)) return 'other';
   return normalizeTableCellAlign(cssTextAlign) ?? 'other';
 }
 function resolveTableCellAlign(style: string, cssTextAlign: string, alignAttr: string | null): TableCellAlign | null {
