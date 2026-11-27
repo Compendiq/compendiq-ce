@@ -1119,17 +1119,29 @@ describe('review r1', () => {
       .toBe('<p>See <a href="#confluence-page:My%20Page?ac:anchor=sec&amp;ri:space-key=ENG" data-confluence-link="page">the page</a>.</p>');
   });
 
-  it('invariant: every reported recovery is in the returned HTML, over the whole corpus and its editor and TipTap targets', () => {
+  // One test per fixture (CI time limit): the same three targets and assertions as one loop over the corpus.
+  const INVARIANT_FIXTURES = Object.entries(F);
+  const INVARIANT_TARGETS = [
+    ['stored', (html: string) => html],
+    ['editor', editorProjection],
+    ['TipTap', tiptapTasks],
+  ] as const;
+
+  it('invariant: the corpus check below covers every fixture with its three targets', () => {
+    expect(INVARIANT_FIXTURES.map(([name]) => name)).toEqual(Object.keys(F));
+    expect(INVARIANT_FIXTURES.length * INVARIANT_TARGETS.length).toBe(3 * Object.keys(F).length);
+  });
+
+  it.each(INVARIANT_FIXTURES)('invariant: every reported recovery is in the returned HTML for %s and its editor and TipTap targets', (_name, fixture) => {
     let checked = 0;
-    for (const fixture of Object.values(F)) {
-      for (const target of [fixture.legacyHtml, editorProjection(fixture.legacyHtml), tiptapTasks(fixture.legacyHtml)]) {
-        const result = reconcile(fixture, target);
-        expectRecoveriesPresent(target, result);
-        if (result.report.outcome !== 'recovered') expect(result.html).toBe(target);
-        checked += 1;
-      }
+    for (const [, project] of INVARIANT_TARGETS) {
+      const target = project(fixture.legacyHtml);
+      const result = reconcile(fixture, target);
+      expectRecoveriesPresent(target, result);
+      if (result.report.outcome !== 'recovered') expect(result.html).toBe(target);
+      checked += 1;
     }
-    expect(checked).toBe(3 * Object.keys(F).length);
+    expect(checked).toBe(3);
   });
 });
 
