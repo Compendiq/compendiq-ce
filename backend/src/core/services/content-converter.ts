@@ -3342,7 +3342,7 @@ export const IMPROVE_CODE_META_PROTOCOL = 1;
  * HTML's digest, so an entry another release's converter admitted is never
  * served. Change it whenever what the Accept takes changes.
  */
-export const IMPROVE_CONVERTER_VERSION = '1958-d28';
+export const IMPROVE_CONVERTER_VERSION = '1958-r7';
 
 /**
  * Where an applied suggestion comes from (D26 item 2), decided by the route
