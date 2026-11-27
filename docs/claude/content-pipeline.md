@@ -359,14 +359,39 @@ an attribute the frontend declares; the frontend declarations are pinned by
 Editor.test.tsx, ArticleViewer.test.tsx and MermaidBlockExtension.test.tsx. The
 reverse pass skips a carried copy of a canonical name. The code language is the
 whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
-TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
-code language, but not a code block's `data-title`/`data-macro-params`. Only
+TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters, the
+code language and, since #1958, a code block's `data-title`/`data-macro-params`
+(below). Only
 `body_html` converted after #1749 holds the carriers: a page synced earlier gets
 them when its body is next re-derived from Confluence (an upstream change, or
 a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
 or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
 `POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
 unchanged pages). A save before that still drops them.
+
+**AI Improve keeps code-block title and options (#1958).** With `layoutTokens`
+an annotated `pre` that can travel (one `code` child without elements, not in
+a table cell, not draw.io, non-blank, bounded valid metadata, a lossless
+projection) is written as its fence with `[[[CODE-META n=<ordinal> title=…
+params=…]]]` on the line directly above; every other annotated block is frozen
+by `protectMedia` (as are token blocks past 1,000). On Accept the route runs
+`beginCodeMetaAccept` → `markdownToHtml(…, { codeMeta })` →
+`replayProtectedMedia` → `finalizeCodeMetadata` → (local)
+`assertLocalCodeMacroProjections` or (remote) `htmlToConfluence` +
+`assertCodeMacroStorage`. Metadata returns only to a fence whose language and
+exact lexer text equal the pre-Improve block's, in per-key groups equal element
+for element; the stored values are written, never the echoed ones. Two blocks
+that end with the same language and code keep metadata only when all carry
+identical metadata (R1). The written storage (standalone: both publication
+projections, read whatever they spell) is read as XML: every code macro must be
+the writer's exact shape and accounted for by the page, else 422
+`unapproved-code-macro` (or the read reason) before any intent or write.
+Model-written code markup that is not a fence or a plain `pre` is refused (R2).
+A placeholder spelled in `pre`/`code`, or one the page itself spells, stays
+text; a code-carrying original without exactly one viable placement is
+appended once. Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
+"AI Improve code-block metadata". #1953-2 consumes `witnesses`,
+`codeBlockElements` and `admitLegacyCodeMetadata`.
 
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without

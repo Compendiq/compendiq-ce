@@ -93,7 +93,7 @@ Custom turndown rules handle Confluence-specific macros:
 
 | Confluence macro                     | HTML form                                                    | Markdown form                 |
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
-| `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block — the language survives Improve; `data-title` / `data-macro-params` do not (#1749, out of scope) |
+| `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block; on Improve an annotated block carries `[[[CODE-META n=… title=… params=…]]]` on the line above its fence and gets the stored title and options back on Accept only when its language and code are unchanged; blocks that cannot travel are frozen (#1958, see "AI Improve code-block metadata") |
 | `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged |
 | `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
@@ -1499,20 +1499,38 @@ On `POST /llm/improvements/apply` the route:
    The rule is re-checked on the transaction client under the page fence.
 1. Re-derives the same token map from the **current** `body_html` stored in
    the DB (same deterministic order — no token map needs to be persisted).
-2. Calls `markdownToHtml(improvedMarkdown, { layoutSkeleton })` on the LLM
-   output, where the skeleton is re-derived from the same `body_html`
-   (#781, see "Skeleton-guided token recovery" below). An unrecoverable
-   layout throws and the apply is rejected with **422** — nothing is saved
-   or pushed.
-3. Calls `restoreMedia(html, media)` to replace tokens (and their
-   turndown-escaped variants `CQ\_MEDIA\_PLACEHOLDER\_N`) with the original
-   HTML verbatim. A token is replaced only where it stands as content
-   (`locateMediaTokens`, #1955); one inside an attribute value, a comment or
-   raw text stays as written, and so does one where a reparse would not hold
-   the media at that place (a `select`, SVG or MathML, a subtree the tree
-   builder moved, an element holding a start tag it ignored).
-4. Appends any media entries whose HTML is still missing after restoration
-   (LLM dropped the token entirely) and logs a warning.
+2. Calls `markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia,
+   codeMeta })` on the LLM output, where the skeleton is re-derived from the
+   same `body_html` (#781, see "Skeleton-guided token recovery" below). An
+   unrecoverable layout throws and the apply is rejected with **422** —
+   nothing is saved or pushed. `codeMeta` (#1958) is the Accept's code
+   metadata state from `beginCodeMetaAccept(protectMedia(body_html))`.
+3. Calls `replayProtectedMedia(html, media, codeMeta)` (#1958; it replaced
+   `restoreMedia` plus the `includes` drop guard). The tokens (and their
+   turndown-escaped variants `CQ\_MEDIA\_PLACEHOLDER\_N`) are located once
+   (`locateMediaTokens`, #1955): a token is a placement only where it stands
+   as content, never inside an attribute value, a comment, raw text, a
+   `select`, SVG or MathML, a subtree the tree builder moved or an element
+   holding a start tag it ignored. Every placement is screened before
+   anything is counted: a spelling inside `pre`/`code`, or of an entry the
+   page itself spells (`literal`), stays as written; one inside a container
+   the reverse pass drops (`isDroppingContext`: `div.figure-index`,
+   `div.table-index`, `summary`, `template`, the atomic macro placeholders,
+   draw.io, a plain item of a task list) is removed; for an entry holding an
+   annotated code block (`code`), one in a context that does not keep a
+   spliced block intact (outside `p div li ul ol blockquote table thead tbody
+   tfoot tr td th details section article span h1–h6`) is removed too. An
+   entry without code goes to every viable placement; a code-carrying entry
+   to its single viable placement, marked; any entry left without a viable
+   placement is **appended once** at the end (logged `#723: re-appended media
+   dropped during AI Improve`). The plan is budgeted before anything is built
+   (`2 × Σ originals + 65,536` UTF-16 units, else **422**). With no screened
+   placement, no literal or code-carrying entry and every entry placed, the
+   result is byte-identical to the former `restoreMedia` + drop guard.
+4. Calls `finalizeCodeMetadata` (#1958, see "AI Improve code-block metadata"),
+   then derives `body_text`; the local exit judges the publication
+   projections before the write transaction, the remote exit judges the
+   storage `htmlToConfluence` returned before the intent is reserved.
 
 ### Lossless confluence-drawio turndown rule
 
@@ -1533,6 +1551,128 @@ not checked yet.
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|
 | `confluenceDrawio` | `<div class="confluence-drawio" data-diagram-name="…">` | ` ```drawio\nNAME-or-JSON\n``` ` |
+
+## AI Improve code-block metadata (#1958)
+
+A code block's title and options (`data-title`, `data-macro-params`) have no
+Markdown carrier, so before #1958 every Improve Accept dropped them. They now
+travel in an echo token, are given back from the stored body on exact
+identity only, and the storage that is written is the authority.
+
+**Token and emission.** With `layoutTokens` only (the Improve main-page
+conversion), `htmlToMarkdown` writes a `token` block as
+`[[[CODE-META n=<N>[ title=<ENC>][ params=<ENC>]]]` on the line directly above
+its fence (turndown's own fence algorithm). `N` (0..999) is the block's index
+among the token blocks of the protected DOM in document order; `ENC` is the
+expand token's percent encoding (`[A-Za-z0-9%-]`). One canonical encoder and a
+strict parser (canonical re-encoding required).
+
+**Classification (`protectMedia`).** `plain`: no metadata, turndown's own fence,
+byte for byte. `token`: annotated, one `code` child without element children,
+not in `td`/`th`, not `drawio`, code not blank (`/^\s*$/`), title and options
+within the bounds, no placeholder spelling, and a lossless projection (the
+fence lexes back to exactly one fenced code token of that language; no CR).
+`frozen`: any other annotated block, and every token block past the first
+1,000, travels as a media entry. `protectMedia` also reports per entry `code`
+(its subtree holds an annotated `pre`) and `literal` (the page's text spells
+its token more than once), and `carried` (the stored body holds an annotated
+`pre` anywhere).
+
+**Bounds (both ways).** Title ≤ 1,024 characters; options a plain JSON object
+of ≤ 16 own keys (`^[A-Za-z][A-Za-z0-9_.-]{0,63}$`, not `constructor` /
+`prototype`), every value a string ≤ 1,024 characters, the JSON ≤ 4,096 UTF-8
+bytes checked before parsing; neither may hold a character XML forbids; the
+encoded attributes ≤ 16,384 units. Out-of-bound stored metadata freezes the
+block (kept); an out-of-bound or otherwise invalid echo is dropped.
+
+**Identity (on marked's lexer tokens).** A standalone token is a paragraph or
+list-item text that is exactly one token line; it binds only to the fenced
+code token immediately after it in the same token list. It is valid when
+canonical, within the bounds and naming a token block whose stored title and
+options equal it exactly. An ordinal on two tokens voids both (G0). Per
+identity key (language + the fence's exact lexer text; the stored side is the
+projection of the block's text) the echoed fences take their tokens only when
+their sequence of valid ordinals equals the stored blocks' sequence element
+for element (G1–G3). A bound fence renders the **stored** code text; the
+stored values are set on it later, never the echoed ones. Token lines and
+three-bracket lookalikes are removed, also from inside a line of prose; a page's
+own escaped spelling stays text.
+
+**HTML stage (`finalizeCodeMetadata`).** Markers (`data-cq-code-fence`,
+`data-cq-code-replay`, value `<nonce>-<index>`, the nonce 128 random bits made
+at Accept) are authentic when they name a fence or a replayed entry of this
+Accept and occur once. Each replayed code-carrying original must come back
+intact (else **422**, never downgraded). Then: model-owned markup naming a
+code macro (`data-macro-name="code"` anywhere, raw `*:structured-macro` /
+`*:macro` markup with a name-like attribute `code`) refuses the Accept with
+`unapproved-code-macro` before conversion; every other `pre` outside a
+verified original loses `data-title`/`data-macro-params`; forged `data-cq-*`
+attributes are removed; a marked fence still in marked's exact shape, outside
+every dropping container, gets the stored values. **Twin rule:** effective
+code blocks (every `pre` with a `code` descendant) with one key (the language
+the writer emits, the class or else a carried `language`, and the code text
+with XML line ends) keep metadata only when all carry identical metadata;
+otherwise every member loses it (content kept), verified originals included.
+After one re-serialisation every fact is read from the document the returned
+string parses to; the markers are removed by exact text.
+
+**Storage rule.** For trusted units (each bound `pre` and each verified
+original, from #1953-2 on also each admitted legacy block) and
+`R = htmlToConfluence(units, same options)`, read by the #1955 storage reader:
+(i) every element resembling a code macro (`macro` / `structured-macro` with
+any name-like attribute `code`, any prefix or case) is the writer's exact
+shape: `ac:structured-macro` in the Confluence namespace with exactly one
+attribute `ac:name="code"`, outside `style`, `script`, `xmp`, `iframe`,
+`noembed`, `noframes`, `noscript`, `plaintext`, `textarea`, `title`,
+`template`, holding only `ac:parameter` elements (one attribute `ac:name`,
+text only) and then one attribute-less text-only `ac:plain-text-body`; and
+every macro with one key (first `language` parameter, body) carries the same
+record, bare and annotated being different; (ii) the multiset of annotated
+records equals R's; (iii) no bare macro has the key of an approved record. A
+bounded walk charges every element, attribute and compared character to an
+8,000,000-unit budget. Remote exit (`assertCodeMacroStorage`): the exact
+string `updatePage` receives; a string that cannot hold a start tag ending in
+`macro` (any prefix, no assumption about its alphabet) is not read and passes
+exactly when the units carry no record; otherwise a read failure refuses.
+Local exit (`assertLocalCodeMacroProjections`): no fast path; `P1 =
+htmlToConfluence(html, { previousStorage: body_storage })` (what version
+restore converts) and `P2 = htmlToConfluence(reserialise(html))` (what
+relocation converts) are both read and judged, each with its own options; the
+write transaction re-checks the `body_storage` used. A refusal is **422**
+(`unapproved-code-macro` or the read reason); nothing is reserved, uploaded,
+dispatched or stored. On the remote exit page access is checked first, so a
+caller without it gets 403, not a content-dependent answer.
+
+**#1953-2 interface.** `beginCodeMetaAccept(…, { witnesses: true })` returns one
+witness per `codeBlockElements` element (every `pre` with a direct `code`
+child): the lexer text of an unchanged plain fence, else null.
+`admitLegacyCodeMetadata(allowance, ops)` admits an op only on an uncarried
+page, for an in-range ordinal no earlier op named, string-or-null values (not
+both null), a witnessed, unannotated block with no twin; the storage rule then
+accounts for exactly the admitted units.
+
+**Recorded limits.** R1: blocks that end with the same language and code keep
+title and options only when all carry identical ones (a frozen block with an
+editable twin included). R2: model-written code markup that is not a fence
+or a plain `pre` is refused (a code-named placeholder, raw macro markup, macro
+text in raw text, a template or a comment the CDATA pass opens); raw markup
+Markdown writes as text, a fence showing macro syntax and escaped prose are
+data. R3: a page whose own body yields a code macro outside the writer's shape
+cannot Accept. R4: a frozen code-carrying token without exactly one viable
+placement is appended once at the end with its metadata, no copy is made.
+R5: a placeholder in `pre`/`code` is never replaced, and one the page itself
+spells is never placed (its medium is appended). R6: an original that does
+not verify refuses. R7 (Q8): a standalone Accept is refused when either
+projection is unreadable, with or without code: such a page cannot Accept an
+Improve result until it is edited. R8: on the remote exit a result whose
+storage may hold a macro start tag and is unreadable is refused. Q9
+(inference, not verified against a server): Confluence parses storage as XML,
+so it would reject such storage too. Q14: identity is language and code, not
+position; a block dropped by a container `isDroppingContext` does not know
+while an identical macro is written elsewhere passes as a move, carrying
+exactly the stored metadata. Edited code loses its title and options; blocks
+in a panel lose them (the panel rule puts the token line in prose, where it is
+removed); there is no UI warning.
 
 ## AI Improve layout preservation — boundary tokens (#765)
 
