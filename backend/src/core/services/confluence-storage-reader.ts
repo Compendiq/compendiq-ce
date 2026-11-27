@@ -233,12 +233,19 @@ export function readConfluenceStorage(
     parser.on('error', () => fail('not-well-formed'));
     parser.on('doctype', () => fail('not-well-formed'));
     parser.on('xmldecl', () => fail('not-well-formed'));
+    // The tag and each of its attributes are charged at their own events, before the parser reads the next
+    // attribute: a refusal leaves the rest of the tag unread (review r2, R13).
+    parser.on('opentagstart', () => {
+      if (depth + 1 > limits.depth) fail('too-deep');
+      if (++nodes > limits.nodes) fail('too-many-nodes');
+    });
+    // Every attribute as written, namespace declarations included.
+    parser.on('attribute', () => {
+      if (++nodes > limits.nodes) fail('too-many-nodes');
+    });
     parser.on('opentag', (tag) => {
-      if (++depth > limits.depth) fail('too-deep');
-      // The element and every attribute the tag was written with, declarations included, before any is kept.
+      depth += 1;
       const written = Object.values(tag.attributes);
-      nodes += 1 + written.length;
-      if (nodes > limits.nodes) fail('too-many-nodes');
       const attributes: StorageAttribute[] = [];
       for (const attribute of written) {
         // A namespace declaration binds names; it is not an attribute of the element.
