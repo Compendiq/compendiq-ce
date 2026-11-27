@@ -42,6 +42,7 @@ import {
   parseCodeMacroParams,
   parseCodeMetaAttrs,
   projectSourceCodeText,
+  placesFrozenCodeTokens,
   protectMedia,
   readCodeMacroInventory,
   replayProtectedMedia,
@@ -1152,10 +1153,33 @@ describe('#1958 r3 (D26): the suggestion\'s provenance decides the path, never i
     const sizes = protectMedia(page).media.reduce((sum, entry) => sum + entry.html.length, 0);
     await expect(improveChain(page, () => suggestion, { provenance: 'legacy', replayBudget: sizes - 1 })).rejects.toBeInstanceOf(ImproveReplayBudgetError);
     expect((await improveChain(page, () => suggestion, { provenance: 'legacy', replayBudget: sizes })).html).toBe(HISTORICAL.imageInCodePlain.base);
-    // #1958 path: a code-carrying original's marker is part of the charge.
+    // #1958 path: a code-carrying original's marker is part of the charge, taken from lengths before the marked
+    // string exists (r4 CM4-5): exactly original + marker passes, one unit less refuses.
     const frozen = `<table><tbody><tr><td>${pre('frozen()', TITLED)}</td></tr></tbody></table>`;
     const original = protectMedia(frozen).frozenCode[0]!.html.length;
     await expect(improveChain(frozen, undefined, { replayBudget: original })).rejects.toBeInstanceOf(ImproveReplayBudgetError);
+    const marker = ' data-cq-code-replay="'.length + 32 + '-0"'.length;
+    await expect(improveChain(frozen, undefined, { replayBudget: original + marker - 1 })).rejects.toBeInstanceOf(ImproveReplayBudgetError);
+    expect(codeMacros((await improveChain(frozen, undefined, { replayBudget: original + marker })).storage)).toHaveLength(1);
+  });
+
+  it('reads the page\'s own spellings per text node, as the replay reads text runs (r4 CM4-2)', () => {
+    const table = `<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table>`;
+    expect(protectMedia(`${table}<p>Syntax</p><p>CQ_CODE_PLACEHOLDER_0</p><p>End</p>`).frozenCode[0]).toMatchObject({ literal: true });
+    expect(protectMedia(`${table}<p>Use CQ_CODE_PLACEHOLDER_0_COUNT</p>`).frozenCode[0]!.literal).toBeUndefined();
+    // The placeholder protectMedia inserts is never the page's own spelling.
+    expect(protectMedia(`<p>Syntax</p>${table}<p>End</p>`).frozenCode[0]!.literal).toBeUndefined();
+  });
+
+  it('tells the generator whether an output can still place every frozen block (r4 CM4-4)', () => {
+    const input = htmlToMarkdown(protectMedia(`<table><tbody><tr><td>${pre('x()', TITLED)}</td></tr></tbody></table><p>Prose</p>`).html, { layoutTokens: true });
+    expect(input).toContain('CQ_CODE_PLACEHOLDER_0');
+    expect(placesFrozenCodeTokens(input, input)).toBe(true);
+    expect(placesFrozenCodeTokens(input, 'Prose only.')).toBe(false);
+    expect(placesFrozenCodeTokens(input, 'CQ\\_CODE\\_PLACEHOLDER\\_0\n\nCQ_CODE_PLACEHOLDER_0')).toBe(false);
+    expect(placesFrozenCodeTokens(input, '`CQ_CODE_PLACEHOLDER_0`')).toBe(false);
+    expect(placesFrozenCodeTokens(input, 'Use CQ_CODE_PLACEHOLDER_0_COUNT')).toBe(false);
+    expect(placesFrozenCodeTokens('Plain prose.', 'Anything.')).toBe(true);
   });
 });
 

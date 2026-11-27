@@ -2574,6 +2574,8 @@ export function protectMedia(html: string): ProtectedBody {
     });
   const carried = doc.body.querySelector(ANNOTATED_CODE_BLOCK_SELECTOR) !== null;
   const frozen = carried ? frozenCodeBlocks(doc.body, nodes) : [];
+  /** The placeholder text nodes inserted below: generator output, never an authored spelling. */
+  const synthesized = new Set<Node>();
   for (const node of nodes) {
     const token = `${MEDIA_TOKEN_PREFIX}${media.length}`;
     const entry: ProtectedMedia = { token, html: (node as Element).outerHTML };
@@ -2583,19 +2585,29 @@ export function protectMedia(html: string): ProtectedBody {
       if (lineEnds !== null) entry.lineEndForm = lineEnds;
     }
     media.push(entry);
-    node.replaceWith(doc.createTextNode(` ${token} `));
+    const placeholder = doc.createTextNode(` ${token} `);
+    synthesized.add(placeholder);
+    node.replaceWith(placeholder);
   }
   const frozenCode: ProtectedMedia[] = frozen.map((pre, index) => {
     const entry: ProtectedMedia = { token: `${CODE_TOKEN_PREFIX}${index}`, html: pre.outerHTML, code: true };
     const lineEnds = codeTextLineEndForm(pre);
     if (lineEnds !== null) entry.lineEndForm = lineEnds;
-    pre.replaceWith(doc.createTextNode(` ${entry.token} `));
+    const placeholder = doc.createTextNode(` ${entry.token} `);
+    synthesized.add(placeholder);
+    pre.replaceWith(placeholder);
     return entry;
   });
   if (media.length > 0 || frozenCode.length > 0) {
-    const text = doc.body.textContent ?? '';
-    markLiteralTokens(text, MEDIA_TOKEN_PREFIX, media);
-    markLiteralTokens(text, CODE_TOKEN_PREFIX, frozenCode, true);
+    // #1958 (review r4 CM4-2): each authored text node on its own, as the replay sees text runs; never the
+    // flattened body text, whose node joins would hide a spelling standing alone in its own paragraph.
+    const texts: string[] = [];
+    const walker = doc.createTreeWalker(doc.body, dom.window.NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      if (!synthesized.has(text)) texts.push(text.nodeValue ?? '');
+    }
+    markLiteralTokens(texts, MEDIA_TOKEN_PREFIX, media);
+    markLiteralTokens(texts, CODE_TOKEN_PREFIX, frozenCode, true);
   }
   return { html: doc.body.innerHTML, media, frozenCode, carried };
 }
@@ -3216,23 +3228,28 @@ function codeTextLineEndForm(el: Element): string | null {
 }
 
 /**
- * #1958 (X4): an entry is `literal` when the protected body's text spells its
- * token (either spelling, digit boundary) more often than the one node
- * protectMedia inserted: the page itself writes the token, so no spelling of
- * it can be told for a placement. For code entries (`identifier`) a spelling
- * inside a longer identifier (`CQ_CODE_PLACEHOLDER_0_COUNT`) is not one, as in
- * the replay (isIdentifierPart).
+ * #1958 (X4, review r4 CM4-2): an entry is `literal` when an authored text
+ * node of the protected body (never a placeholder protectMedia inserted)
+ * spells its token, either spelling, digit boundary: the page itself writes
+ * the token, so no spelling of it can be told for a placement. Each node is
+ * scanned on its own, as the replay reads a text run; for code entries
+ * (`identifier`) a spelling inside a longer identifier within that node
+ * (`CQ_CODE_PLACEHOLDER_0_COUNT`) is not one, as in the replay
+ * (isIdentifierPart). A token whose node ends where an identifier goes on in
+ * the next one (`CQ_CODE_PLACEHOLDER_0<!---->_COUNT`) counts: refusal, never a guess.
  */
-function markLiteralTokens(text: string, prefix: string, entries: ProtectedMedia[], identifier = false): void {
+function markLiteralTokens(texts: readonly string[], prefix: string, entries: ProtectedMedia[], identifier = false): void {
   if (entries.length === 0) return;
   const counts = new Map<string, number>();
   const spelled = `(?:${escapeRegExp(prefix)}|${escapeRegExp(prefix.replace(/_/g, '\\_'))})(\\d+)`;
   const spelling = new RegExp(identifier ? `(?<![A-Za-z0-9_])${spelled}(?![A-Za-z0-9_]|\\\\_)` : spelled, 'g');
-  for (const match of text.matchAll(spelling)) {
-    counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
+  for (const text of texts) {
+    for (const match of text.matchAll(spelling)) {
+      counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
+    }
   }
   for (let index = 0; index < entries.length; index += 1) {
-    if ((counts.get(String(index)) ?? 0) > 1) entries[index]!.literal = true;
+    if ((counts.get(String(index)) ?? 0) > 0) entries[index]!.literal = true;
   }
 }
 
@@ -3775,30 +3792,33 @@ export function replayProtectedMedia(
     if (verdicts[index] === 'viable') viable[entryOf.get(placement.token)!]! += 1;
   });
   if (entries.some((entry, k) => entry.code && viable[k] !== 1)) throw new ImproveCodePlacementError();
+  const markerText = (k: number): string => ` ${REPLAY_MARKER}="${codeMeta.nonce}-${k}"`;
+  const lengthOf = (k: number): number => entries[k]!.html.length + (entries[k]!.code ? markerText(k).length : 0);
+  const appended = entries.flatMap((_entry, k) => (viable[k] === 0 ? [k] : []));
+
+  // Budget from the plan's lengths alone (marker text included), before any replacement string is built.
+  let cost = appended.reduce((sum, k) => sum + lengthOf(k) + 1, 0);
+  placements.forEach((placement, index) => {
+    if (verdicts[index] === 'viable') cost += lengthOf(entryOf.get(placement.token)!);
+  });
+  if (cost > budget) throw new ImproveReplayBudgetError();
+
   const marked = entries.map((entry, k) => {
     if (!entry.code) return entry.html;
     const at = entry.html.search(/[\s/>]/);
-    return `${entry.html.slice(0, at)} ${REPLAY_MARKER}="${codeMeta.nonce}-${k}"${entry.html.slice(at)}`;
+    return `${entry.html.slice(0, at)}${markerText(k)}${entry.html.slice(at)}`;
   });
-  const replacements = placements.map((placement, index): string | null => {
-    if (verdicts[index] === 'keep') return null;
-    if (verdicts[index] === 'remove') return '';
-    return marked[entryOf.get(placement.token)!]!;
-  });
-  const appended = entries.flatMap((_entry, k) => (viable[k] === 0 ? [k] : []));
-
-  // Budget from the plan alone (marker text included), before anything is built.
-  const cost = replacements.reduce((sum, value) => sum + (value?.length ?? 0), 0)
-    + appended.reduce((sum, k) => sum + marked[k]!.length + 1, 0);
-  if (cost > budget) throw new ImproveReplayBudgetError();
-
   report.screened += verdicts.filter((verdict) => verdict === 'remove').length;
   report.literal += verdicts.filter((verdict) => verdict === 'keep').length;
   report.appended += appended.length;
   entries.forEach((entry, k) => {
     if (entry.code) codeMeta.replayed.add(k);
   });
-  const spliced = splicePlacements(html, placements, (_placement, index) => replacements[index]!);
+  const spliced = splicePlacements(html, placements, (placement, index) => {
+    if (verdicts[index] === 'keep') return null;
+    if (verdicts[index] === 'remove') return '';
+    return marked[entryOf.get(placement.token)!]!;
+  });
   return {
     html: appended.length > 0 ? spliced + appended.map((k) => marked[k]!).join('\n') : spliced,
     dropped: appended.length,
@@ -5487,6 +5507,38 @@ function wrapProseInSingleSlot(markdown: string, skeleton: LayoutSkeletonToken[]
  */
 export function hasRecoverableLayoutTokens(markdown: string): boolean {
   return scanLooseLayoutTokens(markdown).length > 0;
+}
+
+/**
+ * #1958 (review r4 CM4-4): can an Improve output still place every frozen
+ * code block the input Markdown carried? Each `CQ_CODE_PLACEHOLDER_<N>` the
+ * input spells outside Markdown code (either spelling, identifier
+ * boundaries, as the Accept reads it) must be spelled there exactly once in
+ * the input and exactly once in the output. An output that fails can only
+ * be refused on Accept (ImproveCodePlacementError), so the generator never
+ * caches it and "run AI Improve again" reaches the provider anew. A pass is
+ * no promise the Accept succeeds (the placement's context still decides).
+ */
+export function placesFrozenCodeTokens(input: string, output: string): boolean {
+  const spelling = new RegExp(
+    `(?<![A-Za-z0-9_])(?:${escapeRegExp(CODE_TOKEN_PREFIX)}|${escapeRegExp(CODE_TOKEN_PREFIX.replace(/_/g, '\\_'))})(\\d+)(?![A-Za-z0-9_]|\\\\_)`,
+    'g',
+  );
+  const count = (markdown: string): Map<string, number> => {
+    const counts = new Map<string, number>();
+    transformOutsideMarkdownCode(markdown, (segment) => {
+      for (const match of segment.matchAll(spelling)) counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
+      return segment;
+    });
+    return counts;
+  };
+  const expected = count(input);
+  if (expected.size === 0) return true;
+  const found = count(output);
+  for (const [ordinal, times] of expected) {
+    if (times !== 1 || found.get(ordinal) !== 1) return false;
+  }
+  return true;
 }
 
 /**

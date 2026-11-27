@@ -435,6 +435,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         improvedMarkdown,
         version: localVersion,
         title: 'Improved title',
+        improvementId: accepted.rows[0]!.id,
       });
 
       expect(response.statusCode, response.body).toBe(200);
@@ -1074,8 +1075,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         await setIntegration(outsiderId, false);
 
         const missing = await apply({ pageId: '987654', improvedMarkdown, version: 5 });
-        const denied = await apply({ pageId: String(pageId), improvedMarkdown, version: 5, title: 'Taken over' });
-        const deniedByConfluenceId = await apply({ pageId: 'page-outsider', improvedMarkdown });
+        const denied = await apply({ pageId: String(pageId), improvedMarkdown, version: 5, title: 'Taken over', improvementId });
+        const deniedByConfluenceId = await apply({ pageId: 'page-outsider', improvedMarkdown, improvementId });
 
         expect(missing.statusCode).toBe(404);
         expect(denied.statusCode).toBe(missing.statusCode);
@@ -1152,7 +1153,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         userId = outsiderId;
         await setIntegration(outsiderId, false);
 
-        const response = await apply({ pageId: String(pageId), improvedMarkdown, version: 5, title: 'Improved runbook' });
+        const response = await apply({ pageId: String(pageId), improvedMarkdown, version: 5, title: 'Improved runbook', improvementId });
 
         expect(response.statusCode, response.body).toBe(200);
         expect(response.json()).toEqual({ id: pageId, title: 'Improved runbook', version: 6 });
@@ -1178,7 +1179,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         await blocker.query('BEGIN');
         await lockPageLifecycle(blocker, [pageId]);
         try {
-          const pending = apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
+          const pending = apply({ pageId: String(pageId), improvedMarkdown, version: 5, improvementId });
           await waitForBlockedLifecycleLock();
           await blocker.query(
             `DELETE FROM space_role_assignments WHERE principal_type = 'user' AND principal_id = $1`,

@@ -175,7 +175,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       const cacheKey = `kb:${userId}:pages:fixture`;
       await redis.set(cacheKey, 'stale');
 
-      const response = await apply(pageId, improvedMarkdown);
+      const response = await apply(pageId, improvedMarkdown, { improvementId: improvement.rows[0]!.id });
 
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toEqual({ id: pageId, title: 'My Article', version: 6 });
@@ -730,7 +730,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const pageId = await seedPage(CM1_PAGE);
           const improvementId = await pendingImprovement(pageId, CM1_BASE_SUGGESTION);
 
-          const response = await apply(pageId, CM1_BASE_SUGGESTION);
+          const response = await apply(pageId, CM1_BASE_SUGGESTION, { improvementId });
 
           expect(response.statusCode, response.body).toBe(422);
           expect(response.body).toMatch(/run AI Improve again/);
@@ -742,7 +742,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const pageId = await seedPage(TOKEN_PAGE);
           const improvementId = await pendingImprovement(pageId, TOKEN_PAGE_BASE_SUGGESTION);
 
-          const response = await apply(pageId, TOKEN_PAGE_BASE_SUGGESTION);
+          const response = await apply(pageId, TOKEN_PAGE_BASE_SUGGESTION, { improvementId });
 
           expect(response.statusCode, response.body).toBe(422);
           await expectUnchanged(pageId, TOKEN_PAGE);
@@ -817,7 +817,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, null);
 
-          const response = await apply(pageId, suggestion);
+          const response = await apply(pageId, suggestion, { improvementId });
 
           expect(response.statusCode, response.body).toBe(422);
           expect(response.body).toMatch(/made before an update/);
@@ -836,7 +836,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, null);
 
-          const response = await apply(pageId, suggestion);
+          const response = await apply(pageId, suggestion, { improvementId });
 
           expect(response.statusCode, response.body).toBe(200);
           expect((await readPage(pageId)).body_html).toBe(base);
@@ -849,15 +849,15 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const pageId = await seedPage(page);
           const named = `${base}\n\n<div class="confluence-macro-unknown" data-macro-name="code">x</div>\n`;
           const injected = `${base}\n\n<pre data-title="Evil" data-macro-params="{&quot;a&quot;:&quot;b&quot;}"><code>raw()</code></pre>\n`;
-          await storedImprovement(pageId, named, null);
-          await storedImprovement(pageId, injected, null);
+          const namedId = await storedImprovement(pageId, named, null);
+          const injectedId = await storedImprovement(pageId, injected, null);
 
-          const refused = await apply(pageId, named);
+          const refused = await apply(pageId, named, { improvementId: namedId });
           expect(refused.statusCode, refused.body).toBe(422);
           expect(refused.json()).toMatchObject({ reason: 'unapproved-code-macro' });
           await expectUnchanged(pageId, page);
 
-          const stripped = await apply(pageId, injected);
+          const stripped = await apply(pageId, injected, { improvementId: injectedId });
           expect(stripped.statusCode, stripped.body).toBe(200);
           const saved = (await readPage(pageId)).body_html;
           expect(saved).toContain('<pre><code>raw()</code></pre>');
@@ -870,7 +870,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, 1);
 
-          const response = await apply(pageId, suggestion);
+          const response = await apply(pageId, suggestion, { improvementId });
 
           expect(response.statusCode, response.body).toBe(200);
           const saved = (await readPage(pageId)).body_html;
@@ -885,7 +885,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const pageId = await seedPage(page);
           const improvementId = await storedImprovement(pageId, suggestion, 1);
 
-          const response = await apply(pageId, suggestion);
+          const response = await apply(pageId, suggestion, { improvementId });
 
           expect(response.statusCode, response.body).toBe(422);
           expect(response.body).toMatch(/edit the page directly/);
@@ -905,6 +905,87 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           const echo = await apply(pageId, faithfulEcho(page));
           expect(echo.statusCode, echo.body).toBe(200);
           expect((await readPage(pageId)).body_html.match(/data-title="Sample"/g)).toHaveLength(1);
+        });
+
+        describe('review r4 (D27): provenance and status bind to the selected improvement id only', () => {
+          const TITLED_PAGE = '<p>Intro</p><pre data-title="T"><code class="language-js">a()</code></pre>';
+          const OLD_SUGGESTION = 'Intro\n\n```js\na()\n```';
+
+          it.each(['legacy row newer', 'protocol row newer'] as const)(
+            'binds the row the request names when a pre-#1958 and a #1958 row hold the same text (CM4-3, %s)',
+            async (ordering) => {
+              const pageId = await seedPage(TITLED_PAGE);
+              const first = await storedImprovement(pageId, OLD_SUGGESTION, ordering === 'legacy row newer' ? 1 : null);
+              const second = await storedImprovement(pageId, OLD_SUGGESTION, ordering === 'legacy row newer' ? null : 1);
+              const [legacy, current] = ordering === 'legacy row newer' ? [second, first] : [first, second];
+
+              const old = await apply(pageId, OLD_SUGGESTION, { improvementId: legacy });
+              expect(old.statusCode, old.body).toBe(422);
+              expect(old.body).toMatch(/made before an update/);
+              await expectUnchanged(pageId, TITLED_PAGE);
+              expect([await status(legacy), await status(current)]).toEqual(['completed', 'completed']);
+
+              const fresh = await apply(pageId, OLD_SUGGESTION, { improvementId: current });
+              expect(fresh.statusCode, fresh.body).toBe(200);
+              expect([await status(legacy), await status(current)]).toEqual(['completed', 'applied']);
+            },
+          );
+
+          it('treats a request without an id, or with a row that fails the checks, as new input and changes no row', async () => {
+            const pageId = await seedPage(TITLED_PAGE);
+            const otherPageId = await seedPage('<p>Elsewhere</p>');
+            const legacy = await storedImprovement(pageId, OLD_SUGGESTION, null);
+            const foreign = await storedImprovement(otherPageId, OLD_SUGGESTION, null);
+            const applied = await storedImprovement(pageId, OLD_SUGGESTION, null);
+            await query("UPDATE llm_improvements SET status = 'applied' WHERE id = $1", [applied]);
+
+            // The text equals a stored pre-#1958 row, but nothing names it: the #1958 path, no row changes.
+            const unbound = await apply(pageId, OLD_SUGGESTION);
+            expect(unbound.statusCode, unbound.body).toBe(200);
+            expect(await status(legacy)).toBe('completed');
+            // Another page's row and an already applied row do not bind either.
+            for (const improvementId of [foreign, applied]) {
+              const response = await apply(pageId, OLD_SUGGESTION, { improvementId, version: (await readPage(pageId)).version });
+              expect(response.statusCode, response.body).toBe(200);
+            }
+            expect([await status(legacy), await status(foreign), await status(applied)]).toEqual(['completed', 'completed', 'applied']);
+          });
+
+          it('binds a long suggestion by id, not by a prefix of its text (CM4-1)', async () => {
+            const page = `<p>Intro</p>${IMG('d')}<p>End</p>`;
+            const long = `Intro\n\n${'Long prose. '.repeat(5000)}\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n\nEnd`;
+            expect(long.length).toBeGreaterThan(50_000);
+            const pageId = await seedPage(page);
+            const row = await storedImprovement(pageId, long.slice(0, 50_000), null);
+
+            // A suffix-only edit with no id: new input, the row stays as it was.
+            const edited = await apply(pageId, `${long}\n\nRevised.`);
+            expect(edited.statusCode, edited.body).toBe(200);
+            expect(await status(row)).toBe('completed');
+            // The selected row binds whatever its stored text: the pre-#1958 base path on this plain page, and it is applied.
+            const bound = await apply(pageId, long, { improvementId: row, version: 6 });
+            expect(bound.statusCode, bound.body).toBe(200);
+            expect(await status(row)).toBe('applied');
+            expect((await readPage(pageId)).body_html.match(/<img /g)).toHaveLength(1);
+          });
+
+          it('refuses an edited old suggestion whose only placement is a placeholder the page writes in its own paragraph (CM4-2)', async () => {
+            const page = `${BOLD_TABLE}<p>Syntax</p><p>CQ_CODE_PLACEHOLDER_0</p><p>End</p>`;
+            // Generated on a06f304c (disposable worktree).
+            const old = `${BOLD_TABLE}\n\nSyntax\n\nCQ\\_CODE\\_PLACEHOLDER\\_0\n\nEnd`;
+            const pageId = await seedPage(page);
+            const row = await storedImprovement(pageId, old, null);
+
+            const unchanged = await apply(pageId, old, { improvementId: row });
+            expect(unchanged.statusCode, unchanged.body).toBe(422);
+            await expectUnchanged(pageId, page);
+
+            const edited = await apply(pageId, `${old}\n\nRevised.`);
+            expect(edited.statusCode, edited.body).toBe(422);
+            expect(edited.body).toMatch(/dropped, repeated or moved a protected code block/);
+            await expectUnchanged(pageId, page);
+            expect(await status(row)).toBe('completed');
+          });
         });
       });
     });

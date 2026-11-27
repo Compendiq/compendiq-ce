@@ -17,7 +17,7 @@ import { ConversationTurnAiProvenanceSchema, ImproveRequestSchema, ImprovementId
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
-import { hasRecoverableLayoutTokens, IMPROVE_CODE_META_PROTOCOL } from '../../core/services/content-converter.js';
+import { hasRecoverableLayoutTokens, IMPROVE_CODE_META_PROTOCOL, placesFrozenCodeTokens } from '../../core/services/content-converter.js';
 import {
   resolveReadablePageRef,
   resolveSystemPrompt,
@@ -297,8 +297,10 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         },
         // Never cache a response that lost the layout tokens: the apply will
         // 422 with "run AI Improve again", and a cached token-less response
-        // would replay on every retry until the TTL expires.
-        shouldCache: (out) => !inputHasLayoutTokens || hasRecoverableLayoutTokens(out),
+        // would replay on every retry until the TTL expires. #1958 (r4
+        // CM4-4): the same for a response that cannot place every frozen code
+        // block exactly once, which the Accept can only refuse.
+        shouldCache: (out) => (!inputHasLayoutTokens || hasRecoverableLayoutTokens(out)) && placesFrozenCodeTokens(markdown, out),
         // Authoritative token-loss verdict for the frontend's pre-Accept
         // warning — its own `[[[` heuristic cannot recognize mangled-but-
         // recoverable token spellings.

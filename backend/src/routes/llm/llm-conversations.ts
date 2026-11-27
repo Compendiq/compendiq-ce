@@ -317,7 +317,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
   // POST /api/llm/improvements/apply - apply accepted improvement to a page + sync to Confluence
   fastify.post('/llm/improvements/apply', async (request) => {
     const body = ApplyImprovementRequestSchema.parse(request.body);
-    const { pageId, improvedMarkdown, version, title } = body;
+    const { pageId, improvedMarkdown, version, title, improvementId: selectedImprovementId } = body;
     const userId = request.userId;
 
     // Resolve page by internal id or Confluence id. Both are numeric strings,
@@ -481,26 +481,23 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
-    // The public apply request predates improvement ids. Bind its status side
-    // effect now, before conversion/remote latency can make a newer unrelated
-    // improvement look like the row this request accepted. An exact content
-    // match preserves direct/manual Apply calls, which have no history row.
-    const linkedImprovement = await query<{ id: string; improveProtocol: number | null }>(
+    // #1958 (coordinator decision D27): the request names the improvement the
+    // user selected. Its provenance and its `applied` status are bound to that
+    // row only, once it is the caller's, for this page and completed; the text
+    // is never matched against stored rows. No id, or a row that fails these
+    // checks (a manual Apply, an older client), is new input: the #1958 path
+    // with exact-grammar carriers only, and no row changes status. Bound now,
+    // before conversion or remote latency.
+    const linkedRow = selectedImprovementId === undefined ? undefined : (await query<{ id: string; improveProtocol: number | null }>(
       `SELECT id, improve_protocol AS "improveProtocol"
          FROM llm_improvements
-        WHERE user_id = $1
-          AND page_id = $2
-          AND status IN ('streaming', 'completed')
-          AND improved_content = $3
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1`,
-      [userId, existingPage.id, improvedMarkdown.slice(0, 50000)],
-    );
-    const improvementId = linkedImprovement.rows[0]?.id ?? null;
-    // #1958 (D26 item 2): the suggestion's provenance is the matched row's
-    // protocol, never its text. No row (a direct or edited Apply) takes the
-    // #1958 path, where only exact-grammar carriers bind.
-    const linkedRow = linkedImprovement.rows[0];
+        WHERE id = $1
+          AND user_id = $2
+          AND page_id = $3
+          AND status = 'completed'`,
+      [selectedImprovementId, userId, existingPage.id],
+    )).rows[0];
+    const improvementId = linkedRow?.id ?? null;
     const provenance: ImproveSuggestionProvenance = !linkedRow ? 'unmatched'
       : linkedRow.improveProtocol === IMPROVE_CODE_META_PROTOCOL ? 'code-meta' : 'legacy';
 

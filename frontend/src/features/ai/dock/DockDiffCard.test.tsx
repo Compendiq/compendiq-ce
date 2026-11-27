@@ -158,6 +158,8 @@ describe('DockDiffCard (#1126)', () => {
           improvedMarkdown: IMPROVED,
           version: 4,
           title: 'Onboarding Guide',
+          // #1958: the selected row, so the server binds provenance and status to it alone.
+          improvementId: IMPROVEMENT_ID,
         }),
       }));
     });
@@ -189,7 +191,7 @@ describe('DockDiffCard (#1126)', () => {
       expect(apiFetchMock).toHaveBeenCalledWith(READMIT_PATH, expect.objectContaining({ method: 'POST' }));
       // What is applied is the row's re-admitted text.
       expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.objectContaining({
-        body: JSON.stringify({ pageId: 'page-1', improvedMarkdown: IMPROVED, version: 4, title: 'Onboarding Guide' }),
+        body: JSON.stringify({ pageId: 'page-1', improvedMarkdown: IMPROVED, version: 4, title: 'Onboarding Guide', improvementId: IMPROVEMENT_ID }),
       }));
     });
 

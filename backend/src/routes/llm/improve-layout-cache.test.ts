@@ -73,3 +73,33 @@ describe.skipIf(!available)('POST /api/llm/improve - layout-token cache guard', 
     expect(fixture.requests).toHaveLength(1);
   });
 });
+
+// #1958 (review r4 CM4-4): a titled code block in a table cell is frozen as CQ_CODE_PLACEHOLDER_0. An output that
+// does not carry that placeholder exactly once can only be refused on Accept, so it is never cached: running AI
+// Improve again reaches the provider until a usable output comes back, which is cached as before.
+describe.skipIf(!available)('POST /api/llm/improve - frozen code-block cache guard (#1958)', () => {
+  const fixture = new ArticleRouteFixture();
+  beforeAll(() => fixture.start(llmImproveRoutes));
+  beforeEach(() => fixture.reset());
+  afterAll(() => fixture.close());
+  const FROZEN_CONTENT = '<table><tbody><tr><td><pre data-title="Sample"><code class="language-js">x()</code></pre></td></tr></tbody></table><p>Prose</p>';
+  const improve = () => fixture.post('improve', { pageId: fixture.pageId, content: FROZEN_CONTENT, type: 'grammar', model: 'llama3' });
+  const keys = () => fixture.redis.keys('kb:llm:*');
+
+  it('calls the provider anew while the output cannot place the frozen block, then caches a usable one', async () => {
+    fixture.output = 'Prose improved, the sample left out.';
+    expect((await improve()).statusCode).toBe(200);
+    expect((await improve()).statusCode).toBe(200);
+    expect(fixture.requests).toHaveLength(2);
+    expect(await keys()).toHaveLength(0);
+
+    fixture.output = '<table><tbody><tr><td>CQ_CODE_PLACEHOLDER_0</td></tr></tbody></table>\n\nProse improved.';
+    expect((await improve()).statusCode).toBe(200);
+    expect(fixture.requests).toHaveLength(3);
+    expect(await keys()).toHaveLength(1);
+    const replayed = await improve();
+    expect(replayed.statusCode).toBe(200);
+    expect(fixture.requests).toHaveLength(3);
+    expect(sseEvents(replayed.body).map((event) => event.content ?? '').join('')).toContain('CQ_CODE_PLACEHOLDER_0');
+  });
+});
