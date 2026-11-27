@@ -3,15 +3,16 @@
  * depth — through the forward pass, both TipTap schemas (the backend collab
  * schema here; the frontend one in Editor.test.tsx and ArticleViewer.test.tsx)
  * and write-back. Task lists that are not in a task body stay flat, exactly as
- * before. Nesting deeper than MAX_TASK_LIST_NESTING is refused, never
- * flattened, and only where the HTML is kept: write-back reads stored tasks at
- * any depth. Literals marked "bff6d4ec" were captured at that commit.
+ * before. Nesting deeper than MAX_TASK_LIST_NESTING (counted on the input,
+ * editor lists and raw task lists alike) is converted exactly as before #1957,
+ * on both passes. Literals and hashes marked "bff6d4ec" were captured at that
+ * commit.
  */
+import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
 import * as Y from 'yjs';
 import {
-  ConfluenceTaskNestingError,
   MAX_TASK_LIST_NESTING,
   assignTaskIds,
   confluenceToHtml,
@@ -19,6 +20,7 @@ import {
   htmlToMarkdown,
   markdownToHtml,
   measureTaskListConversion,
+  storageTaskNesting,
 } from './content-converter.js';
 import { applyHtmlToYDoc, collabCarriesTaskIds, collabTaskItems, htmlToYDoc, markTaskIds, yDocToHtml } from './collab-schema.js';
 import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
@@ -29,6 +31,33 @@ import {
   NESTED_TASK_LIST_PAGE,
   POLLUTED_TASK_LIST_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
+
+/**
+ * Hashes of what bff6d4ec wrote for the 33-level inputs below, captured at
+ * that commit (`$EPIC/evidence/1957/capture-r1.mts.txt`): beyond the limit,
+ * #1957 converts exactly as the base did.
+ */
+const BASE = {
+  forward33Macros: '0a912b4af28810936affdbc6d6582a2265f018724cc0ab4f056c57ff3876c426',
+  forward33Plain: '52ef2667b202d2649ad40b51d95cfa7e30ef7ec0734406651e7fdf94622da12a',
+  writeBack33: '7b9b4e30b75d2dabef8b1d56c12d119f83b5378d2f65b5c2f0c9a059890b0eb0',
+  rawSublistWrite: 'da0748721b2dd7a429ffd19fe4ac34433ed4cc5b1cddd8b56a68be149c5f5f18',
+  rawSublistForward: 'add2f2020a25a4c01b67a73b888883752b3e0d3341a4fcb16d1221c3c3879a23',
+};
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** `depth` editor task lists, each in the previous task's li; `innermost` ends the deepest task. */
+function editorChain(depth: number, innermost = ''): string {
+  let html = '';
+  for (let level = depth; level >= 1; level -= 1) {
+    html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${level}">`
+      + `<p>t${level}</p>${level === depth ? innermost : ''}${html}</li></ul>`;
+  }
+  return html;
+}
 
 const STATUS = '<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter>'
   + '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro>';
@@ -297,28 +326,46 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       expect(htmlToConfluence(html)).toBe(storage);
     });
 
-    it('refuses one level more with a typed error, not a flattened page', () => {
-      const storage = chain(MAX_TASK_LIST_NESTING + 1);
-      expect(() => confluenceToHtml(storage)).toThrow(ConfluenceTaskNestingError);
-      expect(() => confluenceToHtml(storage)).toThrow(`nest ${MAX_TASK_LIST_NESTING + 1} levels deep`);
-      // The limit counts subtask lists, not lists placed in lists, which stay flat.
+    it('converts one level more exactly as before #1957, without an error (bff6d4ec)', () => {
+      const html = confluenceToHtml(chain(MAX_TASK_LIST_NESTING + 1));
+      expect(sha256(html)).toBe(BASE.forward33Macros);
+      // The pre-#1957 shape: the subtask list stays raw inside its parent and is listed again beside it.
+      expect(html).toContain('<ac:task-list>');
+      expect(sha256(confluenceToHtml(chain(MAX_TASK_LIST_NESTING + 1, (level) => `t${level}`)))).toBe(BASE.forward33Plain);
+      // Lists placed in lists stay flat at any depth.
       expect(items(confluenceToHtml(siblingChain(MAX_TASK_LIST_NESTING + 50))).every((item) => item.depth === 1)).toBe(true);
     });
 
-    it('refuses to write editor HTML nested one level more, so Confluence never holds a page sync would refuse', () => {
-      let html = '';
-      for (let level = MAX_TASK_LIST_NESTING + 1; level >= 1; level -= 1) {
-        html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${level}"><p>t${level}</p>${html}</li></ul>`;
+    it('decides the limit with a scan of the storage as written, before any conversion work', () => {
+      for (const depth of [1, 10, MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1, 200]) {
+        // One look at each task-list tag: linear in the page.
+        expect(storageTaskNesting(chain(depth)), `depth ${depth}`).toEqual({ depth, tags: 2 * depth });
       }
-      expect(() => htmlToConfluence(html)).toThrow(ConfluenceTaskNestingError);
-      expect(new ConfluenceTaskNestingError(MAX_TASK_LIST_NESTING + 1).statusCode).toBe(422);
-      const atLimit = html.replace(/<ul data-type="taskList"><li[^>]*data-task-id="1"><p>t1<\/p>(.*)<\/li><\/ul>$/, '$1');
-      expect(storedTasks(htmlToConfluence(atLimit))).toHaveLength(MAX_TASK_LIST_NESTING);
-      // A restore reserved before nested-tasks wrote such HTML and still derives it.
-      expect(storedTasks(htmlToConfluence(html, { derivationFeatures: NO_STORAGE_DERIVATION_FEATURES }))).toHaveLength(MAX_TASK_LIST_NESTING + 1);
+      // A task list shown as code is text, not nesting.
+      const code = `<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[${'<ac:task-list>'.repeat(40)}]]></ac:plain-text-body></ac:structured-macro>`;
+      expect(storageTaskNesting(`${code}${chain(2)}`)).toEqual({ depth: 2, tags: 4 });
     });
 
-    it('does linear work however deep the tasks nest: each element indexed once, each node moved once', () => {
+    it('writes editor HTML nested one level more exactly as before #1957 (bff6d4ec)', () => {
+      const html = editorChain(MAX_TASK_LIST_NESTING + 1);
+      const previousStorage = chain(MAX_TASK_LIST_NESTING + 1, (level) => `t${level}`);
+      expect(sha256(htmlToConfluence(html, { previousStorage }))).toBe(BASE.writeBack33);
+      expect(htmlToConfluence(html, { previousStorage }))
+        .toBe(htmlToConfluence(html, { previousStorage, derivationFeatures: NO_STORAGE_DERIVATION_FEATURES }));
+      expect(storedTasks(htmlToConfluence(editorChain(MAX_TASK_LIST_NESTING)))).toHaveLength(MAX_TASK_LIST_NESTING);
+    });
+
+    it('counts a raw subtask list an old body still holds, and reads its storage back as before (bff6d4ec)', () => {
+      // 32 editor levels whose deepest task keeps the raw list a body synced before #1957 held.
+      const html = editorChain(MAX_TASK_LIST_NESTING, '<ac:task-list><ac:task><ac:task-id>33</ac:task-id>'
+        + '<ac:task-status>incomplete</ac:task-status><ac:task-body>raw</ac:task-body></ac:task></ac:task-list>');
+      const storage = htmlToConfluence(html);
+      expect(sha256(storage)).toBe(BASE.rawSublistWrite);
+      expect(storageTaskNesting(storage).depth).toBe(MAX_TASK_LIST_NESTING + 1);
+      expect(sha256(confluenceToHtml(storage))).toBe(BASE.rawSublistForward);
+    });
+
+    it('builds each task once: one destination per task and body node (a move count, not runtime)', () => {
       // Counted work, not time: JSDOM's own parse of a deep page is superlinear.
       let previous = { visited: 0, moved: 0 };
       for (const depth of [10, 20, MAX_TASK_LIST_NESTING, MAX_TASK_LIST_NESTING + 1, 100, 200]) {
@@ -335,17 +382,11 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
       expect(measureTaskListConversion(siblingChain(200))).toEqual({ depth: 1, visited: 1000, moved: 400 });
     });
 
-    it('reads the stored tasks of deeper storage on write-back, so a page that saved before still saves', () => {
-      const depth = MAX_TASK_LIST_NESTING * 4;
-      const storage = chain(depth, (level) => `t${level}`);
-      const target = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>t${depth}</p></li></ul>`;
-      expect(storedTasks(htmlToConfluence(target, { previousStorage: storage })).map((t) => t.id)).toEqual([String(depth)]);
-    });
-
-    it('reads them with the loop before #1957 for a restore reserved without nested-tasks, which never refuses', () => {
+    it('reads the stored tasks of deeper storage on write-back as before, so a page that saved before still saves', () => {
       const depth = MAX_TASK_LIST_NESTING + 1;
       const storage = chain(depth, (level) => `t${level}`);
       const target = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>t${depth}</p></li></ul>`;
+      expect(storedTasks(htmlToConfluence(target, { previousStorage: storage })).map((t) => t.id)).toEqual([String(depth)]);
       expect(storedTasks(htmlToConfluence(target, {
         previousStorage: storage,
         derivationFeatures: NO_STORAGE_DERIVATION_FEATURES,
@@ -356,6 +397,27 @@ describe('content-converter: #1957 nested subtasks on sync-in', () => {
   describe('collab TipTap schema and a collaborative round trip', () => {
     it('keeps a nested task list with a subtask macro through the collab schema', () => {
       expect(yDocToHtml(htmlToYDoc(NESTED_TASK_LIST_HTML))).toBe(NESTED_TASK_LIST_EDITOR_HTML);
+    });
+
+    it('keeps script and event-handler canaries out of a nested task, while its content and nesting stay', () => {
+      // The same input and expectation as the frontend's Editor and ArticleViewer cases (#1957 M3).
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">parent'
+        + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="2">safe '
+        + '<img src="https://example.com/a.png" onerror="alert(1)"><script>alert(2)</script>'
+        + '<a href="javascript:alert(3)">link</a> <span onmouseover="alert(4)">hover</span>'
+        + '<div class="confluence-toc" data-maxlevel="2" onclick="alert(5)">[Table of Contents]</div></li></ul></li></ul>';
+      const saved = yDocToHtml(htmlToYDoc(html));
+      for (const canary of ['onerror', '<script', 'javascript:', 'onmouseover', 'onclick', 'alert(']) {
+        expect(saved, canary).not.toContain(canary);
+      }
+      expect(items(saved).map(({ id, checked, depth }) => [id, checked, depth])).toEqual([['1', 'false', 1], ['2', 'true', 2]]);
+      const doc = new JSDOM(`<body>${saved}</body>`).window.document;
+      const sub = doc.querySelector('li[data-task-id="2"]')!;
+      expect(sub.textContent).toContain('safe');
+      expect(sub.textContent).toContain('link');
+      expect(sub.textContent).toContain('hover');
+      expect(sub.querySelector('.confluence-toc')).not.toBeNull();
+      expect(sub.querySelector('img')?.getAttribute('src')).toBe('https://example.com/a.png');
     });
 
     it('writes every id, status, body and macro back once at its depth after an unrelated edit', () => {

@@ -296,8 +296,6 @@ interface ConfluenceConversionPass {
   html: string;
   macrosBefore: number;
   macrosAfter: number;
-  /** The deepest task-list nesting the pass wrote (#1957). */
-  taskNestingDepth: number;
 }
 
 /**
@@ -309,11 +307,9 @@ interface ConfluenceConversionPass {
  * descendants, so the raw macro count must strictly decrease. Refuse to return
  * partial HTML if that invariant ever fails: the loop is bounded by the input
  * macro count and a malformed/unhandled shape is never silently discarded.
- * Task lists nested deeper than {@link MAX_TASK_LIST_NESTING} are refused the
- * same way ({@link ConfluenceTaskNestingError}, #1957).
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
-  return confluenceToHtmlWith(storageXhtml, pageId, spaceKey, ALL_STORAGE_DERIVATION_FEATURES, MAX_TASK_LIST_NESTING);
+  return confluenceToHtmlWith(storageXhtml, pageId, spaceKey, ALL_STORAGE_DERIVATION_FEATURES);
 }
 
 /**
@@ -321,24 +317,26 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
  * (#1953): every forward conversion says which set it derives with. A
  * write-back that converts stored storage itself ({@link storedTasks}) passes
  * its own set, so a restore recovered with the features it was reserved with
- * reads the stored tasks as it read them then. Only a conversion whose HTML is
- * kept states `maxTaskNesting` (#1957): a write-back reads stored tasks at any
- * depth, so a page that saved before stays saveable.
+ * reads the stored tasks as it read them then.
+ *
+ * #1957: whether task lists nest (`nested-tasks`) is decided once, before any
+ * conversion work, from a scan of the storage as written
+ * ({@link storageTaskNesting}): storage nested deeper than
+ * {@link MAX_TASK_LIST_NESTING} converts exactly as without the feature, in
+ * every pass.
  */
 function confluenceToHtmlWith(
   storageXhtml: string,
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
-  maxTaskNesting?: number,
 ): string {
   assertStorageDerivationFeatures(features);
+  const nestTasks = derivationHas(features, 'nested-tasks')
+    && storageTaskNesting(storageXhtml).depth <= MAX_TASK_LIST_NESTING;
   let input = storageXhtml;
   while (true) {
-    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features);
-    if (maxTaskNesting !== undefined && pass.taskNestingDepth > maxTaskNesting) {
-      throw new ConfluenceTaskNestingError(pass.taskNestingDepth);
-    }
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, nestTasks);
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
       throw new Error(
@@ -624,42 +622,66 @@ export function _setForwardDerivationStepForTest(step: ForwardDerivationStep | u
 }
 
 /**
- * The deepest task-list nesting a conversion writes (#1957): a subtask list
- * inside a task body is one level below its parent's. The bound is the
- * write-back reverse pass, which re-serialises once per level: with a status
- * and a toc macro in every task it writes 32 levels in about 0.2 s, 64 in
- * about 1.5 s and 100 in 5–10 s, while both TipTap schemas and the
- * collaborative document stay under 0.2 s at 100. Before #1957 the forward
- * pass took 1.5 s at 50 levels and ran out of memory by 150
- * (docs/architecture/11-content-pipeline.md). Storage nested deeper is refused
- * with {@link ConfluenceTaskNestingError}, never flattened: a flattened page
- * would publish a different hierarchy on its next save.
+ * The deepest task nesting #1957 converts as nested tasks: a subtask list
+ * inside a task body is one level below its parent's. Beyond it (coordinator
+ * decision D13) a page converts exactly as before #1957, on both passes — the
+ * pre-#1957 forward loop and write-back's pre-#1957 read of its stored tasks
+ * — so nothing is refused and no other hierarchy is published; such a page
+ * keeps the pre-#1957 duplicated shape. The bound is the write-back reverse
+ * pass, which re-serialises once per level: with a status and a toc macro in
+ * every task it writes 32 levels in about 0.2 s, 64 in about 1.5 s and 100 in
+ * 5–10 s, while both TipTap schemas and the collaborative document stay under
+ * 0.2 s at 100 (docs/architecture/11-content-pipeline.md).
  */
 export const MAX_TASK_LIST_NESTING = 32;
 
-/**
- * Task lists nest deeper than {@link MAX_TASK_LIST_NESTING} (#1957). Like the
- * raw-macro fixed-point guard (#1438), the conversion returns nothing
- * partial, so nothing partial is stored; write-back refuses such HTML before
- * anything reaches Confluence (422 on a request).
- */
-export class ConfluenceTaskNestingError extends Error {
-  readonly statusCode = 422;
-
-  constructor(readonly depth: number) {
-    super(`Confluence task lists nest ${depth} levels deep; at most ${MAX_TASK_LIST_NESTING} are converted`);
-    this.name = 'ConfluenceTaskNestingError';
-  }
+/** How deep the task lists of a storage body nest, and how many task-list tags the scan read (#1957). */
+export interface StorageTaskNesting {
+  depth: number;
+  tags: number;
 }
 
-/** How deep the editor's task lists (`ul[data-type="taskList"]`) of `doc` nest (#1957). */
-function taskListNestingDepth(doc: Document): number {
+const TASK_LIST_TAG = /<(\/?)ac:task-list(?=[\s/>])[^>]*>/gi;
+
+/**
+ * How deep `ac:task-list` nests in storage as the HTML parser reads it (#1957):
+ * CDATA as text, an `ac:task-list` the XHTML preprocessing leaves self-closing
+ * as an opening tag. One scan of the string, before any DOM work, so deciding
+ * the limit costs time linear in the page. It counts every task list inside
+ * another, a list placed directly in a list included (those stay flat either
+ * way), so it bounds the subtask nesting from above.
+ */
+export function storageTaskNesting(storageXhtml: string): StorageTaskNesting {
+  let depth = 0;
+  let deepest = 0;
+  let tags = 0;
+  for (const match of expandSelfClosingXhtmlTags(stripCdata(storageXhtml)).matchAll(TASK_LIST_TAG)) {
+    tags += 1;
+    if (match[1]) {
+      depth = Math.max(0, depth - 1);
+    } else {
+      depth += 1;
+      if (depth > deepest) deepest = depth;
+    }
+  }
+  return { depth: deepest, tags };
+}
+
+/**
+ * How deep the task hierarchy of HTML being written back nests (#1957): the
+ * editor's lists (`ul[data-type="taskList"]`) and the raw `ac:task-list` a
+ * body synced before #1957 still holds both count, since both reach storage.
+ * One preorder pass, before any restructuring.
+ */
+function htmlTaskNesting(doc: Document): number {
   const depthOf = new Map<Element, number>();
   let deepest = 0;
-  for (const ul of doc.querySelectorAll('ul[data-type="taskList"]')) {
-    const enclosing = ul.parentElement?.closest('ul[data-type="taskList"]');
-    const depth = (enclosing ? depthOf.get(enclosing) ?? 0 : 0) + 1;
-    depthOf.set(ul, depth);
+  for (const el of byTag(doc.body, '*')) {
+    const outer = (el.parentElement && depthOf.get(el.parentElement)) ?? 0;
+    const isList = el.localName === 'ac:task-list'
+      || (el.localName === 'ul' && el.getAttribute('data-type') === 'taskList');
+    const depth = isList ? outer + 1 : outer;
+    depthOf.set(el, depth);
     if (depth > deepest) deepest = depth;
   }
   return deepest;
@@ -690,15 +712,17 @@ interface TaskScope {
  * outside its body) is not Confluence's nesting: its tasks join the nearest
  * kept list in source order, as they always have. Each task gets its li once,
  * in the kept list it ends in; each body node and each li moves once. Nothing
- * is re-serialised, so the work is linear in the page and no subtask is cloned
- * beside its parent (the duplicate the outer-first loop wrote).
+ * is re-serialised and no subtask is cloned beside its parent (the duplicate
+ * the outer-first loop wrote). A move is one DOM call, not constant time: JSDOM
+ * also walks the moved node's ancestors, so the runtime grows with the depth,
+ * which MAX_TASK_LIST_NESTING bounds before this step runs.
  */
 function convertTaskLists(doc: Document, work?: TaskListConversionWork): number {
   if (doc.getElementsByTagName('ac:task-list').length === 0) return 0;
   // Work on the page detached from the document: JSDOM walks the whole subtree
   // of a node moved within a connected tree, which made moving each body into
-  // its li quadratic in the nesting depth; detached, a move is constant. The
-  // page goes back in one append, in the same order.
+  // its li far more expensive in the nesting depth. The page goes back in one
+  // append, in the same order.
   const detached = doc.createDocumentFragment();
   while (doc.body.firstChild) detached.appendChild(doc.body.firstChild);
   const lists: Element[] = [];
@@ -833,8 +857,9 @@ function convertTaskListsBeforeNesting(doc: Document): void {
 }
 
 /**
- * Test seam (#1957): the work the task-list step does on `storageXhtml`, which
- * grows linearly with the page however deep its tasks nest.
+ * Test seam (#1957): the elements the task-list step indexes and the moves it
+ * makes on `storageXhtml` — one destination per task and body node. A count
+ * of DOM calls, not of runtime (see convertTaskLists).
  */
 export function measureTaskListConversion(storageXhtml: string): TaskListConversionWork {
   const doc = new JSDOM(`<body>${expandSelfClosingXhtmlTags(stripCdata(storageXhtml))}</body>`, {
@@ -846,15 +871,17 @@ export function measureTaskListConversion(storageXhtml: string): TaskListConvers
 }
 
 /**
- * Run one static-snapshot conversion pass. Its task-list step is gated on the
- * `nested-tasks` storage-derivation feature (#1957); every other step derives
- * the same for every set (#1953).
+ * Run one static-snapshot conversion pass. Its task-list step is the #1957
+ * one only when `nestTasks` (decided once per conversion, see
+ * confluenceToHtmlWith); every other step derives the same for every set
+ * (#1953).
  */
 function confluenceToHtmlPass(
   storageXhtml: string,
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
+  nestTasks: boolean,
 ): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
@@ -900,11 +927,11 @@ function confluenceToHtmlPass(
   // Process task lists: ac:task-list -> <ul data-type="taskList">. The task's
   // own ac:task-id rides in data-task-id (#1751), so write-back keeps it; a
   // value that is not a Confluence task id is not carried and the task is new.
-  // A subtask nests inside its parent's li (#1957); without the `nested-tasks`
-  // feature (a restore reserved before it) the pre-#1957 loop runs verbatim.
-  let taskNestingDepth = 0;
-  if (derivationHas(features, 'nested-tasks')) {
-    taskNestingDepth = convertTaskLists(doc);
+  // A subtask nests inside its parent's li (#1957) when `nestTasks` (the
+  // `nested-tasks` feature, storage within MAX_TASK_LIST_NESTING); otherwise
+  // the pre-#1957 loop runs verbatim.
+  if (nestTasks) {
+    convertTaskLists(doc);
   } else {
     convertTaskListsBeforeNesting(doc);
   }
@@ -1360,7 +1387,7 @@ function confluenceToHtmlPass(
 
   const html = doc.body.innerHTML;
   const macrosAfter = countRawStructuredMacros(doc.body);
-  return { html, macrosBefore, macrosAfter, taskNestingDepth };
+  return { html, macrosBefore, macrosAfter };
 }
 
 /**
@@ -1371,14 +1398,12 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
 
-  const features = writeBackFeatures(options);
-
-  // #1957: never write task nesting the forward pass refuses to read back, so
-  // every page Confluence accepts from here can be mirrored and synced again.
-  // A restore reserved before nested-tasks derives as it did.
-  if (derivationHas(features, 'nested-tasks')) {
-    const depth = taskListNestingDepth(doc);
-    if (depth > MAX_TASK_LIST_NESTING) throw new ConfluenceTaskNestingError(depth);
+  // #1957: a hierarchy deeper than MAX_TASK_LIST_NESTING (editor lists and raw
+  // task lists alike, counted before anything is restructured) is written
+  // exactly as without the nested-tasks feature (coordinator decision D13).
+  let features = writeBackFeatures(options);
+  if (derivationHas(features, 'nested-tasks') && htmlTaskNesting(doc) > MAX_TASK_LIST_NESTING) {
+    features = new Set([...features].filter((feature) => feature !== 'nested-tasks'));
   }
 
   // Strip auto-generated index blocks before export to Confluence (#13)
@@ -3940,11 +3965,12 @@ function blockMediaTokenPattern(media: readonly ProtectedMedia[] | undefined): R
  * #1752: does this rendered task-item body hold a `<div>`, or something that
  * becomes one — a draw.io fence (markdownToHtml turns it into
  * `div.confluence-drawio` after parsing) or a block-media token
- * (blockMediaTokenPattern)? TipTap's TaskItem parses its content from the
- * first descendant `div` (`contentElement` in @tiptap/extension-list
- * task-item.ts), so a task item holding one would lose all content outside
- * that div in the editor. Inline placeholders (image, mention, status, Jira)
- * hold no div, so their task items stay tasks.
+ * (blockMediaTokenPattern)? Such a task item stays a plain item. The rule
+ * dates from TipTap's stock TaskItem, which parsed its content from the first
+ * descendant `div` and dropped the rest; since #1957 both schemas keep a block
+ * in a task (`task-item-content`), and the fallback is kept unchanged so this
+ * path's output does not change. Inline placeholders (image, mention, status,
+ * Jira) hold no div, so their task items stay tasks.
  */
 function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): boolean {
   return DIV_START_TAG.test(body)

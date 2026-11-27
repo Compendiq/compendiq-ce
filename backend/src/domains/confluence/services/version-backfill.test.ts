@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, teardownTestDb, truncateAllTables, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import { upsertVersionMetadata } from '../../../core/services/version-snapshot.js';
-import { ConfluenceTaskNestingError, MAX_TASK_LIST_NESTING } from '../../../core/services/content-converter.js';
+import { MAX_TASK_LIST_NESTING } from '../../../core/services/content-converter.js';
 import { backfillVersionHistory, getHistoricalBody } from './version-backfill.js';
 
 const dbAvailable = await isDbAvailable();
@@ -57,20 +58,24 @@ describe.skipIf(!dbAvailable)('version-backfill (#722)', () => {
     expect(r.rows[0]!.body_html).toContain('old');
   });
 
-  it('stores no body when the conversion refuses a version whose task lists nest too deep (#1957)', async () => {
+  it('stores the pre-#1957 conversion of a version whose task lists nest past the limit (#1957)', async () => {
     const pageId = await seedConfluencePage('c-3');
     await upsertVersionMetadata(pageId, 1, 'T', { editedAt: null, author: null, message: null });
     let storage = '';
     for (let level = MAX_TASK_LIST_NESTING + 1; level >= 1; level -= 1) {
-      storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+      storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id>`
+        + `<ac:task-status>${level % 2 === 0 ? 'complete' : 'incomplete'}</ac:task-status>`
         + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
     }
     const client = { getHistoricalPageBody: vi.fn().mockResolvedValue(storage) };
-    await expect(getHistoricalBody(pageId, 'c-3', 1, client as never)).rejects.toBeInstanceOf(ConfluenceTaskNestingError);
+    const body = await getHistoricalBody(pageId, 'c-3', 1, client as never);
+    // sha256 of bff6d4ec's confluenceToHtml for this storage, captured at that commit.
+    expect(createHash('sha256').update(body.bodyHtml).digest('hex'))
+      .toBe('52ef2667b202d2649ad40b51d95cfa7e30ef7ec0734406651e7fdf94622da12a');
     const r = await query(
       `SELECT body_html FROM page_versions WHERE page_id=$1 AND version_number=1`,
       [pageId],
     );
-    expect(r.rows[0]!.body_html).toBeNull();
+    expect(r.rows[0]!.body_html).toBe(body.bodyHtml);
   });
 });

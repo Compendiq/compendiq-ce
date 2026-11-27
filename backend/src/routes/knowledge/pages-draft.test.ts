@@ -489,6 +489,33 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['7', '8']);
     });
 
+    it('publishes a draft whose tasks nest one level deeper than the 32-level limit as before #1957 (#1957)', async () => {
+      const pageId = await seedConfluencePage();
+      let storage = '';
+      let draft = '';
+      for (let level = 33; level >= 1; level -= 1) {
+        storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+          + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+        draft = `<ul data-type="taskList"><li data-checked="false" data-task-id="${level}" data-type="taskItem">`
+          + `<label><input type="checkbox"><span></span></label><div><p>t${level}</p>${draft}</div></li></ul>`;
+      }
+      await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [
+        pageId, `<p>live storage</p>${storage}`, `<p>draft</p>${draft}`,
+      ]);
+
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(confluenceRequests).toHaveLength(1);
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]))
+        .toEqual(Array.from({ length: 33 }, (_, index) => String(index + 1)));
+      expect(sent.match(/<ac:task-list>/g)).toHaveLength(33);
+      const stored = await storedPage(pageId);
+      expect(stored.draft_body_html).toBeNull();
+      expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)]).toHaveLength(33);
+    });
+
     describe('the order pairing of a page synced before ids were carried (#1751)', () => {
       const STORAGE = '<p>live storage</p><ac:task-list>'
         + '<ac:task><ac:task-id>7</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Ship it</ac:task-body></ac:task>'

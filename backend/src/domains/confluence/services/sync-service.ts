@@ -15,7 +15,7 @@ import {
   restrictionRefreshIntervalMs,
   type RestrictionChangeSet,
 } from './restriction-change-tracker.js';
-import { ConfluenceTaskNestingError, confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
+import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { pruneVersionJumpAttachmentCache } from './version-jump-attachment-cleanup.js';
 import { livePageVersion, saveVersionSnapshotByPageId, snapshotLocalVersionBeforeOverwrite } from '../../../core/services/version-snapshot.js';
@@ -2196,18 +2196,9 @@ async function syncMissingAttachments(
     for (const row of pagesResult.rows) {
       let missingDiagrams: string[] = [];
       if (row.body_storage.includes('drawio')) {
-        let convertedHtml: string;
-        try {
-          convertedHtml = confluenceToHtml(row.body_storage, row.confluence_id, spaceKey);
-        } catch (err) {
-          // A row stored before #1957 whose task lists nest deeper than the
-          // converter keeps: its own sync is refused as well, and it must not
-          // end the repair of every other page of the space.
-          if (!(err instanceof ConfluenceTaskNestingError)) throw err;
-          logger.warn({ pageId: row.confluence_id, depth: err.depth }, 'Attachment repair skipped a page whose task lists nest too deep');
-          continue;
-        }
-        const preview = await materializeDrawioPreviews(convertedHtml, row.confluence_id);
+        const preview = await materializeDrawioPreviews(
+          confluenceToHtml(row.body_storage, row.confluence_id, spaceKey), row.confluence_id,
+        );
         missingDiagrams = preview.missing;
         if (preview.missing.length > 0 || preview.missingSources.length > 0 || preview.html !== row.body_html) {
           try {

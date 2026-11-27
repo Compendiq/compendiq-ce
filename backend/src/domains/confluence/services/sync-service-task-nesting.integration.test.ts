@@ -1,22 +1,21 @@
 /**
  * #1957 — a page whose task lists nest deeper than MAX_TASK_LIST_NESTING is
- * refused by the converter (ConfluenceTaskNestingError), never flattened.
- * Sync stores nothing for it and keeps any row it already has; the run goes
- * on with the other pages, the attachment repair of an incremental run skips
- * such a row, and the space's `last_synced` still advances.
+ * converted exactly as before #1957 (coordinator decision D13): sync stores it
+ * through the ordinary path, with its labels, like every other page, and the
+ * attachment repair of an incremental run goes over it without a special case.
  *
  * Real PostgreSQL and Redis; the real `ConfluenceClient` against an
  * in-process HTTP fixture, the only stand-in for Confluence.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import { createClient, type RedisClientType } from 'redis';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
 import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { query } from '../../../core/db/postgres.js';
-import { ConfluenceTaskNestingError, MAX_TASK_LIST_NESTING } from '../../../core/services/content-converter.js';
+import { MAX_TASK_LIST_NESTING } from '../../../core/services/content-converter.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import { encryptPat } from '../../../core/utils/crypto.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -37,7 +36,8 @@ const { attachmentsRoot, originalAttachmentsRoot } = await vi.hoisted(async () =
 const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 const SPACE_KEY = 'NEST';
 const PAGE_FAILED = 'Page sync failed — skipping page and continuing sync';
-const REPAIR_SKIPPED = 'Attachment repair skipped a page whose task lists nest too deep';
+/** sha256 of what bff6d4ec's confluenceToHtml wrote for nestedTasks(33), captured at that commit. */
+const BASE_FORWARD_33 = '52ef2667b202d2649ad40b51d95cfa7e30ef7ec0734406651e7fdf94622da12a';
 
 const upstreamPages = new Map<string, ConfluencePage>();
 let baseUrl = '';
@@ -45,11 +45,16 @@ let client: ConfluenceClient;
 let redis: RedisClientType;
 let userId = '';
 
-/** `depth` tasks, each nested in the previous one's body. */
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** `depth` tasks, each nested in the previous one's body (even levels complete). */
 function nestedTasks(depth: number): string {
   let storage = '';
   for (let level = depth; level >= 1; level -= 1) {
-    storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+    storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id>`
+      + `<ac:task-status>${level % 2 === 0 ? 'complete' : 'incomplete'}</ac:task-status>`
       + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
   }
   return storage;
@@ -95,7 +100,7 @@ function handleRequest(request: IncomingMessage, response: ServerResponse): void
 
 const upstream = createServer(handleRequest);
 
-function remotePage(id: string, version: number, storage: string): ConfluencePage {
+function remotePage(id: string, version: number, storage: string, labels: string[] = []): ConfluencePage {
   return {
     id,
     title: `Page ${id}`,
@@ -104,7 +109,7 @@ function remotePage(id: string, version: number, storage: string): ConfluencePag
     version: { number: version, when: '2026-11-20T10:00:00.000Z', by: { displayName: 'Fixture Author' } },
     body: { storage: { value: storage } },
     ancestors: [],
-    metadata: { labels: { results: [] } },
+    metadata: { labels: { results: labels.map((name) => ({ name })) } },
   };
 }
 
@@ -118,9 +123,11 @@ async function seedPage(confluenceId: string, storage: string, bodyHtml: string)
   );
 }
 
-async function row(confluenceId: string): Promise<{ version: number; body_html: string; body_storage: string } | undefined> {
-  const result = await query<{ version: number; body_html: string; body_storage: string }>(
-    'SELECT version, body_html, body_storage FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
+async function row(confluenceId: string): Promise<
+  { version: number; body_html: string; body_storage: string; labels: string[] } | undefined
+> {
+  const result = await query<{ version: number; body_html: string; body_storage: string; labels: string[] }>(
+    'SELECT version, body_html, body_storage, labels FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
     [confluenceId],
   );
   return result.rows[0];
@@ -183,30 +190,28 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       else process.env.ATTACHMENTS_DIR = originalAttachmentsRoot;
     });
 
-    it('stores nothing for the refused page, keeps its row and syncs the rest of the space', async () => {
+    it('syncs a page nested one level past the limit exactly as before #1957, with its labels, and the rest of the space', async () => {
       await query(`INSERT INTO spaces (space_key, space_name) VALUES ($1, 'Nesting')`, [SPACE_KEY]);
       await seedPage('nest-deep', nestedTasks(2), '<p>stored before</p>');
-      upstreamPages.set('nest-deep', remotePage('nest-deep', 2, nestedTasks(MAX_TASK_LIST_NESTING + 1)));
+      upstreamPages.set('nest-deep', remotePage('nest-deep', 2, nestedTasks(MAX_TASK_LIST_NESTING + 1), ['nesting-check']));
       upstreamPages.set('nest-new-deep', remotePage('nest-new-deep', 1, nestedTasks(MAX_TASK_LIST_NESTING + 1)));
       upstreamPages.set('nest-limit', remotePage('nest-limit', 1, nestedTasks(MAX_TASK_LIST_NESTING)));
       const warn = vi.spyOn(logger, 'warn');
 
       await __internal.syncSpace(client, userId, SPACE_KEY, undefined, new Date(), new Map(), randomUUID());
 
-      for (const pageId of ['nest-deep', 'nest-new-deep']) {
-        expect(warn).toHaveBeenCalledWith(
-          expect.objectContaining({ pageId, err: expect.any(ConfluenceTaskNestingError) }),
-          PAGE_FAILED,
-        );
-      }
-      expect(warn.mock.calls.filter(([, message]) => message === PAGE_FAILED)).toHaveLength(2);
-      expect(await row('nest-deep')).toEqual({ version: 1, body_html: '<p>stored before</p>', body_storage: nestedTasks(2) });
-      expect(await row('nest-new-deep')).toBeUndefined();
+      expect(warn.mock.calls.filter(([, message]) => message === PAGE_FAILED)).toEqual([]);
+      const deep = await row('nest-deep');
+      expect(deep?.version).toBe(2);
+      expect(deep?.body_storage).toBe(nestedTasks(MAX_TASK_LIST_NESTING + 1));
+      expect(sha256(deep!.body_html)).toBe(BASE_FORWARD_33);
+      expect(deep?.labels).toEqual(['nesting-check']);
+      expect(sha256((await row('nest-new-deep'))!.body_html)).toBe(BASE_FORWARD_33);
       expect((await row('nest-limit'))?.body_html.match(/data-type="taskItem"/g)).toHaveLength(MAX_TASK_LIST_NESTING);
       expect(await lastSynced()).not.toBeNull();
     });
 
-    it('lets the attachment repair of an incremental run skip a stored row nested too deep and finish the run', async () => {
+    it('finishes the attachment repair of an incremental run over a stored row nested past the limit', async () => {
       const before = new Date(Date.now() - 60 * 60 * 1000);
       await query(`INSERT INTO spaces (space_key, space_name, last_synced) VALUES ($1, 'Nesting', $2)`, [SPACE_KEY, before]);
       const storage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch</ac:parameter></ac:structured-macro>${nestedTasks(MAX_TASK_LIST_NESTING + 1)}`;
@@ -216,8 +221,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
 
       await __internal.syncSpace(client, userId, SPACE_KEY, undefined, new Date(), new Map(), randomUUID());
 
-      expect(warn).toHaveBeenCalledWith({ pageId: 'nest-legacy', depth: MAX_TASK_LIST_NESTING + 1 }, REPAIR_SKIPPED);
-      expect((await row('nest-legacy'))?.body_html).toBe('<p>stored before #1957</p>');
+      expect(warn.mock.calls.filter(([, message]) => message === PAGE_FAILED)).toEqual([]);
       expect((await lastSynced())!.getTime()).toBeGreaterThan(before.getTime());
     });
   },

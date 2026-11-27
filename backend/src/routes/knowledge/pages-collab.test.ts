@@ -3199,7 +3199,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       editor.ws.close();
     });
 
-    it(`refuses a collaborative Save that nests tasks deeper than ${MAX_TASK_LIST_NESTING} levels before Confluence is written (#1957)`, async () => {
+    it(`saves a collaboration that nests tasks one level deeper than ${MAX_TASK_LIST_NESTING} as before #1957 (#1957)`, async () => {
       let storage = '';
       for (let level = MAX_TASK_LIST_NESTING; level >= 1; level -= 1) {
         storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
@@ -3223,9 +3223,12 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       editor.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(editor.doc)));
       await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('<p>deeper</p>'));
       const saved = await save(pageId, token, commitPayload(editor.ws, 'Save', Y.snapshot(editor.doc)));
-      expect(saved.statusCode, saved.body).toBe(422);
-      expect(saved.body).toContain(`nest ${MAX_TASK_LIST_NESTING + 1} levels deep`);
-      expect(provider.storages).toEqual([]);
+      expect(saved.statusCode, saved.body).toBe(200);
+      const written = provider.storages[0]!;
+      expect(storageTaskIds(written)).toEqual(Array.from({ length: MAX_TASK_LIST_NESTING + 1 }, (_, index) => String(index + 1)));
+      expect(written.match(/<ac:task-list>/g)).toHaveLength(MAX_TASK_LIST_NESTING + 1);
+      expect(written).toContain('<ac:task-body><p>deeper</p></ac:task-body>');
+      await vi.waitFor(() => expect(editor.controls).toContain('pages_version'));
       expect(await activePurposes(pageId)).not.toContain('collab.commit.confluence');
       editor.ws.close();
     });

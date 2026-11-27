@@ -32,7 +32,12 @@ describeRestoreDerivationFeature({
 
 describe.skipIf(!restoreDerivationStackAvailable)('restore of nested tasks Confluence writes (#1957)', () => {
   const harness = useRestoreDerivationHarness();
-  const nested = ['tasks-nested-1957-macros-idless', 'tasks-nested-12-levels-idless', 'tasks-three-levels-with-macro'];
+  const nested = [
+    'tasks-nested-1957-macros-idless',
+    'tasks-nested-12-levels-idless',
+    'tasks-three-levels-with-macro',
+    'tasks-33-levels-target',
+  ];
 
   it('derives the same storage with and without nested-tasks', () => {
     for (const name of nested) {
@@ -55,6 +60,25 @@ describe.skipIf(!restoreDerivationStackAvailable)('restore of nested tasks Confl
 
   it('recovers the same restore reserved with every feature', async () => {
     const entry = corpus('tasks-nested-1957-macros-idless');
+    const seeded = await harness.seedRestore({
+      ...entry,
+      reservedStorage: entry.storage,
+      recordedFeatures: [...ALL_STORAGE_DERIVATION_FEATURES].sort(),
+    });
+    await expectRestoreRecoveredOnce(harness, seeded, entry.storage);
+  });
+
+  // Review r1 B3: a restore dispatched before the upgrade, Confluence already at
+  // E+1, whose target nests 33 levels: past the limit it derives and converts
+  // exactly as the base did, so it settles instead of failing local publication.
+  it('settles a dispatched restore of tasks nested past the limit, reserved before #1957, once, without another PUT', async () => {
+    const entry = corpus('tasks-33-levels-target');
+    const seeded = await harness.seedRestore({ ...entry, reservedStorage: entry.storage });
+    await expectRestoreRecoveredOnce(harness, seeded, entry.storage);
+  });
+
+  it('settles the same restore reserved with every feature', async () => {
+    const entry = corpus('tasks-33-levels-target');
     const seeded = await harness.seedRestore({
       ...entry,
       reservedStorage: entry.storage,

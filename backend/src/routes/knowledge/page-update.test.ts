@@ -601,6 +601,36 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     expect([...row.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['794464', '12']);
   });
 
+  it('saves a page whose tasks nest one level deeper than the 32-level limit as before #1957 (#1957)', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    let storage = '';
+    let bodyHtml = '';
+    for (let level = 33; level >= 1; level -= 1) {
+      storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+        + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+      bodyHtml = `<ul data-type="taskList"><li data-checked="false" data-task-id="${level}" data-type="taskItem">`
+        + `<label><input type="checkbox"><span></span></label><div><p>t${level}</p>${bodyHtml}</div></li></ul>`;
+    }
+    await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, `<p>original</p>${storage}`]);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Original', bodyHtml: `<p>original (edited)</p>${bodyHtml}`, version: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(confluenceRequests).toHaveLength(1);
+    const sent = confluenceRequests[0]!.body.body.storage.value;
+    expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]))
+      .toEqual(Array.from({ length: 33 }, (_, index) => String(index + 1)));
+    expect(sent.match(/<ac:task-list>/g)).toHaveLength(33);
+    // The stored body is re-derived from the returned storage the way it was before #1957.
+    const row = await pageRow(pageId);
+    expect(row.version).toBe(8);
+    expect(row.body_html).toContain('<ac:task-list>');
+  });
+
   describe('the order pairing of a page synced before ids were carried (#1751)', () => {
     const STORAGE = '<p>original</p><ac:task-list>'
       + '<ac:task><ac:task-id>794464</ac:task-id><ac:task-status>complete</ac:task-status>'
