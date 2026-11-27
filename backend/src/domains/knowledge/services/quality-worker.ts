@@ -225,7 +225,7 @@ async function analyzePageQuality(
 
   try {
     // Convert to markdown for LLM consumption (prefer bodyHtml for richer content)
-    const markdown = bodyHtml ? htmlToMarkdown(bodyHtml) : bodyText;
+    const markdown = bodyHtml ? htmlToMarkdown(bodyHtml, { linkedCodeAsText: true }) : bodyText;
 
     // Skip pages with insufficient content for meaningful analysis
     if (!markdown || markdown.trim().length < 50) {

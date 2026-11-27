@@ -46,7 +46,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const markdown = htmlToMarkdown(content);
+    const markdown = htmlToMarkdown(content, { linkedCodeAsText: true });
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);

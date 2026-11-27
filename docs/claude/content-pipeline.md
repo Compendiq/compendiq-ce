@@ -64,15 +64,19 @@ excludes only itself (#1954), so a link whose body is or mixes inline code stays
 link and code takes bold, italic and the other marks (its Yjs key stays `code`; a mark
 excluding nothing would be stored under a hashed key). Its Markdown is
 `` [`code`](href) `` / `` [run `code` now](href) ``. Code inside a link that holds a
-backtick cannot be a code span in a link label (marked 15), so plain `htmlToMarkdown`
-(embeddings, quality, summaries) writes it as link text with every ASCII punctuation
-character backslash-escaped, each white-space boundary written once. The AI Improve
-chain (`layoutTokens`) is unchanged by #1954 (D24): its Markdown and applied HTML for
-linked code are exactly slice A's, pinned against a capture at `42e07553`
-(`__fixtures__/improve-parity-1954-a.ts`). An Accept of linked code therefore behaves as
-before #1954, limits included: code holding a backtick comes back as text beside the
-link, and a media-placeholder spelling in a label or code text is replaced by
-`restoreMedia` as in any text on the page (#723; recorded limit). A line break inside a link survives a
+backtick cannot be a code span in a link label (marked 15), so `htmlToMarkdown` with
+`linkedCodeAsText` writes it as link text with every ASCII punctuation character
+backslash-escaped, each white-space boundary written once. Only callers whose Markdown
+never reaches an AI Improve prompt opt in: quality score, auto-tagging, version-compare
+summaries, diagram context. Everything an Improve prompt holds (the page itself with
+layout tokens, its sub-pages and extracted documents without options) is unchanged by
+#1954 (D24): the parent's Markdown, a sub-page's Markdown, the assembled prompt and the
+applied HTML of an Accept are exactly slice A's, pinned against captures at `42e07553`
+(`__fixtures__/improve-parity-1954-a.ts`). Improve keeps slice A's limits for linked
+code: the chain can lose such a link (a code span holding a backtick inside a link
+label comes back as literal Markdown in a paragraph), and a media-placeholder spelling
+that matches a real media entry of the page is replaced by `restoreMedia`, as in any
+text (#723; recorded limit). A line break inside a link survives a
 collaborative save (#1954): Yjs keeps marks on text only, so `yDocToHtml` gives a
 run of unmarked line breaks between two text pieces with the same Link mark (every
 attribute equal once the schema default fills a missing one; an explicit null is not

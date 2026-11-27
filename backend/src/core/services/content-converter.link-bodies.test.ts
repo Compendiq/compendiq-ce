@@ -273,7 +273,8 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
     });
 
     // Review B2: literal code characters stay data. marked 15 cannot read a code span holding a backtick inside a
-    // link label, so plain Markdown (not the Improve chain, D24) writes such code as escaped link text.
+    // link label, so the Markdown of callers outside AI Improve (`linkedCodeAsText`, D24) writes such code as escaped
+    // link text.
     const HOSTILE = [
       'a`b <em>literal</em>',
       'x` &amp; &#60;tag&#62; &lt;b&gt;',
@@ -291,7 +292,7 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
       ['a web link', 'https://example.com/z'],
     ])('writes linked code holding a backtick as escaped link text in plain Markdown, in %s: the text, the destination and nothing else', async (_case, href) => {
       for (const text of HOSTILE) {
-        const markdown = htmlToMarkdown(`<p>See <a href="${href}"><code>${escapeHtml(text)}</code></a> here.</p>`);
+        const markdown = htmlToMarkdown(`<p>See <a href="${href}"><code>${escapeHtml(text)}</code></a> here.</p>`, { linkedCodeAsText: true });
         const doc = new JSDOM(await markdownToHtml(markdown)).window.document;
         expect([...doc.body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase())).toEqual(['p', 'a']);
         const anchor = doc.querySelector('a')!;
@@ -304,7 +305,7 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
 
     it('keeps markup-looking code without a backtick as one code element with its text', async () => {
       for (const text of ['<em>x</em>', '&amp;', '[a](b)', 'CQ_MEDIA_PLACEHOLDER_0']) {
-        const markdown = htmlToMarkdown(`<p><a href="#confluence-page:Runbook"><code>${escapeHtml(text)}</code></a></p>`);
+        const markdown = htmlToMarkdown(`<p><a href="#confluence-page:Runbook"><code>${escapeHtml(text)}</code></a></p>`, { linkedCodeAsText: true });
         const doc = new JSDOM(await markdownToHtml(markdown)).window.document;
         expect([...doc.body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase())).toEqual(['p', 'a', 'code']);
         expect(doc.querySelector('code')!.textContent).toBe(text);
@@ -312,21 +313,23 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
     });
 
     it('writes each white-space boundary of linked code holding a backtick once in plain Markdown', () => {
-      expect(htmlToMarkdown('<p><a href="#confluence-page:R">pkg.<code> a`b </code>()</a></p>')).toBe('[pkg. a\\`b ()](#confluence-page:R)');
-      expect(htmlToMarkdown('<p><a href="#confluence-page:R">pkg.<code>a`b\u00a0</code>()</a></p>')).toBe('[pkg.a\\`b\u00a0()](#confluence-page:R)');
+      const md = (html: string): string => htmlToMarkdown(html, { linkedCodeAsText: true });
+      expect(md('<p><a href="#confluence-page:R">pkg.<code> a`b </code>()</a></p>')).toBe('[pkg. a\\`b ()](#confluence-page:R)');
+      expect(md('<p><a href="#confluence-page:R">pkg.<code>a`b\u00a0</code>()</a></p>')).toBe('[pkg.a\\`b\u00a0()](#confluence-page:R)');
     });
 
     it('takes only the characters of linked code holding a backtick in plain Markdown, never its attributes or inner markup', async () => {
       const html = '<p><a href="#confluence-page:Runbook"><code data-note="from-storage">a`<u>b</u></code></a></p>';
-      const back = new JSDOM(await markdownToHtml(htmlToMarkdown(html))).window.document;
+      const back = new JSDOM(await markdownToHtml(htmlToMarkdown(html, { linkedCodeAsText: true }))).window.document;
       expect(back.querySelector('a')!.outerHTML).toBe('<a href="#confluence-page:Runbook">a`b</a>');
     });
 
-    // Coordinator decision D24 (C4 by parity): slice B changes nothing on the AI Improve chain. For linked code with
-    // and without a backtick, with a media-placeholder spelling, in a table, with NBSP at its edges, in a page link
-    // and a class-carried web link, with and without a real image, the Markdown and the applied HTML are exactly
-    // slice A's (captured at 42e07553 by backend/scripts/capture-improve-parity-1954.ts). A placeholder spelling
-    // there is the pre-existing restoreMedia collision (#723), as for any text on the page: a recorded limit.
+    // Coordinator decision D24 (C4 by parity): slice B changes nothing in what reaches an AI Improve prompt or its
+    // Accept. For linked code with and without a backtick, with a media-placeholder spelling, in a table, with NBSP
+    // at its edges, in a page link and a class-carried web link, with and without a real image, the parent's
+    // Improve Markdown, the applied HTML and the plain Markdown of a sub-page are exactly slice A's (captured at
+    // 42e07553 by backend/scripts/capture-improve-parity-1954.ts). Slice A's limits stay: the chain can lose such a
+    // link, and a placeholder spelling that matches a real media entry is replaced (#723).
     it.each(Object.keys(IMPROVE_PARITY_AT_A))('runs the Improve chain exactly as slice A for %s', async (name) => {
       const expected = IMPROVE_PARITY_AT_A[name]!;
       const html = confluenceToHtml(IMPROVE_PARITY_STORAGE[name]!, '55');
@@ -336,6 +339,8 @@ describe('content-converter: a Confluence link whose body is inline code (#1954)
       expect(markdown).toBe(expected.markdown);
       const back = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media });
       expect(restoreMedia(back, media)).toBe(expected.applied);
+      // A sub-page's Markdown in the same prompt (assembleSubPageContext converts it without options).
+      expect(htmlToMarkdown(html)).toBe(expected.plain);
     });
   });
 });
