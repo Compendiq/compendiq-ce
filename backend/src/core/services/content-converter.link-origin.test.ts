@@ -379,6 +379,28 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       // The base commit bff6d4ec writes U+27E8 here too: the HTML parser's value, for a link #1955 does not rebuild.
       expect(confluenceToHtml(storage)).toBe('<p>t\u27E8x <a href="#confluence-page:A%E2%9F%A8B" data-confluence-link="page">A\u27E8B</a></p>');
     });
+
+    // Review r3, R17: an XML processing instruction is no markup to the scan that spells the references, and a
+    // key the HTML reading changes is never written unless the XML reading confirms it.
+    it.each([
+      ['with nothing before it', ''],
+      ['after an unrelated processing instruction whose data spells a style tag', '<?meta data="<style>"?>'],
+    ])('writes a space key back with the value XML reads, %s (R17)', (_where, before) => {
+      for (const [, l, r] of SPELLINGS) {
+        const storage = `${before}<p>see <ac:link><ri:space ri:space-key="A${l}B${r}" /></ac:link> now</p>`;
+        const first = htmlToConfluence(confluenceToHtml(storage), { previousStorage: storage });
+        expect(values(first)).toEqual(values(storage));
+      }
+    });
+
+    it('writes a link whose key the HTML reading changes, and no reading confirms, as its text, never with another key (R17)', () => {
+      // XML reads a literal TAB in an attribute value as a space; HTML keeps the TAB.
+      const storage = '<p>see <ac:link><ri:space ri:space-key="A\tB" /></ac:link> and <ac:link><ri:space ri:space-key="ENG" /></ac:link></p>';
+      const html = confluenceToHtml(storage);
+      expect(html).toBe('<p>see A B and <a href="#confluence-space:ENG" data-confluence-link="space">ENG</a></p>');
+      expect(htmlToConfluence(html, { previousStorage: storage }))
+        .toBe('<p>see A B and <ac:link><ri:space ri:space-key="ENG"></ri:space></ac:link></p>');
+    });
   });
 
   // Review r3, R16: the writer and its second Save give a page link's title and an explicit body showing the same

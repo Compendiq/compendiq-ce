@@ -17,6 +17,7 @@ import {
   enforceConfluenceUrlLinkOrigin,
   escapeConfluenceLinkAttributes,
   keepXhtmlLinkReferences,
+  markUncertainLinkReadings,
   materializeConfluenceUrlLinks,
 } from './confluence-link.js';
 import {
@@ -333,7 +334,7 @@ function confluenceToHtmlWith(
   assertStorageDerivationFeatures(features);
   let input = storageXhtml;
   while (true) {
-    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features);
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, input === storageXhtml);
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
       throw new Error(
@@ -631,14 +632,17 @@ function confluenceToHtmlPass(
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
+  firstPass: boolean,
 ): ConfluenceConversionPass {
+  const linkKinds = derivationHas(features, 'link-kinds');
   // #1955 (review r2 R12): with `link-kinds`, a link of a #1955 kind keeps the target XML reads from it.
   const cdataAsText = stripCdata(storageXhtml);
-  const preprocessed = expandSelfClosingXhtmlTags(
-    derivationHas(features, 'link-kinds') ? keepXhtmlLinkReferences(cdataAsText) : cdataAsText,
-  );
+  const preprocessed = expandSelfClosingXhtmlTags(linkKinds ? keepXhtmlLinkReferences(cdataAsText) : cdataAsText);
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
+  // #1955 (review r3 R17): on the storage itself, a link of a #1955 kind whose target the XML reading does not
+  // confirm is shown as text. A later pass reads this pass's HTML, whose values were read here already.
+  if (linkKinds && firstPass) markUncertainLinkReadings(doc, storageXhtml);
   forwardDerivationStepForTest?.(doc, features);
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
   const macrosBefore = countRawStructuredMacros(doc.body);
