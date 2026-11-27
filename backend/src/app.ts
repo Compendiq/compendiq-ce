@@ -507,9 +507,10 @@ export async function buildApp() {
     }
 
     // #1955: a write to Confluence refused for the storage it would send,
-    // before any effect. The message names no content.
+    // before any effect. The message names no content. The derivation has
+    // logged the refusal with its reason (it also runs outside a request), so
+    // this only answers.
     if (error instanceof ConfluenceStorageRefusedError) {
-      logger.warn({ reason: error.reason }, 'Page write refused: Confluence storage not dispatched');
       reply.status(error.statusCode).send({
         error: error.name,
         reason: error.reason,

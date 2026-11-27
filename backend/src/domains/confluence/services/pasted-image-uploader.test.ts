@@ -10,9 +10,27 @@ import { describeCollabCommit } from './collab-commit-intent-reconciler.js';
 import {
   planLocalImagesForConfluence,
   preparePastedImagePlan,
-  uploadLocalImagesToConfluence,
   uploadPreparedPastedImage,
 } from './pasted-image-uploader.js';
+
+type UploadClient = Parameters<typeof uploadPreparedPastedImage>[2];
+
+/**
+ * What a page save does with pasted images (#1955): plan them from the HTML,
+ * re-read the planned files, upload each prepared image. The save derives its
+ * storage from the planned HTML between the first step and the other two.
+ */
+async function planPrepareUpload(
+  html: string,
+  confluencePageId: string,
+  client: UploadClient,
+  log: Parameters<typeof uploadPreparedPastedImage>[3],
+): Promise<string> {
+  const plan = await planLocalImagesForConfluence(html);
+  const prepared = await preparePastedImagePlan(plan);
+  for (const image of prepared) await uploadPreparedPastedImage(image, confluencePageId, client, log);
+  return plan.bodyHtml;
+}
 
 const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
 let tmpRoot: string;
@@ -59,13 +77,13 @@ afterAll(async () => {
   else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
 });
 
-describe('uploadLocalImagesToConfluence', () => {
+describe('pasted images of a page save: plan, prepare, upload', () => {
   it('returns the html unchanged when there are no local pasted images', async () => {
     const updateAttachment = vi.fn();
-    const client = { updateAttachment } as never as Parameters<typeof uploadLocalImagesToConfluence>[2];
+    const client = { updateAttachment } as never as UploadClient;
     const html = '<p>hello <img src="https://cdn.example.com/remote.png"></p>';
 
-    const result = await uploadLocalImagesToConfluence(
+    const result = await planPrepareUpload(
       html,
       '9999',
       client,
@@ -79,10 +97,10 @@ describe('uploadLocalImagesToConfluence', () => {
   it('uploads a pasted image to Confluence and annotates the tag', async () => {
     await seedAttachment('local-1', 'pasted.png');
     const updateAttachment = vi.fn().mockResolvedValue(attachmentAck('pasted.png'));
-    const client = { updateAttachment } as never as Parameters<typeof uploadLocalImagesToConfluence>[2];
+    const client = { updateAttachment } as never as UploadClient;
     const html = '<p><img src="/api/attachments/local-1/pasted.png"></p>';
 
-    const result = await uploadLocalImagesToConfluence(html, '9999', client, makeLog() as never);
+    const result = await planPrepareUpload(html, '9999', client, makeLog() as never);
 
     // Uploads under the *target* Confluence page id (arg 2), reading the file
     // from the *source* page id parsed out of the src attribute.
@@ -94,21 +112,21 @@ describe('uploadLocalImagesToConfluence', () => {
   it('derives the mime type from the file extension', async () => {
     await seedAttachment('local-1', 'photo.jpg');
     const updateAttachment = vi.fn().mockResolvedValue(attachmentAck('photo.jpg'));
-    const client = { updateAttachment } as never as Parameters<typeof uploadLocalImagesToConfluence>[2];
+    const client = { updateAttachment } as never as UploadClient;
     const html = '<p><img src="/api/attachments/local-1/photo.jpg"></p>';
 
-    await uploadLocalImagesToConfluence(html, '9999', client, makeLog() as never);
+    await planPrepareUpload(html, '9999', client, makeLog() as never);
 
     expect(updateAttachment).toHaveBeenCalledWith('9999', 'photo.jpg', expect.any(Buffer), 'image/jpeg');
   });
 
   it('skips images already marked with a confluence filename', async () => {
     const updateAttachment = vi.fn();
-    const client = { updateAttachment } as never as Parameters<typeof uploadLocalImagesToConfluence>[2];
+    const client = { updateAttachment } as never as UploadClient;
     const html =
       '<p><img src="/api/attachments/local-1/synced.png" data-confluence-filename="synced.png"></p>';
 
-    const result = await uploadLocalImagesToConfluence(html, '9999', client, makeLog() as never);
+    const result = await planPrepareUpload(html, '9999', client, makeLog() as never);
 
     expect(updateAttachment).not.toHaveBeenCalled();
     expect(result).toBe(html);
@@ -116,11 +134,11 @@ describe('uploadLocalImagesToConfluence', () => {
 
   it('refuses a missing planned file instead of publishing a broken reference', async () => {
     const updateAttachment = vi.fn();
-    const client = { updateAttachment } as never as Parameters<typeof uploadLocalImagesToConfluence>[2];
+    const client = { updateAttachment } as never as UploadClient;
     const html = '<p><img src="/api/attachments/local-1/missing.png"></p>';
 
     await expect(
-      uploadLocalImagesToConfluence(html, '9999', client, makeLog() as never),
+      planPrepareUpload(html, '9999', client, makeLog() as never),
     ).rejects.toMatchObject({
       statusCode: 409,
       reason: 'pasted_image_unavailable',
@@ -130,9 +148,9 @@ describe('uploadLocalImagesToConfluence', () => {
 
   it('refuses attachment paths that escape the configured attachment root', async () => {
     const updateAttachment = vi.fn();
-    const client = { updateAttachment } as never as Parameters<typeof uploadLocalImagesToConfluence>[2];
+    const client = { updateAttachment } as never as UploadClient;
 
-    await expect(uploadLocalImagesToConfluence(
+    await expect(planPrepareUpload(
       '<p><img src="/api/attachments/local-1/%2e%2e"></p>',
       '9999',
       client,
@@ -271,12 +289,12 @@ describe('uploadLocalImagesToConfluence', () => {
   it('retains an unknown attachment outcome instead of continuing to page publication', async () => {
     await seedAttachment('local-1', 'boom.png');
     const updateAttachment = vi.fn().mockRejectedValue(new Error('confluence exploded'));
-    const client = { updateAttachment } as never as Parameters<typeof uploadLocalImagesToConfluence>[2];
+    const client = { updateAttachment } as never as UploadClient;
     const log = makeLog();
     const html = '<p><img src="/api/attachments/local-1/boom.png"></p>';
 
     await expect(
-      uploadLocalImagesToConfluence(html, '9999', client, log as never),
+      planPrepareUpload(html, '9999', client, log as never),
     ).rejects.toThrow('confluence exploded');
 
     expect(log.error).toHaveBeenCalled();

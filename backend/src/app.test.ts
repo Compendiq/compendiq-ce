@@ -475,6 +475,31 @@ describe.skipIf(!canRun)('buildApp — error handler information leakage', () =>
     await closeTestApp(app);
   });
 
+  // Review r1, R10: the derivation logs the refusal (it also runs outside a request); the handler only answers.
+  it('logs a refused Confluence storage once, with its reason only (#1955)', async () => {
+    process.env.NODE_ENV = 'development';
+
+    const app = await createTestApp();
+    const { htmlToConfluence } = await import('./core/services/content-converter.js');
+    const { logger } = await import('./core/utils/logger.js');
+    app.get('/test/storage-refused-by-write-back', async () =>
+      htmlToConfluence('<p>secret text</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>'));
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      const response = await app.inject({ method: 'GET', url: '/test/storage-refused-by-write-back' });
+      expect(response.statusCode).toBe(422);
+      expect(JSON.parse(response.body)).toMatchObject({ error: 'ConfluenceStorageRefusedError', reason: 'unapproved-link' });
+      expect(warn.mock.calls).toEqual([[{ reason: 'unapproved-link' }, 'Confluence storage refused before dispatch (#1955)']]);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+
+    await closeTestApp(app);
+  });
+
   it('forwards only allow-listed error codes', async () => {
     process.env.NODE_ENV = 'development';
 
