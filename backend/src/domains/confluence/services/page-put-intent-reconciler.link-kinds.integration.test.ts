@@ -19,7 +19,7 @@ import {
   expectRestoreRecoveredOnce,
   restoreDerivationStackAvailable,
   useRestoreDerivationHarness,
-} from './test-restore-derivation-contract.js';
+} from './__fixtures__/test-restore-derivation-contract.js';
 
 function corpusEntry(name: string) {
   const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === name);
@@ -71,13 +71,19 @@ describe('the storage a version restore derives with and without link-kinds (#19
       + ' old <ac:link><ri:url ri:value="/relative/a"></ri:url><ac:plain-text-link-body><![CDATA[docs]]></ac:plain-text-link-body></ac:link>.</p>'
       + '<p>New /other.</p>',
     );
-    expect(derive('link-kinds-raw-link-markup', LINK_KINDS)).toBe('<p>Raw x and .</p><template><p>/relative/t</p></template>');
+    // Raw link markup with no stored origin: a link whose body or display text is known leaves that text.
+    const raw = '<p>Raw <ac:link><ri:url ri:value="javascript:alert(1)"></ri:url><ac:plain-text-link-body>x</ac:plain-text-link-body></ac:link>.</p>'
+      + '<template><p><ac:link><ri:url ri:value="/relative/t"></ri:url></ac:link></p></template>';
+    expect(deriveVersionRestoreStorage(raw, { body_storage: null, body_html: null }, LINK_KINDS))
+      .toBe('<p>Raw x.</p><template><p>/relative/t</p></template>');
   });
 
   it('refuses, with the feature only, a body that would carry a link past the judgement', () => {
     for (const [name, reason] of [
       ['link-kinds-raw-text-link-markup', 'unapproved-link'],
       ['link-kinds-unreadable-with-link-markup', 'not-well-formed'],
+      // A link with two resources and no body: what it shows is not known, so it is not taken away.
+      ['link-kinds-raw-link-markup', 'unapproved-link'],
     ] as const) {
       expect(derive(name, NO_STORAGE_DERIVATION_FEATURES)).toBe(corpusEntry(name).storage);
       let refused: unknown;
@@ -100,7 +106,7 @@ describe.skipIf(!restoreDerivationStackAvailable)('recovery of a version restore
     'link-kinds-carriers-with-stored-origin',
     'link-kinds-raw-link-markup',
     'link-kinds-task-text-with-labels',
-    // The feature would refuse these two. A restore reserved before it never reads them.
+    // The feature would refuse these, and the raw link markup above. A restore reserved before it never reads them.
     'link-kinds-raw-text-link-markup',
     'link-kinds-unreadable-with-link-markup',
   ])('recovers an accepted restore of %s reserved before the feature once, with the base bytes and no PUT', async (name) => {
@@ -117,7 +123,7 @@ describe.skipIf(!restoreDerivationStackAvailable)('recovery of a version restore
     await expectRestoreRecoveredOnce(harness, seeded, reservedStorage);
   });
 
-  it.each(['link-kinds-raw-text-link-markup', 'link-kinds-unreadable-with-link-markup'])(
+  it.each(['link-kinds-raw-text-link-markup', 'link-kinds-unreadable-with-link-markup', 'link-kinds-raw-link-markup'])(
     'fences a restore that recorded link-kinds when its derivation of %s is refused: no retry PUT, nothing derived another way',
     async (name) => {
       const entry = corpusEntry(name);

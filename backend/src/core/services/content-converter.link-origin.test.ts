@@ -113,18 +113,29 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
         .toBe(`<p>one</p>${FILLER}<p>see ${written()} now</p>${FILLER}<p>copy x here</p><p>three</p>`);
     });
 
-    it('declines a link with two resources, an alias prefix or a url container, whatever is stored', () => {
+    it('declines a link with a second resource or without a value, whatever is stored, and keeps its body', () => {
       const origin = `<p>q ${stored()} r</p>`;
-      for (const [markup, text] of [
-        ['<ac:link><ri:url ri:value="https://ok.example/"></ri:url><ri:url ri:value="/relative/a"></ri:url></ac:link>', ''],
-        ['<ac:link><ri:url ri:value="/relative/a"></ri:url><ri:page ri:content-title="X"></ri:page><ac:plain-text-link-body>kept</ac:plain-text-link-body></ac:link>', 'kept'],
-        ['<ac:link><ri:attachment ri:filename="a.pdf"><ri:url ri:value="/relative/a"></ri:url></ri:attachment></ac:link>', ''],
-        ['<x:link xmlns:x="http://atlassian.com/content"><y:url xmlns:y="http://atlassian.com/resource/identifier" y:value="/relative/a"></y:url></x:link>', ''],
-        ['<ac:link><ri:url></ri:url><ac:plain-text-link-body>kept</ac:plain-text-link-body></ac:link>', 'kept'],
-      ] as const) {
+      for (const markup of [
+        '<ac:link><ri:url ri:value="/relative/a"></ri:url><ri:page ri:content-title="X"></ri:page><ac:plain-text-link-body>kept</ac:plain-text-link-body></ac:link>',
+        '<ac:link><ri:url></ri:url><ac:plain-text-link-body>kept</ac:plain-text-link-body></ac:link>',
+        '<ac:link><ri:attachment ri:filename="a.pdf"><ri:url ri:value="/relative/a"></ri:url></ri:attachment><ac:link-body>kept</ac:link-body></ac:link>',
+      ]) {
         const storage = htmlToConfluence(`<p>q ${markup} r</p>`, { previousStorage: origin });
-        expect(storage).toBe(`<p>q ${text} r</p>`);
+        expect(storage).toBe('<p>q kept r</p>');
         expect(oracleLocalNameCount(storage, 'url')).toBe(0);
+      }
+    });
+
+    // Review r1, R3: without a body, what such a link shows (a title, a value) is not known here.
+    it('refuses a link without a body that is not the exact shape, whatever is stored: what it shows is not known', () => {
+      const origin = `<p>q ${stored()} r</p>`;
+      for (const markup of [
+        '<ac:link><ri:url ri:value="https://ok.example/"></ri:url><ri:url ri:value="/relative/a"></ri:url></ac:link>',
+        '<ac:link><ri:attachment ri:filename="a.pdf"><ri:url ri:value="/relative/a"></ri:url></ri:attachment></ac:link>',
+        '<x:link xmlns:x="http://atlassian.com/content"><y:url xmlns:y="http://atlassian.com/resource/identifier" y:value="/relative/a"></y:url></x:link>',
+        '<ac:link><ri:url ri:value="/relative/a"></ri:url><ri:page ri:content-title="X"></ri:page><ac:plain-text-link-body> </ac:plain-text-link-body></ac:link>',
+      ]) {
+        expect(refusal(`<p>q ${markup} r</p>`, { previousStorage: origin })).toBe('unapproved-link');
       }
     });
 
@@ -250,6 +261,119 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       expect(refusal(`<style>${raw('javascript:alert(1)', 'secret')}</style>`)).toBe('unapproved-link');
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith({ reason: 'unapproved-link' }, 'Confluence storage refused before dispatch (#1955)');
+    });
+  });
+
+  // Review r1. Each case states the bytes that are returned, not only that a resource is gone.
+  describe('a prefix the first look must not miss (R1)', () => {
+    const hostile = (prefix: string): string =>
+      `<ac:link><${prefix}:url ri:value="javascript:alert(1)"></${prefix}:url><ac:plain-text-link-body>y</ac:plain-text-link-body></ac:link>`;
+    const PREFIXES: Array<[string, string]> = [
+      ['300 characters long', 'p'.repeat(300)],
+      ['holding U+1680, a name character JavaScript calls white space', 'a\u1680b'],
+      ['holding U+FEFF', 'a\uFEFFb'],
+    ];
+
+    it.each(PREFIXES)('judges a link whose url element has a prefix %s', (_name, prefix) => {
+      // With no feature in force the element is written as it came: the reader reads it as a `url` in a link.
+      const base = htmlToConfluence(`<p>x ${hostile(prefix)} z</p>`, { derivationFeatures: NO_STORAGE_DERIVATION_FEATURES });
+      expect(base).toContain(`<${prefix}:url ri:value="javascript:alert(1)">`);
+      expect(htmlToConfluence(`<p>x ${hostile(prefix)} z</p>`)).toBe('<p>x y z</p>');
+    });
+
+    it.each(PREFIXES)('refuses it in a body the reader cannot read, prefix %s', (_name, prefix) => {
+      expect(refusal(`<p title="a<b">x</p><p>${hostile(prefix)}</p>`)).toBe('not-well-formed');
+    });
+
+    it('refuses a body it cannot read whose tags it cannot account for, once the name is in it', () => {
+      // A raw-text element is written raw: `1 < 2` is no tag in any reading, and what follows cannot be told.
+      expect(refusal(`<p title="a<b">x</p><style>1 < 2</style><p>${raw('https://example.com/')}</p>`)).toBe('not-well-formed');
+      const quiet = '<p title="a<b">x</p><style>1 < 2</style><p>the url is here</p>';
+      expect(htmlToConfluence(quiet)).toBe(htmlToConfluence(quiet, { derivationFeatures: NO_STORAGE_DERIVATION_FEATURES }));
+    });
+  });
+
+  describe('a stored lookalike never inherits a deleted link (R2)', () => {
+    const GENUINE = '<ac:link><ri:url ri:value="/docs" /></ac:link>';
+    const LOOKALIKE = '<a href="#confluence-url:%2Fdocs">/docs</a>';
+
+    it.each([
+      ['the link first', `<p>${GENUINE}</p><p>${LOOKALIKE}</p>`],
+      ['the lookalike first', `<p>${LOOKALIKE}</p><p>${GENUINE}</p>`],
+    ])('writes the one paragraph left of two as text, %s, on both Saves', (_order, storage) => {
+      // body_html holds two anchors with the same href; the editor deletes one paragraph.
+      const html = confluenceToHtml(storage);
+      expect(html.match(/<a href="#confluence-url:%2Fdocs"/g)).toHaveLength(2);
+      const left = '<p><a href="#confluence-url:%2Fdocs">/docs</a></p>';
+      const first = htmlToConfluence(left, { previousStorage: storage });
+      expect(first).toBe('<p>/docs</p>');
+      expect(htmlToConfluence(left, { linkOrigin: first })).toBe(first);
+    });
+
+    it('still writes the link of a page without a lookalike when it moves, on both Saves', () => {
+      const storage = `${FILLER}<p>a</p><p>${GENUINE}</p>`;
+      const moved = `<p><a href="#confluence-url:%2Fdocs">/docs</a></p>${FILLER}<p>a</p>`;
+      const first = htmlToConfluence(moved, { previousStorage: storage });
+      expect(first).toBe(`<p><ac:link><ri:url ri:value="/docs"></ri:url></ac:link></p>${FILLER}<p>a</p>`);
+      expect(htmlToConfluence(moved, { linkOrigin: first })).toBe(first);
+    });
+  });
+
+  describe('what a link held when it is taken away (R3)', () => {
+    it('keeps the text of a plain body as the text an XML reader reads from it', () => {
+      const html = '<p>a <ac:link><ri:url ri:value="/r"></ri:url><ac:plain-text-link-body>use <b>bold</b> &amp; more</ac:plain-text-link-body></ac:link> z</p>';
+      // The body is written as CDATA: its text is the markup, as characters.
+      expect(htmlToConfluence(html, { derivationFeatures: NO_STORAGE_DERIVATION_FEATURES }))
+        .toContain('<![CDATA[use <b>bold</b> & more]]>');
+      expect(htmlToConfluence(html)).toBe('<p>a use &lt;b&gt;bold&lt;/b&gt; &amp; more z</p>');
+    });
+
+    it('keeps the nodes of a rich body, and of every body of a link with two', () => {
+      const rich = '<ac:link-body>the <b>Annual report</b> <ac:image><ri:attachment ri:filename="a.png"></ri:attachment></ac:image></ac:link-body>';
+      expect(htmlToConfluence(`<p>Before <ac:link><ri:url ri:value="/r"></ri:url>${rich}</ac:link> after</p>`)).toBe(
+        '<p>Before the <b>Annual report</b> <ac:image><ri:attachment ri:filename="a.png"></ri:attachment></ac:image> after</p>',
+      );
+      expect(htmlToConfluence(
+        '<p>Before <ac:link><ri:url ri:value="/r"></ri:url><ac:link-body><i>one</i></ac:link-body>'
+        + '<ac:plain-text-link-body>two</ac:plain-text-link-body></ac:link> after</p>',
+      )).toBe('<p>Before <i>one</i>two after</p>');
+    });
+
+    it.each([
+      [
+        'a link element under another prefix, bound to the Confluence namespace',
+        '<p>Before <x:link xmlns:x="http://atlassian.com/content"><ri:url ri:value="/r"></ri:url>'
+        + '<ac:link-body><b>Annual report</b></ac:link-body></x:link> after</p>',
+      ],
+      ['text outside its body', '<p>Before <ac:link><ri:url ri:value="/r"></ri:url>Annual report</ac:link> after</p>'],
+      ['an element outside its body', '<p>Before <ac:link><ri:url ri:value="/r"></ri:url><b>Annual report</b></ac:link> after</p>'],
+      ['content in its resource', '<p>Before <ac:link><ri:url ri:value="/r"><b>Annual report</b></ri:url></ac:link> after</p>'],
+      [
+        'a body under another prefix',
+        '<p>Before <ac:link><ri:url ri:value="/r"></ri:url><x:link-body>Annual report</x:link-body></ac:link> after</p>',
+      ],
+    ])('refuses a link with %s: nothing it shows is dropped unseen', (_name, html) => {
+      expect(refusal(html)).toBe('unapproved-link');
+      // The same markup is written as it came when the link is one anyone may write.
+      const navigable = html.replace('ri:value="/r"', 'ri:value="https://example.com/"');
+      expect(refusal(navigable)).toBe('unapproved-link');
+    });
+  });
+
+  describe('a long body, and work past the limit (R6)', () => {
+    it.each([4_096, 4_097, 60_000])('round-trips an unchanged link whose plain body has %i characters, byte for byte', (length) => {
+      const storage = `<p>See ${stored('/guide', 'x'.repeat(length))} now</p>`;
+      expect(htmlToConfluence(confluenceToHtml(storage), { previousStorage: storage })).toBe(`<p>See ${written('/guide', 'x'.repeat(length))} now</p>`);
+    });
+
+    it('refuses a body it cannot judge within its work limit, and never writes it without its links', () => {
+      // 400 links in each other's bodies around 25,000 characters: 400 bodies of 25,000 characters to compare.
+      const depth = 400;
+      const nested = `${'<ac:link><ri:url ri:value="/r"></ri:url><ac:link-body>'.repeat(depth)}${'x'.repeat(25_000)}${'</ac:link-body></ac:link>'.repeat(depth)}`;
+      expect(refusal(`<p>${nested}</p>`)).toBe('too-many-nodes');
+      // The stored storage is evidence or the write is refused: it is never silently no evidence.
+      expect(refusal(`<p>${carrier()}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('too-many-nodes');
+      expect(refusal(`<p>${raw('https://example.com/')}</p>`, { previousStorage: `<p>${stored()}</p>${nested}` })).toBe('written');
     });
   });
 

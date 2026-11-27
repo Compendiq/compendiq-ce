@@ -44,15 +44,17 @@ import {
   resemblesStorageName,
   scanStorageForStartTag,
   storageElements,
+  storageText,
   type ConfluenceStorageRefusal,
+  type StorageElement,
 } from './confluence-storage-reader.js';
 import {
   analyseStorageLinks,
   isApprovedUrlLinkVerdict,
   judgeStorageUrlLinks,
+  storageLinkShown,
   StorageLinkBudgetError,
   type StorageLinkAnalysis,
-  type StorageUrlLink,
   type StorageUrlLinkVerdict,
 } from './confluence-url-origin.js';
 import { derivationHas, type StorageDerivationFeatures } from './storage-derivation.js';
@@ -62,6 +64,7 @@ export {
   isApprovedUrlLinkVerdict,
   judgeStorageUrlLinks,
   STORAGE_LINK_LIMITS,
+  storageLinkShown,
   StorageLinkBudgetError,
   type StorageLinkAnalysis,
   type StorageLinkClaim,
@@ -383,12 +386,14 @@ export function materializeConfluenceUrlLinks(html: string): string {
 }
 
 /**
- * A start tag whose local name is `url`, as it must be spelled in any XML
- * reading of a string: `<`, an optional prefix, `url`, then white space, `/`
- * or `>`. A string without one holds no `ri:url` element whatever reads it.
- * A match proves nothing: prose, a comment and a code sample match too.
+ * What any XML reading needs to find an element whose local name is `url`:
+ * `<`, the rest of a name (no `<`, no `>`, no `/`, no XML white space: a
+ * prefix may hold any other character and be of any length), `url` in any
+ * case, then the end of the name. A string without this holds no such
+ * element whatever reads it, so it needs no reading. A match proves nothing:
+ * prose, a comment and a code sample match too.
  */
-const URL_START_TAG = /<(?:[^\s<>/"'=:]*:)?url[\s/>]/i;
+const URL_START_TAG = /<[^<> \t\r\n/]*url[ \t\r\n\f/>]/i;
 
 /** The link-like elements under `root`, template contents included, in document order. */
 function linkLikeElements(root: ParentNode): Element[] {
@@ -409,25 +414,32 @@ function linkLikeElements(root: ParentNode): Element[] {
 }
 
 /**
- * Take the link away from what it held (#1955): a declined link is replaced
- * by the content of its bodies — the nodes of an `ac:link-body`, the text of
- * an `ac:plain-text-link-body` — or, for a link that showed only its display
- * text, by that text. A malformed link with no body leaves nothing: it never
- * showed anything of its own.
+ * Take the link away from what it shows (#1955, `storageLinkShown`):
+ * `element` is replaced by its display text, or by the content of its bodies.
+ * `bodies` are the bodies an XML reader finds in the link: a rich body leaves
+ * its nodes, a plain body the text that reader reads from it, which is not
+ * the document's text of the element when the body holds markup (the
+ * serialisation writes a plain body as CDATA). False when the document does
+ * not hold those bodies in that order: then nothing is changed.
  */
-function unwrapUrlLink(element: Element, link: StorageUrlLink): void {
+function unwrapUrlLink(element: Element, shown: { label: string } | { bodies: StorageElement[] }): boolean {
   const doc = element.ownerDocument;
-  const replacement: Node[] = [];
-  if (link.label !== '') {
-    replacement.push(doc.createTextNode(link.label));
-  } else if (element.tagName.toLowerCase() === 'ac:link') {
-    for (const child of [...element.children]) {
-      const name = child.tagName.toLowerCase();
-      if (name === 'ac:link-body') replacement.push(...child.childNodes);
-      else if (name === 'ac:plain-text-link-body') replacement.push(doc.createTextNode(child.textContent ?? ''));
-    }
+  if ('label' in shown) {
+    element.replaceWith(doc.createTextNode(shown.label));
+    return true;
   }
+  const { bodies } = shown;
+  const own = element.tagName.toLowerCase() === 'ac:link'
+    ? [...element.children].filter((child) => BODY_ELEMENTS.includes(child.tagName.toLowerCase()))
+    : [];
+  if (own.length !== bodies.length || own.some((child, index) => child.tagName.toLowerCase() !== bodies[index]!.name)) return false;
+  const replacement: Node[] = [];
+  own.forEach((child, index) => {
+    if (bodies[index]!.local === 'link-body') replacement.push(...child.childNodes);
+    else replacement.push(doc.createTextNode(storageText(bodies[index]!)));
+  });
   element.replaceWith(...replacement);
+  return true;
 }
 
 /**
@@ -440,17 +452,22 @@ function unwrapUrlLink(element: Element, link: StorageUrlLink): void {
  * document are markup in the string. Every link holding a `ri:url` must be a
  * navigable one or stand for one occurrence of `evidence`, the page's stored
  * storage (`confluence-url-origin.ts`). A link that does neither is unwrapped
- * in the document — its contents stay, without the link — and the string is
+ * in the document — what it shows stays, without the link — and the string is
  * serialised and read again; the second reading is the one trusted, and the
  * first string is never returned after a repair.
  *
- * Throws {@link ConfluenceStorageRefusedError} when the string holds `ri:url`
- * markup and cannot be read (not well-formed for the reader, or past a
- * limit), and when a link that may not be written cannot be reached in the
- * document or is still there after the repair. A string the reader cannot
- * read is left as it was when it holds no start tag named `url` in markup at
- * all: then there is nothing for this check to judge, and nothing new to
- * refuse.
+ * Throws {@link ConfluenceStorageRefusedError}:
+ * - when the string may hold a `url` element and cannot be read (not
+ *   well-formed for the reader, or past a limit). A string the reader cannot
+ *   read is left as it was only when the lexical scan accounts for all of it
+ *   and finds no start tag named `url`;
+ * - when the links cannot be judged within the work limit, in the string or
+ *   in `evidence`: a link is never dropped because judging it was costly;
+ * - when a link that may not be written cannot be taken away without loss:
+ *   it is not an element of the document, it may show something outside its
+ *   bodies, the text shown differs after the repair, or it is still there.
+ *
+ * A refusal is logged here, once, with its reason only.
  */
 export function enforceConfluenceUrlLinkOrigin(
   body: ParentNode,
@@ -468,21 +485,25 @@ export function enforceConfluenceUrlLinkOrigin(
     if (storedCache !== undefined) return storedCache;
     storedCache = null;
     const read = evidence ? readConfluenceStorage(evidence) : null;
-    // Stored storage that cannot be read proves nothing: every candidate is declined.
     if (read?.ok) {
       try {
         storedCache = analyseStorageLinks(read.tree);
       } catch (error) {
         if (!(error instanceof StorageLinkBudgetError)) throw error;
+        return refuse('too-many-nodes');
       }
+    } else if (read && read.reason !== 'not-well-formed') {
+      // Past a limit the evidence is there and cannot be used: writing without it would drop links unseen.
+      return refuse(read.reason);
     }
+    // Stored storage that is not XML proves nothing: every candidate is declined.
     return storedCache;
   };
   const judge = (storage: string): { analysis: StorageLinkAnalysis; verdicts: StorageUrlLinkVerdict[] } | null => {
     const read = readConfluenceStorage(storage);
     if (!read.ok) {
-      // Unreadable: with no `url` start tag in markup there is nothing to judge; with one, or when
-      // even that cannot be told, the string holds possible link markup nobody checked.
+      // Unreadable: when the scan accounts for the whole string and finds no `url` start tag there is
+      // nothing to judge; with one, or when that cannot be told, the string may hold a link nobody checked.
       if (scanStorageForStartTag(storage, 'url') === 'no') return null;
       return refuse(read.reason);
     }
@@ -520,7 +541,7 @@ export function enforceConfluenceUrlLinkOrigin(
   if (!markedRead.ok) return refuse('unapproved-link');
   const markedLinks = [...storageElements(markedRead.tree)].filter((element) => resemblesStorageName(element, 'link'));
   if (markedLinks.length !== judged.analysis.linkLike) return refuse('unapproved-link');
-  const unwrap: Array<{ element: Element; link: StorageUrlLink }> = [];
+  const unwrap: Array<{ element: Element; shown: NonNullable<ReturnType<typeof storageLinkShown>> }> = [];
   for (const index of declined) {
     const link = judged.analysis.links[index]!;
     const twin = markedLinks[link.ordinal]!;
@@ -528,14 +549,22 @@ export function enforceConfluenceUrlLinkOrigin(
     const element = mark ? elements[Number(mark.value)] : undefined;
     // Not an element of the document (raw text read as markup), so it cannot be taken out of it.
     if (twin.name !== link.element.name || !element) return refuse('unapproved-link');
-    unwrap.push({ element, link });
+    // What it shows is not known: taking it away could drop that unseen.
+    const shown = storageLinkShown(link);
+    if (!shown) return refuse('unapproved-link');
+    unwrap.push({ element, shown });
   }
   // Innermost first: an outer link's body may hold an inner one.
-  for (const { element, link } of unwrap.reverse()) unwrapUrlLink(element, link);
+  for (const { element, shown } of unwrap.reverse()) {
+    if (!unwrapUrlLink(element, shown)) return refuse('unapproved-link');
+  }
 
   const second = serialise();
   const rejudged = judge(second);
-  if (rejudged && declinedOf(rejudged.verdicts).length > 0) return refuse('unapproved-link');
+  // The second reading must hold no declined link, and show exactly the text the first one showed.
+  if (!rejudged || declinedOf(rejudged.verdicts).length > 0 || rejudged.analysis.text !== judged.analysis.text) {
+    return refuse('unapproved-link');
+  }
   const counts = { unproven: 0, ambiguous: 0, retarget: 0 };
   for (const index of declined) counts[judged.verdicts[index] as keyof typeof counts] += 1;
   logger.warn(counts, 'Confluence URL links without a stored origin written as text (#1955)');

@@ -38,32 +38,26 @@ import {
 } from './confluence-storage-reader.js';
 
 export interface StorageLinkLimits {
-  /** The most steps an analysis or a judgement takes. */
+  /**
+   * The most an analysis or a judgement may cost: one unit for each step it
+   * takes and for each character it keeps besides the text of the string
+   * itself (a body, the description of an image or of a target).
+   */
   readonly work: number;
-  /** The longest body text that takes part in a match, in UTF-16 code units. */
-  readonly bodyText: number;
-  /** The most images of a body that take part in a match. */
-  readonly bodyMedia: number;
-  /** The longest description of one image or one foreign target. */
-  readonly signature: number;
 }
 
 /**
- * A real page is far below every one of these. Past `work` the analysis stops
- * and the write is refused; a body past `bodyText` or `bodyMedia` and a
- * description past `signature` take no part in any match.
+ * A real page is far below it. Nothing else limits what is compared: a body
+ * of any length and with any number of images is evidence like any other.
+ * Past `work` the analysis stops ({@link StorageLinkBudgetError}) and the
+ * write is refused; a link is never dropped because judging it was costly.
  */
-export const STORAGE_LINK_LIMITS: StorageLinkLimits = {
-  work: STORAGE_READER_LIMITS.nodes * 8,
-  bodyText: 4_096,
-  bodyMedia: 32,
-  signature: 4_096,
-};
+export const STORAGE_LINK_LIMITS: StorageLinkLimits = { work: STORAGE_READER_LIMITS.nodes * 8 };
 
 /** The text taken on each side of a link as its place, in characters that are not white space. */
 const PLACE_WINDOW = 64;
 
-/** The analysis or the judgement would take more than {@link StorageLinkLimits.work} steps. */
+/** The analysis or the judgement would cost more than {@link StorageLinkLimits.work}. */
 export class StorageLinkBudgetError extends Error {
   constructor() {
     super('The links of a storage string are too many or too deeply nested to judge');
@@ -80,10 +74,8 @@ export class StorageLinkBudgetError extends Error {
 export interface StorageLinkClaim {
   /** What it points at, comparable across two readings. */
   readonly target: string;
-  /** Its body: `[text, images]` as JSON, or null when the body is over a limit. */
-  readonly body: string | null;
-  /** Whether the body says more than the target itself (text of its own, or an image). */
-  readonly distinctive: boolean;
+  /** Its body: `[text, images]` as JSON, the text with white space collapsed. */
+  readonly body: string;
   /**
    * Where it stands: the enclosing task's id, and the text before and after
    * it. `''` when a link element encloses it outside that link's body: it has
@@ -118,10 +110,17 @@ export interface StorageUrlLink extends StorageLinkClaim {
 export interface StorageLinkAnalysis {
   /** The URL links, in document order. */
   readonly links: readonly StorageUrlLink[];
-  /** Every link-like element and anchor, the URL links included. */
+  /** Every link-like element and anchor, in document order; a URL link is the same object as in `links`. */
   readonly claims: readonly StorageLinkClaim[];
   /** The number of link-like elements. */
   readonly linkLike: number;
+  /**
+   * The text the string shows, white space collapsed: the text outside
+   * link-like elements, the text of a link's own bodies, and the display text
+   * of a link without one. Taking a link away from what it shows leaves this
+   * unchanged, so comparing it before and after proves nothing shown was lost.
+   */
+  readonly text: string;
 }
 
 /**
@@ -158,7 +157,6 @@ interface OpenLink {
   urls: StorageElement[];
   hasUser: boolean;
   media: string[];
-  mediaOverflow: boolean;
   /** The link's rendered text: its range of the text stream. */
   start: number;
   end: number;
@@ -176,8 +174,7 @@ interface OpenLink {
 /** What a link or an anchor is, known when it ends; its place needs the text after it. */
 interface Described {
   target: string;
-  body: string | null;
-  distinctive: boolean;
+  body: string;
   canonical: boolean;
   value: string | null;
   label: string;
@@ -187,6 +184,57 @@ function sortedAttributes(attributes: readonly StorageAttribute[]): Array<[strin
   return attributes
     .map((attribute): [string, string] => [attribute.name, attribute.value])
     .sort(([a, x], [b, y]) => (a === b ? Number(x > y) - Number(x < y) : Number(a > b) - Number(a < b)));
+}
+
+/** The characters a description of these attributes holds. */
+function attributeCost(attributes: readonly StorageAttribute[]): number {
+  let cost = 0;
+  for (const attribute of attributes) cost += attribute.name.length + attribute.value.length + 1;
+  return cost;
+}
+
+const isOwnLinkBody = (link: StorageElement, child: StorageElement): boolean =>
+  child.parent === link && isStorageName(link, 'ac', 'link') && BODY_LOCALS.some((local) => isStorageName(child, 'ac', local));
+
+/**
+ * What a URL link shows, when that is known (#1955): the display text of the
+ * exact shape without a body, or the content of its own bodies. Null when it
+ * is not known, so the link cannot be taken away from what it shows without a
+ * possible loss:
+ * - the element is not `ac:link` (another prefix, another case);
+ * - it holds text or an element outside its own `ac:link-body` /
+ *   `ac:plain-text-link-body` children, other than white space and resource
+ *   elements (`ri:*`, or anything named `url`) without content of their own;
+ * - it has no body with content and is not the exact shape: what Confluence
+ *   shows for it (a resource's title, a value) is not something this module
+ *   computes.
+ */
+export function storageLinkShown(link: StorageUrlLink): { label: string } | { bodies: StorageElement[] } | null {
+  if (link.canonical && link.label !== '') return { label: link.label };
+  const element = link.element;
+  if (!isStorageName(element, 'ac', 'link')) return null;
+  const bodies: StorageElement[] = [];
+  let content = false;
+  for (const child of element.children) {
+    if (typeof child === 'string') {
+      if (child.trim() !== '') return null;
+    } else if (isOwnLinkBody(element, child)) {
+      bodies.push(child);
+      content ||= child.children.some((inner) => typeof inner !== 'string' || inner.trim() !== '');
+    } else {
+      // A resource and what it holds: resource elements and white space, nothing that could be shown.
+      const pending: StorageElement[] = [child];
+      while (pending.length > 0) {
+        const resource = pending.pop()!;
+        if (resource.prefix !== 'ri' && !resemblesStorageName(resource, 'url')) return null;
+        for (const inner of resource.children) {
+          if (typeof inner !== 'string') pending.push(inner);
+          else if (inner.trim() !== '') return null;
+        }
+      }
+    }
+  }
+  return content ? { bodies } : null;
 }
 
 /**
@@ -230,6 +278,8 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
   let pendingSpace = false;
   // Open link-like elements that enclose the current position outside their own body: text there is not content.
   let outsideBody = 0;
+  /** Open links and anchors whose body encloses the current position. */
+  let inBodies = 0;
   let dormant = 0;
   const scopes: string[] = [];
   const open: OpenLink[] = [];
@@ -252,38 +302,48 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     pendingSpace = trailing;
   };
 
-  /** A description of `element`'s element descendants: names and attributes, attribute order aside. */
-  const structure = (element: StorageElement): string | null => {
-    const describe = (node: StorageElement): unknown => {
-      charge(1 + node.attributes.length);
-      const children = node.children.filter((child): child is StorageElement => typeof child !== 'string');
-      return [node.name, node.uri, sortedAttributes(node.attributes), children.map(describe)];
-    };
-    const children = element.children.filter((child): child is StorageElement => typeof child !== 'string');
-    const signature = JSON.stringify(children.map(describe));
-    return signature.length > limits.signature ? null : signature;
+  /**
+   * A description of `roots` and their element descendants: names and
+   * attributes in document order, attribute order aside. No recursion, and
+   * every node is charged what its description holds before it is written.
+   */
+  const structure = (roots: readonly StorageElement[]): string => {
+    const parts: string[] = [];
+    const pending: Array<StorageElement | null> = [...roots].reverse();
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if (node === null) {
+        parts.push(']');
+        continue;
+      }
+      charge(1 + node.name.length + node.uri.length + attributeCost(node.attributes) + node.children.length);
+      parts.push(JSON.stringify([node.name, node.uri, sortedAttributes(node.attributes)]), '[');
+      pending.push(null);
+      for (let index = node.children.length - 1; index >= 0; index -= 1) {
+        const child = node.children[index]!;
+        if (typeof child !== 'string') pending.push(child);
+      }
+    }
+    return parts.join('');
   };
 
-  const isOwnBody = (link: OpenLink, child: StorageElement): boolean =>
-    !link.anchor
-    && child.parent === link.element
-    && isStorageName(link.element, 'ac', 'link')
-    && BODY_LOCALS.some((local) => isStorageName(child, 'ac', local));
+  const isOwnBody = (link: OpenLink, child: StorageElement): boolean => !link.anchor && isOwnLinkBody(link.element, child);
 
   /** What `link` is, at its end tag, and the text it shows when it has no body of its own. */
   const describe = (link: OpenLink): { described: Described; shown: string } => {
     const element = link.element;
-    const bodyText = link.bodyStart < 0 ? '' : stream.slice(link.bodyStart, link.bodyEnd < 0 ? link.bodyStart : link.bodyEnd).trim();
-    const overLimit = link.mediaOverflow || bodyText.length > limits.bodyText;
+    // The body is a range of the text: charged before it is copied, so nested bodies cannot be copied for free.
+    const bodyLength = link.bodyStart < 0 || link.bodyEnd < 0 ? 0 : link.bodyEnd - link.bodyStart;
+    charge(bodyLength);
+    const bodyText = bodyLength === 0 ? '' : stream.slice(link.bodyStart, link.bodyEnd).trim();
     if (link.anchor) {
-      const target = `a|${JSON.stringify([
-        element.attributes.find((attribute) => attribute.name === 'href')!.value,
-        element.attributes.find((attribute) => attribute.name === 'class')?.value ?? null,
-      ])}`;
+      const href = element.attributes.find((attribute) => attribute.name === 'href')!.value;
+      const className = element.attributes.find((attribute) => attribute.name === 'class')?.value ?? null;
+      charge(href.length + (className?.length ?? 0));
       return {
         described: {
-          target, body: overLimit ? null : JSON.stringify([bodyText, link.media]),
-          distinctive: bodyText !== '' || link.media.length > 0, canonical: false, value: null, label: '',
+          target: `a|${JSON.stringify([href, className])}`, body: JSON.stringify([bodyText, link.media]),
+          canonical: false, value: null, label: '',
         },
         shown: '',
       };
@@ -291,6 +351,7 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     const children = element.children.filter((child): child is StorageElement => typeof child !== 'string');
     const bodies = children.filter((child) => BODY_LOCALS.some((local) => isStorageName(child, 'ac', local)));
     const url = children.find((child) => isStorageName(child, 'ri', 'url'));
+    charge(children.length + attributeCost(element.attributes) + (url ? attributeCost(url.attributes) : 0));
     const linkAttrs = isStorageName(element, 'ac', 'link') ? carriedAttributes(element, 'ac', null) : null;
     const urlAttrs = url ? carriedAttributes(url, 'ri', 'value') : null;
     const body = bodies[0];
@@ -321,16 +382,13 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
       // Attribute order is not part of what a link points at.
       target = `url|${Number(link.live)}|${JSON.stringify([value, [...linkAttrs!.carried].sort(), [...urlAttrs!.carried].sort()])}`;
     } else {
-      const shape = structure({ ...element, children: children.filter((child) => !bodies.includes(child)) });
-      target = shape === null
-        ? `link|${link.sequence}|unbounded`
-        : `link|${JSON.stringify([element.name, element.uri, sortedAttributes(element.attributes), shape])}`;
+      const shape = structure(children.filter((child) => !bodies.includes(child)));
+      target = `link|${JSON.stringify([element.name, element.uri, sortedAttributes(element.attributes), shape])}`;
     }
     return {
       described: {
         target,
-        body: overLimit ? null : JSON.stringify([text, link.media]),
-        distinctive: link.media.length > 0 || (text !== '' && text !== display),
+        body: JSON.stringify([text, link.media]),
         canonical,
         value,
         label: canonical && blank ? display : '',
@@ -357,6 +415,7 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
       const enclosing = open[open.length - 1];
       if (enclosing && isOwnBody(enclosing, child)) {
         enclosing.inBody = 1;
+        inBodies += 1;
         outsideBody -= 1;
         if (enclosing.bodyStart < 0) enclosing.bodyStart = stream.length;
         entered.body = enclosing;
@@ -373,15 +432,21 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
           link.hasUser = true;
         }
       }
-      if (resemblesStorageName(child, 'image') || child.name === 'img') {
-        const signature = child.name === 'img'
-          ? JSON.stringify(['img', child.attributes.find((attribute) => attribute.name === 'src')?.value ?? null])
-          : structure(child);
+      // An image is described only for a body that holds it, and each body that keeps the description pays for it.
+      if (inBodies > 0 && (resemblesStorageName(child, 'image') || child.name === 'img')) {
+        let signature: string;
+        if (child.name === 'img') {
+          const src = child.attributes.find((attribute) => attribute.name === 'src')?.value ?? null;
+          charge(src?.length ?? 0);
+          signature = JSON.stringify(['img', src]);
+        } else {
+          // What the image shows, not how: its own display attributes (`ac:width`, …) are not its identity.
+          signature = structure(child.children.filter((inner): inner is StorageElement => typeof inner !== 'string'));
+        }
         for (const link of open) {
-          charge();
           if (link.inBody === 0) continue;
-          if (signature === null || link.media.length >= limits.bodyMedia) link.mediaOverflow = true;
-          else link.media.push(signature);
+          charge(1 + signature.length);
+          link.media.push(signature);
         }
       }
       if (DORMANT.has(child.local.toLowerCase())) {
@@ -398,13 +463,15 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
       if (isLink || isAnchor) {
         const link: OpenLink = {
           element: child, anchor: isAnchor, ordinal: isLink ? linkLike : -1, inBody: Number(isAnchor), urls: [], hasUser: false,
-          media: [], mediaOverflow: false, start: stream.length, end: -1, bodyStart: isAnchor ? stream.length : -1, bodyEnd: -1,
+          media: [], start: stream.length, end: -1, bodyStart: isAnchor ? stream.length : -1, bodyEnd: -1,
           scope: scopes[scopes.length - 1] ?? '', live: dormant === 0, placed: outsideBody === 0,
           sequence: open.length + closed.length, described: null,
         };
         if (isLink) {
           linkLike += 1;
           outsideBody += 1;
+        } else {
+          inBodies += 1;
         }
         open.push(link);
         entered.link = link;
@@ -416,6 +483,7 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     frames.pop();
     if (frame.body) {
       frame.body.inBody = 0;
+      inBodies -= 1;
       outsideBody += 1;
       frame.body.bodyEnd = stream.length;
     }
@@ -423,8 +491,12 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     if (frame.scoped) scopes.pop();
     if (frame.link) {
       const link = open.pop()!;
-      if (!link.anchor) outsideBody -= 1;
-      else link.bodyEnd = stream.length;
+      if (!link.anchor) {
+        outsideBody -= 1;
+      } else {
+        inBodies -= 1;
+        link.bodyEnd = stream.length;
+      }
       const { described, shown } = describe(link);
       link.described = described;
       // A link without a body shows its display text: that is its rendered text, here and once it is unwrapped.
@@ -442,13 +514,13 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
     charge();
     const before = stream.slice(Math.max(0, link.start - PLACE_WINDOW * 2 - 2), link.start).replaceAll(' ', '').slice(-PLACE_WINDOW);
     const after = stream.slice(link.end, link.end + PLACE_WINDOW * 2 + 2).replaceAll(' ', '').slice(0, PLACE_WINDOW);
-    const { target, body, distinctive, canonical, value, label } = link.described!;
-    const claim: StorageLinkClaim = {
-      target, body, distinctive, place: link.placed ? JSON.stringify([link.scope, before, after]) : '',
-    };
-    claims.push(claim);
-    if (link.anchor || link.urls.length === 0) continue;
-    links.push({
+    const { target, body, canonical, value, label } = link.described!;
+    const claim: StorageLinkClaim = { target, body, place: link.placed ? JSON.stringify([link.scope, before, after]) : '' };
+    if (link.anchor || link.urls.length === 0) {
+      claims.push(claim);
+      continue;
+    }
+    const found: StorageUrlLink = {
       ...claim,
       element: link.element,
       ordinal: link.ordinal,
@@ -457,9 +529,11 @@ export function analyseStorageLinks(tree: StorageTree, limits: StorageLinkLimits
       label,
       navigable: canonical && isNavigableConfluenceUrl(value!),
       live: link.live,
-    });
+    };
+    claims.push(found);
+    links.push(found);
   }
-  return { links, claims, linkLike };
+  return { links, claims, linkLike, text: stream };
 }
 
 function pushTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
@@ -479,26 +553,29 @@ function count<K>(map: Map<K, number>, key: K): void {
  * stored, and none that is not stored is written at all.
  *
  * A written link stands for a stored one only on continuity that nothing
- * contradicts:
+ * contradicts. Everything in either string that points somewhere takes part:
+ * every link-like element and every HTML anchor, whatever its body. (body_html
+ * cannot tell the carrier of a link from a stored `<a>` with the same href, so
+ * a stored anchor is a possible source of any written link with its body.)
  *
  * 0. A link that stands exactly where one stored thing pointing elsewhere
- *    stood (another link of any kind, an HTML anchor) is that thing
- *    retargeted: `retarget`.
- * 1. Same target and same body. A link in the place of a stored one, the only
- *    such pair there, is that link. With no more written links than stored
- *    ones the rest have only moved (`unchanged`), unless the body is also that
- *    of a stored link to another target that is now missing: then the moved
- *    link cannot be told from that one retargeted (`ambiguous`). With more
- *    written than stored the class holds copies: the links still in a stored
- *    place are kept (`pinned`), every other one is `ambiguous`.
+ *    stood is that thing retargeted: `retarget`.
+ * 1. Same target and same body. A link in a place that holds one thing in
+ *    each string, the stored one being a link of its target and body, is that
+ *    link (`unchanged`; `pinned` when more such links are written than
+ *    stored). Any other link has moved: with more written than stored it is a
+ *    copy (`ambiguous`); else it is `unchanged`, unless a stored thing with
+ *    this very body and another target is missing from what is written: then
+ *    it cannot be told from that one retargeted (`ambiguous`).
  * 2. Same target and same place, another body: the one stored link there with
  *    the one written link there is that link relabelled (`edited`), unless
- *    the new body is that of a stored link to another target (`retarget`).
- *    A link both moved and relabelled is not told from a deletion and a new
- *    link: `unproven`.
+ *    the new body is that of any stored thing with another target
+ *    (`retarget`). A link both moved and relabelled is not told from a
+ *    deletion and a new link: `unproven`.
  *
- * Nothing depends on document order. Throws {@link StorageLinkBudgetError}
- * past the work limit.
+ * Nothing depends on document order, and the cost grows with the number of
+ * links and anchors, not with their square. Throws
+ * {@link StorageLinkBudgetError} past the work limit.
  */
 export function judgeStorageUrlLinks(
   written: StorageLinkAnalysis,
@@ -514,38 +591,76 @@ export function judgeStorageUrlLinks(
   const candidates: number[] = [];
   written.links.forEach((link, index) => {
     if (verdicts[index] !== null) return;
-    // Only the exact shape write-back builds, with a body within the limits, can stand for a stored link.
-    if (!link.canonical || link.body === null || link.place === '') verdicts[index] = 'unproven';
+    // Only the exact shape write-back builds, in a place of its own, can stand for a stored link.
+    if (!link.canonical || link.place === '') verdicts[index] = 'unproven';
     else candidates.push(index);
   });
   const finish = (): StorageUrlLinkVerdict[] => verdicts.map((verdict) => verdict ?? 'unproven');
   if (candidates.length === 0 || stored === null) return finish();
 
-  // Indexes over both readings.
-  const evidence = stored.links.filter((link) => link.canonical && !link.navigable && link.body !== null && link.place !== '');
-  const storedAtPlace = new Map<string, StorageLinkClaim[]>();
-  const storedWithBody = new Map<string, Set<string>>();
-  const storedTargetBody = new Map<string, number>();
+  // Targets, bodies and places are compared as numbers: each string is hashed once, however long it is.
+  const numbers = new Map<string, number>();
+  const numberOf = (kind: 't' | 'b' | 'p', value: string): number => {
+    const key = kind + value;
+    let number = numbers.get(key);
+    if (number === undefined) {
+      number = numbers.size;
+      numbers.set(key, number);
+    }
+    return number;
+  };
+  const targetOf = (claim: StorageLinkClaim): number => numberOf('t', claim.target);
+  const bodyOf = (claim: StorageLinkClaim): number => numberOf('b', claim.body);
+  const placeOf = (claim: StorageLinkClaim): number => numberOf('p', claim.place);
+  const classOf = (claim: StorageLinkClaim): string => `${targetOf(claim)}:${bodyOf(claim)}`;
+
+  // Indexes over everything that points somewhere, in both readings.
+  const storedAtPlace = new Map<number, StorageLinkClaim[]>();
+  /** body → target → how many stored things with that body point there. */
+  const storedByBody = new Map<number, Map<number, number>>();
   for (const claim of stored.claims) {
     charge();
-    if (claim.place !== '') pushTo(storedAtPlace, claim.place, claim);
-    if (claim.body === null || !claim.distinctive) continue;
-    const targets = storedWithBody.get(claim.body);
-    if (targets) targets.add(claim.target);
-    else storedWithBody.set(claim.body, new Set([claim.target]));
-    count(storedTargetBody, `${claim.target}\u0000${claim.body}`);
+    if (claim.place !== '') pushTo(storedAtPlace, placeOf(claim), claim);
+    const body = bodyOf(claim);
+    let targets = storedByBody.get(body);
+    if (!targets) storedByBody.set(body, targets = new Map());
+    count(targets, targetOf(claim));
   }
-  const writtenAtPlace = new Map<string, number>();
-  const writtenTargetBody = new Map<string, number>();
+  const writtenAtPlace = new Map<number, number>();
+  const writtenByClass = new Map<string, number>();
   for (const claim of written.claims) {
     charge();
-    if (claim.place !== '') count(writtenAtPlace, claim.place);
-    if (claim.body !== null && claim.distinctive) count(writtenTargetBody, `${claim.target}\u0000${claim.body}`);
+    if (claim.place !== '') count(writtenAtPlace, placeOf(claim));
+    count(writtenByClass, classOf(claim));
   }
   /** The one stored thing that stood exactly where `link` stands, when the place names one thing on both sides. */
   const placeOwner = (link: StorageUrlLink): StorageLinkClaim | undefined => {
-    const owners = storedAtPlace.get(link.place);
-    return owners?.length === 1 && writtenAtPlace.get(link.place) === 1 ? owners[0] : undefined;
+    const place = placeOf(link);
+    const owners = storedAtPlace.get(place);
+    return owners?.length === 1 && writtenAtPlace.get(place) === 1 ? owners[0] : undefined;
+  };
+  /** body → the stored targets with that body that are written less often than they are stored; made once a body. */
+  const missingByBody = new Map<number, Set<number>>();
+  const missingSources = (body: number): Set<number> => {
+    let missing = missingByBody.get(body);
+    if (missing) return missing;
+    missing = new Set();
+    for (const [target, storedCount] of storedByBody.get(body) ?? []) {
+      charge();
+      if ((writtenByClass.get(`${target}:${body}`) ?? 0) < storedCount) missing.add(target);
+    }
+    missingByBody.set(body, missing);
+    return missing;
+  };
+  /** Whether a stored thing with `link`'s body and another target is missing from what is written. */
+  const otherSourceMissing = (link: StorageUrlLink): boolean => {
+    const missing = missingSources(bodyOf(link));
+    return missing.size > Number(missing.has(targetOf(link)));
+  };
+  /** Whether any stored thing with `link`'s body points somewhere else. */
+  const foreignBody = (link: StorageUrlLink): boolean => {
+    const targets = storedByBody.get(bodyOf(link));
+    return targets !== undefined && targets.size > Number(targets.has(targetOf(link)));
   };
 
   // 0. A link in the place of something that pointed elsewhere.
@@ -559,74 +674,54 @@ export function judgeStorageUrlLinks(
   }
 
   // 1. Same target, same body.
-  const classOf = (link: StorageUrlLink): string => `${link.target}\u0000${link.body}`;
-  const storedByClass = new Map<string, StorageUrlLink[]>();
-  for (const link of evidence) pushTo(storedByClass, classOf(link), link);
-  const writtenByClass = new Map<string, number[]>();
-  for (const index of remaining) pushTo(writtenByClass, classOf(written.links[index]!), index);
+  const evidence = new Set<StorageLinkClaim>();
+  const storedLinksByClass = new Map<string, StorageUrlLink[]>();
+  for (const link of stored.links) {
+    charge();
+    if (!link.canonical || link.navigable || link.place === '') continue;
+    evidence.add(link);
+    pushTo(storedLinksByClass, classOf(link), link);
+  }
+  const candidatesByClass = new Map<string, number[]>();
+  for (const index of remaining) pushTo(candidatesByClass, classOf(written.links[index]!), index);
   /** Stored links no written link of their own class has taken, for step 2. */
-  const available = new Map<string, StorageUrlLink[]>();
-  const taken = new Set<StorageUrlLink>();
+  const available = new Map<string, number>();
   const unmatched: number[] = [];
-  for (const [key, indexes] of writtenByClass) {
-    const storedClass = storedByClass.get(key);
+  for (const [key, indexes] of candidatesByClass) {
+    const storedClass = storedLinksByClass.get(key);
     if (!storedClass) {
       unmatched.push(...indexes);
       continue;
     }
-    // A written link and a stored one in the same place, the only two of the class there, are one link.
-    const places = new Map<string, { stored: StorageUrlLink[]; written: number[] }>();
-    for (const link of storedClass) {
-      charge();
-      const at = places.get(link.place);
-      if (at) at.stored.push(link);
-      else places.set(link.place, { stored: [link], written: [] });
-    }
-    for (const index of indexes) {
-      charge();
-      places.get(written.links[index]!.place)?.written.push(index);
-    }
     const copies = indexes.length > storedClass.length;
-    const inPlace = new Set<number>();
-    for (const at of places.values()) {
-      if (at.stored.length !== 1 || at.written.length !== 1) continue;
-      inPlace.add(at.written[0]!);
-      taken.add(at.stored[0]!);
-      verdicts[at.written[0]!] = copies ? 'pinned' : 'unchanged';
-    }
+    const taken = new Set<StorageLinkClaim>();
     let moved = 0;
     for (const index of indexes) {
-      if (inPlace.has(index)) continue;
-      moved += 1;
+      charge();
       const link = written.links[index]!;
-      if (copies) {
-        verdicts[index] = 'ambiguous';
+      // Step 0 left only owners with this target; one that is a stored link with this body is this link.
+      const owner = placeOwner(link);
+      if (owner && evidence.has(owner) && owner.body === link.body) {
+        taken.add(owner);
+        verdicts[index] = copies ? 'pinned' : 'unchanged';
         continue;
       }
-      // Moved, body unchanged: not when a stored link to another target with this very body went missing.
-      let otherSource = false;
-      if (link.distinctive) {
-        for (const target of storedWithBody.get(link.body!) ?? []) {
-          charge();
-          if (target === link.target) continue;
-          const pair = `${target}\u0000${link.body}`;
-          if ((writtenTargetBody.get(pair) ?? 0) < (storedTargetBody.get(pair) ?? 0)) otherSource = true;
-        }
-      }
-      verdicts[index] = otherSource ? 'ambiguous' : 'unchanged';
+      moved += 1;
+      verdicts[index] = copies || otherSourceMissing(link) ? 'ambiguous' : 'unchanged';
     }
     // Which stored link a moved one was is not known, so with any moved link none of the class is left for step 2.
     if (moved === 0 || copies) {
       for (const link of storedClass) {
-        if (!taken.has(link)) pushTo(available, `${link.target}\u0000${link.place}`, link);
+        charge();
+        if (!taken.has(link)) count(available, `${targetOf(link)}:${placeOf(link)}`);
       }
     }
   }
-  for (const [key, storedClass] of storedByClass) {
-    if (writtenByClass.has(key)) continue;
+  for (const [key, storedClass] of storedLinksByClass) {
+    if (candidatesByClass.has(key)) continue;
     for (const link of storedClass) {
       charge();
-      pushTo(available, `${link.target}\u0000${link.place}`, link);
+      count(available, `${targetOf(link)}:${placeOf(link)}`);
     }
   }
 
@@ -634,24 +729,17 @@ export function judgeStorageUrlLinks(
   const unmatchedAt = new Map<string, number>();
   for (const index of unmatched) {
     const link = written.links[index]!;
-    count(unmatchedAt, `${link.target}\u0000${link.place}`);
+    count(unmatchedAt, `${targetOf(link)}:${placeOf(link)}`);
   }
   for (const index of unmatched) {
     charge();
     const link = written.links[index]!;
-    let foreignBody = false;
-    if (link.distinctive) {
-      for (const target of storedWithBody.get(link.body!) ?? []) {
-        charge();
-        if (target !== link.target) foreignBody = true;
-      }
-    }
-    if (foreignBody) {
+    if (foreignBody(link)) {
       verdicts[index] = 'retarget';
       continue;
     }
-    const at = `${link.target}\u0000${link.place}`;
-    const inPlace = available.get(at)?.length === 1 && unmatchedAt.get(at) === 1 && placeOwner(link)?.target === link.target;
+    const at = `${targetOf(link)}:${placeOf(link)}`;
+    const inPlace = available.get(at) === 1 && unmatchedAt.get(at) === 1 && placeOwner(link)?.target === link.target;
     verdicts[index] = inPlace ? 'edited' : 'unproven';
   }
   return finish();

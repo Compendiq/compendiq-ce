@@ -45,24 +45,24 @@ describe('confluence-url-origin: what is a URL link in a storage string (#1955, 
     expect(rest).toEqual([]);
     expect(found).toMatchObject({
       canonical: true, value: '/rel/a', navigable: false, live: true, label: '', ordinal: 0,
-      body: JSON.stringify(['the docs', []]), distinctive: true, place: JSON.stringify(['', 'see', 'now']),
+      body: JSON.stringify(['the docs', []]), place: JSON.stringify(['', 'see', 'now']),
     });
     expect(found!.element.name).toBe('ac:link');
   });
 
   it('gives a link without a body its display text as body and label, and counts that text in the places around it', () => {
     const { links } = analyse(`<p>a ${link('', ' /rel/a ')} b ${link('', '')} c</p>`);
-    expect(links.map((found) => [found.label, found.body, found.distinctive, found.place])).toEqual([
-      ['/rel/a', JSON.stringify(['/rel/a', []]), false, JSON.stringify(['', 'a', 'b(emptylink)c'])],
-      ['(empty link)', JSON.stringify(['(empty link)', []]), false, JSON.stringify(['', 'a/rel/ab', 'c'])],
+    expect(links.map((found) => [found.label, found.body, found.place])).toEqual([
+      ['/rel/a', JSON.stringify(['/rel/a', []]), JSON.stringify(['', 'a', 'b(emptylink)c'])],
+      ['(empty link)', JSON.stringify(['(empty link)', []]), JSON.stringify(['', 'a/rel/ab', 'c'])],
     ]);
   });
 
   it('takes a blank explicit body for no body, and an image-only body for a body', () => {
     const { links } = analyse(`<p>${link(text(' '))}${link('<ac:link-body></ac:link-body>')}${link(image())}</p>`);
     expect(links.map((found) => found.label)).toEqual(['/rel/a', '/rel/a', '']);
-    expect(links[2]).toMatchObject({ canonical: true, distinctive: true });
-    expect(JSON.parse(links[2]!.body!)[0]).toBe('');
+    expect(links[2]).toMatchObject({ canonical: true });
+    expect(JSON.parse(links[2]!.body)[0]).toBe('');
   });
 
   it('tells a navigable value from every other, and a dormant context from live content', () => {
@@ -353,6 +353,75 @@ describe('confluence-url-origin: a second Save is the first again (#1955)', () =
   });
 });
 
+// Review r1, R2. A stored `<a href="#confluence-url:…">` is an ordinary anchor that body_html cannot tell
+// from the carrier of a link: when one of the two goes, the one that stays is not known to be the link.
+describe('confluence-url-origin: a stored lookalike never inherits a deleted link (R2)', () => {
+  const genuine = link();
+  const lookalike = '<a href="#confluence-url:%2Frel%2Fa">/rel/a</a>';
+  /** What write-back builds from either anchor once only one is left. */
+  const left = `<p>${link()}</p>`;
+
+  it.each([
+    ['the link first', `<p>${genuine}</p><p>${lookalike}</p>`],
+    ['the lookalike first', `<p>${lookalike}</p><p>${genuine}</p>`],
+  ])('declines the one left of two adjacent paragraphs, %s, on both Saves', (_order, stored) => {
+    expect(judge(stored, left)).toEqual(['ambiguous']);
+    // The first Save wrote text; the room keeps its anchor and the second Save has nothing stored.
+    expect(judge('<p>/rel/a</p>', left)).toEqual(['unproven']);
+  });
+
+  it('declines the one left where both stood in the same surroundings', () => {
+    const around = (inner: string): string => `${FILLER}<p>X ${inner} Y</p>`;
+    const stored = `${around(genuine)}${around(lookalike)}${FILLER}`;
+    // Either paragraph deleted: what is left stands in the stored place of both.
+    expect(judge(stored, `${FILLER}${around(link())}${FILLER}`)).toEqual(['ambiguous']);
+  });
+
+  it('declines a link with a text of its own beside a lookalike with that text, as before', () => {
+    const labelled = '<a href="#confluence-url:%2Frel%2Fa?body=plain">the docs</a>';
+    expect(judge(`<p>${link(text('the docs'))}</p><p>${labelled}</p>`, `<p>${link(text('the docs'))}</p>`)).toEqual(['ambiguous']);
+  });
+
+  it('declines a link relabelled in place to the text of a stored anchor that points elsewhere', () => {
+    const stored = `<p>See ${link(text('Guide'))} now</p>${FILLER}<p>${lookalike}</p>`;
+    // The link lost its label, or the lookalike took its place: the same storage either way.
+    expect(judge(stored, `<p>See ${link()} now</p>${FILLER}`)).toEqual(['retarget']);
+  });
+
+  it('keeps the link where nothing competes: moved, and in its own place beside a deleted lookalike', () => {
+    expect(judge(`${FILLER}<p>a</p><p>${genuine}</p>`, `<p>${genuine}</p>${FILLER}<p>a</p>`)).toEqual(['unchanged']);
+    expect(judge(`<p>a</p><p>${genuine}</p><p>${lookalike}</p>`, `<p>${genuine}</p><p>a</p><p>${lookalike}</p>`)).toEqual(['unchanged']);
+    const far = `<p>See ${genuine} first</p>${FILLER}`;
+    expect(judge(`${far}<p>${lookalike}</p>`, far)).toEqual(['unchanged']);
+  });
+});
+
+// Review r1, R6. No cap of this module takes a link away: what cannot be judged within the work limit is refused.
+describe('confluence-url-origin: a long or rich body is evidence like any other (R6)', () => {
+  it.each([4_096, 4_097, 100_000])('keeps an unchanged link whose plain body has %i characters', (length) => {
+    const storage = `<p>see ${link(text('x'.repeat(length)))} now</p>`;
+    expect(analyse(storage).links[0]!.body).toBe(JSON.stringify(['x'.repeat(length), []]));
+    expect(judge(storage, storage)).toEqual(['unchanged']);
+    expect(judge(storage, `<p>see ${link(text(`${'x'.repeat(length - 1)}y`))} now</p><p>z</p>`)).toEqual(['unproven']);
+  });
+
+  it('keeps an unchanged link around forty images, and around an image with long attributes', () => {
+    const picture = (name: string): string => `<ac:image ac:alt="${name}"><ri:attachment ri:filename="${name}.png"></ri:attachment></ac:image>`;
+    const gallery = `<p>${link(`<ac:link-body>${Array.from({ length: 40 }, (_, index) => picture(`i${index}`)).join('')}</ac:link-body>`)}</p>`;
+    expect(judge(gallery, gallery)).toEqual(['unchanged']);
+    const described = `<p>${link(`<ac:link-body>${picture('d'.repeat(6_000))}</ac:link-body>`)}</p>`;
+    expect(judge(described, described)).toEqual(['unchanged']);
+    // The fortieth image and the last character of the long name are part of what is compared: in place the
+    // link is the stored one with another body, moved as well it is no link the page holds.
+    const otherGallery = gallery.replace('i39.png', 'other.png');
+    const otherDescribed = described.replace(`${'d'.repeat(6_000)}.png`, `${'d'.repeat(5_999)}e.png`);
+    expect(judge(gallery, otherGallery)).toEqual(['edited']);
+    expect(judge(described, otherDescribed)).toEqual(['edited']);
+    expect(judge(gallery, `<p>z</p>${otherGallery}`)).toEqual(['unproven']);
+    expect(judge(described, `<p>z</p>${otherDescribed}`)).toEqual(['unproven']);
+  });
+});
+
 describe('confluence-url-origin: bounded work (W5)', () => {
   const tight = (over: Partial<StorageLinkLimits>): StorageLinkLimits => ({ ...STORAGE_LINK_LIMITS, ...over });
 
@@ -378,17 +447,59 @@ describe('confluence-url-origin: bounded work (W5)', () => {
     expect(judgeStorageUrlLinks(repeated, distinct, tight({ work: 400 * 12 })).filter(isApprovedUrlLinkVerdict)).toHaveLength(1);
   });
 
-  it('takes a body past its limits for no body evidence at all, on either side', () => {
-    const long = link(text('x'.repeat(40)));
-    const limits = tight({ bodyText: 32 });
-    expect(analyse(`<p>${long}</p>`, limits).links[0]!.body).toBeNull();
-    const short = analyse(`<p>${long}</p>`);
-    expect(judgeStorageUrlLinks(analyse(`<p>${long}</p>`, limits), short)).toEqual(['unproven']);
-    expect(judgeStorageUrlLinks(short, analyse(`<p>${long}</p>`, limits))).toEqual(['unproven']);
-    const gallery = link(`<ac:link-body>${'<ac:image><ri:attachment ri:filename="i.png"></ri:attachment></ac:image>'.repeat(3)}</ac:link-body>`);
-    expect(analyse(`<p>${gallery}</p>`, tight({ bodyMedia: 2 })).links[0]!.body).toBeNull();
-    expect(analyse(`<p>${gallery}</p>`, tight({ signature: 8 })).links[0]!.body).toBeNull();
-    expect(analyse(`<p>${gallery}</p>`).links[0]!.body).not.toBeNull();
+  // Review r1, R5: every case below is a count of charged steps, never a verdict, a length or a duration.
+  it('charges what it is about to keep before it keeps it: bodies of nested links', () => {
+    // 40 links in each other's bodies around 2,000 characters: 40 bodies of 2,000 characters each.
+    const depth = 40;
+    const nested = `${'<ac:link><ri:url ri:value="/rel/a"></ri:url><ac:link-body>'.repeat(depth)}${'x'.repeat(2_000)}${'</ac:link-body></ac:link>'.repeat(depth)}`;
+    expect(() => analyse(nested, tight({ work: 40_000 }))).toThrow(StorageLinkBudgetError);
+    expect(() => analyse(nested, tight({ work: 120_000 }))).not.toThrow();
+    // One link around the same text costs the text once.
+    expect(() => analyse(link(`<ac:link-body>${'x'.repeat(2_000)}</ac:link-body>`), tight({ work: 3_000 }))).not.toThrow();
+  });
+
+  it('charges what it is about to keep before it keeps it: media of nested links', () => {
+    const images = '<ac:image><ri:attachment ri:filename="a-file-name-of-some-length.png"></ri:attachment></ac:image>'.repeat(25);
+    const depth = 30;
+    const nested = `${'<ac:link><ri:url ri:value="/rel/a"></ri:url><ac:link-body>'.repeat(depth)}${images}${'</ac:link-body></ac:link>'.repeat(depth)}`;
+    // 25 descriptions of about 100 characters, kept by each of 30 links: about 75,000 characters.
+    expect(() => analyse(nested, tight({ work: 30_000 }))).toThrow(StorageLinkBudgetError);
+    expect(() => analyse(nested, tight({ work: 300_000 }))).not.toThrow();
+  });
+
+  it('describes no image that no link holds', () => {
+    const images = '<ac:image ac:alt="an alternative text of some length"><ri:attachment ri:filename="i.png"></ri:attachment></ac:image>'.repeat(1_000);
+    // 1 + 2,000 elements, one step each; a description of each image would cost its attributes as well.
+    expect(() => analyse(`<p>${images}</p>`, tight({ work: 2_100 }))).not.toThrow();
+  });
+
+  it('charges the attribute values of what it describes', () => {
+    const odd = `<ac:link ac:x="${'v'.repeat(20_000)}"><ri:url ri:value="/rel/a"></ri:url><span>x</span></ac:link>`;
+    expect(() => analyse(odd, tight({ work: 5_000 }))).toThrow(StorageLinkBudgetError);
+    expect(() => analyse(odd, tight({ work: 50_000 }))).not.toThrow();
+  });
+
+  it('describes the element below a link once per link that is not the exact shape, each node at its cost', () => {
+    // 20 malformed links in each other's stray content around 500 elements: 20 descriptions of up to 500 elements.
+    const depth = 20;
+    const nested = `${'<ac:link><ri:url ri:value="/rel/a"></ri:url><span>'.repeat(depth)}${'<i></i>'.repeat(500)}${'</span></ac:link>'.repeat(depth)}`;
+    expect(() => analyse(nested, tight({ work: 20_000 }))).toThrow(StorageLinkBudgetError);
+    expect(() => analyse(nested, tight({ work: 2_000_000 }))).not.toThrow();
+  });
+
+  it('judges links that share one body and differ in target in steps that grow with their number', () => {
+    const count = 400;
+    const page = (label: (index: number) => string): string =>
+      `<p>${Array.from({ length: count }, (_, index) => `${label(index)} ${link(text('same'), `/rel/${index}`)}`).join(' ')}</p>`;
+    // Every link moved (another word before it): each is compared with the stored links of its body.
+    const stored = analyse(page((index) => `w${index}`));
+    const moved = analyse(page((index) => `v${index}`));
+    const verdicts = judgeStorageUrlLinks(moved, stored, tight({ work: count * 20 }));
+    expect(verdicts).toHaveLength(count);
+    expect(verdicts.every((verdict) => verdict === 'unchanged')).toBe(true);
+    // With one of the 400 targets gone from what is written, every moved link could be that one retargeted.
+    const fewer = analyse(page((index) => `v${index}`).replace(link(text('same'), '/rel/7'), 'gone'));
+    expect(judgeStorageUrlLinks(fewer, stored, tight({ work: count * 20 })).every((verdict) => verdict === 'ambiguous')).toBe(true);
   });
 
   it('describes nested links without reading an inner body once per ancestor', () => {
