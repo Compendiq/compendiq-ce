@@ -107,11 +107,19 @@ anything; create and relocation have no origin, so they write no unsafe
 of its resource as XML does (`keepXmlLinkValues`: the storage reader finds the
 tags; `&lang;`/`&rang;`, C1 numeric references and literal TAB/LF/CR are spelled
 so HTML reads XML's value); text and the #1748 kinds keep the HTML values, as
-before #1955. Where the HTML reading of a stored link of the five kinds still
-differs (a literal `/>` in a quoted value, folded attribute names), a write
-that would publish it with another target than the stored XML one is refused
-before any effect (422 `changed-link-target`, owner decision D19); so is one
-carried from stored storage past the reader's limits (the limit as reason).
+before #1955. Where the reading of a stored link of the five kinds still differs
+(a literal `/>` in a quoted value, folded attribute names, a panel re-parsing
+its body so CR becomes LF), a write that would publish it with another target
+than the stored XML one is refused before any effect (422 `changed-link-target`,
+owner decisions D19/D20). The verdict is the real forward pass's: the writer
+runs it over the stored storage with reader-found tags marked and records, where
+each carrier is emitted, whether it keeps that link's XML target; a carrier
+never emitted (new link, discarded macro parameter) passes, one emitted both
+faithfully and not is refused as `ambiguous` (logged detail). Links of stored
+storage the reader stopped at a limit (`isStorageLimitStop`; the unread rest
+is not certified) are refused with the limit as reason; known malformed
+storage is not checked. A stored rival of unknown text is released only by its
+target still standing in its own place.
 `restoreMedia` replaces a token only where it stands as content
 (`locateMediaTokens`, parse5): never in an attribute, a comment or raw text,
 never under an element the tree builder moved (out of a table, or misnested
