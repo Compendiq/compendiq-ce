@@ -251,9 +251,10 @@ any change to the existing conflict policy.
   Code holding a backtick inside a link is escaped link text in Markdown, AI
   Improve included (code mark lost for that span, D22). A line break inside a
   link survives a collaborative save: `yDocToHtml` gives a run of unmarked hard
-  breaks between two text nodes with equal Link marks (all attributes) that
-  mark again, so the HTML has
-  one `<a>` and write-back one `ac:link`; a break at either end of a link body
+  breaks between two text nodes with equal Link marks (every attribute, a
+  missing one taking its schema default, an explicit null not) that mark
+  again, so the HTML has one `<a>` and write-back one `ac:link`; a break at
+  either end of a link body
   stays outside it, and two separate same-target links around a break become
   one after a collaborative session (documented limit). Deferred, unchanged
   since before #1748 (the converters and Improve keep all of these but the

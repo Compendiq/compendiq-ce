@@ -10,6 +10,7 @@ import * as Y from 'yjs';
 import { encodeConfluenceLinkValue, isConfluenceUrlClassCarrierFor } from '@compendiq/contracts';
 import { htmlToYDoc, markAttachmentImages, yDocToHtml } from './collab-schema.js';
 import { confluenceLinkCarrierOf } from './confluence-link.js';
+import { htmlToConfluence } from './content-converter.js';
 
 const IMG = '<img src="/api/attachments/1/a.png" alt="a.png">';
 const roundTrip = (html: string): string => yDocToHtml(htmlToYDoc(html));
@@ -213,5 +214,36 @@ describe('collab schema: a link around a line break (#1954)', () => {
   it('leaves a line break at the start or end of a link outside it (documented)', () => {
     expect(yDocToHtml(htmlToYDoc(`<p>See ${A}<br>lead</a> and ${A}trail<br></a> end</p>`)))
       .toBe(`<p>See <br>${A}lead</a> and ${A}trail</a><br> end</p>`);
+  });
+
+  // Review C-M1: a room's Link mark attributes are compared as ProseMirror applies them: a missing attribute takes
+  // its schema default, an explicit null stays null. Set on real Yjs text, then Yjs → HTML → storage.
+  function roomWithLinks(left: Record<string, unknown>, right: Record<string, unknown>): Y.Doc {
+    const doc = htmlToYDoc('<p>a<br>b</p>');
+    const paragraph = doc.getXmlFragment('default').get(0) as Y.XmlElement;
+    const texts = paragraph.toArray().filter((child): child is Y.XmlText => child instanceof Y.XmlText);
+    expect(texts.map((text) => text.toString())).toEqual(['a', 'b']);
+    texts[0]!.format(0, 1, { link: left });
+    texts[1]!.format(0, 1, { link: right });
+    return doc;
+  }
+  const PAGE_X = '<ri:page ri:content-title="X"></ri:page>';
+
+  it('joins a link whose attribute is missing on one side and its schema default on the other', () => {
+    const html = yDocToHtml(roomWithLinks(
+      { href: '#confluence-page:X' },
+      { href: '#confluence-page:X', target: '_blank', rel: 'noopener noreferrer nofollow', class: null, title: null },
+    ));
+    expect(html).toBe(`<p>${A}a<br>b</a></p>`);
+    expect(htmlToConfluence(html)).toBe(`<p><ac:link>${PAGE_X}<ac:link-body>a<br />b</ac:link-body></ac:link></p>`);
+  });
+
+  it('never joins a link whose attribute is missing on one side and explicitly null on the other', () => {
+    const html = yDocToHtml(roomWithLinks({ href: '#confluence-page:X' }, { href: '#confluence-page:X', target: null }));
+    expect(html).toBe(`<p>${A}a</a><br><a rel="noopener noreferrer nofollow" href="#confluence-page:X">b</a></p>`);
+    expect(htmlToConfluence(html)).toBe(
+      `<p><ac:link>${PAGE_X}<ac:plain-text-link-body><![CDATA[a]]></ac:plain-text-link-body></ac:link><br />`
+      + `<ac:link>${PAGE_X}<ac:plain-text-link-body><![CDATA[b]]></ac:plain-text-link-body></ac:link></p>`,
+    );
   });
 });

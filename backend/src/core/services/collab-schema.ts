@@ -1129,20 +1129,23 @@ function linkMarkOf(node: JSONContent): JSONMark | undefined {
   return node.marks?.find((mark) => mark.type === 'link');
 }
 
-/** Two Link marks with the same attributes, every one of them (href, target, rel, class, title). */
+/**
+ * Two Link marks that render the same: every attribute equal once the collab
+ * schema has applied its defaults. ProseMirror gives a missing attribute its
+ * default but keeps an explicit null, so `{href}` equals `{href, target: <default>}`
+ * and differs from `{href, target: null}`.
+ */
 function sameLink(a: JSONMark, b: JSONMark): boolean {
-  const left = a.attrs ?? {};
-  const right = b.attrs ?? {};
-  return [...new Set([...Object.keys(left), ...Object.keys(right)])]
-    .every((key) => (left[key] ?? null) === (right[key] ?? null));
+  const type = getCollabSchema().marks.link!;
+  return type.create(a.attrs ?? null).eq(type.create(b.attrs ?? null));
 }
 
 /**
  * #1954: a link whose body holds a line break leaves Yjs split in two, because
  * y-prosemirror keeps marks on text only and drops the Link mark of the
  * `hardBreak` between. Give every run of unmarked hard breaks that stands
- * between two text nodes carrying the same Link mark (all attributes equal)
- * that mark again, so the HTML has one `<a>` across the breaks and write-back
+ * between two text nodes carrying the same Link mark (sameLink) that mark
+ * again, so the HTML has one `<a>` across the breaks and write-back
  * one `ac:link`. A break at either end of a link, or any other node or text
  * between, leaves the links apart. Two links to the same target that were
  * deliberately separate around a break cannot be told apart in Yjs and become
@@ -1153,7 +1156,7 @@ function joinLinksAcrossHardBreaks(doc: JSONContent): JSONContent {
   while (pending.length > 0) {
     const content = pending.pop()!.content;
     if (!content) continue;
-    pending.push(...content);
+    for (const child of content) if (child.content) pending.push(child);
     for (let start = 0; start < content.length; start += 1) {
       const link = content[start]!.type === 'text' ? linkMarkOf(content[start]!) : undefined;
       if (!link) continue;

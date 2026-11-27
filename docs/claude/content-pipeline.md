@@ -73,8 +73,9 @@ before. A media-placeholder spelling inside such a label is ordinary text to
 `restoreMedia`, as in any prose (#723). A line break inside a link survives a
 collaborative save (#1954): Yjs keeps marks on text only, so `yDocToHtml` gives a
 run of unmarked line breaks between two text pieces with the same Link mark (every
-attribute equal) that mark again, and write-back writes one `ac:link`; links with a
-different href, class or title are never joined. Limits: a break at the start or
+attribute equal once the schema default fills a missing one; an explicit null is not
+the default) that mark again, and write-back writes one `ac:link`; links with a
+different href, class, title, target or rel are never joined. Limits: a break at the start or
 end of a link body leaves the link, and two separate links to the same target
 around a break cannot be told apart after a collaborative session and become one
 (the converter and an ordinary editor Save keep them apart). Deferred, unchanged
