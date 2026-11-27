@@ -761,6 +761,35 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       expect(await pageRow(pageId)).toEqual(before);
     });
 
+    // Owner decision D19 (review r5, R24): an unchanged Save that would publish a #1955 link with another target
+    // than the stored one is refused before any effect, on this Save and the next; the escaped spelling is written.
+    it('refuses a Save that would change a stored blog link\'s section, before the intent and the PUT, twice (D19)', async () => {
+      const pageId = await seedConfluencePage(currentUserId);
+      const blog = (anchor: string): string =>
+        `<p>see <ac:link ac:anchor="${anchor}"><ri:blog-post ri:content-title="Authors" ri:space-key="OPS" /></ac:link> now</p>`;
+      const changed = blog('See /> here');
+      await query('UPDATE pages SET body_storage = $2, body_html = $3 WHERE id = $1', [pageId, changed, confluenceToHtml(changed, 'page-1')]);
+      const before = await pageRow(pageId);
+      for (let save = 0; save < 2; save += 1) {
+        const response = await app.inject({
+          method: 'PUT', url: `/api/pages/${pageId}`, payload: { title: 'Original', version: 7, bodyHtml: before.body_html },
+        });
+        expect(response.statusCode, response.body).toBe(422);
+        expect(response.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'changed-link-target' });
+      }
+      expect(providerCalls).toEqual([]);
+      expect(await intentRows(pageId)).toBe(0);
+      expect(await pageRow(pageId)).toEqual(before);
+
+      const kept = blog('See /&gt; here');
+      await query('UPDATE pages SET body_storage = $2, body_html = $3 WHERE id = $1', [pageId, kept, confluenceToHtml(kept, 'page-1')]);
+      const response = await app.inject({
+        method: 'PUT', url: `/api/pages/${pageId}`, payload: { title: 'Original', version: 7, bodyHtml: confluenceToHtml(kept, 'page-1') },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(confluenceRequests.at(-1)!.body.body.storage.value).toContain('ac:anchor="See /&gt; here"');
+    });
+
     // Review r1, R4: membership of the space is not access to a page that does not inherit its permissions.
     it.each([
       ['a body the write-back refuses', '<p>x</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>'],

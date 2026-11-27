@@ -28,6 +28,7 @@ import {
 import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { confluenceToHtml } from '../../core/services/content-converter.js';
 import {
   buildKnowledgeTestApp,
   insertLocalSpace,
@@ -535,6 +536,22 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
         expect(await storedPage(pageId)).toEqual(before);
         expect((await query('SELECT COUNT(*)::int AS count FROM page_versions WHERE page_id = $1', [pageId])).rows)
           .toEqual(versionsBefore.rows);
+        expect((await query('SELECT 1 FROM page_write_intents')).rowCount).toBe(0);
+        expect(confluenceRequests).toEqual([]);
+      });
+
+      // Owner decision D19 (review r5, R24): a draft that would publish a stored #1955 link with another target.
+      it('refuses a draft that would change a stored blog link\'s section and leaves it a draft, twice (D19)', async () => {
+        const pageId = await seedConfluencePage();
+        const stored = '<p>see <ac:link ac:anchor="See /> here"><ri:blog-post ri:content-title="Authors" ri:space-key="OPS" /></ac:link> now</p>';
+        await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [pageId, stored, confluenceToHtml(stored)]);
+        const before = await storedPage(pageId);
+        for (let publish = 0; publish < 2; publish += 1) {
+          const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'changed-link-target' });
+        }
+        expect(await storedPage(pageId)).toEqual(before);
         expect((await query('SELECT 1 FROM page_write_intents')).rowCount).toBe(0);
         expect(confluenceRequests).toEqual([]);
       });

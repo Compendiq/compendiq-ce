@@ -410,6 +410,58 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       expect(values(first)).toEqual(values(storage));
       expect(htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(first))), { previousStorage: first })).toBe(first);
     });
+
+    // Review r5, R24 and owner decision D19: a Save that would publish a #1955 link with another XML target than
+    // the stored link it carries is refused before any effect; a stored target that survives is written as it is.
+    const refusal = (save: () => string): string | null => {
+      try {
+        save();
+        return null;
+      } catch (error) {
+        if (error instanceof ConfluenceStorageRefusedError) return error.reason;
+        throw error;
+      }
+    };
+    const blog = (anchor: string): string =>
+      `<p>see <ac:link ac:anchor="${anchor}"><ri:blog-post ri:content-title="Authors" ri:space-key="OPS" /></ac:link> now</p>`;
+    const mailto = (subject: string): string =>
+      `<p>mail <ac:link><ri:url ri:value="mailto:a@example.com?subject=${subject}" /></ac:link> now</p>`;
+
+    it.each([
+      ['a literal `/>` in a blog link\'s section', blog('See /> here'), 'changed-link-target'],
+      ['that section with `>` escaped', blog('See /&gt; here'), null],
+      ['two attribute names HTML folds into one', '<p><ac:link><ri:blog-post ri:content-title="Release notes" ri:CONTENT-TITLE="Draft notes" ri:space-key="ENG" /></ac:link></p>', 'changed-link-target'],
+      ['a literal `/>` in a mailto primary', mailto('Read/>notes'), 'changed-link-target'],
+      ['that primary with `>` escaped', mailto('Read/&gt;notes'), null],
+    ])('saves an unchanged page holding %s: refused on both Saves, or written with its XML target (D19)', (_name, storage, reason) => {
+      const projected = yDocToHtml(htmlToYDoc(confluenceToHtml(storage)));
+      const save = (): string => htmlToConfluence(projected, { previousStorage: storage });
+      expect(refusal(save)).toBe(reason);
+      if (reason !== null) {
+        // Nothing changed, so the next Save meets the same stored page and is refused alike.
+        expect(refusal(save)).toBe(reason);
+        return;
+      }
+      const first = save();
+      expect(values(first)).toEqual(values(storage));
+      expect(htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(first))), { previousStorage: first })).toBe(first);
+    });
+
+    it('refuses only a link carried from a stored one: a new link, a #1748 kind and a page without the link are written (D19)', () => {
+      const projected = yDocToHtml(htmlToYDoc(confluenceToHtml(blog('See /> here'))));
+      expect(refusal(() => htmlToConfluence(projected, { previousStorage: '<p>other</p>' }))).toBeNull();
+      expect(refusal(() => htmlToConfluence('<p>see now</p>', { previousStorage: blog('See /> here') }))).toBeNull();
+      const page = '<p>see <ac:link ac:anchor="See /> here"><ri:page ri:content-title="Authors" /></ac:link> now</p>';
+      expect(refusal(() => htmlToConfluence(confluenceToHtml(page), { previousStorage: page }))).toBeNull();
+    });
+
+    it('refuses a link carried from well-formed stored storage past the reader\'s limits, not from malformed storage (D19)', () => {
+      const link = '<p>see <ac:link><ri:blog-post ri:content-title="Ops&lang;guide" ri:space-key="OPS" /></ac:link> now</p>';
+      const deep = `${link}${'<div>'.repeat(1_100)}x${'</div>'.repeat(1_100)}`;
+      expect(refusal(() => htmlToConfluence(confluenceToHtml(deep), { previousStorage: deep }))).toBe('too-deep');
+      const malformed = `${link}<p>unclosed`;
+      expect(refusal(() => htmlToConfluence(confluenceToHtml(malformed), { previousStorage: malformed }))).toBeNull();
+    });
   });
 
   // Review r3, R16: the writer and its second Save give a page link's title and an explicit body showing the same

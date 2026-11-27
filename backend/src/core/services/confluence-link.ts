@@ -47,6 +47,7 @@ import {
   storageText,
   type ConfluenceStorageRefusal,
   type StorageElement,
+  type StorageReadFailure,
 } from './confluence-storage-reader.js';
 import {
   analyseStorageLinks,
@@ -376,6 +377,18 @@ function asXmlReadsIt(spelling: string): string {
   return code >= 0x80 && code <= 0x9f ? String.fromCharCode(code) : spelling;
 }
 
+/** What {@link keepXmlLinkValues} returns. */
+export interface XmlLinkValues {
+  /** The string with the tags spelled (and marked). */
+  readonly storage: string;
+  /**
+   * The links of the five kinds the reader holds, in document order: a
+   * mark's value is an index here. Why the string could not be read when it
+   * could not (then nothing is spelled).
+   */
+  readonly links: readonly StorageElement[] | StorageReadFailure;
+}
+
 /**
  * `storage` (CDATA already turned into text) with the start tag of every link
  * to a blog post, a space, a shortcut, a content entity or a URL, and of its
@@ -388,27 +401,74 @@ function asXmlReadsIt(spelling: string): string {
  * instruction or raw text is never taken for one. Nothing else is touched:
  * text, bodies, other elements, and the three #1748 kinds, which the base
  * commit read with the HTML values. A string the reader cannot read (not
- * XML, or past a limit) is returned as it came: it has no XML value to keep.
+ * XML, or past a limit) is returned as it came. With `marker`, each such
+ * link's start tag also gets the attribute `marker` holding its index in
+ * `links`, right after its name (owner decision D19: a write-back tells which
+ * stored link an HTML element is).
  */
-export function keepXmlLinkValues(storage: string): string {
-  if (!NON_FILE_RESOURCE_TAG.test(storage)) return storage;
+export function keepXmlLinkValues(storage: string, marker?: string): XmlLinkValues {
+  if (!NON_FILE_RESOURCE_TAG.test(storage)) return { storage, links: [] };
   const read = readConfluenceStorage(storage);
-  if (!read.ok) return storage;
-  const tags: Array<readonly [number, number]> = [];
+  if (!read.ok) return { storage, links: read.reason };
+  const links: StorageElement[] = [];
+  const tags: Array<{ range: readonly [number, number]; mark: string; at: number }> = [];
   for (const element of storageElements(read.tree)) {
     if (element.name.toLowerCase() !== 'ac:link') continue;
     const resource = element.children
       .find((child): child is StorageElement => typeof child !== 'string' && child.name.toLowerCase().startsWith('ri:'));
-    if (resource && NON_FILE_RESOURCES.has(resource.name.toLowerCase())) tags.push(element.tag, resource.tag);
+    if (!resource || !NON_FILE_RESOURCES.has(resource.name.toLowerCase())) continue;
+    tags.push({ range: element.tag, mark: marker ? ` ${marker}="${links.length}"` : '', at: 1 + element.name.length });
+    tags.push({ range: resource.tag, mark: '', at: 0 });
+    links.push(element);
   }
-  tags.sort((a, b) => a[0] - b[0]);
+  tags.sort((a, b) => a.range[0] - b.range[0]);
   let out = '';
   let at = 0;
-  for (const [start, end] of tags) {
-    out += storage.slice(at, start) + storage.slice(start, end).replace(HTML_READS_OTHERWISE, asXmlReadsIt);
+  for (const { range: [start, end], mark, at: name } of tags) {
+    const tag = storage.slice(start, end);
+    out += storage.slice(at, start) + (tag.slice(0, name) + mark + tag.slice(name)).replace(HTML_READS_OTHERWISE, asXmlReadsIt);
     at = end;
   }
-  return out + storage.slice(at);
+  return { storage: out + storage.slice(at), links };
+}
+
+/** A target as a comparable record: the resource and every attribute of the link and of the resource, sorted. */
+function targetRecord(resource: string, link: ReadonlyArray<readonly [string, string]>, own: ReadonlyArray<readonly [string, string]>): string {
+  const sorted = (list: ReadonlyArray<readonly [string, string]>): Array<readonly [string, string]> =>
+    [...list].sort(([a], [b]) => Number(a > b) - Number(a < b));
+  return JSON.stringify([resource, sorted(link), sorted(own)]);
+}
+
+/**
+ * Owner decision D19 (review r5, R24): whether a link that carries `built`
+ * (the forward pass's reading of the stored link `stored`) is written back
+ * with the XML target `stored` holds: its resource, its primary value, its
+ * section and every other carried attribute. The attributes the carrier
+ * cannot hold by the grammar (`built.dropped`, logged by #1748) and those of
+ * no `ac:`/`ri:` name are not part of the comparison.
+ */
+export function storedLinkKeepsTarget(stored: StorageElement, built: ConfluenceLinkCarrier): boolean {
+  const target = parseConfluenceLinkHref(built.carrier);
+  if (!target || target.kind === 'anchor') return false;
+  const resource = stored.children
+    .find((child): child is StorageElement => typeof child !== 'string' && child.name.toLowerCase().startsWith('ri:'));
+  if (!resource) return false;
+  const dropped = new Set(built.dropped);
+  const own = (element: StorageElement, prefix: string): Array<readonly [string, string]> => element.attributes
+    .filter(({ name }) => name.toLowerCase().startsWith(prefix) && !dropped.has(name.toLowerCase()))
+    .map(({ name, value }) => [name, value] as const);
+  const written = targetRecord(
+    CONFLUENCE_LINK_RESOURCE_ELEMENT[target.kind],
+    target.link,
+    [[CONFLUENCE_LINK_PRIMARY_ATTR[target.kind], target.value], ...target.resource],
+  );
+  return written === targetRecord(resource.name.toLowerCase(), own(stored, 'ac:'), own(resource, 'ri:'));
+}
+
+/** Refuse a storage before dispatch (#1955): logged here, once, with its reason only; `app.ts` answers 422. */
+export function refuseConfluenceStorage(reason: ConfluenceStorageRefusal): never {
+  logger.warn({ reason }, 'Confluence storage refused before dispatch (#1955)');
+  throw new ConfluenceStorageRefusedError(reason);
 }
 
 /** The string every `ri:url` carrier starts with. */
@@ -530,10 +590,7 @@ export function enforceConfluenceUrlLinkOrigin(
 ): string {
   const first = serialise();
   if (!URL_START_TAG.test(first)) return first;
-  const refuse = (reason: ConfluenceStorageRefusal): never => {
-    logger.warn({ reason }, 'Confluence storage refused before dispatch (#1955)');
-    throw new ConfluenceStorageRefusedError(reason);
-  };
+  const refuse = refuseConfluenceStorage;
   let storedCache: StorageLinkAnalysis | null | undefined;
   const stored = (): StorageLinkAnalysis | null => {
     if (storedCache !== undefined) return storedCache;

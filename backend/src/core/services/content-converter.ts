@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { JSDOM, type VirtualConsole } from 'jsdom';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
@@ -11,14 +12,20 @@ import {
 import { isConfluenceTaskId, MAX_CONFLUENCE_TASK_ID } from './confluence-task-id.js';
 import { logger } from '../utils/logger.js';
 import {
+  CONFLUENCE_LINK_KINDS_1748,
   confluenceLinkAnchor,
+  confluenceLinkCarrier,
   confluenceLinkCarrierOf,
   confluenceLinkElement,
   enforceConfluenceUrlLinkOrigin,
   escapeConfluenceLinkAttributes,
   keepXmlLinkValues,
   materializeConfluenceUrlLinks,
+  parseConfluenceLinkHref,
+  refuseConfluenceStorage,
+  storedLinkKeepsTarget,
 } from './confluence-link.js';
+import type { ConfluenceStorageRefusal } from './confluence-storage-reader.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   assertStorageDerivationFeatures,
@@ -637,7 +644,7 @@ function confluenceToHtmlPass(
   // Only the storage itself is spelled so; a later pass reads this pass's HTML, whose values were read here.
   const cdataAsText = stripCdata(storageXhtml);
   const preprocessed = expandSelfClosingXhtmlTags(
-    firstPass && derivationHas(features, 'link-kinds') ? keepXmlLinkValues(cdataAsText) : cdataAsText,
+    firstPass && derivationHas(features, 'link-kinds') ? keepXmlLinkValues(cdataAsText).storage : cdataAsText,
   );
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
@@ -1705,9 +1712,21 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   const linkAnchors = linkKinds
     ? 'a[href^="#confluence-"], a[href][class^="#confluence-url:"]'
     : 'a[href^="#confluence-"]';
+  const linkOrigin = options.linkOrigin === undefined ? options.previousStorage : options.linkOrigin;
+  let refusalOf: ((carrier: string) => ConfluenceStorageRefusal | null) | undefined;
   for (const a of doc.querySelectorAll(linkAnchors)) {
     const acLink = confluenceLinkElement(a, options.derivationFeatures);
-    if (acLink) a.replaceWith(acLink);
+    if (!acLink) continue;
+    // Owner decision D19 (#1955, review r5 R24): a link of a #1955 kind that carries a stored link's carrier is
+    // written with that link's XML target, or the write is refused here, before any effect.
+    const carrier = linkKinds && linkOrigin ? confluenceLinkCarrierOf(a) : null;
+    const kind = carrier === null ? undefined : parseConfluenceLinkHref(carrier)?.kind;
+    if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) {
+      refusalOf ??= storedLinkRefusals(linkOrigin!);
+      const reason = refusalOf(carrier);
+      if (reason) refuseConfluenceStorage(reason);
+    }
+    a.replaceWith(acLink);
   }
 
   // Convert images with attachment references back
@@ -1765,8 +1784,41 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // would carry one past the check is refused. The check may change the
   // document and serialise it again; nothing follows it.
   if (!linkKinds) return serialiseStorage(doc);
-  const linkOrigin = options.linkOrigin === undefined ? options.previousStorage : options.linkOrigin;
   return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin);
+}
+
+/**
+ * Owner decision D19 (#1955, review r5 R24): which carriers an outgoing link
+ * may not carry, given the page's stored storage, and why. A link of the five
+ * kinds that carries the forward carrier of a stored link is that stored
+ * link; it is refused (`changed-link-target`) when writing it back would give
+ * it another XML target than the stored one (`storedLinkKeepsTarget`). Which
+ * stored link an HTML element is comes from a mark the storage reader's own
+ * tag ranges put on it (`keepXmlLinkValues`), with a name nobody can have
+ * written. Stored storage that is well-formed as far as read but past the
+ * reader's limits has no XML target to keep: every carrier read from it is
+ * refused with the limit as the reason. Storage that is not well-formed, and
+ * the three #1748 kinds, are not checked.
+ */
+function storedLinkRefusals(storage: string): (carrier: string) => ConfluenceStorageRefusal | null {
+  const marker = `data-cq-stored-link-${randomBytes(8).toString('hex')}`;
+  const { storage: marked, links } = keepXmlLinkValues(stripCdata(storage), marker);
+  if (links === 'not-well-formed' || (typeof links !== 'string' && links.length === 0)) return () => null;
+  const stored = new JSDOM(`<body>${expandSelfClosingXhtmlTags(marked)}</body>`, { contentType: 'text/html' }).window.document;
+  const refused = new Set<string>();
+  for (const element of byTag(stored, 'ac:link')) {
+    const built = confluenceLinkCarrier(element);
+    if (!built || CONFLUENCE_LINK_KINDS_1748.includes(built.kind)) continue;
+    if (typeof links === 'string') {
+      refused.add(built.carrier);
+      continue;
+    }
+    const index = element.getAttribute(marker);
+    const link = index === null ? undefined : links[Number(index)];
+    if (link && !storedLinkKeepsTarget(link, built)) refused.add(built.carrier);
+  }
+  const reason: ConfluenceStorageRefusal = typeof links === 'string' ? links : 'changed-link-target';
+  return (carrier) => (refused.has(carrier) ? reason : null);
 }
 
 /**

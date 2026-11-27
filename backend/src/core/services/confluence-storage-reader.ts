@@ -97,7 +97,7 @@ export type StorageReadFailure = 'not-well-formed' | 'too-large' | 'too-deep' | 
 export type StorageReadResult = { ok: true; tree: StorageTree } | { ok: false; reason: StorageReadFailure };
 
 /** Why a storage string is not dispatched (#1955). #1958 adds its own reason. */
-export type ConfluenceStorageRefusal = StorageReadFailure | 'unapproved-link';
+export type ConfluenceStorageRefusal = StorageReadFailure | 'unapproved-link' | 'changed-link-target';
 
 const REFUSAL_MESSAGE: Readonly<Record<ConfluenceStorageRefusal, string>> = {
   'not-well-formed':
@@ -107,6 +107,8 @@ const REFUSAL_MESSAGE: Readonly<Record<ConfluenceStorageRefusal, string>> = {
   'too-many-nodes': 'This page cannot be saved to Confluence: its content is too complex to be checked. Nothing was changed.',
   'unapproved-link':
     'This page cannot be saved to Confluence: its content holds a link to a non-web address in a place where it cannot be verified or removed. Nothing was changed.',
+  'changed-link-target':
+    'This page cannot be saved to Confluence: a link to a blog post, a space, a shortcut, a content entity or a web address would be saved with a different target than Confluence holds. Edit the link in Confluence, then sync the page. Nothing was changed.',
 };
 
 /**
