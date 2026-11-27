@@ -606,6 +606,27 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
         }
       },
     );
+
+    // Review r7, R30 and owner decision D21: a stored anchor whose text is not known is released only when it owns
+    // its place alone on both sides, never by another anchor to the same target in a place of the same signature.
+    it.each([['the entity name', 'Ops&lang;guide'], ['the character the editor shows', 'Ops\u27E8guide']])(
+      'writes the moved URL link as text when the removed rival, spelled with %s, shared its place signature with a kept anchor (R30)',
+      (_name, label) => {
+        const around = 'Follow every step of these setup instructions carefully before you continue reading. '.repeat(2);
+        const anchorIn = (text: string, words: string): string =>
+          `<p>${words}<a href="https://example.com/ops">${text}</a> ${words}</p>`;
+        const moved = '<p>Moved here: <a href="#confluence-url:%2Fguide?body=plain">Ops\u27E8guide</a></p>';
+        for (const [calendarWords, kind] of [[around, 'repeated'], ['See the calendar for the next dates. ', 'distinct']] as const) {
+          const storage = `<p>${GUIDE}</p>${FILLER}${anchorIn(label, around)}${anchorIn('Calendar', calendarWords)}`;
+          expect(yDocToHtml(htmlToYDoc(confluenceToHtml(storage))))
+            .toBe(yDocToHtml(htmlToYDoc(confluenceToHtml(storage.replace(label, 'Ops\u27E8guide')))));
+          const outgoing = `${moved}${FILLER}${anchorIn('Calendar', calendarWords)}`;
+          const first = htmlToConfluence(outgoing, { previousStorage: storage });
+          expect(oracleUrlLinks(first), kind).toEqual([]);
+          expect(oracleUrlLinks(htmlToConfluence(outgoing, { linkOrigin: first })), kind).toEqual([]);
+        }
+      },
+    );
   });
 
   // Review r4, R22: no attribute of the input stands for a decision of the converter.

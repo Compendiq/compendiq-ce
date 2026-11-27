@@ -706,8 +706,8 @@ export function judgeStorageUrlLinks(
   const storedAtPlace = new Map<number, StorageLinkClaim[]>();
   /** body → target → how many stored things with that body point there. */
   const storedByBody = new Map<number, Map<number, number>>();
-  /** For each stored thing whose body is not known: its target, and how many such stand at its target and place. */
-  const unknownStoredAt = new Map<string, { target: number; count: number }>();
+  /** The stored things whose body is not known. */
+  const unknownStored: StorageLinkClaim[] = [];
   const targetAndPlace = (claim: StorageLinkClaim): string => `${targetOf(claim)}:${placeOf(claim)}`;
   for (const claim of stored.claims) {
     charge();
@@ -716,11 +716,7 @@ export function judgeStorageUrlLinks(
     let targets = storedByBody.get(body);
     if (!targets) storedByBody.set(body, targets = new Map());
     count(targets, targetOf(claim));
-    if (body !== unknownBody) continue;
-    const key = targetAndPlace(claim);
-    const entry = unknownStoredAt.get(key);
-    if (entry) entry.count += 1;
-    else unknownStoredAt.set(key, { target: targetOf(claim), count: 1 });
+    if (body === unknownBody) unknownStored.push(claim);
   }
   const writtenAtPlace = new Map<number, number>();
   const writtenByClass = new Map<string, number>();
@@ -739,9 +735,9 @@ export function judgeStorageUrlLinks(
   };
   /**
    * body → the stored targets with that body that are written less often than they are stored; made once a body.
-   * Coordinator decision D20 (review r6, R27): a stored thing whose body is not known is still written only when
-   * as many things point to its target from its own place, whatever body they show; never by a count of the
-   * things pointing to that target elsewhere.
+   * Owner decision D21 (reviews r6 R27, r7 R30): a stored thing whose body is not known is still written only when
+   * it owns its place alone on both sides and the one thing written there points to its target, whatever body it
+   * shows; never by a count of things pointing there from elsewhere or from a place it shares.
    */
   const missingByBody = new Map<number, Set<number>>();
   const missingSources = (body: number): Set<number> => {
@@ -749,9 +745,12 @@ export function judgeStorageUrlLinks(
     if (missing) return missing;
     missing = new Set();
     if (body === unknownBody) {
-      for (const [key, { target, count: storedCount }] of unknownStoredAt) {
+      for (const claim of unknownStored) {
         charge();
-        if ((writtenByTargetAndPlace.get(key) ?? 0) < storedCount) missing.add(target);
+        const place = placeOf(claim);
+        const owned = claim.place !== '' && storedAtPlace.get(place)?.length === 1 && writtenAtPlace.get(place) === 1
+          && writtenByTargetAndPlace.get(targetAndPlace(claim)) === 1;
+        if (!owned) missing.add(targetOf(claim));
       }
     } else {
       for (const [target, storedCount] of storedByBody.get(body) ?? []) {
