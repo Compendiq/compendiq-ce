@@ -34,7 +34,10 @@ vi.mock('sonner', () => ({
   },
 }));
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Editor } from './Editor';
+import { ArticleViewer } from './ArticleViewer';
 import { clearDraft, readDraft } from '../../lib/editor-drafts';
 import { useAuthStore } from '../../../stores/auth-store';
 import type { Editor as EditorType } from '@tiptap/react';
@@ -43,6 +46,12 @@ import { CellSelection, cellAround } from '@tiptap/pm/tables';
 import { handleTableCellClick, handleTableCellTripleClick } from './table-cell-selection';
 import { useUiStore } from '../../../stores/ui-store';
 import { containsStructuredInline } from './block-menu-nodes';
+
+/** The editor HTML of a linked image copied out of read mode and pasted (#1954); the backend writes it back. */
+const LINKED_IMAGE_COPY = readFileSync(
+  resolve(import.meta.dirname, '../../../../../backend/src/core/services/__fixtures__/linked-image-copy.html'),
+  'utf8',
+).trim();
 
 /**
  * The toolbar's long tail lives behind the Insert menu now. Radix menus open on
@@ -400,6 +409,176 @@ describe('Editor', () => {
       expect(hrefs.filter((href) => !href?.startsWith('#'))).toEqual([]);
       expect(saved.body.innerHTML).not.toMatch(/href="\s*javascript:/i);
       expect(saved.body.textContent).toContain('script carried');
+    });
+  });
+
+  // #1954: a Confluence link whose body is an image. The image is a block node, so the link rides on the
+  // node (`href`, and the class carrier of a navigable ri:url) and comes back as the wrapper `<a>`.
+  describe('linked images (#1954)', () => {
+    const IMG = '<img src="/api/attachments/55/a.png" alt="a.png" data-confluence-image-source="attachment" data-confluence-filename="a.png">';
+    const WEB_CARRIER = '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich';
+
+    async function mounted(content: string): Promise<EditorType> {
+      let editor: EditorType | null = null;
+      render(<Editor content={content} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it('keeps the link of a linked image in getHTML() and renders no anchor in edit mode', async () => {
+      mockFetchAuthenticatedBlob.mockResolvedValue(null);
+      const editor = await mounted(
+        `<p>Intro</p><p><a href="#confluence-page:Runbook" data-confluence-link="page">${IMG}</a></p>`
+        + `<p><a href="https://example.com/z" class="${WEB_CARRIER}" data-confluence-link="url">${IMG.replaceAll('a.png', 'b.png')}</a></p>`,
+      );
+
+      expect(editor.getHTML()).toBe(
+        '<p>Intro</p><p></p>'
+        + `<a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook">${IMG}</a><p></p>`
+        + `<a target="_blank" rel="noopener noreferrer nofollow" class="${WEB_CARRIER}" href="https://example.com/z">`
+        + `${IMG.replaceAll('a.png', 'b.png')}</a><p></p>`,
+      );
+      // The editor shows the images, never their links, and puts no link attribute on an <img>.
+      const dom = editor.view.dom;
+      expect(dom.querySelectorAll('img')).toHaveLength(2);
+      expect(dom.querySelector('img')?.closest('a')).toBeNull();
+      for (const img of dom.querySelectorAll('img')) {
+        expect(img.hasAttribute('href')).toBe(false);
+        expect(img.hasAttribute('linkclass')).toBe(false);
+      }
+      // A node-view update (another attribute of a linked image changes) still writes no link attribute.
+      let imagePos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'image') imagePos = pos;
+      });
+      act(() => {
+        editor.chain().setNodeSelection(imagePos).updateAttributes('image', { alt: 'b2' }).run();
+      });
+      expect(dom.querySelector('img[alt="b2"]')).not.toBeNull();
+      for (const img of dom.querySelectorAll('img')) {
+        expect(img.hasAttribute('href')).toBe(false);
+        expect(img.hasAttribute('linkclass')).toBe(false);
+      }
+      expect(editor.getHTML()).toContain(`class="${WEB_CARRIER}" href="https://example.com/z"><img src="/api/attachments/55/b.png" alt="b2"`);
+    });
+
+    it.each([
+      ['a script address', 'javascript:alert(1)'],
+      ['an obfuscated script address', ' java&#9;script:alert(1)'],
+      ['a data URI', 'data:text/html,x'],
+    ])('drops the link of %s around an image', async (_case, href) => {
+      const editor = await mounted(`<p>Intro</p><p><a href="${href}">${IMG}</a></p>`);
+      const saved = new DOMParser().parseFromString(editor.getHTML(), 'text/html');
+      expect(saved.querySelector('img')).not.toBeNull();
+      expect(saved.querySelector('a')).toBeNull();
+    });
+
+    it('keeps a class on an image link only when it is the carrier of the image\'s own web address', async () => {
+      const other = '#confluence-url:https%3A%2F%2Fexample.com%2Fother';
+      const editor = await mounted(`<p>Intro</p><p><a href="https://example.com/z" class="${other}">${IMG}</a></p>`);
+      const anchor = new DOMParser().parseFromString(editor.getHTML(), 'text/html').querySelector('a');
+      expect(anchor?.getAttribute('href')).toBe('https://example.com/z');
+      expect(anchor?.hasAttribute('class')).toBe(false);
+    });
+
+    it('renders the same <a> start tag for an image link and a text link to the same web address', async () => {
+      const editor = await mounted(
+        `<p><a href="https://example.com/z" class="${WEB_CARRIER}">text</a></p>`
+        + `<p><a href="https://example.com/z" class="${WEB_CARRIER}">${IMG}</a></p>`,
+      );
+      const tags = editor.getHTML().match(/<a [^>]*>/g)!;
+      expect(tags).toHaveLength(2);
+      expect(tags[1]).toBe(tags[0]);
+    });
+
+    // M9: a copy out of read mode is serialized with the viewer's schema. Pasted into the editor and saved, it must
+    // still name the same image resources. The editor's HTML is the fixture the backend writes back
+    // (content-converter.link-bodies.test.ts, page-update.test.ts).
+    it('keeps the image markers and the link of a linked image copied out of read mode and pasted', async () => {
+      const READ_HTML = '<p>Owner</p><p><a href="#confluence-page:Runbook" data-confluence-link="page">'
+        + '<img src="/api/attachments/55/o.xref-fd220de896a5.png" alt="o.png" data-confluence-image-source="attachment"'
+        + ' data-confluence-filename="o.png" data-confluence-owner-page-title="Shared Assets" data-confluence-owner-space-key="ENG"></a></p>'
+        + '<p>Web</p><p><a href="https://example.com/doc" class="#confluence-url:https%3A%2F%2Fexample.com%2Fdoc?body=rich"'
+        + ' data-confluence-link="url"><img src="/api/attachments/55/external-24111e21c3de.png" data-confluence-image-source="external-url"'
+        + ' data-confluence-url="https://cdn.example.com/x.png" alt="x.png"></a></p>';
+      mockFetchAuthenticatedBlob.mockResolvedValue(null);
+      const viewer = render(<ArticleViewer content={READ_HTML} />);
+      await waitFor(() => {
+        expect(viewer.container.querySelectorAll('.ProseMirror img')).toHaveLength(2);
+      });
+      const readView = viewer.container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      readView.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(readView, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+      expect(copied).toContain('data-confluence-owner-page-title="Shared Assets"');
+
+      const editor = await mounted('<p></p>');
+      act(() => {
+        editor.commands.focus();
+        fireEvent.paste(editor.view.dom, {
+          clipboardData: { items: [], types: ['text/html'], getData: (type: string) => (type === 'text/html' ? copied : '') },
+        });
+      });
+
+      expect(editor.getHTML()).toBe(LINKED_IMAGE_COPY);
+    });
+  });
+
+  // #1954: inline code excludes only itself, so a link stays on code text and code takes other marks.
+  describe('links around inline code (#1954)', () => {
+    async function mounted(content: string): Promise<EditorType> {
+      let editor: EditorType | null = null;
+      render(<Editor content={content} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it('mounts inline code that excludes only itself, as the collab schema does', async () => {
+      const editor = await mounted('<p>x</p>');
+      const { code, link, bold } = editor.schema.marks;
+      expect(code!.spec.excludes).toBe('code');
+      expect(code!.excludes(code!)).toBe(true);
+      expect(code!.excludes(link!)).toBe(false);
+      expect(code!.excludes(bold!)).toBe(false);
+    });
+
+    it('keeps a link on inline code and on mixed code text as one <a> each', async () => {
+      const editor = await mounted(
+        '<p>Call <a href="#confluence-page:Runbook" data-confluence-link="page"><code>deploy()</code></a> first.</p>'
+        + '<p>Then <a href="#confluence-page:Runbook" data-confluence-link="page">run <code>deploy()</code> now</a>.</p>',
+      );
+      expect(editor.getHTML()).toBe(
+        '<p>Call <a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook"><code>deploy()</code></a> first.</p>'
+        + '<p>Then <a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook">run <code>deploy()</code> now</a>.</p>',
+      );
+    });
+
+    it('applies bold to inline code, and inline code to linked text, without losing either mark', async () => {
+      const editor = await mounted('<p><code>bold me</code> and <a href="#confluence-page:Runbook">code me</a></p>');
+      act(() => {
+        editor.chain().setTextSelection({ from: 1, to: 1 + 'bold me'.length }).toggleBold().run();
+      });
+      const linkStart = 1 + 'bold me and '.length;
+      act(() => {
+        editor.chain().setTextSelection({ from: linkStart, to: linkStart + 'code me'.length }).toggleCode().run();
+      });
+      expect(editor.getHTML()).toBe(
+        '<p><strong><code>bold me</code></strong> and '
+        + '<a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook"><code>code me</code></a></p>',
+      );
     });
   });
 
@@ -1780,6 +1959,130 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
 
       expect(savedTaskIds(editor!)).toEqual(['42', null, '7']);
     });
+
+    // #1957: confluenceToHtml's output for nested tasks, byte for byte, pinned
+    // by the backend's content-converter.nested-tasks.test.ts (NESTED_TASK_LIST_HTML).
+    const NESTED_TASK_PAGE_HTML =
+      '<p>Release checklist</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="11">Release'
+      + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="12">Write notes '
+      + '<span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li>'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="13">Tag build<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="14">Push tag</li></ul></li></ul></li>'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="15">Announce</li></ul>';
+
+    /** Every task item: id, checked, depth (task lists around it) and own text. */
+    function savedTasks(editor: EditorType): Array<[string | null, string | null, number, string]> {
+      const saved = new DOMParser().parseFromString(editor.getHTML(), 'text/html');
+      return [...saved.querySelectorAll('li[data-type="taskItem"]')].map((li) => {
+        let depth = 0;
+        for (let el: Element | null = li; el; el = el.parentElement) {
+          if (el.matches('ul[data-type="taskList"]')) depth += 1;
+        }
+        const own = li.cloneNode(true) as Element;
+        for (const nested of own.querySelectorAll('ul, label, .confluence-toc')) nested.remove();
+        return [li.getAttribute('data-task-id'), li.getAttribute('data-checked'), depth, own.textContent ?? ''];
+      });
+    }
+
+    it('keeps nested tasks, their ids and a subtask macro at their depth through an unrelated edit (#1957)', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={NESTED_TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      act(() => {
+        editor!.chain().setTextSelection(1 + 'Release checklist'.length).insertContent(' (edited)').run();
+      });
+
+      expect(savedTasks(editor!)).toEqual([
+        ['11', 'false', 1, 'Release'],
+        ['12', 'true', 2, 'Write notes DONE'],
+        ['13', 'false', 2, 'Tag build'],
+        ['14', 'false', 3, 'Push tag'],
+        ['15', 'false', 1, 'Announce'],
+      ]);
+      const saved = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+      expect(saved.querySelector('p')?.textContent).toBe('Release checklist (edited)');
+      // The toc stays a macro, once, inside task 12's content.
+      expect([...saved.querySelectorAll('.confluence-toc')].map((toc) => toc.closest('li')?.getAttribute('data-task-id')))
+        .toEqual(['12']);
+    });
+
+    it('starts a new task without the id when Enter splits a subtask (#1957)', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={NESTED_TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      let end = -1;
+      editor!.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Push tag') end = pos + node.nodeSize;
+      });
+      act(() => {
+        editor!.chain().setTextSelection(end).splitListItem('taskItem').run();
+      });
+
+      expect(savedTasks(editor!).map(([id, , depth]) => [id, depth]))
+        .toEqual([['11', 1], ['12', 2], ['13', 2], ['14', 3], [null, 3], ['15', 1]]);
+    });
+
+    it('keeps the text and the block macro of a task that holds both (#1957)', async () => {
+      let editor: EditorType | null = null;
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">text '
+        + '<div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li></ul>';
+      render(<Editor content={html} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const saved = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+      expect(saved.querySelector('li[data-task-id="1"] > div > p')?.textContent).toBe('text');
+      expect(saved.querySelector('li[data-task-id="1"] > div > .confluence-toc')).not.toBeNull();
+    });
+
+    // #1957 M3: the backend's content-converter.nested-tasks.test.ts runs the
+    // same input through the collab schema and expects the same result.
+    const NESTED_CANARY_HTML = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">parent'
+      + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="2">safe '
+      + '<img src="https://example.com/a.png" onerror="alert(1)"><script>alert(2)</script>'
+      + '<a href="javascript:alert(3)">link</a> <span onmouseover="alert(4)">hover</span>'
+      + '<div class="confluence-toc" data-maxlevel="2" onclick="alert(5)">[Table of Contents]</div></li></ul></li></ul>';
+
+    it('keeps script and event-handler canaries out of a nested task, while its content and nesting stay (#1957)', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={NESTED_CANARY_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const html = editor!.getHTML();
+      for (const canary of ['onerror', '<script', 'javascript:', 'onmouseover', 'onclick', 'alert(']) {
+        expect(html, canary).not.toContain(canary);
+      }
+      expect(savedTasks(editor!).map(([id, checked, depth]) => [id, checked, depth])).toEqual([['1', 'false', 1], ['2', 'true', 2]]);
+      const sub = new DOMParser().parseFromString(html, 'text/html').querySelector('li[data-task-id="2"]')!;
+      expect(sub.textContent).toContain('safe');
+      expect(sub.textContent).toContain('link');
+      expect(sub.textContent).toContain('hover');
+      expect(sub.querySelector('.confluence-toc')).not.toBeNull();
+    });
+
+    it('keeps 32 nested levels and every id, the nesting the converter writes at most (#1957)', async () => {
+      let html = '';
+      for (let level = 32; level >= 1; level -= 1) {
+        html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${level}">t${level} `
+          + `<div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div>${html}</li></ul>`;
+      }
+      let editor: EditorType | null = null;
+      render(<Editor content={html} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      expect(savedTasks(editor!).map(([id, , depth, text]) => [id, depth, text]))
+        .toEqual(Array.from({ length: 32 }, (_, index) => [String(index + 1), index + 1, `t${index + 1}`]));
+    });
   });
 });
 
@@ -1945,6 +2248,31 @@ describe('draft auto-save flush on unmount (#877)', () => {
         expect(editor!.getText()).not.toContain('/table');
       });
     });
+  });
+});
+
+describe('table cell alignment (#1956)', () => {
+  const ALIGNED = '<table><tbody><tr><th align="left">a</th><th align="center">b</th><th align="right">c</th><th>d</th></tr>'
+    + '<tr><td align="left">1</td><td style="text-align: center;">2</td><td align="right">3</td><td>4</td></tr></tbody></table>';
+
+  it('keeps cell alignment from the align attribute and from style, and serialises align="…" without a style', async () => {
+    let editor: EditorType | null = null;
+    render(<Editor content={ALIGNED} editable={true} onEditorReady={(e) => { editor = e; }} />);
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+    const doc = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+    expect([...doc.querySelectorAll('th')].map((cell) => cell.getAttribute('align'))).toEqual(['left', 'center', 'right', null]);
+    expect([...doc.querySelectorAll('td')].map((cell) => cell.getAttribute('align'))).toEqual(['left', 'center', 'right', null]);
+    expect(doc.querySelectorAll('th[style], td[style]')).toHaveLength(0);
+  });
+
+  it('renders the aligned cells with the attribute the stylesheet rules target', async () => {
+    const { container } = render(<Editor content={ALIGNED} editable={true} />);
+    await waitFor(() => {
+      expect(container.querySelector('th[align="center"]')).not.toBeNull();
+    });
+    expect(container.querySelector('td[align="right"]')).not.toBeNull();
   });
 });
 

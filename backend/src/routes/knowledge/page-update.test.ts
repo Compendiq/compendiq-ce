@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
@@ -17,6 +17,7 @@ import {
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import { STORAGE_DERIVATION_BASE_CORPUS } from '../../core/services/__fixtures__/storage-derivation-base-corpus.js';
 import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
 import {
   freezePage,
@@ -618,6 +619,65 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     expect([...row.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['794464', '12']);
   });
 
+  it('saves a page whose tasks nest one level deeper than the 32-level limit as before #1957 (#1957)', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    let storage = '';
+    let bodyHtml = '';
+    for (let level = 33; level >= 1; level -= 1) {
+      storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+        + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+      bodyHtml = `<ul data-type="taskList"><li data-checked="false" data-task-id="${level}" data-type="taskItem">`
+        + `<label><input type="checkbox"><span></span></label><div><p>t${level}</p>${bodyHtml}</div></li></ul>`;
+    }
+    await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, `<p>original</p>${storage}`]);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Original', bodyHtml: `<p>original (edited)</p>${bodyHtml}`, version: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(confluenceRequests).toHaveLength(1);
+    const sent = confluenceRequests[0]!.body.body.storage.value;
+    expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]))
+      .toEqual(Array.from({ length: 33 }, (_, index) => String(index + 1)));
+    expect(sent.match(/<ac:task-list>/g)).toHaveLength(33);
+    // The stored body is re-derived from the returned storage the way it was before #1957.
+    const row = await pageRow(pageId);
+    expect(row.version).toBe(8);
+    expect(row.body_html).toContain('<ac:task-list>');
+  });
+
+  // Review r3 B2, decision D13b: the limit counts the task lists the body
+  // holds, a list in a toc placeholder (which write-back drops) included. Past
+  // 32 the save sends exactly what bff6d4ec sent, ids and bytes
+  // (`$EPIC/evidence/1957/capture-r3.mts.txt`).
+  it('saves a corpus page with 32 levels and a task in a toc placeholder exactly as before #1957 (#1957)', async () => {
+    const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'tasks-list-before-own-body')!;
+    let chain = '<div class="confluence-toc"><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="133">'
+      + '<p>in toc</p></li></ul></div>';
+    for (let level = 32; level >= 1; level -= 1) {
+      chain = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${100 + level}">`
+        + `<p>t${level}</p>${chain}</li></ul>`;
+    }
+    const pageId = await seedConfluencePage(currentUserId);
+    await query('UPDATE pages SET body_storage = $2, body_html = $3 WHERE id = $1', [pageId, entry.previousStorage, entry.storedBodyHtml]);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Original', bodyHtml: `${entry.targetHtml}${chain}`, version: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(confluenceRequests).toHaveLength(1);
+    const sent = confluenceRequests[0]!.body.body.storage.value;
+    expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]).slice(0, 2)).toEqual(['1', '134']);
+    expect(createHash('sha256').update(sent).digest('hex'))
+      .toBe('bc932bcd18b3795e5e3e5012bdda7da1ca45a70fd6d3f7b19ceb1347506a5f5f');
+  });
+
   describe('the order pairing of a page synced before ids were carried (#1751)', () => {
     const STORAGE = '<p>original</p><ac:task-list>'
       + '<ac:task><ac:task-id>794464</ac:task-id><ac:task-status>complete</ac:task-status>'
@@ -871,6 +931,31 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       expect(providerCalls).toEqual([]);
       expect((await pageRow(pageId)).body_html).toBe(bodyHtml);
     });
+  });
+
+  // #1954 (M9): the HTML an editor holds after a linked image is copied out of read mode and pasted
+  // (pinned by Editor.test.tsx) is sent to Confluence with each image's resource and link intact.
+  it('sends a pasted linked image with its owner page, its external source and its link (#1954)', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    const bodyHtml = (await readFile(
+      new URL('../../core/services/__fixtures__/linked-image-copy.html', import.meta.url),
+      'utf8',
+    )).trim();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Original', version: 7, bodyHtml },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(confluenceRequests).toHaveLength(1);
+    expect(confluenceRequests[0]!.body.body.storage.value).toBe(
+      '<p>Owner</p><p></p><ac:link><ri:page ri:content-title="Runbook"></ri:page><ac:link-body><ac:image>'
+      + '<ri:attachment ri:filename="o.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG"></ri:page>'
+      + '</ri:attachment></ac:image></ac:link-body></ac:link><p>Web</p><p></p><ac:link><ri:url ri:value="https://example.com/doc"></ri:url>'
+      + '<ac:link-body><ac:image><ri:url ri:value="https://cdn.example.com/x.png"></ri:url></ac:image></ac:link-body></ac:link><p></p>',
+    );
   });
 
   it('recovers a compact acknowledged PUT after readback fails without replaying the mutation', async () => {

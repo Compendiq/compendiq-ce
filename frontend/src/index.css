@@ -3777,6 +3777,21 @@ span[data-comment-id][data-comment-resolved="true"] {
   color: var(--color-muted-foreground);
 }
 
+/* Table cell alignment (#1956). The schema renders the deprecated `align` attribute, which a
+   browser applies as a presentational hint, and `.prose :where(th)` (text-align: left) beats any
+   hint, so a header cell needs an explicit rule. (0,2,1) specificity, no !important. */
+.tiptap :is(th, td)[align="left"] {
+  text-align: left;
+}
+
+.tiptap :is(th, td)[align="center"] {
+  text-align: center;
+}
+
+.tiptap :is(th, td)[align="right"] {
+  text-align: right;
+}
+
 /* ProseMirror multi-cell selection highlight (#1179) — Notion-style perimeter border */
 .tiptap td.selectedCell,
 .tiptap th.selectedCell,
