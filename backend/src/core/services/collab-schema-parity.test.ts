@@ -13,7 +13,9 @@ import { generateHTML, generateJSON } from '@tiptap/html';
 import { type JSONContent } from '@tiptap/core';
 import { yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
 import * as Y from 'yjs';
+import { JSDOM } from 'jsdom';
 import { collabExtensions, getCollabSchema, htmlToYDoc, yDocToHtml } from './collab-schema.js';
+import { htmlToConfluence } from './content-converter.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../../../..');
@@ -445,3 +447,47 @@ describe('table cell alignment definition (#1956)', () => {
   });
 });
 
+/** The source between `// <name:begin>` and `// <name:end>`. */
+function markerBlock(src: string, name: string): string {
+  const begin = src.indexOf(`// <${name}:begin>`);
+  const end = src.indexOf(`// <${name}:end>`);
+  expect(begin, `${name}:begin`).toBeGreaterThanOrEqual(0);
+  expect(end, `${name}:end`).toBeGreaterThan(begin);
+  return src.slice(begin, end);
+}
+
+describe('task item content parse parity (#1957)', () => {
+  it('keeps the task-item-content blocks identical across the two schemas', () => {
+    const backend = readFileSync(join(here, 'collab-schema.ts'), 'utf8');
+    const frontend = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');
+    expect(markerBlock(frontend, 'task-item-content')).toBe(markerBlock(backend, 'task-item-content'));
+  });
+
+  it('parses a task item\'s content from the element write-back reads it from', () => {
+    const checkbox = '<label><input type="checkbox"><span></span></label>';
+    const shapes: Array<[name: string, li: string]> = [
+      ['TipTap label and div', `${checkbox}<div><p>own</p><div class="panel-info"><p>panel</p></div></div>`],
+      ['label and div plus a third element', `${checkbox}<div><p>own</p></div><p>more</p>`],
+      ['a label without a checkbox', '<label>tag</label><div><p>own</p></div>'],
+      ['a div only', '<div class="panel-info"><p>panel</p></div>'],
+      ['bare text and a nested block div', 'own<div class="confluence-toc">[Table of Contents]</div>'],
+      ['bare text and a subtask holding a block macro', 'own<ul data-type="taskList"><li data-type="taskItem" data-checked="false">sub<div class="confluence-toc">[Table of Contents]</div></li></ul>'],
+    ];
+    // The task's own text: without subtasks, the editor's checkbox label (the
+    // li's first child, in the editor's copy only) and macro placeholder labels.
+    const text = (html: string, tag: string) => {
+      const doc = new JSDOM(`<body>${html}</body>`).window.document;
+      const own = doc.getElementsByTagName(tag)[0]!.cloneNode(true) as Element;
+      const chrome = tag === 'li' ? [...own.querySelectorAll(':scope > label')] : [];
+      for (const nested of [...chrome, ...own.querySelectorAll('ul'), ...own.getElementsByTagName('ac:task-list')]) nested.remove();
+      return (own.textContent ?? '').replace(/\s+|Table of Contents is displayed in the sidebar|\[Table of Contents\]/g, '');
+    };
+    for (const [name, inner] of shapes) {
+      const html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">${inner}</li></ul>`;
+      const written = text(htmlToConfluence(html), 'ac:task-body');
+      const parsed = text(yDocToHtml(htmlToYDoc(html)), 'li');
+      expect(parsed, name).toBe(written);
+      expect(parsed.length, name).toBeGreaterThan(0);
+    }
+  });
+});

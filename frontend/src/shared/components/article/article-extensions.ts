@@ -2,6 +2,7 @@ import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table, TableCell, TableHeader } from '@tiptap/extension-table';
 import { Highlight } from '@tiptap/extension-highlight';
 import { TaskItem } from '@tiptap/extension-list';
+import { DOMParser as ProseMirrorDOMParser, Fragment, type Schema } from '@tiptap/pm/model';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
@@ -1562,6 +1563,43 @@ export const ConfluenceTableHeader = TableHeader.extend({
   },
 });
 
+// <task-item-content:begin>
+/**
+ * The element a task item's content is parsed from (#1957): the rule
+ * write-back's taskItemContent (content-converter.ts) reads it with. TipTap's
+ * own `<li><label><input type="checkbox">…</label><div>…</div></li>` holds it
+ * in the div; any other li (Confluence sync, Markdown and Notion import) in
+ * itself. TaskItem's own rule took the first div at any depth, so a block
+ * macro in a subtask became the whole task.
+ */
+function taskItemContentElement(li: HTMLElement): HTMLElement {
+  const label = li.children[0];
+  const content = li.children[1];
+  return li.children.length === 2
+    && label?.tagName === 'LABEL'
+    && label.querySelector('input[type="checkbox"]') !== null
+    && content?.tagName === 'DIV'
+    ? (content as HTMLElement)
+    : li;
+}
+
+/**
+ * A task item's content, parsed as if its first paragraph were already there
+ * (#1957), so a body that opens with a block (a macro, a code block, a subtask
+ * list) stays in its task; the first paragraph TaskItem requires is added,
+ * empty, only then.
+ */
+function parseTaskItemContent(li: HTMLElement, schema: Schema): Fragment {
+  const taskItem = schema.nodes.taskItem!;
+  const paragraph = schema.nodes.paragraph!;
+  const content = ProseMirrorDOMParser.fromSchema(schema).parse(taskItemContentElement(li), {
+    topNode: taskItem.create(),
+    topMatch: taskItem.contentMatch.matchType(paragraph) ?? undefined,
+  }).content;
+  return content.firstChild?.type === paragraph ? content : Fragment.from(paragraph.create()).append(content);
+}
+// <task-item-content:end>
+
 /**
  * ConfluenceTaskItem — TaskItem plus the task's Confluence identity (#1751):
  * `ac:task-id` rides in `data-task-id`, so a save writes the same id back
@@ -1581,6 +1619,13 @@ export const ConfluenceTaskItem = TaskItem.extend({
           attributes.taskId ? { 'data-task-id': attributes.taskId } : {},
       },
     };
+  },
+  parseHTML() {
+    return [{
+      tag: 'li[data-type="taskItem"]',
+      priority: 51,
+      getContent: (li, schema) => parseTaskItemContent(li as HTMLElement, schema),
+    }];
   },
 });
 

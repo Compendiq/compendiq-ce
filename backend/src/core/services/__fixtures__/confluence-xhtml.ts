@@ -45,6 +45,39 @@ export const TASK_LIST_PAGE = `<h2>Sprint Checklist</h2>
 </ac:task>
 </ac:task-list>`;
 
+/**
+ * Nested tasks (#1957): `Release`(11) holds `Write notes`(12, complete, an
+ * inline status macro and a block toc macro) and `Tag build`(13), which holds
+ * `Push tag`(14); `Announce`(15) follows. Each subtask list sits in its
+ * parent's `ac:task-body`, the way Confluence stores a subtask. One line, no
+ * whitespace between tags, so it round-trips byte for byte. #1953 reuses it
+ * for carriers inside nested task bodies (toc and status are its kinds).
+ */
+export const NESTED_TASK_LIST_PAGE = '<p>Release checklist</p><ac:task-list><ac:task><ac:task-id>11</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Release<ac:task-list><ac:task><ac:task-id>12</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>Write notes <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro><ac:structured-macro ac:name="toc"><ac:parameter ac:name="maxLevel">2</ac:parameter></ac:structured-macro></ac:task-body></ac:task><ac:task><ac:task-id>13</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Tag build<ac:task-list><ac:task><ac:task-id>14</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Push tag</ac:task-body></ac:task></ac:task-list></ac:task-body></ac:task></ac:task-list></ac:task-body></ac:task><ac:task><ac:task-id>15</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Announce</ac:task-body></ac:task></ac:task-list>';
+
+/** confluenceToHtml(NESTED_TASK_LIST_PAGE), byte for byte (#1957). */
+export const NESTED_TASK_LIST_HTML = '<p>Release checklist</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="11">Release<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="12">Write notes <span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li><li data-type="taskItem" data-checked="false" data-task-id="13">Tag build<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="14">Push tag</li></ul></li></ul></li><li data-type="taskItem" data-checked="false" data-task-id="15">Announce</li></ul>';
+
+/**
+ * The editor's copy of NESTED_TASK_LIST_HTML: yDocToHtml(htmlToYDoc(·)) with
+ * both TipTap schemas (#1957). Inline body text gains its paragraph and the
+ * toc its editor label; every id, status, depth and macro stays.
+ */
+export const NESTED_TASK_LIST_EDITOR_HTML = '<p>Release checklist</p><ul data-type="taskList"><li data-checked="false" data-task-id="11" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Release</p><ul data-type="taskList"><li data-checked="true" data-task-id="12" data-type="taskItem"><label><input type="checkbox" checked="checked"><span></span></label><div><p>Write notes <span class="confluence-status" data-color="green">DONE</span></p><div class="confluence-toc" data-maxlevel="2">Table of Contents is displayed in the sidebar</div></div></li><li data-checked="false" data-task-id="13" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Tag build</p><ul data-type="taskList"><li data-checked="false" data-task-id="14" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Push tag</p></div></li></ul></div></li></ul></div></li><li data-checked="false" data-task-id="15" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Announce</p></div></li></ul>';
+
+/**
+ * The body_html a page synced before #1957 holds for NESTED_TASK_LIST_PAGE:
+ * confluenceToHtml at bff6d4ec, which kept each subtask list raw inside its
+ * parent and listed every subtask again beside it. Captured at that commit.
+ */
+export const NESTED_TASK_LIST_LEGACY_HTML = '<p>Release checklist</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="11">Release<ac:task-list><ac:task><ac:task-id>12</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>Write notes <span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></ac:task-body></ac:task><ac:task><ac:task-id>13</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Tag build<ac:task-list><ac:task><ac:task-id>14</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Push tag</ac:task-body></ac:task></ac:task-list></ac:task-body></ac:task></ac:task-list></li><li data-type="taskItem" data-checked="true" data-task-id="12">Write notes <span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li><li data-type="taskItem" data-checked="false" data-task-id="13">Tag build<ac:task-list><ac:task><ac:task-id>14</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Push tag</ac:task-body></ac:task></ac:task-list></li><li data-type="taskItem" data-checked="false" data-task-id="14">Push tag</li><li data-type="taskItem" data-checked="false" data-task-id="15">Announce</li></ul>';
+
+/**
+ * Storage an editor save before #1957 already polluted: the subtask `sub`(2)
+ * nests in `parent`(1), and the duplicate that save wrote is a real task(3).
+ */
+export const POLLUTED_TASK_LIST_PAGE = '<ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>parent<ac:task-list><ac:task><ac:task-id>2</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>sub</ac:task-body></ac:task></ac:task-list></ac:task-body></ac:task><ac:task><ac:task-id>3</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>sub</ac:task-body></ac:task></ac:task-list>';
+
 /** Page with panels (info, warning, note, tip) */
 export const PANELS_PAGE = `<h2>Deployment Notes</h2>
 <ac:structured-macro ac:name="info"><ac:rich-text-body><p>This service requires PostgreSQL 17 with pgvector.</p></ac:rich-text-body></ac:structured-macro>

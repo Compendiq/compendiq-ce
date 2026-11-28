@@ -226,6 +226,54 @@ content `div`, never its checkbox `<label>`. AI Improve carries no ids (turndown
 writes `- [ ]`) and never pairs: only tasks with unchanged text get theirs back
 on apply.
 
+**A subtask nests inside its parent task (#1957).** An `ac:task-list` inside an
+`ac:task-body` becomes a `ul[data-type="taskList"]` inside the parent's `li`,
+once, with every `data-task-id` and status at its depth, and `htmlToConfluence`
+writes it back byte for byte. `convertTaskLists` indexes the page in one
+preorder pass and gives each task its `li` once in its final list, each body
+node and `li` moving once (no re-parse, no clone beside the parent; a move is
+one DOM call, not constant time, since JSDOM walks the moved node's
+ancestors). A task list that is not in a task body (placed directly in a list,
+in a wrapper, or in a task but outside its body) is not Confluence's nesting
+and stays flat in source order, exactly as before. Nesting applies only within
+`MAX_TASK_LIST_NESTING` (32) levels, decided once per document before anything
+is restructured, by one walk of the tree the pass already parses
+(`taskListNesting`). The count is syntactic: every task list present in the
+input — editor `ul[data-type="taskList"]` and raw `ac:task-list` alike, empty
+ones included — by element ancestry, whatever task owns it, whichever body a
+task's content is read from, and whether or not an enclosing macro later
+keeps, flattens or drops it (comments and CDATA are text); write-back skips
+only the generated figure and table indexes it removes. `indexTaskLists` only
+places tasks. Write-back's decision (`writeBackProfile`) is shared by
+`assignTaskIds`, so every writer derives with the same profile. It may
+overcount the output, never
+undercount it, and an overcounted page takes the pre-#1957 path (the bytes and
+ids of `bff6d4ec`); a task in a removed index can still get different ids from
+the two-step writers, as before #1957. A page
+nested deeper converts exactly as before #1957 on both passes — the pre-#1957
+forward loop and write-back's pre-#1957 read of the stored tasks — so nothing is
+refused, but such a page keeps the duplicated pre-#1957 shape: the defect is
+not fixed for it. The bound is the reverse pass, which re-serialises once per
+level (about 0.2 s at 32 levels, 1.5 s at 64, 5–10 s at 100 with a macro in
+every task); both schemas stay fast far beyond. Known limit, inherited and
+unchanged: the JSDOM parse every conversion already starts with costs more
+than linear time in the nesting depth (its per-insert ancestor walk), and the
+decision is taken on that parsed tree, not before it.
+Both TipTap schemas parse a task item's content from TipTap's
+`label` + `div` only when the `li` has exactly that shape (write-back's
+`taskItemContent` rule; the `task-item-content` blocks of `collab-schema.ts`
+and `article-extensions.ts` are identical, pinned by
+`collab-schema-parity.test.ts`), else from the `li` itself: TaskItem's stock
+rule took the first `div` at any depth, so a block macro in a task (or in a
+subtask) became the whole task. A body that opens with a block gets the empty
+first paragraph TaskItem requires. Pages synced before #1957 keep their
+duplicated `body_html` until the next sync re-derives it (no migration); a save
+before then writes that shape back, and storage an earlier save already
+polluted keeps its duplicate task. The restore derivation registers
+`nested-tasks`: without it `storedTasks` converts with the pre-#1957 loop,
+verbatim. AI Improve still flattens nested tasks (pre-existing; only unchanged
+tasks keep their ids).
+
 **What write-back derives from a stored `body_html` is versioned by named
 features (#1953).** A version restore records only a digest of the storage it
 derived and derives it again when it publishes, possibly in a recovery on a
@@ -360,7 +408,9 @@ plain items into runs (ordered plain runs keep `start`), for every caller —
 AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
 draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
 which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
-text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+text. That rule was introduced while TipTap's stock TaskItem parsed only the
+first descendant `div`; since #1957 both schemas keep a block in a task, and the
+fallback stays only so this path's output does not change in that slice. Mentions,
 status lozenges, Jira links and images are inline and keep their tasks. The
 import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked`,
 `data-diagram-name` (#1754) and, on `th`/`td` only, `align` (#1956) by name:
