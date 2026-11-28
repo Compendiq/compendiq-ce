@@ -312,6 +312,19 @@ describe('pasted images of a page save: plan, prepare, upload', () => {
     expect(plan.images.map((image) => image.filename)).toEqual(['a b.png']);
   });
 
+  it('plans and marks a pasted image inside a link and keeps the link around it (#1954)', async () => {
+    await seedAttachment('9', 'linked.png');
+    const html = '<p></p><a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook">'
+      + '<img src="/api/attachments/9/linked.png"></a>';
+    const plan = await planLocalImagesForConfluence(html);
+    expect(plan.images.map((image) => image.filename)).toEqual(['linked.png']);
+    expect(plan.markers).toEqual([{ src: '/api/attachments/9/linked.png', filename: 'linked.png' }]);
+    expect(plan.bodyHtml).toBe(
+      '<p></p><a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook">'
+      + '<img src="/api/attachments/9/linked.png" data-confluence-filename="linked.png" data-confluence-image-source="attachment"></a>',
+    );
+  });
+
   describe('draw.io preview wrappers (#1935)', () => {
     it('neither plans nor marks an img inside a .confluence-drawio wrapper, nested or foreign', async () => {
       await seedAttachment('cf-1', 'Arch.png');

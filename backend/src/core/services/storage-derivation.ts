@@ -25,7 +25,7 @@
  * a pending intent may record it. A name is 1–32 characters of `a-z`, `0-9`
  * and `-`, starting with a letter; at most 16 names.
  */
-export const STORAGE_DERIVATION_FEATURES = ['link-kinds'] as const satisfies readonly string[];
+export const STORAGE_DERIVATION_FEATURES = ['cell-align', 'nested-tasks', 'link-kinds'] as const satisfies readonly string[];
 
 export type StorageDerivationFeature = (typeof STORAGE_DERIVATION_FEATURES)[number];
 export type StorageDerivationFeatures = ReadonlySet<StorageDerivationFeature>;

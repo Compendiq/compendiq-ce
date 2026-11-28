@@ -3,15 +3,16 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import { Mark } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
-import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table';
 import { TaskList } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
-import { Image } from '@tiptap/extension-image';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import DOMPurify from 'dompurify';
 import { lowlight } from '../../lib/lowlight';
 import {
+  ConfluenceImageSchema,
+  LinkableCode,
   Details,
   DetailsSummary,
   Panel,
@@ -37,6 +38,8 @@ import {
   TableIndex,
   UnknownMacro,
   ExtendedTable,
+  ConfluenceTableCell,
+  ConfluenceTableHeader,
   CommentMark,
   SafeHighlight,
   ConfluenceTaskItem,
@@ -131,12 +134,15 @@ export function ArticleViewer({
     extensions: [
       StarterKit.configure({
         codeBlock: false,
+        // #1954: inline code is LinkableCode below, which a link can sit on.
+        code: false,
         heading: { levels: [1, 2, 3, 4, 5, 6] },
         link: {
           openOnClick: true,
           HTMLAttributes: { target: '_blank', rel: 'noreferrer' },
         },
       }),
+      LinkableCode,
       VersionInsert,
       VersionDelete,
       TextAlign.configure({
@@ -149,8 +155,8 @@ export function ArticleViewer({
       SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: false }),
       TableRow,
-      TableCell,
-      TableHeader,
+      ConfluenceTableCell,
+      ConfluenceTableHeader,
       TaskList,
       ConfluenceTaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
       CodeBlockLowlight.extend({
@@ -175,7 +181,12 @@ export function ArticleViewer({
           };
         },
       }).configure({ lowlight }),
-      Image.configure({ inline: false }),
+      // The editor's image schema (#1954), so a copy out of read mode keeps the
+      // image's Confluence markers and its link; the link renders like a text link.
+      ConfluenceImageSchema.configure({
+        inline: false,
+        linkHTMLAttributes: { target: '_blank', rel: 'noreferrer' },
+      }),
       InlineLucideIcon,
       Details,
       DetailsSummary,
@@ -470,6 +481,8 @@ export function ArticleViewer({
     const raf = requestAnimationFrame(() => {
       const images = container.querySelectorAll('img');
       images.forEach((img) => {
+        // A linked image (#1954) follows its link, as a text link does; it does not also zoom.
+        if (img.closest('a[href]')) return;
         img.style.cursor = 'zoom-in';
         img.addEventListener('click', handleImageClick);
       });

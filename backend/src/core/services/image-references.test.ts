@@ -111,6 +111,20 @@ describe('extractImageReferencesFromHtml (#1115)', () => {
     expect(extractImageReferencesFromHtml(storage)).toEqual([]);
   });
 
+  it('finds an image inside a link, in body_html and in storage (#1954)', () => {
+    expect(extractImageReferencesFromHtml(
+      '<p></p><a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook">'
+      + '<img src="/api/attachments/7/linked.png" alt="linked.png"></a><p><img src="/api/attachments/7/plain.png"></p>',
+    )).toEqual([
+      expect.objectContaining({ source: 'confluence', key: 'linked.png' }),
+      expect.objectContaining({ source: 'confluence', key: 'plain.png' }),
+    ]);
+    expect(extractImageReferences(
+      '<p><ac:link><ri:page ri:content-title="Runbook" /><ac:link-body><ac:image><ri:attachment ri:filename="linked.png" />'
+      + '</ac:image></ac:link-body></ac:link></p>',
+    )).toEqual([expect.objectContaining({ localFilename: 'linked.png' })]);
+  });
+
   describe('compose-time context (ADR-027 D9.2)', () => {
     it('carries the alt text as the caption, else the enclosing figcaption, else nothing', () => {
       const html = `
