@@ -419,6 +419,44 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     expect(await pageStatus(carolId, p.id)).toBe(404);
   });
 
+  // #1957 review r2 (R1-B4 follow-up): a page whose subtasks now nest past the
+  // 32-level task limit takes the ordinary sync path, restrictions included.
+  it('mirrors the restriction an unrestricted page gains when its tasks start to nest past the task limit (#1957)', async () => {
+    const aliceId = await seedUser('alice');
+    const carolId = await seedUser('carol');
+    const syncerId = await seedUser(`syncer-${randomUUID()}`, { pat: 'syncer-pat' });
+    putPage('DOCS', '7301', 'Nested');
+    await runSync(syncerId);
+    const before = await localPage('7301');
+    expect(before.inherit_perms).toBe(true);
+    expect(await pageStatus(carolId, before.id)).toBe(200);
+
+    let storage = '';
+    for (let level = 33; level >= 1; level -= 1) {
+      storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+        + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+    }
+    putPage('DOCS', '7301', 'Nested', 2, new Date().toISOString()).body.storage.value = storage;
+    modifiedIds.add('7301');
+    readers.set('7301', ['alice']);
+
+    await runSync(syncerId);
+    const after = await localPage('7301');
+    const stored = await query<{ version: number; body_storage: string }>(
+      'SELECT version, body_storage FROM pages WHERE id = $1',
+      [after.id],
+    );
+    expect(stored.rows[0]).toEqual({ version: 2, body_storage: storage });
+    expect(after.inherit_perms).toBe(false);
+    expect(await aceRows(after.id)).toEqual(userAces(aliceId));
+    expect(await pageStatus(aliceId, after.id)).toBe(200);
+    expect(await pageStatus(carolId, after.id)).toBe(404);
+    expect((await query(
+      `SELECT id FROM page_write_intents WHERE $1 = ANY(page_ids) AND status = 'pending'`,
+      [after.id],
+    )).rows).toEqual([]);
+  });
+
   it('an incremental run that visits P deletes a principal de-listed upstream (removal guard)', async () => {
     const aliceId = await seedUser('alice');
     const bobId = await seedUser('bob');

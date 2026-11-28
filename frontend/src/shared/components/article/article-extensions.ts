@@ -1,11 +1,11 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
-import { Table } from '@tiptap/extension-table';
+import { Table, TableCell, TableHeader } from '@tiptap/extension-table';
 import { Highlight } from '@tiptap/extension-highlight';
 import { Code } from '@tiptap/extension-code';
 import { Image, type ImageOptions } from '@tiptap/extension-image';
 import { isAllowedUri } from '@tiptap/extension-link';
 import { TaskItem } from '@tiptap/extension-list';
-import type { DOMOutputSpec } from '@tiptap/pm/model';
+import { DOMParser as ProseMirrorDOMParser, Fragment, type DOMOutputSpec, type Schema } from '@tiptap/pm/model';
 import { CONFLUENCE_LINK_LIMITS, isConfluenceUrlClassCarrierFor } from '@compendiq/contracts';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
@@ -1648,6 +1648,110 @@ export const ExtendedTable = Table.extend({
   },
 });
 
+// <table-cell-align:begin>
+// Table cell alignment (#1956). This block is byte-identical in backend collab-schema.ts, frontend
+// article-extensions.ts and backend content-converter.ts; collab-schema-parity.test.ts compares the text.
+// An inline style that mentions text-align decides; unless it is exactly one plain, lower-case
+// declaration the cell has no alignment. Without such a style the align attribute decides.
+const TABLE_CELL_ALIGNMENTS = ['left', 'center', 'right'] as const;
+type TableCellAlign = (typeof TABLE_CELL_ALIGNMENTS)[number];
+const TABLE_CELL_STYLE_MAX = 1024;
+function normalizeTableCellAlign(value: unknown): TableCellAlign | null {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return (TABLE_CELL_ALIGNMENTS as readonly string[]).includes(v) ? (v as TableCellAlign) : null;
+}
+/** null: the style does not mention text-align. 'other': it does, but not as one plain declaration. */
+function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlign | 'other' | null {
+  if (style.length > TABLE_CELL_STYLE_MAX) return 'other';
+  const mentions = style.match(/text-align/gi);
+  if (!mentions) return null;
+  // A browser reads property names and priorities case-insensitively and the Node hosts disagree: only
+  // the exact lower-case property is read, and a `!` only as a lower-case `!important` ending its
+  // declaration (`!IMPORTANT`, `! important` are declined) before the CSSOM is asked.
+  if (mentions.length !== 1 || mentions[0] !== 'text-align' || /["'\\]|\/\*|--|url\(/i.test(style)) return 'other';
+  if (/!(?!important\s*(?:;|$))/.test(style)) return 'other';
+  // Brackets, braces or unbalanced parentheses make the hosts split the declarations differently.
+  let depth = 0;
+  for (const ch of style) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')' && --depth < 0) return 'other';
+  }
+  if (depth !== 0 || /[{}[\]]/.test(style)) return 'other';
+  return normalizeTableCellAlign(cssTextAlign) ?? 'other';
+}
+// <table-cell-align:end>
+
+// <table-cell-align-attribute:begin>
+function resolveTableCellAlign(style: string, cssTextAlign: string, alignAttr: string | null): TableCellAlign | null {
+  const fromStyle = tableCellStyleAlign(style, cssTextAlign);
+  return fromStyle === null ? normalizeTableCellAlign(alignAttr) : fromStyle === 'other' ? null : fromStyle;
+}
+const TABLE_CELL_ALIGN_ATTRIBUTE = {
+  default: null as TableCellAlign | null,
+  parseHTML: (element: HTMLElement) =>
+    resolveTableCellAlign(element.getAttribute('style') ?? '', element.style.textAlign, element.getAttribute('align')),
+  renderHTML: (attributes: { align?: unknown }) => {
+    const align = normalizeTableCellAlign(attributes.align);
+    return align ? { align } : {};
+  },
+};
+// <table-cell-align-attribute:end>
+
+/**
+ * TableCell / TableHeader with the alignment attribute #1956 decided: parsed from the inline
+ * style or the `align` attribute, rendered as `align="…"` (the attribute marked emits and
+ * turndown's GFM table rule reads). The Yjs attribute key `align` is the stock one. The same
+ * definition, extension names included, is in the backend collab schema (parity test).
+ */
+export const ConfluenceTableCell = TableCell.extend({
+  addAttributes() {
+    return { ...this.parent?.(), align: TABLE_CELL_ALIGN_ATTRIBUTE };
+  },
+});
+
+export const ConfluenceTableHeader = TableHeader.extend({
+  addAttributes() {
+    return { ...this.parent?.(), align: TABLE_CELL_ALIGN_ATTRIBUTE };
+  },
+});
+
+// <task-item-content:begin>
+/**
+ * The element a task item's content is parsed from (#1957): the rule
+ * write-back's taskItemContent (content-converter.ts) reads it with. TipTap's
+ * own `<li><label><input type="checkbox">…</label><div>…</div></li>` holds it
+ * in the div; any other li (Confluence sync, Markdown and Notion import) in
+ * itself. TaskItem's own rule took the first div at any depth, so a block
+ * macro in a subtask became the whole task.
+ */
+function taskItemContentElement(li: HTMLElement): HTMLElement {
+  const label = li.children[0];
+  const content = li.children[1];
+  return li.children.length === 2
+    && label?.tagName === 'LABEL'
+    && label.querySelector('input[type="checkbox"]') !== null
+    && content?.tagName === 'DIV'
+    ? (content as HTMLElement)
+    : li;
+}
+
+/**
+ * A task item's content, parsed as if its first paragraph were already there
+ * (#1957), so a body that opens with a block (a macro, a code block, a subtask
+ * list) stays in its task; the first paragraph TaskItem requires is added,
+ * empty, only then.
+ */
+function parseTaskItemContent(li: HTMLElement, schema: Schema): Fragment {
+  const taskItem = schema.nodes.taskItem!;
+  const paragraph = schema.nodes.paragraph!;
+  const content = ProseMirrorDOMParser.fromSchema(schema).parse(taskItemContentElement(li), {
+    topNode: taskItem.create(),
+    topMatch: taskItem.contentMatch.matchType(paragraph) ?? undefined,
+  }).content;
+  return content.firstChild?.type === paragraph ? content : Fragment.from(paragraph.create()).append(content);
+}
+// <task-item-content:end>
+
 /**
  * ConfluenceTaskItem — TaskItem plus the task's Confluence identity (#1751):
  * `ac:task-id` rides in `data-task-id`, so a save writes the same id back
@@ -1667,6 +1771,13 @@ export const ConfluenceTaskItem = TaskItem.extend({
           attributes.taskId ? { 'data-task-id': attributes.taskId } : {},
       },
     };
+  },
+  parseHTML() {
+    return [{
+      tag: 'li[data-type="taskItem"]',
+      priority: 51,
+      getContent: (li, schema) => parseTaskItemContent(li as HTMLElement, schema),
+    }];
   },
 });
 

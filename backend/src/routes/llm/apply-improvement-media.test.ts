@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { JSDOM } from 'jsdom';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -213,6 +215,38 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(response.statusCode, response.body).toBe(200);
       const saved = await readPage(pageId);
       expect(saved.body_html.split(`/api/attachments/${pageId}/q.png`).length - 1).toBe(1);
+    });
+
+    // #1956 review r3 A3-1 / decision D15: a suggestion generated before #1956 (its Markdown captured at the slice
+    // base bda4d1ed) for a page with an aligned editor table before an image. #1956 adds no media token, so the
+    // image token keeps its number and Accept puts the image back where it was, next to one table.
+    it('applies a pending suggestion from before #1956 to a page with an aligned table and an image exactly as before', async () => {
+      const fixture: { cases: Record<string, { html: string; markdown: string; applied: string }> } = JSON.parse(readFileSync(
+        path.join(import.meta.dirname, '../../core/services/__fixtures__/table-align-improve-base.json'), 'utf8',
+      ));
+      const base = fixture.cases.alignedEditorTableBeforeImage!;
+      expect(base.markdown).toContain('CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+      const pageId = await seedPage(base.html);
+      const improvement = await query<{ id: string }>(
+        `INSERT INTO llm_improvements
+           (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+         VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed')
+         RETURNING id`,
+        [userId, pageId, base.markdown],
+      );
+
+      const response = await apply(pageId, base.markdown);
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ version: 6 });
+      const saved = await readPage(pageId);
+      expect(saved.body_html).toBe(base.applied);
+      const body = new JSDOM(`<body>${saved.body_html}</body>`).window.document.body;
+      expect([...body.children].map((el) => el.nodeName)).toEqual(['TABLE', 'P', 'IMG', 'P']);
+      expect(body.querySelectorAll('table')).toHaveLength(1);
+      expect([...body.querySelectorAll('th, td')].map((cell) => cell.getAttribute('align'))).toEqual(['center', null, 'center', null]);
+      expect((await query<{ status: string }>('SELECT status FROM llm_improvements WHERE id = $1', [improvement.rows[0]!.id])).rows[0]?.status)
+        .toBe('applied');
     });
 
     it('keeps a task holding a mention a task and a task holding a diagram plain in the stored body (#1752)', async () => {

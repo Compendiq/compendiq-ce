@@ -3,7 +3,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import { Mark } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
-import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table';
 import { TaskList } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { TextStyle } from '@tiptap/extension-text-style';
@@ -38,6 +38,8 @@ import {
   TableIndex,
   UnknownMacro,
   ExtendedTable,
+  ConfluenceTableCell,
+  ConfluenceTableHeader,
   CommentMark,
   SafeHighlight,
   ConfluenceTaskItem,
@@ -153,8 +155,8 @@ export function ArticleViewer({
       SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: false }),
       TableRow,
-      TableCell,
-      TableHeader,
+      ConfluenceTableCell,
+      ConfluenceTableHeader,
       TaskList,
       ConfluenceTaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
       CodeBlockLowlight.extend({
