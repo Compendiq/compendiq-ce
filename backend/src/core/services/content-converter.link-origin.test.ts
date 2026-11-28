@@ -885,12 +885,15 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
       const mixed = '<p>x <ac:link><ri:url ri:value="/relative/a" /><ac:link-body>foo '
         + '<ac:image><ri:attachment ri:filename="i.png" /></ac:image></ac:link-body></ac:link> y</p>';
       const room = yDocToHtml(htmlToYDoc(confluenceToHtml(mixed, '77')));
-      // The real projection: the image is a block node, lifted out of the paragraph and out of the link.
+      // The real projection: the image is a block node, lifted out of the paragraph; since #1954 it keeps the
+      // link on the node, so the room holds two pieces with the same unsafe carrier.
       expect(room).toBe(
         '<p>x <a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-url:%2Frelative%2Fa?body=rich">foo</a></p>'
-        + '<img src="/api/attachments/77/i.png" alt="i.png" data-confluence-image-source="attachment" data-confluence-filename="i.png">'
+        + '<a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-url:%2Frelative%2Fa?body=rich">'
+        + '<img src="/api/attachments/77/i.png" alt="i.png" data-confluence-image-source="attachment" data-confluence-filename="i.png"></a>'
         + '<p> y</p>',
       );
+      // Only one piece is written as the stored link; the image keeps its place, without inventing a second link.
       const first = htmlToConfluence(room, { linkOrigin: mixed });
       expect(first).toBe(
         '<p>x <ac:link><ri:url ri:value="/relative/a"></ri:url><ac:link-body>foo</ac:link-body></ac:link></p>'

@@ -1214,6 +1214,63 @@ describe('ArticleViewer: Confluence emoticons (#1750)', () => {
   });
 });
 
+// #1954: read mode renders a linked image inside its link, like a text link, and
+// uses the editor's image schema, so a copy out of it keeps the image's markers.
+describe('ArticleViewer: linked images (#1954)', () => {
+  const IMG = '<img src="https://example.com/img.png" alt="Pic" data-confluence-image-source="external-url"'
+    + ' data-confluence-url="https://cdn.example.com/x.png">';
+
+  it('renders a linked image inside its link and does not also zoom it; an unlinked image still zooms', async () => {
+    const onImageClick = vi.fn();
+    const html = `<p><a href="#confluence-page:Runbook" data-confluence-link="page">${IMG}</a></p>`
+      + '<p><img src="https://example.com/other.png" alt="Other"></p>';
+    const { container } = render(<ArticleViewer content={html} onImageClick={onImageClick} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('img[alt="Other"]')?.style.cursor).toBe('zoom-in');
+    });
+    const linked = container.querySelector('img[alt="Pic"]') as HTMLImageElement;
+    const anchor = linked.closest('a')!;
+    expect(anchor.getAttribute('href')).toBe('#confluence-page:Runbook');
+    expect(anchor.getAttribute('target')).toBe('_blank');
+    expect(anchor.getAttribute('rel')).toBe('noreferrer');
+    expect(linked.style.cursor).toBe('');
+    fireEvent.click(linked);
+    expect(onImageClick).not.toHaveBeenCalled();
+    // The markers are kept in read mode too.
+    expect(linked.getAttribute('data-confluence-url')).toBe('https://cdn.example.com/x.png');
+  });
+
+  it('keeps the class carrier of a web link around an image, and only that class', async () => {
+    const carrier = '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich';
+    const html = `<p><a href="https://example.com/z" class="${carrier}">${IMG}</a></p>`
+      + `<p><a href="https://example.com/y" class="${carrier}">${IMG.replace('Pic', 'Mismatch')}</a></p>`;
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.ProseMirror img')).toHaveLength(2);
+    });
+    expect(container.querySelector('img[alt="Pic"]')!.closest('a')!.getAttribute('class')).toBe(carrier);
+    const mismatch = container.querySelector('img[alt="Mismatch"]')!.closest('a')!;
+    expect(mismatch.getAttribute('href')).toBe('https://example.com/y');
+    expect(mismatch.hasAttribute('class')).toBe(false);
+  });
+
+  it.each([
+    ['a script address', 'javascript:alert(1)'],
+    ['a data URI', 'data:text/html,x'],
+    ['an obfuscated script address', 'java&#9;script:alert(1)'],
+  ])('renders no link around an image whose link is %s', async (_case, href) => {
+    const { container } = render(<ArticleViewer content={`<p><a href="${href}">${IMG}</a></p>`} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.ProseMirror img')).toBeTruthy();
+    });
+    expect(container.querySelector('.ProseMirror img')!.closest('a')).toBeNull();
+    expect(container.querySelector('.ProseMirror')!.innerHTML).not.toMatch(/javascript:|data:text/i);
+  });
+});
+
 describe('ArticleViewer: table cell alignment (#1956)', () => {
   it('keeps the alignment of header and body cells from the attribute and from a stored style', async () => {
     const html = '<table><tbody><tr><th align="center">a</th><th>b</th></tr>'

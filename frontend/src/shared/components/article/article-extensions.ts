@@ -1,8 +1,11 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table, TableCell, TableHeader } from '@tiptap/extension-table';
 import { Highlight } from '@tiptap/extension-highlight';
+import { Image, type ImageOptions } from '@tiptap/extension-image';
+import { isAllowedUri } from '@tiptap/extension-link';
 import { TaskItem } from '@tiptap/extension-list';
-import { DOMParser as ProseMirrorDOMParser, Fragment, type Schema } from '@tiptap/pm/model';
+import { DOMParser as ProseMirrorDOMParser, Fragment, type DOMOutputSpec, type Schema } from '@tiptap/pm/model';
+import { CONFLUENCE_LINK_LIMITS, isConfluenceUrlClassCarrierFor } from '@compendiq/contracts';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
@@ -1322,6 +1325,144 @@ export const UnknownMacro = Node.create({
 
   renderHTML({ HTMLAttributes }) {
     return ['div', mergeAttributes(HTMLAttributes, { class: 'confluence-macro-unknown' }), 0];
+  },
+});
+
+/**
+ * The Link mark's own default HTML attributes (`@tiptap/extension-link`), so an
+ * image link and a text link to one target render the same `<a>` start tag (#1954).
+ */
+const LINK_HTML_ATTRIBUTES: Record<string, string | null> = {
+  target: '_blank',
+  rel: 'noopener noreferrer nofollow',
+  class: null,
+};
+
+export interface ConfluenceImageOptions extends ImageOptions {
+  /** The attributes the wrapper `<a>` of a linked image gets besides `href` and `class` (#1954). */
+  linkHTMLAttributes: Record<string, string | null>;
+}
+
+/**
+ * An href a linked image keeps (#1954): non-empty, within the carrier cap, and
+ * allowed by the Link mark's own policy, as a text link's href is.
+ */
+function isImageLinkHref(href: unknown): href is string {
+  return typeof href === 'string'
+    && href !== ''
+    && href.length <= CONFLUENCE_LINK_LIMITS.href
+    && !!isAllowedUri(href);
+}
+
+/**
+ * The class a linked image keeps (#1954, contract X1): only #1955's carrier of
+ * the image's own navigable URL, by the same predicate the converter uses.
+ */
+function imageLinkClass(href: unknown, className: unknown): string | null {
+  return isImageLinkHref(href) && typeof className === 'string' && isConfluenceUrlClassCarrierFor(href, className)
+    ? className
+    : null;
+}
+
+/**
+ * The image node's schema, shared by the editor (which adds its node view) and
+ * read mode, so a copy out of either serializes the same image (#1954).
+ *
+ * - The `data-confluence-*` markers say which Confluence resource the image is
+ *   (attachment, its owner page, an external URL); write-back reads them.
+ * - A Confluence link whose body is an image wraps it in `<a>`. The block image
+ *   cannot carry the Link mark, so the link rides on the node as `href` (and,
+ *   for a navigable `ri:url`, its class carrier as `linkClass`), read from the
+ *   nearest enclosing `<a>` and rendered back as that wrapper. Both are checked
+ *   again at render, so a value written straight into a collaborative document
+ *   never renders a link the parse would have refused.
+ */
+export const ConfluenceImageSchema = Image.extend<ConfluenceImageOptions>({
+  addOptions() {
+    return {
+      ...this.parent!(),
+      linkHTMLAttributes: LINK_HTML_ATTRIBUTES,
+    };
+  },
+
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      'data-confluence-image-source': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-image-source'),
+        renderHTML: (attributes) => attributes['data-confluence-image-source']
+          ? { 'data-confluence-image-source': attributes['data-confluence-image-source'] }
+          : {},
+      },
+      'data-confluence-filename': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-filename'),
+        renderHTML: (attributes) => attributes['data-confluence-filename']
+          ? { 'data-confluence-filename': attributes['data-confluence-filename'] }
+          : {},
+      },
+      'data-confluence-owner-page-title': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-owner-page-title'),
+        renderHTML: (attributes) => attributes['data-confluence-owner-page-title']
+          ? { 'data-confluence-owner-page-title': attributes['data-confluence-owner-page-title'] }
+          : {},
+      },
+      'data-confluence-owner-space-key': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-owner-space-key'),
+        renderHTML: (attributes) => attributes['data-confluence-owner-space-key']
+          ? { 'data-confluence-owner-space-key': attributes['data-confluence-owner-space-key'] }
+          : {},
+      },
+      'data-confluence-url': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-url'),
+        renderHTML: (attributes) => attributes['data-confluence-url']
+          ? { 'data-confluence-url': attributes['data-confluence-url'] }
+          : {},
+      },
+      // Set by the HTML-paste handler (#683) when an inline `<img src=…>` in
+      // pasted HTML can't be auto-imported (relative path, fetch failure,
+      // unsupported type). The CSS placeholder targets this attribute to
+      // render the broken-image affordance instead of letting the browser
+      // show its native 404 icon.
+      'data-import-failed': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-import-failed'),
+        renderHTML: (attributes) => attributes['data-import-failed']
+          ? { 'data-import-failed': attributes['data-import-failed'] }
+          : {},
+      },
+      href: {
+        default: null,
+        parseHTML: (element) => {
+          const href = element.closest('a')?.getAttribute('href');
+          return isImageLinkHref(href) ? href : null;
+        },
+        renderHTML: () => ({}),
+      },
+      linkClass: {
+        default: null,
+        parseHTML: (element) => {
+          const anchor = element.closest('a');
+          return imageLinkClass(anchor?.getAttribute('href'), anchor?.getAttribute('class'));
+        },
+        renderHTML: () => ({}),
+      },
+    };
+  },
+
+  renderHTML({ node, HTMLAttributes }) {
+    const img: DOMOutputSpec = ['img', mergeAttributes(this.options.HTMLAttributes, HTMLAttributes)];
+    const href: unknown = node.attrs.href;
+    if (!isImageLinkHref(href)) return img;
+    return [
+      'a',
+      mergeAttributes(this.options.linkHTMLAttributes, { href, class: imageLinkClass(href, node.attrs.linkClass) }),
+      img,
+    ];
   },
 });
 

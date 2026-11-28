@@ -101,7 +101,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
 | `th` / `td` with `style="text-align: left\|center\|right;"` (#1956) | the same cell with `align="…"` appended (the stored `style` is kept); the editor schemas model it as the cell's `align` and render `align="…"` | the stock GFM rule's column markers (`:--` / `:-:` / `--:`, from the header row) on the Improve conversion, unchanged by #1956; the write-back turns `align` into `style="text-align: X;"` again (feature `cell-align`) |
-| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); `ri:user` is a mention; any other resource stays its text | `[text](href)` (the href is a valid link destination) |
+| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); `ri:user` is a mention; any other resource stays its text | `[text](href)` (the href is a valid link destination); an image body is `[![alt](src)](href)`, on Improve `[CQ_MEDIA_PLACEHOLDER_n](href)` with the image frozen (#1954) |
 | `ac:link` (`ri:space` / `ri:blog-post` / `ri:shortcut` / `ri:content-entity` / `ri:url`) | `<a href="#confluence-space:<key>[?…]" data-confluence-link="space">` / `#confluence-blog-post:<title>[?…]` / `#confluence-shortcut:<key>[?…]` / `#confluence-content-entity:<id>[?…]` / `#confluence-url:<value>[?…]`; a `ri:url` whose value is a lowercase `http:`, `https:` or `mailto:` URL is `<a href="<value>" class="#confluence-url:<value>[?…]" data-confluence-link="url">` (#1955, below) | `[text](href)`; on Improve a `ri:url` link is `[text](#confluence-url:…)` |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
@@ -236,9 +236,19 @@ any change to the existing conflict policy.
   self-closing anchor link (`<ac:link ac:anchor="x" />`) is expanded like
   `ri:page`; one whose value holds `/` or `>` moves what it swallowed back
   out. Clicking these links in Compendiq does not navigate (non-goal).
-  Deferred, unchanged since before #1748 (the converters and Improve keep all
-  of these but the mention): in the editor, a link whose body is an image or
-  inline code is lost — the image is a block node, and StarterKit's Code mark
+  A link whose body is an image (#1954) rides on the block image node: `href`,
+  and for a navigable `ri:url` the class carrier as `linkClass`, read from the
+  enclosing `<a>` under the Link mark's `isAllowedUri` (and
+  `isConfluenceUrlClassCarrierFor` for the class) and rendered back as that
+  wrapper; both are checked again at render, so a value a collaborator writes
+  into the Yjs image element never renders a link the parse would refuse. The
+  image still leaves its paragraph, so a body of several images, or images and
+  text, is written back as one link per piece; the write-back path and the
+  `ri:url` origin rule are #1955's, with no image branch. The editor, read mode
+  and the collab schema share one image schema, `data-confluence-*` markers
+  included. Deferred, unchanged since before #1748 (the converters and Improve
+  keep all of these but the mention): in the editor, a link whose body is
+  inline code is lost — StarterKit's Code mark
   excludes every other mark — and a link whose text mixes inline code with
   other text is split into two links around the code; on a collaborative
   save, a line break, mention, status or emoticon inside a link is left out of

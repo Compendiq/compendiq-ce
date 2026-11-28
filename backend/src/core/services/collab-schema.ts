@@ -13,9 +13,11 @@ import {
   type AnyExtension,
   type JSONContent,
 } from '@tiptap/core';
-import { DOMParser as ProseMirrorDOMParser, Fragment, type Schema } from '@tiptap/pm/model';
+import { DOMParser as ProseMirrorDOMParser, Fragment, type DOMOutputSpec, type Schema } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
-import { Image } from '@tiptap/extension-image';
+import { Image, type ImageOptions } from '@tiptap/extension-image';
+import { isAllowedUri } from '@tiptap/extension-link';
+import { CONFLUENCE_LINK_LIMITS, isConfluenceUrlClassCarrierFor } from '@compendiq/contracts';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlock } from '@tiptap/extension-code-block';
@@ -858,10 +860,76 @@ const ConfluenceTaskItem = TaskItem.extend({
   },
 });
 
-const ConfluenceImage = Image.extend({
+/**
+ * The Link mark's own default HTML attributes (`@tiptap/extension-link`), so an
+ * image link and a text link to one target render the same `<a>` start tag (#1954).
+ */
+const LINK_HTML_ATTRIBUTES: Record<string, string | null> = {
+  target: '_blank',
+  rel: 'noopener noreferrer nofollow',
+  class: null,
+};
+
+interface ConfluenceImageOptions extends ImageOptions {
+  /** The attributes the wrapper `<a>` of a linked image gets besides `href` and `class` (#1954). */
+  linkHTMLAttributes: Record<string, string | null>;
+}
+
+/**
+ * An href a linked image keeps (#1954): non-empty, within the carrier cap, and
+ * allowed by the Link mark's own policy, as a text link's href is.
+ */
+function isImageLinkHref(href: unknown): href is string {
+  return typeof href === 'string'
+    && href !== ''
+    && href.length <= CONFLUENCE_LINK_LIMITS.href
+    && !!isAllowedUri(href);
+}
+
+/**
+ * The class a linked image keeps (#1954, contract X1): only #1955's carrier of
+ * the image's own navigable URL, by the same predicate the converter uses.
+ */
+function imageLinkClass(href: unknown, className: unknown): string | null {
+  return isImageLinkHref(href) && typeof className === 'string' && isConfluenceUrlClassCarrierFor(href, className)
+    ? className
+    : null;
+}
+
+/**
+ * The image node (block). A Confluence link whose body is an image wraps it in
+ * `<a>` (#1954): the block image cannot carry the Link mark, so the link rides on
+ * the node as `href` (and, for a navigable `ri:url`, its class carrier as
+ * `linkClass`), read from the nearest enclosing `<a>` and rendered back as that
+ * wrapper. Both are checked again at render, so a value written straight into a
+ * Yjs attribute never renders a link the parse would have refused.
+ */
+const ConfluenceImage = Image.extend<ConfluenceImageOptions>({
+  addOptions() {
+    return {
+      ...this.parent!(),
+      linkHTMLAttributes: LINK_HTML_ATTRIBUTES,
+    };
+  },
   addAttributes() {
     return {
       ...this.parent?.(),
+      href: {
+        default: null,
+        parseHTML: (element: HTMLElement) => {
+          const href = element.closest('a')?.getAttribute('href');
+          return isImageLinkHref(href) ? href : null;
+        },
+        renderHTML: () => ({}),
+      },
+      linkClass: {
+        default: null,
+        parseHTML: (element: HTMLElement) => {
+          const anchor = element.closest('a');
+          return imageLinkClass(anchor?.getAttribute('href'), anchor?.getAttribute('class'));
+        },
+        renderHTML: () => ({}),
+      },
       'data-confluence-image-source': {
         default: null,
         parseHTML: (element: HTMLElement) => element.getAttribute('data-confluence-image-source'),
@@ -911,6 +979,16 @@ const ConfluenceImage = Image.extend({
             : {},
       },
     };
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    const img: DOMOutputSpec = ['img', mergeAttributes(this.options.HTMLAttributes, HTMLAttributes)];
+    const href: unknown = node.attrs.href;
+    if (!isImageLinkHref(href)) return img;
+    return [
+      'a',
+      mergeAttributes(this.options.linkHTMLAttributes, { href, class: imageLinkClass(href, node.attrs.linkClass) }),
+      img,
+    ];
   },
 });
 

@@ -6,12 +6,12 @@ import TextAlign from '@tiptap/extension-text-align';
 import { TableRow } from '@tiptap/extension-table';
 import { TaskList } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
-import { Image } from '@tiptap/extension-image';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import DOMPurify from 'dompurify';
 import { lowlight } from '../../lib/lowlight';
 import {
+  ConfluenceImageSchema,
   Details,
   DetailsSummary,
   Panel,
@@ -177,7 +177,12 @@ export function ArticleViewer({
           };
         },
       }).configure({ lowlight }),
-      Image.configure({ inline: false }),
+      // The editor's image schema (#1954), so a copy out of read mode keeps the
+      // image's Confluence markers and its link; the link renders like a text link.
+      ConfluenceImageSchema.configure({
+        inline: false,
+        linkHTMLAttributes: { target: '_blank', rel: 'noreferrer' },
+      }),
       InlineLucideIcon,
       Details,
       DetailsSummary,
@@ -472,6 +477,8 @@ export function ArticleViewer({
     const raf = requestAnimationFrame(() => {
       const images = container.querySelectorAll('img');
       images.forEach((img) => {
+        // A linked image (#1954) follows its link, as a text link does; it does not also zoom.
+        if (img.closest('a[href]')) return;
         img.style.cursor = 'zoom-in';
         img.addEventListener('click', handleImageClick);
       });

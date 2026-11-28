@@ -51,9 +51,17 @@ a script. The analytics renderer stays separate.
 that href alone. Parse and build it only through `core/services/confluence-link.ts`
 (the converter, `link-extractor.ts` and the baseline manifest do); keep reading
 the pre-#1748 shape, the title or filename as written, as the fallback to the
-encoded reading. Deferred, unchanged by #1748 (the converters and Improve keep
-these links): the editor loses a link whose body is an image (a block node, so
-a save lifts it out of the paragraph) or inline code (StarterKit's Code mark
+encoded reading. A link whose body is an image is an `href` on the block image
+node (#1954), and for a navigable `ri:url` its class carrier as `linkClass`,
+admitted only by `isConfluenceUrlClassCarrierFor`: `body_html` keeps
+`<a href><img></a>`, the editor, read mode and the collab schema share one image
+schema (its `data-confluence-*` markers included, so a copy out of read mode keeps
+the image's resource), and both attributes are checked again at render. The
+image still leaves its paragraph, so a link body holding several images, or images
+and text, becomes one link per piece; read mode follows an image's link instead of
+zooming it. Deferred, unchanged by #1748 (the converters and Improve keep
+these links): the editor loses a link whose body is
+inline code (StarterKit's Code mark
 excludes every other mark, so the Link mark leaves it; a fix changes the Code
 mark contract in both schemas), splits a link whose text mixes inline code with
 other text into two links around the code, and on a collaborative save splits a
