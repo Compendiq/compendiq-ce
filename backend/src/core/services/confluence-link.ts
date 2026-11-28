@@ -267,9 +267,15 @@ export function confluenceLinkCarrier(acLink: Element): ConfluenceLinkCarrier | 
  * container whose name is over 32 characters, is logged, never dropped
  * silently. `features` are the storage-derivation features of the conversion
  * (#1953): without `link-kinds` only a page, an attachment and an anchor are
- * read.
+ * read. `onDropped` (#1953, coordinator decision D16): when given, the count of
+ * attributes not carried is handed to it instead of being logged, so the
+ * carrier recovery's conversion logs nothing; without it nothing changes.
  */
-export function confluenceLinkAnchor(acLink: Element, features?: StorageDerivationFeatures): Node[] | null {
+export function confluenceLinkAnchor(
+  acLink: Element,
+  features?: StorageDerivationFeatures,
+  onDropped?: (count: number) => void,
+): Node[] | null {
   const built = buildLink(acLink, linkKinds(features));
   if (!built) return null;
   const a = acLink.ownerDocument.createElement('a');
@@ -284,7 +290,9 @@ export function confluenceLinkAnchor(acLink: Element, features?: StorageDerivati
   a.setAttribute('href', href);
   if (className !== null) a.setAttribute('class', className);
   a.setAttribute('data-confluence-link', built.kind);
-  if (built.dropped.length > 0) {
+  if (built.dropped.length > 0 && onDropped) {
+    onDropped(built.dropped.length);
+  } else if (built.dropped.length > 0) {
     logger.warn(
       { attributes: built.dropped.slice(0, 10).map((name) => name.slice(0, 80)), count: built.dropped.length },
       'Confluence link attributes not carried (#1748)',

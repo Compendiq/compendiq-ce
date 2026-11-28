@@ -414,6 +414,42 @@ Every other writer passes no set and derives with all features. The digest
 proves the derived storage and the effective title, not the historical row: the
 route compares the row's id, title and HTML before the provider PUT.
 
+**Carrier recovery matcher (#1953, not wired to a writer yet).** A page synced
+before #1748/#1749/#1750 has a `body_html` without link targets, macro
+parameters and emoticons while its `body_storage` holds them.
+`reconcileConfluenceCarriers(storedBodyHtml, storedBodyStorage, targetHtml,
+{ marker, … })` (`confluence-carrier-reconcile.ts`) attaches a carrier of the
+five kinds of `CARRIER_KINDS` (code, status and toc parameters; page,
+attachment and anchor links; emoticons) to the HTML a writer means to write
+only under a three-way proof, and returns that HTML byte for byte otherwise.
+The source is an element the storage reader reads as the macro, emoticon or
+link, in storage whose HTML reading (the forward pass's first parse) gives the
+same start, end and text events over the whole body; its builder marks what
+it built only while the subtree is the one the reader read
+(`confluenceToHtmlWithCarrierMarks`, with a marker name the caller draws;
+`confluenceToHtml` does none of this). The legacy projection of that marked
+conversion, the stored body and the target must hold the unit at the same
+position under the same complete child sequences from the body down (empty
+paragraphs included; the editor's one trailing empty paragraph after a body
+that ends in another block excepted), with a key unique in each document, and
+the target element holds no carrier of its own. Everything else abstains and
+is counted by kind and reason, names and numbers only; the function logs
+nothing and never throws. What it cannot recover, by design: storage the two
+readings read differently anywhere (a self-closing toc, `<p/>`, a #1955 link
+kind or a page link whose title holds `/` with a body), task lists that are
+not flat, a container whose child blocks changed, white space the target
+changed around an emoticon, repeated blocks, emoticon-only blocks outside an
+unchanged table grid, and the #1955 link
+kinds; the editor's table projection (`colgroup`, cell paragraphs) and its
+white-space collapse therefore lose a table's carriers and a doubled-space
+emoticon. A link target is recovered only when no other link of any kind in
+the stored body, the storage (with the label it shows there) or the target
+shows the same visible label or goes to the same page, attachment or anchor,
+and only when the link's own anchor is still in the target. So a page with two
+links labelled alike or to one destination recovers neither, and a link the
+editor dropped or the user unlinked is not republished. Re-sync stays the
+remedy. The writers and the room seed call it in #1953-2.
+
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
 clone nested `ac:structured-macro` nodes after their dedicated handler pass.
