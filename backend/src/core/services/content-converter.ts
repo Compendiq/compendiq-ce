@@ -16,8 +16,8 @@ import {
 } from './confluence-link.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
-  derivationHas,
   assertStorageDerivationFeatures,
+  derivationHas,
   type StorageDerivationFeatures,
 } from './storage-derivation.js';
 
@@ -97,6 +97,84 @@ function expandSelfClosingXhtmlTags(xhtml: string): string {
 // elements (ac:structured-macro, ri:page, etc). getElementsByTagName works.
 function byTag(root: Document | Element, tag: string): Element[] {
   return [...root.getElementsByTagName(tag)];
+}
+
+// <table-cell-align:begin>
+// Table cell alignment (#1956). This block is byte-identical in backend collab-schema.ts, frontend
+// article-extensions.ts and backend content-converter.ts; collab-schema-parity.test.ts compares the text.
+// An inline style that mentions text-align decides; unless it is exactly one plain, lower-case
+// declaration the cell has no alignment. Without such a style the align attribute decides.
+const TABLE_CELL_ALIGNMENTS = ['left', 'center', 'right'] as const;
+type TableCellAlign = (typeof TABLE_CELL_ALIGNMENTS)[number];
+const TABLE_CELL_STYLE_MAX = 1024;
+function normalizeTableCellAlign(value: unknown): TableCellAlign | null {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return (TABLE_CELL_ALIGNMENTS as readonly string[]).includes(v) ? (v as TableCellAlign) : null;
+}
+/** null: the style does not mention text-align. 'other': it does, but not as one plain declaration. */
+function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlign | 'other' | null {
+  if (style.length > TABLE_CELL_STYLE_MAX) return 'other';
+  const mentions = style.match(/text-align/gi);
+  if (!mentions) return null;
+  // A browser reads property names and priorities case-insensitively and the Node hosts disagree: only
+  // the exact lower-case property is read, and a `!` only as a lower-case `!important` ending its
+  // declaration (`!IMPORTANT`, `! important` are declined) before the CSSOM is asked.
+  if (mentions.length !== 1 || mentions[0] !== 'text-align' || /["'\\]|\/\*|--|url\(/i.test(style)) return 'other';
+  if (/!(?!important\s*(?:;|$))/.test(style)) return 'other';
+  // Brackets, braces or unbalanced parentheses make the hosts split the declarations differently.
+  let depth = 0;
+  for (const ch of style) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')' && --depth < 0) return 'other';
+  }
+  if (depth !== 0 || /[{}[\]]/.test(style)) return 'other';
+  return normalizeTableCellAlign(cssTextAlign) ?? 'other';
+}
+// <table-cell-align:end>
+
+/** The alignment an element's inline style states (the shared block over its style and the host CSSOM). */
+function cellStyleAlign(cell: Element): TableCellAlign | 'other' | null {
+  return tableCellStyleAlign(cell.getAttribute('style') ?? '', (cell as HTMLElement).style.textAlign);
+}
+
+/**
+ * #1956, read direction: a stored `th`/`td` whose inline style is one plain
+ * `text-align: left|center|right` gains `align="…"`, appended last. The style
+ * is never touched, so the write-back returns the stored bytes.
+ */
+function addCellAlignFromStyle(doc: Document): void {
+  for (const cell of doc.querySelectorAll('th[style], td[style]')) {
+    if (cell.hasAttribute('align')) continue;
+    const align = cellStyleAlign(cell);
+    if (align !== null && align !== 'other') cell.setAttribute('align', align);
+  }
+}
+
+/**
+ * #1956, write direction (feature `cell-align`): `align` is not a storage
+ * attribute, so it is removed from every `th`/`td` and, when it holds one of
+ * the three values, written as `style="text-align: X;"`. An inline style that
+ * mentions text-align decides and is kept byte for byte (also when ambiguous);
+ * a style without it gets the declaration appended, kept only if the result
+ * reads back as exactly that alignment. Nothing is ever removed or rewritten.
+ */
+function cellAlignToStyle(doc: Document): void {
+  for (const cell of doc.querySelectorAll('th[align], td[align]')) {
+    const align = normalizeTableCellAlign(cell.getAttribute('align'));
+    cell.removeAttribute('align');
+    if (align === null) continue;
+    const style = cell.getAttribute('style') ?? '';
+    if (style.trim() === '') {
+      cell.setAttribute('style', `text-align: ${align};`);
+      continue;
+    }
+    if (cellStyleAlign(cell) !== null) continue;
+    const trimmed = style.trimEnd();
+    const candidate = `${trimmed}${trimmed.endsWith(';') ? ' ' : '; '}text-align: ${align};`;
+    const probe = doc.createElement('td');
+    probe.setAttribute('style', candidate);
+    if (cellStyleAlign(probe) === align) cell.setAttribute('style', candidate);
+  }
 }
 
 function getMacroName(el: Element): string {
@@ -918,7 +996,8 @@ export function measureTaskListConversion(storageXhtml: string): TaskListConvers
  * Run one static-snapshot conversion pass. Its task-list step is the #1957
  * one only when nesting is on: `nestTasks` as an earlier pass decided it, or,
  * when `undefined` (the first pass), decided here (see confluenceToHtmlWith).
- * Every other step derives the same for every set (#1953).
+ * The other steps gated on a storage-derivation feature read `derivationHas`
+ * on this pass's set (#1953): `cell-align` (#1956).
  */
 function confluenceToHtmlPass(
   storageXhtml: string,
@@ -1441,6 +1520,8 @@ function confluenceToHtmlPass(
   for (const el of byTag(doc, 'ac:emoticon')) {
     el.replaceWith(emoticonPlaceholder(el), ...el.childNodes);
   }
+
+  if (derivationHas(features, 'cell-align')) addCellAlignFromStyle(doc);
 
   const html = doc.body.innerHTML;
   const macrosAfter = countRawStructuredMacros(doc.body);
@@ -2043,6 +2124,9 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   for (const span of doc.querySelectorAll('span.confluence-emoticon')) {
     span.replaceWith(emoticonWriteBack(span));
   }
+
+  // `allocateTaskIds` above already validated `options.derivationFeatures`.
+  if (derivationHas(options.derivationFeatures, 'cell-align')) cellAlignToStyle(doc);
 
   let result = doc.body.innerHTML;
   // #1748: escape `<`, `>`, tab, LF and CR in ac:link / ri:* attribute values,

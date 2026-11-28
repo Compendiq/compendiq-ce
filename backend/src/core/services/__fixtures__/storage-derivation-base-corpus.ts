@@ -160,6 +160,34 @@ export const STORAGE_DERIVATION_BASE_CORPUS: readonly StorageDerivationBaseEntry
     storedBodyHtml: '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">Parent <ac:task-list><ac:task><ac:task-id>2</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>Child</ac:task-body></ac:task></ac:task-list></li><li data-type="taskItem" data-checked="true" data-task-id="2">Child</li><li data-type="taskItem" data-checked="false" data-task-id="3">Sibling</li></ul><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="7">Read <a></a></li><li data-type="taskItem" data-checked="false" data-task-id="8">See <a></a> and <a>site</a></li></ul><p><a href="#confluence-page:My%20Page?ri:space-key=ENG" data-confluence-link="page">My Page</a></p>',
     storage: '<table><tbody><tr><th align="center">H</th><td align="right">1</td></tr></tbody></table><ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body><p>Parent</p></ac:task-body></ac:task><ac:task><ac:task-id>7</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body><p>Read</p></ac:task-body></ac:task></ac:task-list><p>See <ac:link><ri:page ri:content-title="My Page" ri:space-key="ENG"></ri:page><ac:plain-text-link-body><![CDATA[the page]]></ac:plain-text-link-body></ac:link>, <a href="#confluence-space:ENG">a space</a> and <ac:link><ri:page ri:content-title="Home"></ri:page><ac:link-body><ac:image><ri:attachment ri:filename="a.png"></ri:attachment></ac:image></ac:link-body></ac:link>.</p><ac:structured-macro ac:name="code"><ac:parameter ac:name="language">java</ac:parameter><ac:parameter ac:name="title">Main</ac:parameter><ac:plain-text-body><![CDATA[class A {}]]></ac:plain-text-body></ac:structured-macro>',
   },
+  {
+    name: 'cell-align-marked-gfm-table',
+    targetHtml: '<table>\n<thead>\n<tr>\n<th align="left">a</th>\n<th align="center">b</th>\n<th align="right">c</th>\n<th>d</th>\n</tr>\n</thead>\n<tbody><tr>\n<td align="left">1</td>\n<td align="center">2</td>\n<td align="right">3</td>\n<td>4</td>\n</tr>\n</tbody></table>\n',
+    previousStorage: null,
+    storedBodyHtml: null,
+    storage: '<table>\n<thead>\n<tr>\n<th align="left">a</th>\n<th align="center">b</th>\n<th align="right">c</th>\n<th>d</th>\n</tr>\n</thead>\n<tbody><tr>\n<td align="left">1</td>\n<td align="center">2</td>\n<td align="right">3</td>\n<td>4</td>\n</tr>\n</tbody></table>\n',
+  },
+  {
+    name: 'cell-align-confluence-stored',
+    targetHtml: '<table class="wrapped"><colgroup><col><col></colgroup><tbody><tr><th class="confluenceTh" style="text-align: center;">H</th><th class="confluenceTh">I</th></tr><tr><td class="confluenceTd" style="text-align: right; background-color: rgb(1, 2, 3);" colspan="1" data-highlight-colour="red">x</td><td class="confluenceTd">y</td></tr></tbody></table>',
+    previousStorage: null,
+    storedBodyHtml: null,
+    storage: '<table class="wrapped"><colgroup><col /><col /></colgroup><tbody><tr><th class="confluenceTh" style="text-align: center;">H</th><th class="confluenceTh">I</th></tr><tr><td class="confluenceTd" style="text-align: right; background-color: rgb(1, 2, 3);" colspan="1" data-highlight-colour="red">x</td><td class="confluenceTd">y</td></tr></tbody></table>',
+  },
+  {
+    name: 'cell-align-style-forms',
+    targetHtml: '<table><tbody><tr><th align="center" style="text-align: justify">a</th><th align="left" style="TEXT-ALIGN: right">b</th><th align="right" style="color: red">c</th></tr><tr><td align="center" style="text-align: left; text-align: right">1</td><td align="left" style="--x: \'text-align: center\'">2</td><td align=" Right ">3</td></tr></tbody></table>',
+    previousStorage: null,
+    storedBodyHtml: null,
+    storage: '<table><tbody><tr><th align="center" style="text-align: justify">a</th><th align="left" style="TEXT-ALIGN: right">b</th><th align="right" style="color: red">c</th></tr><tr><td align="center" style="text-align: left; text-align: right">1</td><td align="left" style="--x: \'text-align: center\'">2</td><td align=" Right ">3</td></tr></tbody></table>',
+  },
+  {
+    name: 'cell-align-in-panel',
+    targetHtml: '<div class="panel-info"><table><tbody><tr><th align="center"><p>H</p></th></tr><tr><td align="center"><p>x</p></td></tr></tbody></table></div>',
+    previousStorage: null,
+    storedBodyHtml: null,
+    storage: '<ac:structured-macro ac:name="info"><ac:rich-text-body><table><tbody><tr><th align="center"><p>H</p></th></tr><tr><td align="center"><p>x</p></td></tr></tbody></table></ac:rich-text-body></ac:structured-macro>',
+  },
   // #1957 nested-tasks: captured with evidence/1953/capture-base-corpus.mts at bff6d4ec.
   {
     name: 'tasks-list-before-own-body',

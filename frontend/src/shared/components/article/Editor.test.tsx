@@ -2003,3 +2003,28 @@ describe('draft auto-save flush on unmount (#877)', () => {
   });
 });
 
+describe('table cell alignment (#1956)', () => {
+  const ALIGNED = '<table><tbody><tr><th align="left">a</th><th align="center">b</th><th align="right">c</th><th>d</th></tr>'
+    + '<tr><td align="left">1</td><td style="text-align: center;">2</td><td align="right">3</td><td>4</td></tr></tbody></table>';
+
+  it('keeps cell alignment from the align attribute and from style, and serialises align="…" without a style', async () => {
+    let editor: EditorType | null = null;
+    render(<Editor content={ALIGNED} editable={true} onEditorReady={(e) => { editor = e; }} />);
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+    const doc = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+    expect([...doc.querySelectorAll('th')].map((cell) => cell.getAttribute('align'))).toEqual(['left', 'center', 'right', null]);
+    expect([...doc.querySelectorAll('td')].map((cell) => cell.getAttribute('align'))).toEqual(['left', 'center', 'right', null]);
+    expect(doc.querySelectorAll('th[style], td[style]')).toHaveLength(0);
+  });
+
+  it('renders the aligned cells with the attribute the stylesheet rules target', async () => {
+    const { container } = render(<Editor content={ALIGNED} editable={true} />);
+    await waitFor(() => {
+      expect(container.querySelector('th[align="center"]')).not.toBeNull();
+    });
+    expect(container.querySelector('td[align="right"]')).not.toBeNull();
+  });
+});
+
