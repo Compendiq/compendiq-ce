@@ -1232,9 +1232,59 @@ export function htmlToYDoc(html: string): Y.Doc {
   return prosemirrorJSONToYDoc(getCollabSchema(), json, COLLAB_FIELD);
 }
 
+type JSONMark = NonNullable<JSONContent['marks']>[number];
+
+/** The Link mark of an inline node, or undefined. */
+function linkMarkOf(node: JSONContent): JSONMark | undefined {
+  return node.marks?.find((mark) => mark.type === 'link');
+}
+
+/**
+ * Two Link marks that render the same: every attribute equal once the collab
+ * schema has applied its defaults. ProseMirror gives a missing attribute its
+ * default but keeps an explicit null, so `{href}` equals `{href, target: <default>}`
+ * and differs from `{href, target: null}`.
+ */
+function sameLink(a: JSONMark, b: JSONMark): boolean {
+  const type = getCollabSchema().marks.link!;
+  return type.create(a.attrs ?? null).eq(type.create(b.attrs ?? null));
+}
+
+/**
+ * #1954: a link whose body holds a line break leaves Yjs split in two, because
+ * y-prosemirror keeps marks on text only and drops the Link mark of the
+ * `hardBreak` between. Give every run of unmarked hard breaks that stands
+ * between two text nodes carrying the same Link mark (sameLink) that mark
+ * again, so the HTML has one `<a>` across the breaks and write-back
+ * one `ac:link`. A break at either end of a link, or any other node or text
+ * between, leaves the links apart. Two links to the same target that were
+ * deliberately separate around a break cannot be told apart in Yjs and become
+ * one (documented). Mutates `doc`, which yDocToProsemirrorJSON built for us.
+ */
+function joinLinksAcrossHardBreaks(doc: JSONContent): JSONContent {
+  const pending: JSONContent[] = [doc];
+  while (pending.length > 0) {
+    const content = pending.pop()!.content;
+    if (!content) continue;
+    for (const child of content) if (child.content) pending.push(child);
+    for (let start = 0; start < content.length; start += 1) {
+      const link = content[start]!.type === 'text' ? linkMarkOf(content[start]!) : undefined;
+      if (!link) continue;
+      let end = start + 1;
+      while (end < content.length && content[end]!.type === 'hardBreak' && !content[end]!.marks?.length) end += 1;
+      const after = content[end];
+      if (end === start + 1 || after?.type !== 'text') continue;
+      const afterLink = linkMarkOf(after);
+      if (!afterLink || !sameLink(link, afterLink)) continue;
+      for (let index = start + 1; index < end; index += 1) content[index] = { ...content[index]!, marks: [link] };
+    }
+  }
+  return doc;
+}
+
 export function yDocToHtml(doc: Y.Doc): string {
   const json = yDocToProsemirrorJSON(doc, COLLAB_FIELD) as JSONContent;
-  return generateHTML(json, collabExtensions());
+  return generateHTML(joinLinksAcrossHardBreaks(json), collabExtensions());
 }
 
 /**

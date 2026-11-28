@@ -253,10 +253,18 @@ any change to the existing conflict policy.
   that never reaches AI Improve (`linkedCodeAsText`); the Improve prompt, parent
   and sub-pages, and its Accept are unchanged by #1954 (D24, parity with slice A
   pinned), with slice A's limits: such a link can be lost, and a placeholder
-  spelling matching a real media entry is replaced (#723, pre-existing). Deferred, unchanged since before #1748 (the
-  converters and Improve keep all of these but the mention): on a collaborative
-  save, a line break, mention, status or emoticon inside a link is left out of
-  it, splitting the link around it (Yjs keeps marks on text only). A mention
+  spelling matching a real media entry is replaced (#723, pre-existing). A line break inside a
+  link survives a collaborative save: `yDocToHtml` gives a run of unmarked hard
+  breaks between two text nodes with equal Link marks (every attribute, a
+  missing one taking its schema default, an explicit null not) that mark
+  again, so the HTML has one `<a>` and write-back one `ac:link`; a break at
+  either end of a link body
+  stays outside it, and two separate same-target links around a break become
+  one after a collaborative session (documented limit). Deferred, unchanged
+  since before #1748 (the converters and Improve keep all of these but the
+  mention): on a collaborative save, a mention, status or emoticon inside a
+  link is left out of it, splitting the link around it (Yjs keeps marks on text
+  only). A mention
   inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
   replacing the whole outer link, text included, with the mention (#314);
   Confluence never writes that nesting.

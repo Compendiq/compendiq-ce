@@ -670,7 +670,19 @@ previous bundle does not know the attributes and drops them from an image it
 edits. Inline code is a Code mark that excludes only itself (slice B), so a
 link stays on code text; y-prosemirror still stores it under the key `code` (a
 mark that excluded nothing would be stored under a hashed key `code--…`), and
-an old room's code runs read back unchanged.
+an old room's code runs read back unchanged. A line break inside a link is a
+`hardBreak` element, and y-prosemirror keeps no mark on an element, so the
+link survives in the document only on the text around the break.
+`yDocToHtml` therefore gives every run of unmarked hard breaks between two
+text nodes with the same Link mark (every attribute equal as the schema
+creates the mark: a missing attribute takes its default, an explicit null
+stays null) that mark again
+before it serialises: the 2 s snapshot, the Save snapshot and everything
+downstream see one `<a>`, and write-back one `ac:link`. A room persisted
+before #1954 gets its split links joined the same way on its next
+serialisation; nothing in the Yjs document changes. A break at either end of a
+link stays outside it, and two separate same-target links around a break
+cannot be told apart in Yjs and become one (documented limit).
 
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with

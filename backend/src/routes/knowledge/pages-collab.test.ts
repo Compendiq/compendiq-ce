@@ -3245,6 +3245,17 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
         + FILLER_OUT
         + '<p>Then <ac:link><ri:url ri:value="/docs/guide"></ri:url><ac:link-body>run <code>deploy()</code> now</ac:link-body></ac:link>.</p>');
     });
+
+    it('writes a link around a line break as one ac:link, and the same bytes on a second Save', async () => {
+      const link = '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>line one<br />line two</ac:link-body></ac:link>';
+      const editor = await openRoom(`<p>Go ${link} there.</p>`);
+      // Yjs keeps the link on the two halves only; the room's HTML (yDocToHtml) is one link across the break again.
+      expect(editor.room()).toContain('line one<br>line two</a> there.</p>');
+
+      await expectTwoSaves(editor,
+        '<p>Go <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>'
+        + '<ac:link-body>line one<br />line two</ac:link-body></ac:link> there.</p>');
+    });
   });
 
   describe('task ids after a collaborative Save (#1751)', () => {

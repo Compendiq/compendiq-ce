@@ -76,10 +76,18 @@ applied HTML of an Accept are exactly slice A's, pinned against captures at `42e
 code: the chain can lose such a link (a code span holding a backtick inside a link
 label comes back as literal Markdown in a paragraph), and a media-placeholder spelling
 that matches a real media entry of the page is replaced by `restoreMedia`, as in any
-text (#723; recorded limit). Deferred, unchanged by #1748 (the converters
-and Improve keep these links): on a collaborative save a link is split around a
-line break (Yjs keeps marks on text only). Pinned by
-`content-converter.links.test.ts`.
+text (#723; recorded limit). A line break inside a link survives a
+collaborative save (#1954): Yjs keeps marks on text only, so `yDocToHtml` gives a
+run of unmarked line breaks between two text pieces with the same Link mark (every
+attribute equal once the schema default fills a missing one; an explicit null is not
+the default) that mark again, and write-back writes one `ac:link`; links with a
+different href, class, title, target or rel are never joined. Limits: a break at the start or
+end of a link body leaves the link, and two separate links to the same target
+around a break cannot be told apart after a collaborative session and become one
+(the converter and an ordinary editor Save keep them apart). Deferred, unchanged
+by #1748: on a collaborative save a mention, status or emoticon inside a link
+still splits it. Pinned by `content-converter.links.test.ts` and
+`content-converter.link-bodies.test.ts`.
 
 **Five more link kinds, and one rule for `ri:url` (#1955).** `ri:space`,
 `ri:blog-post`, `ri:shortcut`, `ri:content-entity` and `ri:url` links are
