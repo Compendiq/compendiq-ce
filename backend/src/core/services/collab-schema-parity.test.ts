@@ -9,8 +9,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import { generateJSON } from '@tiptap/html';
+import { generateHTML, generateJSON } from '@tiptap/html';
+import { type JSONContent } from '@tiptap/core';
+import { yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
+import * as Y from 'yjs';
+import { JSDOM } from 'jsdom';
 import { collabExtensions, getCollabSchema, htmlToYDoc, yDocToHtml } from './collab-schema.js';
+import { htmlToConfluence } from './content-converter.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../../../..');
@@ -148,7 +153,9 @@ function frontendDocumentSpecs(): Spec[] {
   const code = parseNamedExtend(titled, 'CodeBlockLowlight', 'codeBlock', 'node');
   const highlight = parseNamedExtend(article, 'Highlight', 'highlight', 'mark');
   const taskItem = parseNamedExtend(article, 'TaskItem', 'taskItem', 'node');
-  for (const extra of [image, table, code, highlight, taskItem]) {
+  const tableCell = parseNamedExtend(article, 'TableCell', 'tableCell', 'node');
+  const tableHeader = parseNamedExtend(article, 'TableHeader', 'tableHeader', 'node');
+  for (const extra of [image, table, code, highlight, taskItem, tableCell, tableHeader]) {
     if (extra) specs.push(extra);
   }
   return specs.filter((s) => !EDITOR_ONLY_EXTENSION_NAMES.has(s.name));
@@ -336,3 +343,175 @@ describe('collab schema parity (#1445)', () => {
   });
 });
 
+/**
+ * Table cell alignment (#1956). Block 1 (the style/attribute reading) is one text in three files, block 2
+ * (the attribute definition) one text in both schema files, so the two schemas and the converter cannot
+ * read a cell differently. The same vector table runs against the frontend extensions in
+ * article-extensions.test.ts; both tables must stay identical.
+ */
+function markedBlock(src: string, name: string): string | null {
+  const begin = `// <${name}:begin>`;
+  const end = `// <${name}:end>`;
+  const from = src.indexOf(begin);
+  const to = src.indexOf(end);
+  if (from < 0 || to < from || src.indexOf(begin, from + 1) >= 0 || src.indexOf(end, to + 1) >= 0) return null;
+  return src.slice(from, to + end.length);
+}
+
+/** `[label, cell attributes, expected align]` — every row must read the same in all hosts (browser, happy-dom, jsdom). */
+const vectorFixture: { vectors: Array<[string, string, string | null]> } = JSON.parse(
+  readFileSync(join(here, '__fixtures__/table-cell-align-vectors.json'), 'utf8'),
+);
+const CELL_ALIGN_VECTORS = vectorFixture.vectors;
+
+describe('table cell alignment definition (#1956)', () => {
+  const article = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');
+  const collab = readFileSync(join(here, 'collab-schema.ts'), 'utf8');
+  const converter = readFileSync(join(here, 'content-converter.ts'), 'utf8');
+
+  it('keeps the style/attribute reading identical in both schemas and the converter', () => {
+    const [a, b, c] = [article, collab, converter].map((src) => markedBlock(src, 'table-cell-align'));
+    expect(a, 'article-extensions.ts block').not.toBeNull();
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+  });
+
+  it('keeps the attribute definition identical in both schemas', () => {
+    const a = markedBlock(article, 'table-cell-align-attribute');
+    expect(a, 'article-extensions.ts block').not.toBeNull();
+    expect(markedBlock(collab, 'table-cell-align-attribute')).toBe(a);
+  });
+
+  it('declares align on tableCell and tableHeader', () => {
+    const schema = getCollabSchema();
+    expect(Object.keys(schema.nodes.tableCell!.spec.attrs ?? {})).toContain('align');
+    expect(Object.keys(schema.nodes.tableHeader!.spec.attrs ?? {})).toContain('align');
+    const names = frontendDocumentSpecs().filter((s) => s.name === 'tableCell' || s.name === 'tableHeader');
+    expect(names.map((s) => s.name).sort()).toEqual(['tableCell', 'tableHeader']);
+    for (const spec of names) expect(spec.attrs).toContain('align');
+  });
+
+  function cellAligns(html: string): Array<string | null> {
+    const found: Array<string | null> = [];
+    const walk = (node: JSONContent): void => {
+      if (node.type === 'tableCell' || node.type === 'tableHeader') found.push((node.attrs?.align as string | null) ?? null);
+      for (const child of node.content ?? []) walk(child);
+    };
+    walk(generateJSON(html, collabExtensions()));
+    return found;
+  }
+
+  it.each(CELL_ALIGN_VECTORS)('reads %s', (_label, attrs, expected) => {
+    expect(cellAligns(`<table><tbody><tr><th ${attrs}>h</th></tr><tr><td ${attrs}>c</td></tr></tbody></table>`))
+      .toEqual([expected, expected]);
+  });
+
+  it('renders align="…" and no style, for an aligned cell and nothing for an unaligned one', () => {
+    const html = yDocToHtml(htmlToYDoc(
+      '<table><tbody><tr><th align="center">h</th><th>i</th></tr><tr><td style="text-align: right;">c</td><td>d</td></tr></tbody></table>',
+    ));
+    expect(html).toMatch(/<th colspan="1" rowspan="1" align="center">/);
+    expect(html).toMatch(/<td colspan="1" rowspan="1" align="right">/);
+    expect(html).not.toMatch(/<t[dh][^>]*style=/);
+    expect(html.match(/align=/g)).toHaveLength(2);
+  });
+
+  it('renders no attribute for a hostile Y.Doc alignment value', () => {
+    const cell = (align: unknown): JSONContent => ({
+      type: 'tableCell',
+      attrs: { colspan: 1, rowspan: 1, colwidth: null, align },
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'x' }] }],
+    });
+    for (const hostile of ['justify', 'x" onmouseover="y', '<b>', 5, { toString: 'x' }]) {
+      const html = generateHTML(
+        { type: 'doc', content: [{ type: 'table', content: [{ type: 'tableRow', content: [cell(hostile)] }] }] },
+        collabExtensions(),
+      );
+      expect(html).not.toMatch(/align=|onmouseover|<t[dh][^>]*style=/);
+    }
+  });
+
+  // Review T6 / epic invariant 3: an update the pre-change schema actually wrote (captured at bff6d4ec, provenance in
+  // the fixture), loaded without running any old encoder.
+  it('loads a room update written by the pre-change schema unchanged: historical attrs, new rendering, same bytes', () => {
+    const fixture: { update: string } = JSON.parse(
+      readFileSync(join(here, '__fixtures__/collab-table-align-bff6d4ec.json'), 'utf8'),
+    );
+    const bytes = new Uint8Array(Buffer.from(fixture.update, 'base64'));
+    const room = new Y.Doc();
+    Y.applyUpdate(room, bytes);
+
+    // What the stock cells stored: `align` under the stock key, omitted when unset.
+    const cell = (type: string, text: string, align?: string): JSONContent => ({
+      type,
+      attrs: { colspan: 1, rowspan: 1, ...(align ? { align } : {}) },
+      content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+    });
+    expect(yDocToProsemirrorJSON(room, 'default')).toEqual({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        attrs: { 'data-layout': 'default' },
+        content: [
+          { type: 'tableRow', content: [cell('tableHeader', 'a', 'center'), cell('tableHeader', 'b')] },
+          { type: 'tableRow', content: [cell('tableCell', '1', 'right'), cell('tableCell', '2')] },
+        ],
+      }],
+    });
+
+    // Rendered by today's schema: align="…" where the old one wrote a text-align style.
+    const html = yDocToHtml(room);
+    expect(cellAligns(html)).toEqual(['center', null, 'right', null]);
+    expect(html).toContain('<th colspan="1" rowspan="1" align="center"><p>a</p></th>');
+    expect(html).toContain('<td colspan="1" rowspan="1" align="right"><p>1</p></td>');
+    expect(html).not.toMatch(/<t[dh][^>]*style=/);
+
+    // Nothing was written into the room.
+    expect(Y.encodeStateAsUpdate(room)).toEqual(bytes);
+  });
+});
+
+/** The source between `// <name:begin>` and `// <name:end>`. */
+function markerBlock(src: string, name: string): string {
+  const begin = src.indexOf(`// <${name}:begin>`);
+  const end = src.indexOf(`// <${name}:end>`);
+  expect(begin, `${name}:begin`).toBeGreaterThanOrEqual(0);
+  expect(end, `${name}:end`).toBeGreaterThan(begin);
+  return src.slice(begin, end);
+}
+
+describe('task item content parse parity (#1957)', () => {
+  it('keeps the task-item-content blocks identical across the two schemas', () => {
+    const backend = readFileSync(join(here, 'collab-schema.ts'), 'utf8');
+    const frontend = readFileSync(join(articleDir, 'article-extensions.ts'), 'utf8');
+    expect(markerBlock(frontend, 'task-item-content')).toBe(markerBlock(backend, 'task-item-content'));
+  });
+
+  it('parses a task item\'s content from the element write-back reads it from', () => {
+    const checkbox = '<label><input type="checkbox"><span></span></label>';
+    const shapes: Array<[name: string, li: string]> = [
+      ['TipTap label and div', `${checkbox}<div><p>own</p><div class="panel-info"><p>panel</p></div></div>`],
+      ['label and div plus a third element', `${checkbox}<div><p>own</p></div><p>more</p>`],
+      ['a label without a checkbox', '<label>tag</label><div><p>own</p></div>'],
+      ['a div only', '<div class="panel-info"><p>panel</p></div>'],
+      ['bare text and a nested block div', 'own<div class="confluence-toc">[Table of Contents]</div>'],
+      ['bare text and a subtask holding a block macro', 'own<ul data-type="taskList"><li data-type="taskItem" data-checked="false">sub<div class="confluence-toc">[Table of Contents]</div></li></ul>'],
+    ];
+    // The task's own text: without subtasks, the editor's checkbox label (the
+    // li's first child, in the editor's copy only) and macro placeholder labels.
+    const text = (html: string, tag: string) => {
+      const doc = new JSDOM(`<body>${html}</body>`).window.document;
+      const own = doc.getElementsByTagName(tag)[0]!.cloneNode(true) as Element;
+      const chrome = tag === 'li' ? [...own.querySelectorAll(':scope > label')] : [];
+      for (const nested of [...chrome, ...own.querySelectorAll('ul'), ...own.getElementsByTagName('ac:task-list')]) nested.remove();
+      return (own.textContent ?? '').replace(/\s+|Table of Contents is displayed in the sidebar|\[Table of Contents\]/g, '');
+    };
+    for (const [name, inner] of shapes) {
+      const html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">${inner}</li></ul>`;
+      const written = text(htmlToConfluence(html), 'ac:task-body');
+      const parsed = text(yDocToHtml(htmlToYDoc(html)), 'li');
+      expect(parsed, name).toBe(written);
+      expect(parsed.length, name).toBeGreaterThan(0);
+    }
+  });
+});
