@@ -26,6 +26,13 @@ import {
   htmlToConfluence,
   htmlToText,
 } from '../../core/services/content-converter.js';
+import {
+  assertCarrierRecoveryEligible,
+  CARRIER_HAS_COLLAB_DOC_SQL,
+  isStaleCarrierReservation,
+  logStoredCarriers,
+  reconcileStoredCarriers,
+} from '../../core/services/confluence-carrier-recovery.js';
 import { materializeDrawioPreviews } from '../../core/services/drawio-previews.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import {
@@ -2580,11 +2587,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       page_type: string;
       content_revision: string; lifecycle_revision: string;
       body_storage: string | null; body_html: string | null;
+      local_modified_at: Date | null; has_collab_doc: boolean;
     }>(
       `SELECT id, version, remote_version, space_key, source, created_by_user_id, visibility,
               confluence_id, deleted_at, page_type, content_revision::text,
-              lifecycle_revision::text, body_storage, body_html
-         FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
+              lifecycle_revision::text, body_storage, body_html,
+              local_modified_at, ${CARRIER_HAS_COLLAB_DOC_SQL} AS has_collab_doc
+         FROM pages p WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
       [primaryKey ?? id],
     );
     if (existing.rows.length === 0) {
@@ -2868,7 +2877,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // The page-level authorization comes first: no file is planned and no storage derived for an
     // actor the page denies.
     await assertContentWriteAuthorizedBeforePreparation(existingPage.id, userId, expectedRevision);
-    const imagePlan = await planLocalImagesForConfluence(body.bodyHtml);
+    // #1953: carriers of a page synced before v0.10.0 are recovered into the HTML this request writes, after the
+    // page-level authorization and before the image plan, so the plan and the one derivation follow the final HTML.
+    const carriers = reconcileStoredCarriers({ row: existingPage, targetHtml: body.bodyHtml });
+    const imagePlan = await planLocalImagesForConfluence(carriers.html);
     const nextStorageBody = htmlToConfluence(imagePlan.bodyHtml, {
       previousStorage: existingPage.body_storage,
       legacyTasks: hasOnlyUncarriedTasks(existingPage.body_html),
@@ -2881,6 +2893,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       await lockPageWriterRuntime(reservationClient, runtimeId);
       await lockPageLifecycle(reservationClient, [existingPage.id]);
       await loadAuthorizedContentWriteState(reservationClient, existingPage.id, userId, expectedRevision);
+      // #1953 (Y7): a recovery is written only while the row is still a lockstep row under this lock.
+      if (carriers.changed) await assertCarrierRecoveryEligible(reservationClient, existingPage.id);
       writeIntent = await reservePageWriteIntentInTransaction(reservationClient, {
         pageIds: [existingPage.id],
         kind: 'pages.update.confluence',
@@ -2898,10 +2912,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       await reservationClient.query('COMMIT');
     } catch (error) {
       await reservationClient.query('ROLLBACK');
+      if (isStaleCarrierReservation(error)) {
+        logStoredCarriers({ pageId: existingPage.id, writer: 'put', result: carriers, final: 'stale' });
+      }
       throw error;
     } finally {
       reservationClient.release();
     }
+    logStoredCarriers({ pageId: existingPage.id, writer: 'put', result: carriers, final: 'reserved' });
 
     let admittedClient: ConfluenceClient;
     try {
@@ -3634,12 +3652,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       visibility: string; confluence_id: string | null; space_key: string | null;
       draft_body_html: string | null; draft_body_storage: string | null;
       content_revision: string; lifecycle_revision: string;
+      local_modified_at: Date | null; has_collab_doc: boolean;
     }>(
       `SELECT id, version, remote_version, title, body_html, body_text, body_storage, source,
               created_by_user_id, visibility, confluence_id, space_key,
               draft_body_html, draft_body_storage, content_revision::text,
-              lifecycle_revision::text
-         FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+              lifecycle_revision::text, local_modified_at,
+              ${CARRIER_HAS_COLLAB_DOC_SQL} AS has_collab_doc
+         FROM pages p WHERE id = $1 AND deleted_at IS NULL`,
       [pageId],
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
@@ -3671,15 +3691,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // #1955 (review r1): the draft is stored content of the page. Nothing is derived from it for an actor
     // the page denies; a local-only publication derives nothing and is authorized where it is written.
     if (remotePublicationRequired) await assertContentWriteAuthorizedBeforePreparation(page.id, userId, expectedRevision);
+    // #1953: carriers of a page synced before v0.10.0 are recovered into the draft that is published, after the
+    // page-level authorization and before the task ids are assigned. A local-only publication recovers nothing.
+    const carriers = remotePublicationRequired
+      ? reconcileStoredCarriers({ row: page, targetHtml: page.draft_body_html })
+      : null;
     // #1751: publication keeps the draft's HTML rather than re-deriving it from
     // the storage Confluence returns, so a remote publication stores the task
     // ids it writes there.
     const publishedHtml = remotePublicationRequired
-      ? assignTaskIds(page.draft_body_html, {
+      ? assignTaskIds(carriers!.html, {
         previousStorage: page.body_storage,
         legacyTasks: hasOnlyUncarriedTasks(page.body_html),
       }).html
       : page.draft_body_html;
+    // #1953: the stored text follows the HTML the reconcile produced (a restored attachment label changes it).
+    const publishedText = carriers?.changed ? htmlToText(publishedHtml) : null;
     // #1955: a remote publication derives its storage once, here, before the
     // draft is published locally and before the intent is reserved, with the
     // stored storage as the evidence for the draft's ri:url links. A body the
@@ -3692,6 +3719,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const publishDraft = async (writeClient: PoolClient): Promise<void> => {
       const current = await loadAuthorizedContentWriteState(writeClient, page.id, userId, expectedRevision);
       if (remotePublicationRequired) await assertNoPendingSyncConflict([page.id], writeClient);
+      // #1953 (Y7): before the lineage is invalidated and the page changes, the row must still be a lockstep row.
+      if (carriers?.changed) await assertCarrierRecoveryEligible(writeClient, page.id);
       remoteVersion = current.remoteVersion;
       await invalidateCollabDocAfterBodyWrite(page.id, writeClient);
       publishedVisibility = current.visibility;
@@ -3703,7 +3732,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       );
       await writeClient.query(
         `UPDATE pages SET
-          body_html = $2, body_text = draft_body_text,
+          body_html = $2, body_text = COALESCE($4::text, draft_body_text),
           body_storage = COALESCE(draft_body_storage, body_storage),
           version = version + 1,
           remote_version = CASE WHEN $3 THEN COALESCE(remote_version, version) ELSE remote_version END,
@@ -3719,7 +3748,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL,
           draft_updated_at = NULL, draft_updated_by = NULL
          WHERE id = $1`,
-        [page.id, publishedHtml, remotePublicationRequired],
+        [page.id, publishedHtml, remotePublicationRequired, publishedText],
       );
     };
 
@@ -3749,10 +3778,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         await writeClient.query('COMMIT');
       } catch (error) {
         await writeClient.query('ROLLBACK');
+        if (carriers && isStaleCarrierReservation(error)) {
+          logStoredCarriers({ pageId: page.id, writer: 'draft_publish', result: carriers, final: 'stale' });
+        }
         throw error;
       } finally {
         writeClient.release();
       }
+      logStoredCarriers({ pageId: page.id, writer: 'draft_publish', result: carriers!, final: 'reserved' });
     } else {
       await withPageWriteTransaction([page.id], publishDraft);
     }

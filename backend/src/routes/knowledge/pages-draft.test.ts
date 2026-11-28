@@ -29,7 +29,8 @@ import {
 import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
-import { confluenceToHtml } from '../../core/services/content-converter.js';
+import { confluenceToHtml, htmlToText } from '../../core/services/content-converter.js';
+import { LEGACY_CARRIER_FIXTURES } from '../../core/services/__fixtures__/confluence-carrier-legacy.js';
 import {
   buildKnowledgeTestApp,
   insertLocalSpace,
@@ -490,6 +491,76 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes �
       // Publication keeps the draft's HTML as the live body: with the ids it was published with.
       const stored = await storedPage(pageId);
       expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['7', '8']);
+    });
+
+    describe('carriers of a page synced before v0.10.0 (#1953)', () => {
+      const LEGACY = LEGACY_CARRIER_FIXTURES.attachmentOwnedLabelInText;
+      const DRAFT = LEGACY.legacyHtml.replace('<p>See a.pdf.</p>', '<p>See the file.</p>');
+
+      async function seedLegacyDraft(): Promise<number> {
+        const pageId = await seedConfluencePage();
+        await query(
+          `UPDATE pages SET body_storage = $2, body_html = $3, draft_body_html = $4, draft_body_text = $5 WHERE id = $1`,
+          [pageId, LEGACY.storage, LEGACY.legacyHtml, DRAFT, 'File Other here See the file.'],
+        );
+        return pageId;
+      }
+
+      it('publishes a recovered page-owned attachment link with its changed label from one derivation; the live body and text agree', async () => {
+        const pageId = await seedLegacyDraft();
+
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const sent = confluenceRequests[0]!.body.body.storage.value;
+        expect(sent).toBe('<p>File <ac:link><ri:attachment ri:filename="a.pdf"><ri:page ri:content-title="Other"></ri:page>'
+          + '</ri:attachment></ac:link> here</p><p>See the file.</p>');
+        const stored = await storedPage(pageId);
+        expect(stored.body_html).toBe('<p>File <a href="#confluence-attachment:a.pdf?page.ri:content-title=Other" data-confluence-link="attachment">'
+          + 'a.pdf</a> here</p><p>See the file.</p>');
+        expect(stored.body_text).toBe(htmlToText(stored.body_html));
+        expect(stored.body_text).toContain('a.pdf');
+        expect(stored.draft_body_html).toBeNull();
+      });
+
+      it('keeps draft_body_text when nothing was recovered', async () => {
+        const pageId = await seedLegacyDraft();
+        await query('UPDATE pages SET local_modified_at = NOW() WHERE id = $1', [pageId]);
+
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(confluenceRequests[0]!.body.body.storage.value).toContain('<ri:page ri:content-title="Other"></ri:page></ac:link>');
+        expect(await storedPage(pageId)).toMatchObject({ body_html: DRAFT, body_text: 'File Other here See the file.' });
+      });
+
+      it('Y7: prepare → seed → reserve leaves the draft a draft and the new lineage in place', async () => {
+        const pageId = await seedLegacyDraft();
+        const before = await storedPage(pageId);
+        const blocker = await getPool().connect();
+        try {
+          await blocker.query('BEGIN');
+          await lockPageLifecycle(blocker, [pageId]);
+          const pending = app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+          await waitForBlockedLifecycleLock();
+          await blocker.query(
+            `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version, updated_at)
+             VALUES ($1, $2, $3, 1, NOW())`,
+            [pageId, Buffer.from(encodeStateAsUpdate(new Doc())), Buffer.from([0])],
+          );
+          await blocker.query('COMMIT');
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(409);
+          expect(response.json()).toMatchObject({ reason: 'stale_content_revision' });
+        } finally {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          blocker.release();
+        }
+        expect(confluenceRequests).toEqual([]);
+        expect(await storedPage(pageId)).toEqual(before);
+        expect((await query('SELECT 1 FROM page_collaborative_docs WHERE page_id = $1', [pageId])).rowCount).toBe(1);
+        expect((await query('SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::integer[]', [pageId])).rowCount).toBe(0);
+      });
     });
 
     describe('ri:url links of a published draft (#1955)', () => {

@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import {
   isDbAvailable,
@@ -30,7 +30,9 @@ import { recordConfluenceVersionObservation } from '../../domains/confluence/ser
 import { encryptPat } from '../../core/utils/crypto.js';
 import { confluenceToHtml } from '../../core/services/content-converter.js';
 import { encodeConfluenceLinkValue } from '../../core/services/confluence-link.js';
-import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { oracleElements, oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { LEGACY_CARRIER_FIXTURES as LEGACY } from '../../core/services/__fixtures__/confluence-carrier-legacy.js';
+import { logger } from '../../core/utils/logger.js';
 import {
   buildKnowledgeTestApp,
   insertLocalSpace,
@@ -1149,5 +1151,152 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       version: before.version,
       content_revision: before.content_revision,
     });
+  });
+
+  describe('carriers of a page synced before v0.10.0 (#1953)', () => {
+    const LOG = 'Confluence carriers reconciled (#1953)';
+    const sent = (): string => confluenceRequests.at(-1)!.body.body.storage.value;
+    const codeParameters = (storage: string): Record<string, string> => Object.fromEntries(
+      [...(oracleElements(storage, 'ac', 'structured-macro').find((macro) => macro.getAttribute('ac:name') === 'code')?.children ?? [])]
+        .filter((child) => child.localName === 'parameter')
+        .map((child) => [child.getAttribute('ac:name') ?? '', child.textContent ?? '']),
+    );
+    const emoticons = (storage: string): string[] => oracleElements(storage, 'ac', 'emoticon').map((el) => el.getAttribute('ac:name') ?? '');
+    const carrierLines = (spy: ReturnType<typeof vi.spyOn>): unknown[] =>
+      spy.mock.calls.filter((call: unknown[]) => call[1] === LOG).map((call: unknown[]) => call[0]);
+
+    async function seedLegacy(fixture: { storage: string; legacyHtml: string } = LEGACY.ac1): Promise<number> {
+      const pageId = await seedConfluencePage(currentUserId);
+      await query('UPDATE pages SET body_storage = $2, body_html = $3 WHERE id = $1', [pageId, fixture.storage, fixture.legacyHtml]);
+      return pageId;
+    }
+
+    async function save(pageId: number, bodyHtml: string, version = 7) {
+      return app.inject({ method: 'PUT', url: `/api/pages/${pageId}`, payload: { title: 'Original', bodyHtml, version } });
+    }
+
+    it('keeps macro parameters, emoticons and link targets of a legacy page on its first save, and logs counts by kind, names only', async () => {
+      const pageId = await seedLegacy();
+      const info = vi.spyOn(logger, 'info');
+      try {
+        const response = await save(pageId, LEGACY.ac1.legacyHtml);
+        expect(response.statusCode, response.body).toBe(200);
+        expect(codeParameters(sent())).toEqual({ language: 'java', title: 'Main', linenumbers: 'true' });
+        expect(emoticons(sent())).toEqual(['tick', 'cross']);
+        expect(sent()).toContain('<ri:page ri:content-title="My Page" ri:space-key="ENG"></ri:page>');
+        expect(sent()).toContain('<ri:attachment ri:filename="a.pdf"><ri:page ri:content-title="Other"></ri:page></ri:attachment>');
+        expect(sent()).toContain('<ac:link ac:anchor="top">');
+        expect(carrierLines(info)).toEqual([{
+          pageId,
+          writer: 'put',
+          outcome: 'recovered',
+          recovered: { emoticon: 2, 'macro.code': 1, 'macro.toc': 1, 'macro.status': 1, link: 3 },
+          skipped: {},
+        }]);
+        expect(JSON.stringify(carrierLines(info))).not.toMatch(/Main|ENG|a\.pdf|tick|My Page|data-cq-/);
+      } finally {
+        info.mockRestore();
+      }
+      expect(sent()).not.toContain('data-cq-');
+      // The page mirrors what Confluence returned; the next save writes the same storage and recovers nothing.
+      const first = sent();
+      const row = await pageRow(pageId);
+      expect(row.body_storage).toBe(first);
+      remoteVersion = 9;
+      const second = await save(pageId, row.body_html, row.version);
+      expect(second.statusCode, second.body).toBe(200);
+      expect(sent()).toBe(first);
+    });
+
+    it('does not resurrect an emoticon in a block the user edited', async () => {
+      const pageId = await seedLegacy();
+      const response = await save(pageId, LEGACY.ac1.legacyHtml.replace('Done  now', 'Done  later'));
+      expect(response.statusCode, response.body).toBe(200);
+      expect(sent()).toContain('<p>Done  later</p>');
+      expect(emoticons(sent())).toEqual(['cross']);
+    });
+
+    it('recovers nothing and logs the excluded reason on a locally modified row, a collaborative document row and a draw.io wrapper', async () => {
+      const drawio = '<div class="confluence-drawio" data-diagram-name="d"></div>';
+      const cases: Array<[string, (pageId: number) => Promise<void>, string]> = [
+        ['local_modified', (pageId) => query('UPDATE pages SET local_modified_at = NOW() WHERE id = $1', [pageId]).then(() => undefined), ''],
+        ['collab_document', (pageId) => query(
+          `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version, updated_at)
+           VALUES ($1, '\\x00'::bytea, '\\x00'::bytea, 1, NOW())`,
+          [pageId],
+        ).then(() => undefined), ''],
+        ['drawio', (pageId) => query('UPDATE pages SET body_html = body_html || $2 WHERE id = $1', [pageId, drawio]).then(() => undefined), drawio],
+      ];
+      for (const [reason, prepare, suffix] of cases) {
+        await truncateAllTables();
+        currentUserId = await insertUser(`page-update-carriers-${randomUUID()}`);
+        confluenceRequests = [];
+        const pageId = await seedLegacy();
+        await prepare(pageId);
+        const info = vi.spyOn(logger, 'info');
+        try {
+          const response = await save(pageId, LEGACY.ac1.legacyHtml + suffix);
+          expect(response.statusCode, `${reason}: ${response.body}`).toBe(200);
+          expect(codeParameters(sent())).toEqual({ language: 'java' });
+          expect(emoticons(sent())).toEqual([]);
+          expect(carrierLines(info)).toEqual([{
+            pageId, writer: 'put', excluded: reason, kinds: ['macro.code', 'macro.status', 'macro.toc', 'link', 'emoticon'],
+          }]);
+        } finally {
+          info.mockRestore();
+        }
+      }
+    });
+
+    it('Z6: an eligible save whose every legacy record is skipped logs evaluated with the skip reason and sends today\'s storage', async () => {
+      const pageId = await seedLegacy(LEGACY.twoLookalikeLinks);
+      const info = vi.spyOn(logger, 'info');
+      try {
+        const response = await save(pageId, LEGACY.twoLookalikeLinks.legacyHtml);
+        expect(response.statusCode, response.body).toBe(200);
+        expect(carrierLines(info)).toEqual([{
+          pageId, writer: 'put', outcome: 'evaluated', recovered: {}, skipped: { link: { ambiguous: 2 } },
+        }]);
+      } finally {
+        info.mockRestore();
+      }
+      expect(oracleElements(sent(), 'ri', 'page').map((page) => page.getAttribute('ri:space-key'))).toEqual([null, null]);
+    });
+
+    for (const [interleaving, change] of [
+      ['a collaborative document seeded', `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version, updated_at)
+         VALUES ($1, '\\x00'::bytea, '\\x00'::bytea, 1, NOW())`],
+      ['local_modified_at set', 'UPDATE pages SET local_modified_at = NOW() WHERE id = $1'],
+    ] as const) {
+      it(`Y7: prepare → ${interleaving} → reserve answers 409, publishes no recovery and logs stale`, async () => {
+        const pageId = await seedLegacy();
+        const info = vi.spyOn(logger, 'info');
+        const blocker = await getPool().connect();
+        try {
+          await blocker.query('BEGIN');
+          await lockPageLifecycle(blocker, [pageId]);
+          const pending = save(pageId, LEGACY.ac1.legacyHtml);
+          await waitForBlockedLifecycleLock();
+          await blocker.query(change, [pageId]);
+          await blocker.query('COMMIT');
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(409);
+          expect(response.json()).toMatchObject({ reason: 'stale_content_revision' });
+          expect(confluenceRequests).toEqual([]);
+          expect(providerCalls).toEqual([]);
+          expect((await query('SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::integer[]', [pageId])).rowCount).toBe(0);
+          expect(await pageRow(pageId)).toMatchObject({ body_html: LEGACY.ac1.legacyHtml, version: 7 });
+          expect(carrierLines(info)).toEqual([{ pageId, writer: 'put', outcome: 'stale' }]);
+        } finally {
+          info.mockRestore();
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          blocker.release();
+        }
+        // The retry reads a row that is no longer lockstep and writes without recovery.
+        const retry = await save(pageId, LEGACY.ac1.legacyHtml);
+        expect(retry.statusCode, retry.body).toBe(200);
+        expect(emoticons(sent())).toEqual([]);
+      });
+    }
   });
 });

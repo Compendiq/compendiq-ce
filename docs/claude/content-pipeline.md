@@ -414,7 +414,7 @@ Every other writer passes no set and derives with all features. The digest
 proves the derived storage and the effective title, not the historical row: the
 route compares the row's id, title and HTML before the provider PUT.
 
-**Carrier recovery matcher (#1953, not wired to a writer yet).** A page synced
+**Carrier recovery matcher (#1953).** A page synced
 before #1748/#1749/#1750 has a `body_html` without link targets, macro
 parameters and emoticons while its `body_storage` holds them.
 `reconcileConfluenceCarriers(storedBodyHtml, storedBodyStorage, targetHtml,
@@ -448,7 +448,30 @@ shows the same visible label or goes to the same page, attachment or anchor,
 and only when the link's own anchor is still in the target. So a page with two
 links labelled alike or to one destination recovers neither, and a link the
 editor dropped or the user unlinked is not republished. Re-sync stays the
-remedy. The writers and the room seed call it in #1953-2.
+remedy.
+
+**Carriers of pages synced before v0.10.0, in the writers (#1953).** PUT,
+draft publish (remote only) and the remote AI Improve Apply call
+`reconcileStoredCarriers` (`confluence-carrier-recovery.ts`, the impure side:
+marker, row gate, logs) on a lockstep row (Confluence, storage and HTML, no
+`local_modified_at`, no `page_collaborative_docs` row, no draw.io wrapper in
+`body_html`), and check `assertCarrierRecoveryEligible` again under the
+reservation locks when the result changed (409 `stale_content_revision`; the
+retry writes without recovery). Apply passes #1958's code witnesses and
+admits the reported legacy code ops only after `legacyCodeApplicationHolds`
+confirms the attributes applied per ordinal. A writable room load of a
+missing document seeds the recovered HTML and the `confluenceCarriers` meta
+key in the same update, unless a pending intent names the page; the key lists
+only the kinds evaluated with no skipped record, is written by the seed only
+and is never evidence. Version restore never recovers (D9 R1); a
+collaborative Save from a room without the key writes what the room holds and
+logs `collab.commit_carriers_unproven` (D9 R2); an existing lineage is never
+replaced (D9 R3). Logs (`Confluence carriers reconciled (#1953)`) carry page
+id, writer, outcome and per-kind counts only, after the reservation commits.
+No migration and no backfill: a row is reconciled only when one of these
+writers saves it. Rollback is a revert of the writer wiring; HTML already
+published with recovered carriers is ordinary carried HTML every release since
+#1749/#1750 reads and writes.
 
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
@@ -482,7 +505,12 @@ them when its body is next re-derived from Confluence (an upstream change, or
 a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
 or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
 `POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
-unchanged pages). A save before that still drops them.
+unchanged pages). Before that, the first PUT, remote draft publish, remote AI
+Improve Apply or newly seeded room of a lockstep page recovers them from
+`body_storage` where the matcher proves them (#1953, above); every other save
+of such a page (a locally edited row, one with a collaborative document or a
+draw.io wrapper, a room created before v0.10.0, a version restore, or a
+carrier the matcher skips) still drops them.
 
 **AI Improve keeps code-block title and options (#1958).** With `layoutTokens`
 an annotated `pre` that can travel (one `code` child without elements, not in

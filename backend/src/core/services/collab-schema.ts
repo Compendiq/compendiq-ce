@@ -1290,13 +1290,18 @@ export function yDocToHtml(doc: Y.Doc): string {
 /**
  * Seed or reset `doc` from HTML. When the HTML's tasks carry Confluence task
  * ids, the same update records that in the document's metadata (#1751;
- * {@link collabCarriesTaskIds}).
+ * {@link collabCarriesTaskIds}). `carrierKinds` (#1953, the seed of a new
+ * lineage only) records in the same update the carrier kinds the seed fully
+ * evaluated ({@link collabSeededCarrierKinds}).
  */
-export function applyHtmlToYDoc(doc: Y.Doc, html: string): void {
+export function applyHtmlToYDoc(doc: Y.Doc, html: string, options: { carrierKinds?: readonly string[] } = {}): void {
   const src = htmlToYDoc(html);
   try {
     if (taskItemElements(src).some((element) => carriesTaskId(element))) {
       src.getMap(COLLAB_META_MAP).set(COLLAB_META_TASK_IDS, true);
+    }
+    if (options.carrierKinds) {
+      src.getMap(COLLAB_META_MAP).set(COLLAB_META_CARRIERS, [...options.carrierKinds].sort().join(','));
     }
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(src), 'load');
   } finally {
@@ -1382,6 +1387,21 @@ export const COLLAB_META_TASK_IDS = 'confluenceTaskIds';
  */
 export function collabCarriesTaskIds(doc: Y.Doc): boolean {
   return doc.getMap(COLLAB_META_MAP).get(COLLAB_META_TASK_IDS) === true;
+}
+
+/**
+ * The carrier kinds the seed of this lineage evaluated with no skipped record
+ * (#1953, D9 R2/R3, Z6): `compendiq.meta` key `confluenceCarriers`, the kind
+ * ids comma-joined. Written only by the seed of a new lineage from a lockstep
+ * row. Never evidence: nothing is recovered because of it; it only silences
+ * the `collab.commit_carriers_unproven` line of a Save for those kinds. A room
+ * without the key (every lineage that predates the release) holds none.
+ */
+export const COLLAB_META_CARRIERS = 'confluenceCarriers';
+
+export function collabSeededCarrierKinds(doc: Y.Doc): ReadonlySet<string> {
+  const value: unknown = doc.getMap(COLLAB_META_MAP).get(COLLAB_META_CARRIERS);
+  return new Set(typeof value === 'string' && value !== '' ? value.split(',') : []);
 }
 
 function taskItemElements(doc: Y.Doc): Y.XmlElement[] {

@@ -690,6 +690,22 @@ read `body_html`, parse into `Y.XmlFragment` field `'default'` with
 Initialization is server-side, once, locked — two clients `setContent` into
 an empty fragment is dual-init duplication.
 
+**Carriers of a seeded room (#1953).** The writable load of a missing
+document on a Confluence row in lockstep (storage and HTML, no
+`local_modified_at`, no draw.io wrapper) and with no pending
+`page_write_intents` row on the page reconciles `body_html` against
+`body_storage` in the same transaction (`chooseSeedCarriers`) and seeds the
+recovered HTML. The seed update also sets `confluenceCarriers` in
+`compendiq.meta`: the sorted kinds the reconcile evaluated with no skipped
+record. A bound, a failure, an excluded row or a pending intent seeds the
+ordinary HTML with no key. The key is written by the seed only and is never
+evidence of anything; a read-only load, a persisted document and every
+existing lineage are untouched (D9 R3). A collaborative Save logs
+`collab.commit_carriers_unproven` with `{ pageId, kinds }` for the carrier
+kinds the page's storage may hold that the room's key lacks, and writes what
+the room holds (D9 R2). The seed's own log line is written after its
+transaction commits.
+
 BYTEA is valid only while it still corresponds to live `body_html`. Every
 non-collab writer that updates `body_html` while the room is empty (PUT,
 restore, Apply, draft-publish, flag-off rollback) must

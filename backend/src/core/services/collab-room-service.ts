@@ -48,6 +48,7 @@ import {
 import * as persist from './collab-persistence.js';
 import {
   collabCarriesTaskIds,
+  collabSeededCarrierKinds,
   collabTaskItems,
   markAttachmentImages,
   markTaskIds,
@@ -223,6 +224,8 @@ export type CollabCommitSnapshot = {
   taskItems: CollabTaskItem[];
   /** Whether the room's tasks carry Confluence task ids (#1751; collabCarriesTaskIds). */
   taskIdsCarried: boolean;
+  /** The carrier kinds the lineage's seed fully evaluated (#1953; collabSeededCarrierKinds). */
+  carrierKinds: ReadonlySet<string>;
   /** Lineage of the snapshotted document; the Save's post-commit marks carry it (#2034). */
   docEpoch: string;
 };
@@ -1726,6 +1729,7 @@ export async function createCollabRuntime(
           documentState: Y.snapshot(room.doc),
           taskItems: collabTaskItems(room.doc),
           taskIdsCarried: collabCarriesTaskIds(room.doc),
+          carrierKinds: collabSeededCarrierKinds(room.doc),
           docEpoch,
         };
       });

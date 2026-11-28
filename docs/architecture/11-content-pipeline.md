@@ -62,7 +62,7 @@ flowchart LR
     NC["Articles + child-pages macros<br/>or parent property tables"]
 
     CF -- "confluenceToHtml()" --> DB
-    DB -- "htmlToConfluence()" --> CF
+    DB -- "htmlToConfluence()<br/>(+ #1953 carrier recovery on lockstep rows)" --> CF
     DB -- "htmlToMarkdown()" --> LLM
     LLM -- "markdownToHtml()" --> DB
     DB <--> ED
@@ -113,6 +113,12 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:layout` / `ac:layout-section` / `ac:layout-cell` | `div.confluence-layout` / `div.confluence-layout-section[data-layout-type]` / `div.confluence-layout-cell` | flattened content (default); `[[[LAYOUT]]]` / `[[[LAYOUT-SECTION type]]]` / `[[[LAYOUT-CELL]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | `ac:structured-macro[section]` / `[column]` (legacy) | `div.confluence-section[data-border]` / `div.confluence-column[data-cell-width]` | flattened content (default); `[[[SECTION border=…]]]` / `[[[COLUMN width=…]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | any other macro (catch-all) | `<div class="confluence-macro-unknown" data-macro-name="…" data-macro-params="{…}">` (#865; was lossy) | placeholder; opaque-protected on Improve |
+
+The code, emoticon, page/attachment/anchor link, toc and status rows hold
+carriers that `body_html` synced before v0.10.0 lacks; the first PUT, draft
+publish, AI Improve Apply or newly seeded room of such a page takes back what
+the matcher proves from `body_storage` (see "Carrier recovery on pages synced
+before v0.10.0 (#1953)"); every other case still needs a re-sync.
 
 Diagram attachment publication promotes only source-only wrappers bound to the
 saved file URL, after full PNG validation, in the existing admitted transaction.
@@ -174,8 +180,10 @@ any change to the existing conflict policy.
   HTML parser reports, lowercased; every known Confluence attribute is
   lowercase. Only `body_html` converted after #1750 holds the placeholders: a
   page synced earlier gets them when its body is next re-derived from
-  Confluence (an upstream change, or a re-sync); saving it before then still
-  writes it back without emoticons.
+  Confluence (an upstream change, or a re-sync). Until then, the first PUT,
+  draft publish, AI Improve Apply or newly seeded room of a lockstep page
+  recovers the emoticons the matcher proves (#1953, "Carrier recovery" below);
+  any other save still writes the page back without them.
 - `jira`, `include`, `excerpt-include`, and `toc` all round-trip
   losslessly by stashing the original parameters on `data-*` attributes
   of the placeholder element; `htmlToConfluence` reads them back to
@@ -221,7 +229,8 @@ any change to the existing conflict policy.
   entity `&nbsp;` as `&#160;`. An href that breaks the grammar's rules stays
   the `<a>` it is. An href written before #1748
   (`#confluence-page:<title as written>`) still converts, as a link by title
-  alone — its space, anchor and other attributes were never stored. An older
+  alone — its space, anchor and other attributes were never stored (unless
+  the first save of a lockstep page recovers them from `body_storage`, #1953). An older
   href that also parses as the grammar (its title made only of unreserved
   characters and `%XX`, or ending in a valid `?name=value` list such as
   `?body=plain`) is read as the grammar, because every href written since
@@ -570,7 +579,9 @@ any change to the existing conflict policy.
   pages, **Pull from Confluence…** on a page, or Settings → Spaces & Sync →
   Sync schedule → **Force Re-sync All**, all calling `POST /api/pages/bulk/sync`;
   **Sync Now** is incremental and does not refresh unchanged pages). Saving it
-  before then still writes back without them.
+  before then writes back without them, except what the first PUT, draft
+  publish, AI Improve Apply or newly seeded room of a lockstep page recovers
+  (#1953, "Carrier recovery" below).
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps the source `ac:name` as
   `data-macro-name="expand|ui-expand"` (plus
@@ -1909,6 +1920,81 @@ heading made of a token binds nothing; there is no UI warning. R6 (review r1):
 a frozen original one HTML parse cannot give back (a line feed before the
 `code` of a `pre`, a CR outside code text) refuses every Accept of that page
 until it is edited.
+
+## Carrier recovery on pages synced before v0.10.0 (#1953)
+
+Before v0.10.0, sync stored `body_html` without some Confluence carriers:
+code-block title and options, status and TOC macro parameters, internal page
+and attachment link destinations, and emoticons. The first save of such a page
+wrote the stored HTML back and dropped them in Confluence. The pure matcher
+(`confluence-carrier-reconcile.ts`, #1953-1) takes the stored HTML L, the
+stored storage S and the writer's target HTML T, re-renders S, pairs each
+carrier of L with the re-rendered one by its text and position, and writes a
+carrier into T only where that pairing is unambiguous; anything else is a
+counted skip (`no_element`, `ambiguous`, `changed`, …). It never reads the
+network or the database.
+
+The writers (#1953-2, `confluence-carrier-recovery.ts`) run it only while the
+row is in lockstep: a Confluence row with storage and HTML, no
+`local_modified_at`, no collaborative document, and no draw.io wrapper in L.
+Every length is checked first (§3.6 stage 0): when L, S or T is past
+2,097,152 UTF-16 units nothing is parsed or scanned and no exclusion is
+reported; PUT, draft publish and the seed log `bound`, and an Apply with any of
+them past the bound (T being its finalized HTML) runs nothing of #1953. Within the bound the
+wrapper test is structural: L is parsed once and excluded when an element's
+class list holds `confluence-drawio`, the selector `htmlToConfluence` and the
+draw.io preview writer use, so an entity-spelled class is a wrapper and prose
+naming the class is not. An excluded row writes T unchanged.
+
+| Writer | When | Eligibility at reservation |
+| --- | --- | --- |
+| PUT `/api/pages/:id` | after the content authorization, before image planning | 409 `stale_content_revision` |
+| Draft publish | before `assignTaskIds`, remote publish only | 409 `stale_content_revision` |
+| AI Improve Apply | after finalize, remote exit only; code via #1958 witnesses | 409 `stale_content_revision` |
+| Collaborative seed | writable load of a missing document, same transaction | no pending intent on the page |
+
+A version restore runs no recovery (D9 R1): it publishes the snapshot as it
+was stored. A changed result is re-checked under the reservation locks, so a
+row that moved since it was read refuses rather than writing carriers from
+another storage. On Apply, the legacy code metadata the matcher found is
+admitted through `admitLegacyCodeMetadata`, and the attributes actually
+applied per ordinal are compared with the reported operations
+(`legacyCodeApplicationHolds`); a mismatch refuses the Apply
+(`unapproved-code-macro`). When the recovery changed the HTML of an Apply
+bound to a #1958 suggestion, #1958's bound-nonce refusal runs again on that
+final HTML and its `htmlToText` projection, before the storage is derived:
+a recovered value spelling the nonce refuses the Apply (422, logged as
+`code-placement`) with nothing reserved or sent.
+
+Each writer logs `Confluence carriers reconciled (#1953)` with the page id,
+the writer, the outcome and per-kind counts, after the reservation commits.
+An excluded row logs the kinds its storage may carry, and a stale or refused
+write logs only its outcome. Lines never carry content, titles, link targets
+or the marker. Outcome `none` is not logged.
+
+Scoped exceptions (maintainer decision D9): version restore recovers nothing
+(R1); a collaborative Save over a room without the `confluenceCarriers` key
+writes what the room holds and logs `collab.commit_carriers_unproven` (R2);
+an existing room lineage is never replaced (R3); a row or block without proof
+is skipped and counted (R4). Limits (design reductions R6-5, R6-6, R7-1 to
+R7-6): a page whose storage the two readers do not read alike anywhere
+recovers nothing; a container whose child blocks changed recovers nothing
+inside it, except the one trailing empty paragraph the editor appends; links
+of the #1955 kinds (blog post, space, shortcut, content entity, url) are not
+recovered; a page with a non-flat task list recovers nothing (`bound`); a
+reservation that finds a room or a local edit answers 409 and the retry writes
+without recovery; a seed under the page's own pending collaborative Save, or
+one that ends on a bound or a failure, writes no key; a kind with a skipped
+record stays out of the key, so later Saves of that room keep logging it.
+Re-sync restores the carriers to `body_html` while Confluence still holds
+them; after a save that wrote the page without them, only Confluence's page
+history does.
+
+No migration and no backfill: a row is reconciled only when one of these
+writers saves it. Rollback is a revert of the writer wiring; HTML already
+published with recovered carriers is the carried HTML every release since
+#1749/#1750 already reads and writes, and rooms that hold the
+`confluenceCarriers` key keep working (an older release ignores the key).
 
 ## AI Improve layout preservation — boundary tokens (#765)
 

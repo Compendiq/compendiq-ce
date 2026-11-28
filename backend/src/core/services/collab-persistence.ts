@@ -26,6 +26,12 @@ import {
   type TaskIdMarker,
 } from './collab-schema.js';
 import {
+  logStoredCarriers,
+  reconcileStoredCarriers,
+  seededCarrierKinds,
+  type StoredCarrierResult,
+} from './confluence-carrier-recovery.js';
+import {
   isCollabCommitPending,
   PageWriteError,
   withPageWriteTransaction,
@@ -94,10 +100,20 @@ export function isCollabLineageChanged(error: unknown): boolean {
   return error instanceof PageWriteError && error.reason === COLLAB_LINEAGE_CHANGED;
 }
 
-function applyLoadRow(doc: Y.Doc, row: LoadRow): CollabLoadResult | 'missing' {
+/**
+ * `seed` (#1953, Z5) is passed only by the writable load of a missing document: its HTML replaces `body_html` in
+ * the one initialization, and its carrier kinds become the room key in that same update.
+ */
+function applyLoadRow(
+  doc: Y.Doc,
+  row: LoadRow,
+  seed?: { seedHtml: string; carrierKinds: readonly string[] | null },
+): CollabLoadResult | 'missing' {
   if (row.deleted_at || (row.page_type ?? 'page') === 'folder') return 'missing';
   if (row.doc_state) {
     Y.applyUpdate(doc, new Uint8Array(row.doc_state), COLLAB_LOAD_ORIGIN);
+  } else if (seed) {
+    applyHtmlToYDoc(doc, seed.seedHtml, seed.carrierKinds ? { carrierKinds: seed.carrierKinds } : {});
   } else {
     applyHtmlToYDoc(doc, row.body_html ?? '<p></p>');
   }
@@ -136,17 +152,27 @@ export async function loadOrInitCollabDoc(
 
     // A missing seed writes BYTEA only, never a protected page row, so the
     // page's own pending collaborative Save does not fence the load (#1763).
-    return await withPageWriteTransaction([pageId], async (client) => {
+    let seedCarriers: StoredCarrierResult | null = null;
+    const loaded = await withPageWriteTransaction([pageId], async (client) => {
       await lockCollabInit(client, pageId);
       const result = await client.query<LoadRow>(LOAD_PAGE_AND_DOC, [pageId]);
       const row = result.rows[0];
       if (!row) return 'missing';
-      const loaded = applyLoadRow(doc, row);
-      if (loaded === 'missing' || loaded.hasPersistedDoc) return loaded;
+      seedCarriers = row.doc_state || row.deleted_at ? null : await chooseSeedCarriers(client, pageId, row.body_html);
+      const seed = seedCarriers
+        ? { seedHtml: seedCarriers.html, carrierKinds: seededCarrierKinds(seedCarriers) }
+        : undefined;
+      const applied = applyLoadRow(doc, row, seed);
+      if (applied === 'missing' || applied.hasPersistedDoc) return applied;
       const docEpoch = await seedDocState(client, pageId, doc);
       if (docEpoch === null) return 'missing';
-      return { ...loaded, hasPersistedDoc: true, docEpoch };
+      return { ...applied, hasPersistedDoc: true, docEpoch };
     }, { admission, ownCollabCommit: 'proceed' });
+    // #1953 (Y8, Z5, Z6): the seed's line is written only once its insert committed.
+    if (loaded !== 'missing' && seedCarriers) {
+      logStoredCarriers({ pageId, writer: 'collab_seed', result: seedCarriers, final: 'reserved' });
+    }
+    return loaded;
   } catch (err) {
     logger.warn({ err, pageId }, 'collab: load/init failed');
     throw err;
@@ -169,6 +195,32 @@ async function seedDocState(client: PoolClient, pageId: number, doc: Y.Doc): Pro
     if ((err as { code?: string }).code === '23503') return null;
     throw err;
   }
+}
+
+/**
+ * #1953 (§3.8, Y7, Z5): what a new lineage of a missing document is seeded with. Only this branch reads the
+ * evidence (the storage and the lockstep columns) and the pending intents, in the seed's own transaction, under
+ * the page lifecycle lock that also serializes every reservation. A lockstep row with no pending write intent
+ * reconciles the stored body with itself; a seed under the page's own pending collaborative Save (the one intent
+ * admission lets pass) runs unrecovered and writes no key. Null: seed the ordinary HTML exactly as before.
+ */
+async function chooseSeedCarriers(client: PoolClient, pageId: number, bodyHtml: string | null): Promise<StoredCarrierResult | null> {
+  if (!bodyHtml) return null;
+  const evidence = await client.query<{
+    source: string; body_storage: string | null; local_modified_at: Date | null;
+    confluence_id: string | null; space_key: string | null; pending: boolean;
+  }>(
+    `SELECT p.source, p.body_storage, p.local_modified_at, p.confluence_id, p.space_key,
+            EXISTS (SELECT 1 FROM page_write_intents i
+                     WHERE i.status = 'pending' AND i.page_ids && ARRAY[p.id]::integer[]) AS pending
+       FROM pages p
+      WHERE p.id = $1 AND p.source = 'confluence' AND p.body_storage IS NOT NULL`,
+    [pageId],
+  );
+  const row = evidence.rows[0];
+  if (!row || row.pending) return null;
+  const result = reconcileStoredCarriers({ row: { ...row, body_html: bodyHtml, has_collab_doc: false }, targetHtml: bodyHtml });
+  return result.applicable ? result : null;
 }
 
 /** Replace the bytes of the row of `docEpoch`; refuses when that row is gone or belongs to another lineage. */
