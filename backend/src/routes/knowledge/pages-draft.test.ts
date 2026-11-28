@@ -28,6 +28,8 @@ import {
 } from '../../core/services/page-baseline-service.js';
 import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
 import { encryptPat } from '../../core/utils/crypto.js';
+import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
+import { confluenceToHtml } from '../../core/services/content-converter.js';
 import {
   buildKnowledgeTestApp,
   insertLocalSpace,
@@ -488,6 +490,116 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       // Publication keeps the draft's HTML as the live body: with the ids it was published with.
       const stored = await storedPage(pageId);
       expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['7', '8']);
+    });
+
+    describe('ri:url links of a published draft (#1955)', () => {
+      const STORED_LINK = '<ac:link><ri:url ri:value="/docs/guide" />'
+        + '<ac:plain-text-link-body><![CDATA[the guide]]></ac:plain-text-link-body></ac:link>';
+      const STORAGE = `<p>See ${STORED_LINK} first.</p>`;
+      const CARRIER = '<a href="#confluence-url:%2Fdocs%2Fguide?body=plain">the guide</a>';
+
+      it('publishes the stored link and writes a link the stored page does not hold as its text', async () => {
+        const pageId = await seedConfluencePage();
+        const draft = `<p>See ${CARRIER} first.</p><p>New <a href="#confluence-url:javascript%3Aalert%281%29?body=plain">click me</a>.</p>`;
+        await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [pageId, STORAGE, draft]);
+
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(confluenceRequests).toHaveLength(1);
+        const sent = confluenceRequests[0]!.body.body.storage.value;
+        expect(oracleUrlLinks(sent)).toEqual([
+          { value: '/docs/guide', link: {}, resource: {}, body: 'plain:the guide', text: 'the guide' },
+        ]);
+        expect(sent).toBe(
+          '<p>See <ac:link><ri:url ri:value="/docs/guide"></ri:url><ac:plain-text-link-body><![CDATA[the guide]]></ac:plain-text-link-body></ac:link> first.</p>'
+          + '<p>New click me.</p>',
+        );
+        // Publication keeps the draft's HTML: the declined carrier stays an inert fragment there.
+        expect((await storedPage(pageId)).body_html).toBe(draft);
+      });
+
+      it('refuses a draft that would carry a link past the check and leaves it a draft (W3)', async () => {
+        const pageId = await seedConfluencePage();
+        await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [
+          pageId,
+          STORAGE,
+          '<p>draft</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>',
+        ]);
+        const before = await storedPage(pageId);
+        const versionsBefore = await query('SELECT COUNT(*)::int AS count FROM page_versions WHERE page_id = $1', [pageId]);
+
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+        expect(response.statusCode, response.body).toBe(422);
+        expect(response.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'unapproved-link' });
+        // Nothing was published, snapshotted, reserved or sent.
+        expect(await storedPage(pageId)).toEqual(before);
+        expect((await query('SELECT COUNT(*)::int AS count FROM page_versions WHERE page_id = $1', [pageId])).rows)
+          .toEqual(versionsBefore.rows);
+        expect((await query('SELECT 1 FROM page_write_intents')).rowCount).toBe(0);
+        expect(confluenceRequests).toEqual([]);
+      });
+
+      // Owner decision D19 (review r5, R24): a draft that would publish a stored #1955 link with another target.
+      it('refuses a draft that would change a stored blog link\'s section and leaves it a draft, twice (D19)', async () => {
+        const pageId = await seedConfluencePage();
+        const stored = '<p>see <ac:link ac:anchor="See /> here"><ri:blog-post ri:content-title="Authors" ri:space-key="OPS" /></ac:link> now</p>';
+        await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [pageId, stored, confluenceToHtml(stored)]);
+        const before = await storedPage(pageId);
+        for (let publish = 0; publish < 2; publish += 1) {
+          const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+          expect(response.statusCode, response.body).toBe(422);
+          expect(response.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'changed-link-target' });
+        }
+        expect(await storedPage(pageId)).toEqual(before);
+        expect((await query('SELECT 1 FROM page_write_intents')).rowCount).toBe(0);
+        expect(confluenceRequests).toEqual([]);
+      });
+
+      // Review r1, R4: the draft is someone else's stored content for a member the page ACE denies.
+      it('answers a space member the page ACE denies as not authorized, before the draft is read for publication (R4)', async () => {
+        const pageId = await seedConfluencePage();
+        await query('UPDATE pages SET body_storage = $2, draft_body_html = $3, inherit_perms = FALSE WHERE id = $1', [
+          pageId,
+          STORAGE,
+          '<p>draft</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>',
+        ]);
+        const before = await storedPage(pageId);
+
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toMatchObject({ reason: 'not_authorized' });
+        expect(response.body).not.toMatch(/ConfluenceStorageRefusedError|unapproved-link/);
+        expect(await storedPage(pageId)).toEqual(before);
+        expect((await query('SELECT 1 FROM page_versions WHERE page_id = $1', [pageId])).rowCount).toBe(0);
+        expect((await query('SELECT 1 FROM page_write_intents')).rowCount).toBe(0);
+        expect(confluenceRequests).toEqual([]);
+
+        // With an entry for them the same draft is refused for what it holds.
+        await query(
+          `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+           VALUES ('page', $1, 'user', $2, 'edit')`,
+          [pageId, ownerId],
+        );
+        const allowed = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+        expect(allowed.statusCode, allowed.body).toBe(422);
+        expect(allowed.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'unapproved-link' });
+      });
+
+      it('never judges a publication that stays local', async () => {
+        const pageId = await seedConfluencePage();
+        const draft = '<p>draft</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>';
+        await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [pageId, STORAGE, draft]);
+        await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [ownerId]);
+
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(await storedPage(pageId)).toMatchObject({ body_html: draft, draft_body_html: null });
+        expect(confluenceRequests).toEqual([]);
+      });
     });
 
     // Review r2 B2: with stored tasks whose ids the two profiles give out

@@ -112,6 +112,7 @@ import {
   initPageBaselineOutbox,
 } from './core/services/page-baseline-outbox.js';
 import { getPageWriterRuntimeId, PageWriteError, SYNC_CONFLICT_PENDING_CODE } from './core/services/page-write-admission.js';
+import { ConfluenceStorageRefusedError } from './core/services/confluence-storage-reader.js';
 import { PageSubtreeFrozenError } from './core/services/page-subtree.js';
 import { registerPageBaselineEnforcementReadiness } from './core/services/page-baseline-governance.js';
 import {
@@ -501,6 +502,20 @@ export async function buildApp() {
         reason: 'incompatible_runtime_active',
         message: 'Restrictive AI policies are unavailable while a runtime without AI policy enforcement is active; retire it first.',
         pageIds: [],
+      });
+      return;
+    }
+
+    // #1955: a write to Confluence refused for the storage it would send,
+    // before any effect. The message names no content. The derivation has
+    // logged the refusal with its reason (it also runs outside a request), so
+    // this only answers.
+    if (error instanceof ConfluenceStorageRefusedError) {
+      reply.status(error.statusCode).send({
+        error: error.name,
+        reason: error.reason,
+        message: error.message,
+        statusCode: error.statusCode,
       });
       return;
     }

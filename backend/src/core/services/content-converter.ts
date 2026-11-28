@@ -1,7 +1,9 @@
+import { randomBytes } from 'node:crypto';
 import { JSDOM, type VirtualConsole } from 'jsdom';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { Marked } from 'marked';
+import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
 import he from 'he';
 import {
   getAttachmentImageSource,
@@ -10,10 +12,25 @@ import {
 import { isConfluenceTaskId, MAX_CONFLUENCE_TASK_ID } from './confluence-task-id.js';
 import { logger } from '../utils/logger.js';
 import {
+  CONFLUENCE_LINK_KINDS_1748,
   confluenceLinkAnchor,
+  confluenceLinkCarrier,
+  confluenceLinkCarrierOf,
   confluenceLinkElement,
+  enforceConfluenceUrlLinkOrigin,
   escapeConfluenceLinkAttributes,
+  keepXmlLinkValues,
+  materializeConfluenceUrlLinks,
+  parseConfluenceLinkHref,
+  refuseConfluenceStorage,
+  storedLinkKeepsTarget,
 } from './confluence-link.js';
+import {
+  ConfluenceStorageRefusedError,
+  isStorageLimitStop,
+  type StorageElement,
+  type StorageReadFailure,
+} from './confluence-storage-reader.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
   assertStorageDerivationFeatures,
@@ -404,7 +421,7 @@ export function _confluenceToHtmlWithForTest(
   features: StorageDerivationFeatures,
   maxTaskListNesting = MAX_TASK_LIST_NESTING,
 ): string {
-  return confluenceToHtmlWith(storageXhtml, undefined, undefined, features, maxTaskListNesting);
+  return confluenceToHtmlWith(storageXhtml, undefined, undefined, features, undefined, maxTaskListNesting);
 }
 
 /**
@@ -425,13 +442,16 @@ function confluenceToHtmlWith(
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
+  witness?: EmittedLinkWitness,
   maxTaskListNesting = MAX_TASK_LIST_NESTING,
 ): string {
   assertStorageDerivationFeatures(features);
   let nestTasks: boolean | undefined;
   let input = storageXhtml;
   while (true) {
-    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features, nestTasks, maxTaskListNesting);
+    const pass = confluenceToHtmlPass(
+      input, pageId, spaceKey, features, input === storageXhtml, witness, nestTasks, maxTaskListNesting,
+    );
     nestTasks = pass.nestTasks;
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
@@ -470,6 +490,15 @@ export interface HtmlToConfluenceOptions {
    * other writer omits the option and derives with every registered feature.
    */
   derivationFeatures?: StorageDerivationFeatures;
+  /**
+   * The page's stored storage as evidence for its `ri:url` links (#1955): a
+   * link to a value that is not a navigable URL is written only as an
+   * occurrence this storage already holds. Omitted, `previousStorage` is the
+   * evidence; a writer that keeps `previousStorage` for `assignTaskIds` alone
+   * (collaborative Save, draft publish) passes the stored storage here. An
+   * explicit `null` is no evidence, never a fallback to `previousStorage`.
+   */
+  linkOrigin?: string | null;
 }
 
 /**
@@ -997,17 +1026,26 @@ export function measureTaskListConversion(storageXhtml: string): TaskListConvers
  * one only when nesting is on: `nestTasks` as an earlier pass decided it, or,
  * when `undefined` (the first pass), decided here (see confluenceToHtmlWith).
  * The other steps gated on a storage-derivation feature read `derivationHas`
- * on this pass's set (#1953): `cell-align` (#1956).
+ * on this pass's set (#1953): the link kinds of #1955 are read only with
+ * `link-kinds`; `cell-align` (#1956).
  */
 function confluenceToHtmlPass(
   storageXhtml: string,
   pageId: string | undefined,
   spaceKey: string | undefined,
   features: StorageDerivationFeatures,
+  firstPass: boolean,
+  witness: EmittedLinkWitness | undefined,
   nestTasks: boolean | undefined,
   maxTaskListNesting: number,
 ): ConfluenceConversionPass {
-  const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
+  // #1955 (reviews r2 R12, r4 R21): with `link-kinds`, a link of a #1955 kind is read with the values XML reads.
+  // Only the storage itself is spelled so; a later pass reads this pass's HTML, whose values were read here.
+  // A witness (D20) has each stored link's start tag marked with its index in what the reader read. Owner decision
+  // D21 (review r7, R28): the reader reads the stored string itself, before its CDATA is turned into text.
+  const kept = firstPass && derivationHas(features, 'link-kinds') ? keepXmlLinkValues(storageXhtml, witness?.marker) : null;
+  if (kept && witness) witness.links = kept.links;
+  const preprocessed = expandSelfClosingXhtmlTags(stripCdata(kept ? kept.storage : storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   forwardDerivationStepForTest?.(doc, features);
@@ -1172,18 +1210,19 @@ function confluenceToHtmlPass(
       continue;
     }
 
-    // #1748: a page, attachment or anchor link becomes an <a> whose href
+    // #1748, #1955: a link to a page, an attachment, an anchor, a blog post,
+    // a space, a shortcut, a content entity or a URL becomes an <a> that
     // carries the whole link (confluence-link.ts), since the editor keeps no
     // data-* attribute of a link.
-    const replacement = confluenceLinkAnchor(link);
+    const replacement = confluenceLinkAnchor(link, features);
     if (replacement) {
+      if (witness) witnessEmittedLink(witness, link, replacement[0] as Element);
       link.replaceWith(...replacement);
       continue;
     }
 
-    // Any other link — another resource (ri:blog-post, ri:space, ri:url, …),
-    // or a title, filename or anchor that is missing or no href can carry:
-    // its text only.
+    // Any other link — another resource, or a primary value that is missing
+    // or that no href can carry: its text only.
     const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
     const a = doc.createElement('a');
     if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
@@ -2070,12 +2109,60 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // target, its attributes and when needed the body element
   // (confluence-link.ts); the body's nodes move, so the image loop below still
   // converts an image inside one. Runs after every loop that rebuilds a body
-  // by re-parsing, so it sees each link where it finally sits.
-  for (const a of doc.querySelectorAll('a[href^="#confluence-"]')) {
-    const acLink = confluenceLinkElement(a);
-    if (acLink) a.replaceWith(acLink);
+  // by re-parsing, so it sees each link where it finally sits. #1955: a
+  // navigable ri:url is a real href with its carrier in the class.
+  const linkKinds = derivationHas(options.derivationFeatures, 'link-kinds');
+  const linkAnchors = linkKinds
+    ? 'a[href^="#confluence-"], a[href][class^="#confluence-url:"]'
+    : 'a[href^="#confluence-"]';
+  const linkOrigin = options.linkOrigin === undefined ? options.previousStorage : options.linkOrigin;
+  // One forward pass over the stored storage, when something needs it: the D19 check and the D21 fallback's `shown`.
+  // It reads the stored page with this write-back's profile (`features`, writeBackProfile), as the task ids do: a
+  // document past MAX_TASK_LIST_NESTING is judged exactly as without `nested-tasks` (D13), so its links are the
+  // ones the pre-#1957 projection of the stored page shows (integration review r1, I1).
+  let stored: StoredLinkWitness | undefined;
+  const storedLinks = (): StoredLinkWitness => (stored ??= witnessStoredLinks(linkOrigin!, features));
+  /** The carriers of the outgoing links of the five #1955 kinds, checked at the end (D19). */
+  const carriers: string[] = [];
+  for (const a of doc.querySelectorAll(linkAnchors)) {
+    const acLink = confluenceLinkElement(a, options.derivationFeatures);
+    if (!acLink) continue;
+    const carrier = linkKinds && linkOrigin ? confluenceLinkCarrierOf(a) : null;
+    const kind = carrier === null ? undefined : parseConfluenceLinkHref(carrier)?.kind;
+    if (carrier !== null && kind !== undefined && !CONFLUENCE_LINK_KINDS_1748.includes(kind)) carriers.push(carrier);
+    a.replaceWith(acLink);
   }
 
+  // #1956: `allocateTaskIds` above already validated `options.derivationFeatures`.
+  if (derivationHas(options.derivationFeatures, 'cell-align')) cellAlignToStyle(doc);
+
+  // Review r11, R34: the D19 check runs last (W5), so an error of a later step that is not a refusal (an
+  // attachment `src` `decodeURIComponent` cannot read) never stands in for D19's typed refusal of the same write.
+  let written: string;
+  try {
+    written = finishStorage(doc, linkOrigin, linkKinds, (element) => storedLinks().shown(element));
+  } catch (error) {
+    if (!(error instanceof ConfluenceStorageRefusedError)) for (const carrier of carriers) storedLinks().check(carrier);
+    throw error;
+  }
+  // Owner decision D19, coordinator decision D20 (#1955, reviews r5 R24, r6 R25/R26): a link of a #1955 kind that
+  // carries a carrier the forward pass emitted from a stored link is written with that link's XML target, or the
+  // write is refused here, before any effect. It runs last so that every cheaper refusal, the work limit of the
+  // `ri:url` judgement first, is decided before the forward pass over the stored storage runs (W5).
+  for (const carrier of carriers) storedLinks().check(carrier);
+  return written;
+}
+
+/**
+ * The last steps of {@link htmlToConfluence}: attachment images and emoticons written back, then, with
+ * `link-kinds`, the `ri:url` judgement on the serialised string.
+ */
+function finishStorage(
+  doc: Document,
+  linkOrigin: string | null | undefined,
+  linkKinds: boolean,
+  shown: (element: StorageElement) => boolean,
+): string {
   // Convert images with attachment references back
   for (const img of doc.querySelectorAll('img[src^="/api/attachments/"]')) {
     const src = img.getAttribute('src') ?? '';
@@ -2125,9 +2212,102 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     span.replaceWith(emoticonWriteBack(span));
   }
 
-  // `allocateTaskIds` above already validated `options.derivationFeatures`.
-  if (derivationHas(options.derivationFeatures, 'cell-align')) cellAlignToStyle(doc);
+  // #1955: every ri:url link is judged on the string that is written, read as
+  // XML (confluence-link.ts): a link to a value that is not a navigable URL
+  // stays only where the stored page holds that occurrence, and a string that
+  // would carry one past the check is refused. The check may change the
+  // document and serialise it again; nothing follows it but the D19 check.
+  if (!linkKinds) return serialiseStorage(doc);
+  return enforceConfluenceUrlLinkOrigin(doc.body, () => serialiseStorage(doc), linkOrigin, shown);
+}
 
+/**
+ * Coordinator decision D20, owner decision D21 (#1955, reviews r6 R25/R26, r7 R28/R29): what the forward pass
+ * emitted for the stored links of the five #1955 kinds. `links` is what the storage reader read from the stored
+ * string itself; each stored link's start tag carries the attribute `marker` with its index there, under a random
+ * name. Each `<a>` the link loop emits carries `marker` with its index in `emissions`, so the completed result
+ * tells which emitted links survived every later step and pass.
+ */
+interface EmittedLinkWitness {
+  readonly marker: string;
+  links: readonly StorageElement[] | StorageReadFailure;
+  /**
+   * Each emitted link of the five kinds: the carrier it was emitted with, whether that keeps its XML target, and
+   * the stored link the reader read at its tag, if any.
+   */
+  readonly emissions: Array<{ carrier: string; faithful: boolean; stored: StorageElement | undefined }>;
+}
+
+/**
+ * Record the link the forward pass emits as `a` for `acLink` and mark `a` (D20): faithful when the stored link the
+ * reader read at that tag is written back by its carrier with its XML target (`storedLinkKeepsTarget`), else
+ * unfaithful — an element the reader did not read as a link, and every link of storage the reader did not read,
+ * has no XML target to keep. The three #1748 kinds are not recorded.
+ */
+function witnessEmittedLink(witness: EmittedLinkWitness, acLink: Element, a: Element): void {
+  const built = confluenceLinkCarrier(acLink);
+  if (!built || CONFLUENCE_LINK_KINDS_1748.includes(built.kind)) return;
+  const { links } = witness;
+  const index = acLink.getAttribute(witness.marker);
+  const stored = typeof links === 'string' || index === null ? undefined : links[Number(index)];
+  a.setAttribute(witness.marker, String(witness.emissions.length));
+  witness.emissions.push({ carrier: built.carrier, faithful: stored !== undefined && storedLinkKeepsTarget(stored, built), stored });
+}
+
+/** What the forward pass over a page's stored storage tells a write-back about its stored links of the five kinds. */
+interface StoredLinkWitness {
+  /** Refuse the write when an outgoing link carrying `carrier` would change a stored link's XML target (D19). */
+  check(carrier: string): void;
+  /** Whether the stored link-like element reached the editor as a link (D21 fallback, review r8 R32). */
+  shown(element: StorageElement): boolean;
+}
+
+/**
+ * Owner decisions D19/D21, coordinator decision D20 (#1955): run the forward pass itself over the page's stored
+ * storage, with the features of this write-back and a witness. Only an emitted link still in the completed result
+ * is an occurrence. For `check`, it is faithful when it still carries the carrier it was emitted with and that
+ * keeps its stored XML target. A carrier only faithful occurrences carry, or none (a new link, or a candidate the
+ * pass discarded), passes. One an unfaithful occurrence carries is refused (`changed-link-target`, or the limit the
+ * reader stopped at); when a faithful occurrence carries it too, which of them the outgoing link is cannot be told,
+ * and it is refused alike, logged `ambiguous`. Storage the reader knows is not well-formed is not checked. `shown`
+ * holds the stored links that have an occurrence (by their tag in the stored string): any other stored link, one
+ * a macro discarded with its parameter for instance, never was a link in the editor and is no source.
+ */
+function witnessStoredLinks(storage: string, features: StorageDerivationFeatures): StoredLinkWitness {
+  const marker = `data-cq-stored-link-${randomBytes(8).toString('hex')}`;
+  const witness: EmittedLinkWitness = { marker, links: [], emissions: [] };
+  const html = confluenceToHtmlWith(storage, undefined, undefined, features, witness);
+  const { links } = witness;
+  const occurrences = new Map<string, { faithful: boolean; unfaithful: boolean }>();
+  const shown = new Set<number>();
+  if (typeof links !== 'string' || isStorageLimitStop(links)) {
+    const result = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+    for (const a of result.querySelectorAll(`a[${marker}]`)) {
+      const emission = witness.emissions[Number(a.getAttribute(marker))];
+      const carrier = confluenceLinkCarrierOf(a);
+      if (!emission || carrier === null) continue;
+      if (emission.stored) shown.add(emission.stored.tag[0]);
+      const verdict = occurrences.get(carrier) ?? { faithful: false, unfaithful: false };
+      if (emission.faithful && emission.carrier === carrier) verdict.faithful = true;
+      else verdict.unfaithful = true;
+      occurrences.set(carrier, verdict);
+    }
+  }
+  const reason = typeof links === 'string' ? links : 'changed-link-target';
+  return {
+    check: (carrier) => {
+      const verdict = occurrences.get(carrier);
+      if (verdict?.unfaithful) refuseConfluenceStorage(reason, verdict.faithful ? 'ambiguous' : undefined);
+    },
+    shown: (element) => shown.has(element.tag[0]),
+  };
+}
+
+/**
+ * The storage string of a document every reverse loop of htmlToConfluence has
+ * run over: its HTML serialisation, made XHTML.
+ */
+function serialiseStorage(doc: Document): string {
   let result = doc.body.innerHTML;
   // #1748: escape `<`, `>`, tab, LF and CR in ac:link / ri:* attribute values,
   // before the void-element pass below can rewrite a `<br>` inside one.
@@ -2758,58 +2938,293 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** An element a media token stands in: what a consumer needs to decide whether a token there may be replaced. */
+export interface MediaTokenContext {
+  /** The element's tag name, lower case. */
+  readonly tagName: string;
+  /** Its attributes as the HTML parser read them (`class`, a marker attribute, …). */
+  readonly attributes: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  /** The element's range in the string, or null for one the parser supplied itself (`tbody`). */
+  readonly start: number | null;
+  readonly end: number | null;
+  /** The enclosing element; null at the top. A `template`'s content has that template as parent. */
+  readonly parent: MediaTokenContext | null;
+}
+
+/** One place of a string where a media token stands as content, and what replaces it. */
+export interface MediaTokenPlacement {
+  /** The media entry's token (its unescaped spelling). */
+  readonly token: string;
+  /** The range of the original string that the entry's HTML replaces. */
+  readonly start: number;
+  readonly end: number;
+  /** The range is a whole `<p>TOKEN</p>`, not the bare token. */
+  readonly wrapped: boolean;
+  /** The element holding the replaced range, with its ancestors. */
+  readonly context: MediaTokenContext | null;
+}
+
+/** Elements whose text the HTML tokenizer never reads as content. */
+const MEDIA_OPAQUE_PARENTS = new Set([
+  'script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext', 'textarea', 'title',
+]);
+
+type Html5Node = DefaultTreeAdapterTypes.Node;
+
+/** A range of the source string. */
+interface SourceRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * The children the tree builder did not leave where their source stands
+ * (#1955): a child whose source lies outside `bounds`, the content of the
+ * nearest ancestor with a source range, and children whose ranges are not in
+ * source order one after the other. Of two that overlap, the one inside the
+ * other was moved (an element or text foster-parented out of a table, in
+ * front of it); when neither holds the other (misnested formatting rebuilt
+ * around a block), both are uncertain. Nothing under such a child is where
+ * the tree says it is. One pass: every child is compared with the kept
+ * children before it, and each of those is given up at most once.
+ */
+function displacedChildren(children: readonly Html5Node[], bounds: SourceRange | null): Set<Html5Node> {
+  const displaced = new Set<Html5Node>();
+  const kept: Array<SourceRange & { node: Html5Node }> = [];
+  for (const node of children) {
+    const location = node.sourceCodeLocation;
+    if (!location) continue;
+    const item = { node, start: location.startOffset, end: location.endOffset };
+    if (bounds && (item.start < bounds.start || item.end > bounds.end)) {
+      displaced.add(node);
+      continue;
+    }
+    let keep = true;
+    while (kept.length > 0) {
+      const last = kept[kept.length - 1]!;
+      if (item.start >= last.end) break;
+      if (last.start >= item.start && last.end <= item.end) {
+        // `last` was moved out of `item`, in front of it.
+        displaced.add(last.node);
+        kept.pop();
+        continue;
+      }
+      keep = false;
+      displaced.add(node);
+      if (item.start >= last.start && item.end <= last.end) break;
+      displaced.add(last.node);
+      kept.pop();
+    }
+    if (keep) kept.push(item);
+  }
+  return displaced;
+}
+
+/** The namespace of HTML elements; anything else (SVG, MathML) is foreign content. */
+const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+
+/**
+ * Where the tree builder dropped a start tag (#1955, review r2 R14): the
+ * offsets of every stretch of `html` that no node accounts for (no start or
+ * end tag of an element, no text, no comment) and that holds a start tag. A
+ * start tag the tree builder ignores (a cell outside a table, a `div` in a
+ * `select`) has no node, so whatever it was written to hold stands in the
+ * tree under something else. An ignored end tag closes nothing and is not
+ * counted. Review r3, R18: a text node whose source holds `<` is text the tree
+ * builder joined across markup it dropped; it accounts for none of its
+ * source, so a start tag in it counts. Sorted.
+ */
+function ignoredStartTags(html: string, root: Html5Node): number[] {
+  const covered: Array<readonly [number, number]> = [];
+  const pending: Html5Node[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if ('tagName' in node) {
+      const { startTag, endTag } = node.sourceCodeLocation ?? {};
+      if (startTag) covered.push([startTag.startOffset, startTag.endOffset]);
+      if (endTag) covered.push([endTag.startOffset, endTag.endOffset]);
+    } else if (node.sourceCodeLocation) {
+      const { startOffset, endOffset } = node.sourceCodeLocation;
+      if (node.nodeName !== '#text' || !html.slice(startOffset, endOffset).includes('<')) covered.push([startOffset, endOffset]);
+    }
+    if ('content' in node) pending.push(node.content);
+    if ('childNodes' in node) pending.push(...node.childNodes);
+  }
+  covered.sort((a, b) => a[0] - b[0]);
+  const ignored: number[] = [];
+  let at = 0;
+  // What no node accounts for after the last one is a tag the string ends in: it holds nothing.
+  for (const [start, end] of covered) {
+    if (start > at && /<[A-Za-z]/.test(html.slice(at, start))) ignored.push(at);
+    at = Math.max(at, end);
+  }
+  return ignored;
+}
+
+/** How many of the sorted `offsets` lie in `[start, end)`. */
+function countWithin(offsets: readonly number[], start: number, end: number): number {
+  const firstAtOrAfter = (value: number): number => {
+    let low = 0;
+    let high = offsets.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (offsets[middle]! < value) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return firstAtOrAfter(end) - firstAtOrAfter(start);
+}
+
+/**
+ * Where the tokens of `media` stand as content in `html` (#1955), in source
+ * order. The HTML tokenizer decides, not a scan for `<` and `>`: a placement
+ * is a token spelling (raw, or turndown-escaped with `\_`) inside the source
+ * range of one text node, or the whole `<p>TOKEN</p>` of an attribute-less
+ * paragraph that holds nothing else. Offsets are offsets of `html` itself.
+ *
+ * A spelling anywhere else is no placement: in an attribute value, a comment
+ * (with `>` or an unmatched quote inside), a tag name, the text of a
+ * `script`, `style`, `textarea` or `title`, text the tree builder joined
+ * across markup, and anything the tree builder moved, with all it holds: text
+ * or an element directly inside a table (foster-parented in front of it) and
+ * misnested formatting it rebuilt. There the tree and the source disagree
+ * about the place. Review r2, R14: nor anywhere a reparse would not keep what
+ * is spliced in where the placement says: in a `select` (it drops every
+ * element inserted into it), in SVG or MathML (an inserted image leaves it),
+ * and under an element whose own content holds a start tag the tree builder
+ * ignored (what that tag held stands under another element in the tree).
+ * Placements never overlap. Each carries the element it stands in with that
+ * element's attributes and ancestors, so a consumer can refuse the ones in a
+ * code sample or a discarded container without parsing the string a second
+ * way.
+ */
+export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]): MediaTokenPlacement[] {
+  const tokenOf = new Map<string, string>();
+  const alternatives: string[] = [];
+  for (const { token } of media) {
+    for (const spelling of [token, token.replace(/_/g, '\\_')]) {
+      tokenOf.set(spelling, token);
+      // The bare form ends on a non-digit so token N never matches token N0…N9.
+      alternatives.push(`${escapeRegExp(spelling)}(?![0-9])`);
+    }
+  }
+  if (alternatives.length === 0 || !new RegExp(alternatives.join('|')).test(html)) return [];
+  const spellings = new RegExp(alternatives.join('|'), 'g');
+
+  const placements: MediaTokenPlacement[] = [];
+  const root = parseFragment(html, { sourceCodeLocationInfo: true });
+  const ignored = ignoredStartTags(html, root);
+  const pending: Array<{ node: Html5Node; context: MediaTokenContext | null; bounds: SourceRange | null }> = [
+    { node: root, context: null, bounds: null },
+  ];
+  while (pending.length > 0) {
+    const { node, context, bounds } = pending.pop()!;
+    if (!('childNodes' in node)) continue;
+    let own = context;
+    let content = bounds;
+    if ('tagName' in node) {
+      // Nothing spliced into a `select` or into foreign content stays where it was put.
+      if (node.namespaceURI !== HTML_NAMESPACE || node.tagName === 'select') continue;
+      const location = node.sourceCodeLocation;
+      own = {
+        tagName: node.tagName, attributes: node.attrs, parent: context,
+        start: location?.startOffset ?? null, end: location?.endOffset ?? null,
+      };
+      // What the element holds stands between its tags; an element the parser supplied has its parent's bounds.
+      if (location) {
+        content = { start: location.startTag?.endOffset ?? location.startOffset, end: location.endTag?.startOffset ?? location.endOffset };
+      }
+    }
+    // A template's children are its content fragment.
+    const children = 'content' in node ? node.content.childNodes : node.childNodes;
+    if (ignored.length > 0) {
+      // A start tag the tree builder ignored stands in this element's own content, not in one of its children.
+      const range = content ?? { start: 0, end: html.length };
+      let inChildren = 0;
+      // Only an element child is visited as a container of its own; what lies in a text child is this element's.
+      for (const child of children) {
+        const location = 'tagName' in child ? child.sourceCodeLocation : null;
+        if (location) inChildren += countWithin(ignored, location.startOffset, location.endOffset);
+      }
+      if (countWithin(ignored, range.start, range.end) > inChildren) continue;
+    }
+    // A child the tree builder moved is not at the place its ancestors name, and neither is anything in it.
+    const displaced = displacedChildren(children, content);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index]!;
+      if (displaced.has(child)) continue;
+      if (child.nodeName !== '#text') {
+        pending.push({ node: child, context: own, bounds: content });
+        continue;
+      }
+      const location = child.sourceCodeLocation;
+      if (!location || (own && MEDIA_OPAQUE_PARENTS.has(own.tagName))) continue;
+      const source = html.slice(location.startOffset, location.endOffset);
+      // One run of text: a range that holds markup is text the tree builder joined across it.
+      if (source.includes('<')) continue;
+      // `<p>TOKEN</p>`: Markdown wrapped the lone token in a paragraph, which goes with it.
+      const paragraph = 'tagName' in node && node.tagName === 'p' && children.length === 1 && node.attrs.length === 0
+        ? node.sourceCodeLocation
+        : null;
+      const wrapped = paragraph?.endTag
+        ? /^<p>\s*([\s\S]*?)\s*<\/p>$/.exec(html.slice(paragraph.startOffset, paragraph.endOffset))?.[1]
+        : undefined;
+      if (wrapped !== undefined && tokenOf.has(wrapped)) {
+        placements.push({
+          token: tokenOf.get(wrapped)!, start: paragraph!.startOffset, end: paragraph!.endOffset, wrapped: true, context,
+        });
+        continue;
+      }
+      for (const match of source.matchAll(spellings)) {
+        const start = location.startOffset + match.index;
+        placements.push({ token: tokenOf.get(match[0])!, start, end: start + match[0].length, wrapped: false, context: own });
+      }
+    }
+  }
+  return placements.sort((a, b) => a.start - b.start);
+}
+
 /**
  * Re-inject protected media. Replaces `<p>TOKEN</p>` (markdown wrapped the lone
  * token in a paragraph) and bare TOKEN occurrences with the original HTML.
  * Also handles the turndown-escaped form (underscores escaped as \_) so that
  * tokens survive a full htmlToMarkdown→markdownToHtml round-trip.
  *
+ * #1955: only a token that stands as content is replaced ({@link
+ * locateMediaTokens}). A spelling in an attribute value (a link's href or
+ * class), a comment, a tag name or raw text stays as written, so restoring
+ * media can never rewrite an attribute. `accept` lets a caller refuse further
+ * placements by the element they stand in; the default takes every one.
+ *
  * #723 correctness:
- * - Single combined pass via one alternation regex + a *function* replacer.
- *   Function replacers treat their return value literally, so original media
- *   HTML containing `$`, `$&`, `$1`, `` $` ``, `$'`, `$$` (legitimate in
- *   Confluence attachment URLs / encoded query strings) is injected verbatim
- *   rather than being reinterpreted as String.replace special patterns.
- * - One pass also makes restoration collision-safe: already-injected media is
- *   never re-scanned, so an earlier entry whose original HTML literally
- *   contains a *later* token (e.g. in an `alt` / `data-diagram-name`) can no
- *   longer be corrupted by a subsequent replacement.
- * - `<p>TOKEN</p>` is preferred over the bare token via alternation order so
- *   the wrapping paragraph is consumed too. A `(?![0-9])` boundary on the bare
- *   form stops `..._1` from matching the prefix of `..._10`.
+ * - One pass over the original string, replaced ranges spliced in source
+ *   order: an original holding `$`, `$&`, `$1` (legitimate in Confluence
+ *   attachment URLs / encoded query strings) is injected verbatim, and
+ *   already-injected media is never re-scanned, so an earlier entry whose
+ *   original HTML literally contains a *later* token (e.g. in an `alt` /
+ *   `data-diagram-name`) cannot be corrupted by a subsequent replacement.
+ * - `<p>TOKEN</p>` is consumed with its paragraph. A `(?![0-9])` boundary on
+ *   the bare form stops `..._1` from matching the prefix of `..._10`.
  */
-export function restoreMedia(html: string, media: ProtectedMedia[]): string {
+export function restoreMedia(
+  html: string,
+  media: ProtectedMedia[],
+  options: { accept?: (placement: MediaTokenPlacement) => boolean } = {},
+): string {
   if (media.length === 0) return html;
-
-  // Map every token spelling (raw + turndown-escaped) back to its original HTML.
-  const byMatch = new Map<string, string>();
-  const wrappedAlts: string[] = [];
-  const bareAlts: string[] = [];
-  for (const { token, html: original } of media) {
-    const escapedToken = token.replace(/_/g, '\\_'); // e.g. CQ\_MEDIA\_PLACEHOLDER\_0
-    for (const t of [token, escapedToken]) {
-      const pat = escapeRegExp(t);
-      // Paragraph-wrapped form is matched first (it consumes the wrapping <p>);
-      // the bare form ends on a non-digit so token N never matches token N0…N9.
-      wrappedAlts.push(`<p>\\s*${pat}\\s*</p>`);
-      bareAlts.push(`${pat}(?![0-9])`);
-      byMatch.set(t, original);
-    }
+  const placements = locateMediaTokens(html, media);
+  if (placements.length === 0) return html;
+  const originals = new Map(media.map((entry) => [entry.token, entry.html] as const));
+  const parts: string[] = [];
+  let at = 0;
+  for (const placement of placements) {
+    if (placement.start < at || (options.accept && !options.accept(placement))) continue;
+    parts.push(html.slice(at, placement.start), originals.get(placement.token)!);
+    at = placement.end;
   }
-
-  // All wrapped alternatives precede all bare ones so a `<p>TOKEN</p>` is never
-  // partially matched by a bare-token alternative.
-  const combined = new RegExp([...wrappedAlts, ...bareAlts].join('|'), 'g');
-  return html.replace(combined, (matched) => {
-    // Recover the token spelling from the (possibly <p>-wrapped, whitespace-
-    // padded) match, then return the original literally (function replacers do
-    // not interpret `$`-sequences).
-    const inner = matched
-      .replace(/^<p>\s*/, '')
-      .replace(/\s*<\/p>$/, '')
-      .trim();
-    return byMatch.get(inner) ?? matched;
-  });
+  parts.push(html.slice(at));
+  return parts.join('');
 }
 
 export interface HtmlToMarkdownOptions {
@@ -2858,6 +3273,20 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
   });
 
   if (layoutTokens) {
+    // #1955: Markdown keeps only a link's destination, so a navigable ri:url
+    // (a real href with its carrier in the class) writes the carrier there
+    // and markdownToHtml restores the pair (materializeConfluenceUrlLinks).
+    // Improve only: every other caller (embeddings, diffs, tagging, quality,
+    // sub-page context) keeps the real URL it gets from the stock link rule.
+    turndownService.addRule('confluenceUrlLink', {
+      filter: (node) =>
+        node.nodeName === 'A' && !(node.getAttribute('href') ?? '').startsWith('#') && confluenceLinkCarrierOf(node) !== null,
+      replacement: (content, node) => {
+        const title = ((node as Element).getAttribute('title') ?? '').replace(/(\n+\s*)+/g, '\n');
+        return `[${content}](${confluenceLinkCarrierOf(node as Element)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
+      },
+    });
+
     // #765: layout containers — emit boundary tokens as standalone lines so the
     // wrapper structure survives the markdown round-trip while the prose inside
     // stays editable by the LLM. markdownToHtml() rebuilds the divs from the
@@ -4310,7 +4739,7 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     // skips them), so no masking is needed. Nothing else is touched: any
     // remaining [[[…]]] text is prose the strictness ladder deliberately kept,
     // and it now reaches the page verbatim instead of being stripped.
-    return rebuildLayoutFromSentinels(html, sentinelPrefix, sentinelTokens);
+    return materializeConfluenceUrlLinks(rebuildLayoutFromSentinels(html, sentinelPrefix, sentinelTokens));
   }
 
   html = transformOutsideHtmlCode(html, (segment) => {
@@ -4329,7 +4758,9 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     return out;
   });
 
-  return html;
+  // #1955: a link whose destination is the carrier of a navigable ri:url
+  // becomes the real link again, on parsed anchors only.
+  return materializeConfluenceUrlLinks(html);
 }
 
 /**

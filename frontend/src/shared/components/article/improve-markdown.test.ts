@@ -26,6 +26,40 @@ describe('improveMarkdownToHtml', () => {
   });
 });
 
+// #1955: the Markdown an Improve returns names a Confluence link by its carrier. The preview keeps
+// it a fragment of this page whatever the label holds, and never a script address.
+describe('Confluence link carriers in an improved text (#1955)', () => {
+  const anchors = (html: string): Array<[string | null, string | null]> =>
+    [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.textContent]);
+
+  it('keeps each carrier one anchor with its own destination', () => {
+    const html = improveMarkdownToHtml(
+      '[the space](#confluence-space:ENG?body=plain) '
+      + '[read **this** & "that"](#confluence-blog-post:Q3%20%22Update%22?ri:posting-day=2024%2F05%2F01&body=rich) '
+      + '[a <b>bold</b> label](#confluence-shortcut:jira?ri:parameter=ABC-1) '
+      + '[web](#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain) '
+      + '[script](#confluence-url:javascript%3Aalert%281%29?body=plain) '
+      + '[(empty link)](#confluence-url:)',
+    );
+
+    expect(anchors(html)).toEqual([
+      ['#confluence-space:ENG?body=plain', 'the space'],
+      ['#confluence-blog-post:Q3%20%22Update%22?ri:posting-day=2024%2F05%2F01&body=rich', 'read this & "that"'],
+      ['#confluence-shortcut:jira?ri:parameter=ABC-1', 'a bold label'],
+      ['#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain', 'web'],
+      ['#confluence-url:javascript%3Aalert%281%29?body=plain', 'script'],
+      ['#confluence-url:', '(empty link)'],
+    ]);
+  });
+
+  it('drops a script destination the model writes out, keeping its text', () => {
+    const html = improveMarkdownToHtml('[script](javascript:alert(1)) and [data](data:text/html,x) and [vb](vbscript:x)');
+
+    expect(anchors(html).map(([href]) => href).filter((href) => href !== null)).toEqual([]);
+    expect(html).toContain('script');
+  });
+});
+
 describe('unwrapSingleParagraph', () => {
   it('unwraps a single paragraph so inline replacement stays in-block', () => {
     expect(unwrapSingleParagraph('<p>hello world</p>')).toBe('hello world');

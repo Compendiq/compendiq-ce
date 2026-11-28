@@ -334,6 +334,75 @@ describe('Editor', () => {
     });
   });
 
+  // #1955: PAGE_HTML is confluenceToHtml's output for links of the five kinds: a carrier in `href`
+  // for every link the app cannot open, the web address itself for a navigable ri:url with its
+  // carrier in `class`, and the label Compendiq shows for a link without one.
+  describe('Confluence link kinds (#1955)', () => {
+    const WEB_CARRIER = '#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain';
+    const PAGE_HTML =
+      '<p>Intro</p><p>'
+      + '<a href="#confluence-space:ENG?body=plain" data-confluence-link="space">the space</a> '
+      + '<a href="#confluence-blog-post:Q3%20%22Update%22?ri:posting-day=2024%2F05%2F01&amp;body=rich" data-confluence-link="blog-post">'
+      + 'read <b>this</b> &amp; that</a> '
+      + '<a href="#confluence-shortcut:jira?ri:parameter=ABC-1" data-confluence-link="shortcut">jira</a> '
+      + '<a href="#confluence-content-entity:123?body=plain" data-confluence-link="content-entity">entity</a> '
+      + `<a href="https://example.com/a?b=1&amp;c=2" class="${WEB_CARRIER}" data-confluence-link="url">web</a> `
+      + '<a href="#confluence-url:%2Frelative%2Fa?body=plain" data-confluence-link="url">relative</a> '
+      + '<a href="#confluence-url:javascript%3Aalert%281%29?body=plain" data-confluence-link="url">script</a> '
+      + '<a href="#confluence-url:" data-confluence-link="url">(empty link)</a></p>';
+
+    async function editedHtml(content: string): Promise<Document> {
+      let editor: EditorType | null = null;
+      render(<Editor content={content} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      // An edit no link is part of: type at the end of the first paragraph.
+      act(() => {
+        editor!.chain().setTextSelection(1 + 'Intro'.length).insertContent(' (edited)').run();
+      });
+      return new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+    }
+
+    it('keeps every carrier, the class of a web link and the label of an empty one through an unrelated edit', async () => {
+      const saved = await editedHtml(PAGE_HTML);
+
+      expect(saved.querySelector('p')?.textContent).toBe('Intro (edited)');
+      // A link whose body carries a mark is one anchor per run: every run keeps the same carrier.
+      const links = [...saved.querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.textContent, a.getAttribute('class')]);
+      const hrefs = [...new Set(links.map(([href]) => href))];
+      expect(hrefs).toEqual([
+        '#confluence-space:ENG?body=plain',
+        '#confluence-blog-post:Q3%20%22Update%22?ri:posting-day=2024%2F05%2F01&body=rich',
+        '#confluence-shortcut:jira?ri:parameter=ABC-1',
+        '#confluence-content-entity:123?body=plain',
+        'https://example.com/a?b=1&c=2',
+        '#confluence-url:%2Frelative%2Fa?body=plain',
+        '#confluence-url:javascript%3Aalert%281%29?body=plain',
+        '#confluence-url:',
+      ]);
+      expect(links.filter(([href]) => href?.startsWith('#confluence-blog-post:')).map(([, text]) => text).join(''))
+        .toBe('read this & that');
+      expect(links.find(([href]) => href === 'https://example.com/a?b=1&c=2')).toEqual(['https://example.com/a?b=1&c=2', 'web', WEB_CARRIER]);
+      expect(links.find(([href]) => href === '#confluence-url:')?.[1]).toBe('(empty link)');
+      // Only the web link carries a class: no other anchor gains one.
+      expect(links.filter(([, , className]) => className).map(([href]) => href)).toEqual(['https://example.com/a?b=1&c=2']);
+    });
+
+    it('never makes a link of a script address, whichever attribute names it', async () => {
+      const saved = await editedHtml(
+        '<p>Intro</p><p><a href="javascript:alert(1)" class="#confluence-url:javascript%3Aalert%281%29">script</a>'
+        + ' <a href="#confluence-url:javascript%3Aalert%281%29">carried</a></p>',
+      );
+
+      const hrefs = [...saved.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+      // The carrier is a fragment of this page; the script address itself is not an href at all.
+      expect(hrefs.filter((href) => !href?.startsWith('#'))).toEqual([]);
+      expect(saved.body.innerHTML).not.toMatch(/href="\s*javascript:/i);
+      expect(saved.body.textContent).toContain('script carried');
+    });
+  });
+
   // #1750: PAGE_HTML is confluenceToHtml's output for the backend fixture, byte
   // for byte, pinned by content-converter.emoticons.test.ts.
   describe('Confluence emoticons (#1750)', () => {

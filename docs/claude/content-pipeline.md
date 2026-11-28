@@ -60,6 +60,94 @@ other text into two links around the code, and on a collaborative save splits a
 link around a line break (Yjs keeps marks on text only). Pinned by
 `content-converter.links.test.ts`.
 
+**Five more link kinds, and one rule for `ri:url` (#1955).** `ri:space`,
+`ri:blog-post`, `ri:shortcut`, `ri:content-entity` and `ri:url` links are
+carried like the #1748 kinds (`#confluence-space:<key>`,
+`#confluence-blog-post:<title>`, `#confluence-shortcut:<key>`,
+`#confluence-content-entity:<id>`, `#confluence-url:<value>`; `body=plain|rich`
+whenever the link has a body; without one the text is the value with white
+space collapsed, or `(empty link)`). The grammar is pure and lives in
+`@compendiq/contracts` (`confluence-link-grammar.ts`), re-exported by
+`confluence-link.ts`; never parse or build a carrier anywhere else. A `ri:url`
+whose value is a lowercase `http:`, `https:` or `mailto:` URL with no white
+space, control or format character (`isNavigableConfluenceUrl`) is a real link:
+the value is the `href` and the carrier is the `class`, accepted only when it
+carries exactly that href (`isConfluenceUrlClassCarrierFor`). Any other value
+(`javascript:`, `data:`, relative, `HTTPS:`, empty) is an inert
+`#confluence-url:` fragment and is never an href anywhere. On write-back a
+navigable `ri:url` is always written; any other `ri:url` is written only where
+the origin (the page's stored storage: `previousStorage`, or `linkOrigin`
+where a writer keeps `previousStorage` for task ids alone) holds that very
+link, same target with the same body or in the same place, and nothing else
+stored could be its source (`confluence-url-origin.ts`). Every stored link and
+`<a href>` with the same body competes, whatever the label: body_html cannot
+tell a link's carrier from a stored anchor with the same href. A link of any
+kind without a body competes with the text the forward pass shows for it (its
+title, key, anchor or value, white space collapsed as the editor shows it);
+one whose shown text is not known (a mention, or a title or own body with
+U+2329, U+232A or a C1 control, which the editor may show as another
+character) matches no body, is never the same body as another, and when it is
+missing from what is written no moved or relabelled link that could be it is
+kept. A link that is
+not approved becomes what it shows: the nodes of a rich body, the XML text of
+a plain body, or the display text of a body-less link. That is judged on the
+storage string about to be sent, read as XML by `confluence-storage-reader.ts`
+(saxes, never JSDOM, which reads storage as HTML; a tag's start and each
+attribute are charged as the parser reads them). `ConfluenceStorageRefusedError`
+(422, nothing sent, nothing changed) is thrown instead of a silent loss: the
+string may hold a `url` element and cannot be read, the links cannot be judged
+within the work limit (written or stored side), or an unapproved link cannot be
+taken away without loss (it is no element of the document, it is not the exact
+`ac:link` shape and shows something outside a body, or the text shown differs
+after the repair). No cap of the judgement drops a link: a body of any length
+is evidence. Every writer of a synced page derives the storage once, before it
+reserves its intent, and authorizes the page before it plans files or derives
+anything; create and relocation have no origin, so they write no unsafe
+`ri:url`. The forward pass reads the start tags of a link of the five kinds and
+of its resource as XML does (`keepXmlLinkValues`: the storage reader finds the
+tags; `&lang;`/`&rang;`, C1 numeric references and literal TAB/LF/CR are spelled
+so HTML reads XML's value); text and the #1748 kinds keep the HTML values, as
+before #1955. Where the reading of a stored link of the five kinds still differs
+(a literal `/>` in a quoted value, folded attribute names, a panel re-parsing
+its body so CR becomes LF), a write that would publish it with another target
+than the stored XML one is refused before any effect (422 `changed-link-target`,
+owner decisions D19/D21, coordinator decision D20). The verdict is the real
+forward pass's: the writer runs it over the stored storage with the tags the
+reader found in the stored string itself (before CDATA becomes text) marked,
+marks each `<a>` it emits with whether it keeps that link's XML target, and
+judges only the marked `<a>` left in the completed result; a carrier no
+surviving occurrence has (new link, macro parameter dropped later) passes, one
+carried both faithfully and not is refused as `ambiguous` (logged detail).
+Links of stored storage the reader stopped at a limit (`isStorageLimitStop`;
+the unread rest is not certified) are refused with the limit as reason; known
+malformed storage is not checked. A stored rival of unknown text is released
+only when it alone stood in its place and the one thing written there points
+to its target.
+`restoreMedia` replaces a token only where it stands as content
+(`locateMediaTokens`, parse5): never in an attribute, a comment or raw text,
+never under an element the tree builder moved (out of a table, or misnested
+formatting), and never where a reparse would drop or move what is spliced in
+(a `select`, SVG or MathML, an element holding a start tag the tree builder
+ignored, also inside text joined across it). The change is the
+storage-derivation feature `link-kinds`. Owner decision D21 (fallback) narrows
+what may grant, without proving every unproven non-web occurrence becomes text:
+a stored link the forward pass did not deliver to the editor as a link (one
+only a discarded macro parameter held) is a competitor only and matches no
+written link, ordinary or dormant; a stored link that is itself dormant (in a
+template, a style, …) keeps its own round trip; an ordinary anchor in any
+letter case competes but never grants. Limits,
+all declining: a link the editor splits keeps at most one piece as an unsafe
+(not navigable) `ri:url` link; a link both moved and relabelled, one of several
+identical links, and a link left when a stored thing with its body and another
+target went missing become text; on a page that also stores something else
+showing the same text as a link (an `<a>` in any letter case, a page link with
+that title), once one of the two is deleted the link is kept only where it
+still stands in its own stored place, unchanged around it, and becomes text if
+it moved; a row
+synced before #1955 holds these links as text until it is re-synced. That
+Confluence rejects storage that is not well-formed XML is an assumption, not
+tested against a server.
+
 `body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
 imports, drafts, version text; Notion imports join parts with blank lines, restores copy
 stored text), so `htmlToText` must equal what the page shows: the HTML parser decodes
@@ -245,7 +333,9 @@ task's content is read from, and whether or not an enclosing macro later
 keeps, flattens or drops it (comments and CDATA are text); write-back skips
 only the generated figure and table indexes it removes. `indexTaskLists` only
 places tasks. Write-back's decision (`writeBackProfile`) is shared by
-`assignTaskIds`, so every writer derives with the same profile. It may
+`assignTaskIds` and by the #1955 stored-link witness (D19), so every writer
+derives with the same profile and a page past the limit is judged against the
+links the pre-#1957 projection of its stored storage shows. It may
 overcount the output, never
 undercount it, and an overcounted page takes the pre-#1957 path (the bytes and
 ids of `bff6d4ec`); a task in a removed index can still get different ids from

@@ -389,6 +389,50 @@ describe('ArticleViewer', () => {
     expect(link.textContent).toBe('Example');
   });
 
+  // #1955: the body confluenceToHtml stores for links of the five kinds.
+  it('shows a Confluence link the app cannot open as a fragment of this page, and a web link as its address (#1955)', async () => {
+    const webCarrier = '#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain';
+    const html = '<p>'
+      + '<a href="#confluence-space:ENG?body=plain" data-confluence-link="space">the space</a> '
+      + '<a href="#confluence-blog-post:Q3%20%22Update%22?ri:posting-day=2024%2F05%2F01&amp;body=plain" data-confluence-link="blog-post">post</a> '
+      + '<a href="#confluence-shortcut:jira?ri:parameter=ABC-1" data-confluence-link="shortcut">jira</a> '
+      + '<a href="#confluence-content-entity:123?body=plain" data-confluence-link="content-entity">entity</a> '
+      + `<a href="https://example.com/a?b=1&amp;c=2" class="${webCarrier}" data-confluence-link="url">web</a> `
+      + '<a href="#confluence-url:%2Frelative%2Fa?body=plain" data-confluence-link="url">relative</a> '
+      + '<a href="#confluence-url:javascript%3Aalert%281%29?body=plain" data-confluence-link="url">script</a> '
+      + '<a href="#confluence-url:data%3Atext%2Fhtml%2Cx" data-confluence-link="url">data</a> '
+      + '<a href="#confluence-url:vbscript%3Ax" data-confluence-link="url">vb</a> '
+      + '<a href="#confluence-url:file%3A%2F%2F%2Fetc%2Fpasswd" data-confluence-link="url">file</a> '
+      + '<a href="#confluence-url:" data-confluence-link="url">(empty link)</a>'
+      + '</p><p><a href="javascript:alert(1)" class="#confluence-url:javascript%3Aalert%281%29">hostile</a></p>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('a')).toBeTruthy();
+    });
+
+    const links = [...container.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]);
+    expect(links).toEqual([
+      ['the space', '#confluence-space:ENG?body=plain'],
+      ['post', '#confluence-blog-post:Q3%20%22Update%22?ri:posting-day=2024%2F05%2F01&body=plain'],
+      ['jira', '#confluence-shortcut:jira?ri:parameter=ABC-1'],
+      ['entity', '#confluence-content-entity:123?body=plain'],
+      ['web', 'https://example.com/a?b=1&c=2'],
+      ['relative', '#confluence-url:%2Frelative%2Fa?body=plain'],
+      ['script', '#confluence-url:javascript%3Aalert%281%29?body=plain'],
+      ['data', '#confluence-url:data%3Atext%2Fhtml%2Cx'],
+      ['vb', '#confluence-url:vbscript%3Ax'],
+      ['file', '#confluence-url:file%3A%2F%2F%2Fetc%2Fpasswd'],
+      ['(empty link)', '#confluence-url:'],
+    ]);
+    // No anchor of the rendered article opens anything but this page or a web address.
+    for (const anchor of container.querySelectorAll('a')) {
+      expect(anchor.getAttribute('href')).toMatch(/^(#|https:\/\/)/);
+    }
+    expect(container.textContent).toContain('hostile');
+  });
+
   it('renders in non-editable mode', async () => {
     const html = '<p>Read only content</p>';
 

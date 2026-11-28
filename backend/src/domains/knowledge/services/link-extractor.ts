@@ -38,6 +38,7 @@ import { JSDOM } from 'jsdom';
 import type { PoolClient } from 'pg';
 import { logger } from '../../../core/utils/logger.js';
 import {
+  confluenceLinkCarrierOf,
   CONFLUENCE_PAGE_HREF_PREFIX,
   encodeConfluenceLinkValue,
   parseConfluenceLinkHref,
@@ -77,6 +78,14 @@ export function extractInternalLinks(
   for (const a of anchors) {
     const href = a.getAttribute('href');
     if (!href) continue;
+
+    // #1955: a Confluence link that is not a page link (blog post, space,
+    // shortcut, content entity, URL, attachment, anchor) is no edge, whatever
+    // its href says: a `ri:url` to this deployment's own `/pages/42` carries
+    // its link in the class and is still a Confluence URL link, not an
+    // internal link an author made here.
+    const carrier = confluenceLinkCarrierOf(a);
+    if (carrier !== null && !carrier.startsWith(CONFLUENCE_PAGE_HREF_PREFIX)) continue;
 
     // Shape 1: app-route /pages/:id (relative, same-origin)
     const m = APP_PAGE_PATH_RE.exec(href);

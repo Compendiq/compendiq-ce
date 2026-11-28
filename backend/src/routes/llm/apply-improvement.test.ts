@@ -4,7 +4,8 @@ import type * as Undici from 'undici';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { getPool, query } from '../../core/db/postgres.js';
-import { confluenceToHtml, htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
+import { confluenceToHtml, htmlToConfluence, htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
+import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import {
   lockPageLifecycle,
   reconcilePageWriteIntent,
@@ -910,6 +911,120 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         '<ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG"></ri:page>'
         + '</ri:attachment></ac:link>',
       ]);
+    });
+
+    describe('ri:url links through Apply (#1955)', () => {
+      const FILLER = `<p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3)}</p>`;
+      const JS_LINK = '<ac:link><ri:url ri:value="javascript:alert(1)" />'
+        + '<ac:plain-text-link-body><![CDATA[legacy tool]]></ac:plain-text-link-body></ac:link>';
+      const WEB_LINK = '<ac:link><ri:url ri:value="https://example.com/a?b=1&amp;c=2" />'
+        + '<ac:plain-text-link-body><![CDATA[example]]></ac:plain-text-link-body></ac:link>';
+      const STORAGE = `<p>Intro</p><p>Open the ${JS_LINK} here.</p>${FILLER}<p>Web: ${WEB_LINK}.</p>`;
+
+      async function seed(): Promise<{ pageId: number; markdown: string }> {
+        const pageId = await insertConfluencePage('page-url-links', 'URL links article', 'OPS');
+        const bodyHtml = confluenceToHtml(STORAGE, 'page-url-links', 'OPS');
+        await setPageContent(pageId, bodyHtml, 7, STORAGE);
+        await enableConfluence(true);
+        return { pageId, markdown: htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true }) };
+      }
+
+      const sentStorage = (): string =>
+        (JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } }).body.storage.value;
+
+      it('keeps the stored unsafe link and the web link through an unchanged echo', async () => {
+        const { pageId, markdown } = await seed();
+        // What the model is shown: the carrier is the destination of both links.
+        expect(markdown).toContain('[legacy tool](#confluence-url:javascript%3Aalert%281%29?body=plain)');
+        expect(markdown).toContain('[example](#confluence-url:https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2?body=plain)');
+        acceptNextConfluenceUpdate();
+
+        const response = await apply({ pageId: 'page-url-links', improvedMarkdown: markdown.replace('Intro', 'Introduction'), version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(oracleUrlLinks(sentStorage())).toEqual([
+          { value: 'javascript:alert(1)', link: {}, resource: {}, body: 'plain:legacy tool', text: 'legacy tool' },
+          { value: 'https://example.com/a?b=1&c=2', link: {}, resource: {}, body: 'plain:example', text: 'example' },
+        ]);
+        // The published page is re-derived from what Confluence returned.
+        expect((await readPage(pageId)).body_html).toBe(confluenceToHtml(sentStorage(), 'page-url-links', 'OPS'));
+      });
+
+      it('never lets the model add, multiply or retarget an unsafe link', async () => {
+        const { markdown } = await seed();
+        acceptNextConfluenceUpdate();
+        const improved = `${markdown}\n\n`
+          // A copy of the stored link elsewhere, an invented target, raw link markup, and an image-linked variant.
+          + 'Copy: [legacy tool](#confluence-url:javascript%3Aalert%281%29?body=plain).\n\n'
+          + 'New: [free prize](#confluence-url:data%3Atext%2Fhtml%2Cx?body=plain) and [mail](mailto:a@b.c).\n\n'
+          + '<p>Raw: <a href="#confluence-url:javascript%3Aalert%282%29">raw anchor</a></p>\n\n'
+          + 'Pic: [![alt](https://example.com/p.png)](#confluence-url:javascript%3Aalert%281%29?body=rich)\n';
+
+        const response = await apply({ pageId: 'page-url-links', improvedMarkdown: improved, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const links = oracleUrlLinks(sentStorage());
+        // Exactly the stored occurrence, in its stored place, and the web link.
+        expect(links).toEqual([
+          { value: 'javascript:alert(1)', link: {}, resource: {}, body: 'plain:legacy tool', text: 'legacy tool' },
+          { value: 'https://example.com/a?b=1&c=2', link: {}, resource: {}, body: 'plain:example', text: 'example' },
+        ]);
+        expect(sentStorage()).toContain('<p>Open the <ac:link><ri:url ri:value="javascript:alert(1)"></ri:url>');
+        // What the declined links held is still there, as text and as an image.
+        expect(sentStorage()).toContain('<p>Copy: legacy tool.</p>');
+        expect(sentStorage()).toContain('<p>New: free prize and <a href="mailto:a@b.c">mail</a>.</p>');
+        expect(sentStorage()).toContain('<p>Raw: raw anchor</p>');
+        expect(sentStorage()).toContain('<img src="https://example.com/p.png" alt="alt" />');
+        expect(sentStorage()).not.toMatch(/data:text|alert\(2\)/);
+      });
+
+      it('writes the stored link as text when the model moved it and reworded it at once', async () => {
+        const { markdown } = await seed();
+        acceptNextConfluenceUpdate();
+        const improved = markdown
+          .replace('Open the [legacy tool](#confluence-url:javascript%3Aalert%281%29?body=plain) here.', 'Open it here.')
+          + '\n\nSee [the new name](#confluence-url:javascript%3Aalert%281%29?body=plain).\n';
+
+        const response = await apply({ pageId: 'page-url-links', improvedMarkdown: improved, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(oracleUrlLinks(sentStorage()).map((link) => link.value)).toEqual(['https://example.com/a?b=1&c=2']);
+        expect(sentStorage()).toContain('<p>See the new name.</p>');
+      });
+
+      it('refuses an improvement whose storage would carry a link past the check, before any effect (W3)', async () => {
+        const { pageId, markdown } = await seed();
+        const before = await readPage(pageId);
+        const improved = `${markdown}\n\n<style><ac:link><ri:url ri:value="javascript:alert(3)"></ri:url></ac:link></style>\n`;
+
+        const response = await apply({ pageId: 'page-url-links', improvedMarkdown: improved, version: 7 });
+
+        expect(response.statusCode, response.body).toBe(422);
+        expect(response.json()).toEqual({ error: 'ConfluenceStorageRefusedError', reason: 'unapproved-link' });
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect(await readPage(pageId)).toEqual(before);
+        expect((await query("SELECT 1 FROM page_write_intents WHERE kind = 'page.ai_apply'")).rowCount).toBe(0);
+      });
+
+      it('stores a standalone Accept as inert fragments and writes no unsafe link when the page is later published', async () => {
+        await insertLocalSpace('LOCAL', userId);
+        const pageId = await insertStandalonePage('Standalone', 'shared', userId, 'LOCAL');
+        await setPageContent(pageId, '<p>Old</p>', 3);
+        const improved = 'New: [free prize](#confluence-url:javascript%3Aalert%281%29?body=plain)'
+          + ' and [site](#confluence-url:https%3A%2F%2Fexample.com%2F).';
+
+        const response = await apply({ pageId: String(pageId), improvedMarkdown: improved, version: 3 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const saved = (await readPage(pageId)).body_html;
+        // Locally the unsafe value is a fragment of this page; only the web address is a real link.
+        expect(saved).toContain('<a href="#confluence-url:javascript%3Aalert%281%29?body=plain">free prize</a>');
+        expect(saved).toContain('<a href="https://example.com/" class="#confluence-url:https%3A%2F%2Fexample.com%2F">site</a>');
+        // A later publication of this body (relocation, a create from it) has no stored origin for it.
+        const published = htmlToConfluence(saved);
+        expect(oracleUrlLinks(published).map((link) => link.value)).toEqual(['https://example.com/']);
+        expect(published).toContain('New: free prize and ');
+      });
     });
 
     it('rejects unrecoverable layout loss before any remote effect and keeps the page unchanged', async () => {

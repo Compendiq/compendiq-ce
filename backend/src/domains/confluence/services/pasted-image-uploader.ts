@@ -225,21 +225,3 @@ export async function uploadPreparedPastedImage(
       : {}),
   };
 }
-
-/**
- * Compatibility wrapper for the ordinary page-save path. Its caller already
- * reserves a terminal-only page intent before invoking this function.
- */
-export async function uploadLocalImagesToConfluence(
-  html: string,
-  confluencePageId: string,
-  client: ConfluenceClient,
-  log: FastifyBaseLogger,
-): Promise<string> {
-  const plan = await planLocalImagesForConfluence(html);
-  const prepared = await preparePastedImagePlan(plan);
-  for (const image of prepared) {
-    await uploadPreparedPastedImage(image, confluencePageId, client, log);
-  }
-  return plan.bodyHtml;
-}

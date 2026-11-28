@@ -167,6 +167,48 @@ describe('extractInternalLinks', () => {
     expect(extractInternalLinks(html, new Map())).toEqual([]);
   });
 
+  // #1955: only a page link is an edge. The other Confluence link kinds point at
+  // a blog post, a space, a shortcut, a content entity or a URL, never at a page here.
+  it('never resolves a blog-post title as a page title (#1955)', () => {
+    const titles = new Map([['Q3 Update', 7], ['OPS', 8], ['jira', 9], ['12345', 10]]);
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:blog-post ri:content-title="Q3 Update" ri:posting-day="2024/05/01" /></ac:link>'
+      + ' <ac:link><ri:page ri:content-title="Q3 Update" /></ac:link></p>',
+    );
+    // The page link with the same title is the one edge.
+    expect(extractInternalLinks(html, titles)).toEqual([{ targetPageId: 7 }]);
+    expect(extractInternalLinks(
+      confluenceToHtml('<p><ac:link><ri:blog-post ri:content-title="Q3 Update" ri:posting-day="2024/05/01" /></ac:link></p>'),
+      titles,
+    )).toEqual([]);
+  });
+
+  it('makes no edge from a space, shortcut, content-entity or inert url link (#1955)', () => {
+    const titles = new Map([['OPS', 8], ['jira', 9], ['12345', 10], ['/pages/42', 11]]);
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:space ri:space-key="OPS" /></ac:link>'
+      + ' <ac:link><ri:shortcut ri:key="jira" ri:parameter="ABC-1" /></ac:link>'
+      + ' <ac:link><ri:content-entity ri:content-id="12345" /></ac:link>'
+      + ' <ac:link><ri:url ri:value="/pages/42" /></ac:link>'
+      + ' <ac:link><ri:url ri:value="javascript:alert(1)" /></ac:link></p>',
+    );
+    expect(extractInternalLinks(html, titles, new Set(['kb.example.com']))).toEqual([]);
+  });
+
+  it('makes no edge from a ri:url to this deployment, and one from the same URL as an ordinary link (#1955)', () => {
+    const hosts = new Set(['kb.example.com']);
+    const viaConfluence = confluenceToHtml('<p><ac:link><ri:url ri:value="https://kb.example.com/pages/42" /></ac:link></p>');
+    expect(viaConfluence).toContain('href="https://kb.example.com/pages/42" class="#confluence-url:');
+    expect(extractInternalLinks(viaConfluence, new Map(), hosts)).toEqual([]);
+    expect(extractInternalLinks('<p><a href="https://kb.example.com/pages/42">x</a></p>', new Map(), hosts)).toEqual([{ targetPageId: 42 }]);
+    // A class that is not the carrier of the anchor's own URL changes nothing.
+    expect(extractInternalLinks(
+      '<p><a href="https://kb.example.com/pages/42" class="#confluence-url:https%3A%2F%2Fother.example%2F">x</a></p>',
+      new Map(),
+      hosts,
+    )).toEqual([{ targetPageId: 42 }]);
+  });
+
   it('dedupes a relative /pages/:id and an absolute internal URL to the same id', () => {
     const hosts = new Set(['kb.example.com']);
     const html = `

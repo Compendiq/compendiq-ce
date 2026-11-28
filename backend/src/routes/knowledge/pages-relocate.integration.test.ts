@@ -1091,6 +1091,43 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
     });
 
 
+    it('publishes no ri:url link that is not a web address: a standalone page has no stored origin (#1955)', async () => {
+      const id = await createPage({
+        title: 'URL links',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+        bodyHtml: '<p>Odd <a href="#confluence-url:javascript%3Aalert%281%29?body=plain">click me</a>,'
+          + ' web <a href="https://example.com/" class="#confluence-url:https%3A%2F%2Fexample.com%2F">example</a>,'
+          + ' space <a href="#confluence-space:OPS">OPS</a>.</p>',
+      });
+      resolveCreatedPage('900014');
+
+      const res = await toConfluence(id);
+      expect(res.statusCode, res.body).toBe(200);
+
+      const storage = String(h.client.createPage.mock.calls[0]?.[2]);
+      expect(storage).toBe(
+        '<p>Odd click me,'
+        + ' web <ac:link><ri:url ri:value="https://example.com/"></ri:url><ac:plain-text-link-body><![CDATA[example]]></ac:plain-text-link-body></ac:link>,'
+        + ' space <ac:link><ri:space ri:space-key="OPS"></ri:space></ac:link>.</p>',
+      );
+      expect((await getRow(id)).body_storage).toBe(storage);
+    });
+
+    it('refuses a move whose storage would carry a link past the check, before any remote call, changing nothing (#1955)', async () => {
+      const bodyHtml = '<p>x</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>';
+      const id = await createPage({ title: 'Refused move', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId, bodyHtml });
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode, res.body).toBe(422);
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      const row = await getRow(id);
+      expect(row).toMatchObject({ source: 'standalone', confluence_id: null, space_key: 'LOCAL', body_html: bodyHtml });
+      expect((await query('SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::int[]', [id])).rowCount).toBe(0);
+    });
+
     it('never deletes the committed upstream page when protected filesystem cleanup fails', async () => {
       const id = await createPage({
         title: 'Committed cleanup failure',

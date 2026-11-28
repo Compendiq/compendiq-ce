@@ -17,6 +17,7 @@ import {
 } from '../../core/services/storage-derivation.js';
 import { STORAGE_DERIVATION_BASE_CORPUS } from '../../core/services/__fixtures__/storage-derivation-base-corpus.js';
 import { encryptPat } from '../../core/utils/crypto.js';
+import { oracleUrlLinks } from '../../core/services/__fixtures__/storage-oracle.js';
 import {
   confluencePagePutDigest,
   deriveVersionRestoreStorage,
@@ -1304,6 +1305,68 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       remote_version: 4,
     }]);
     expect(confluenceRequests.filter((request) => request.method === 'PUT')).toHaveLength(1);
+  });
+
+  describe('ri:url links of a restored version (#1955)', () => {
+    const STORED_LINK = '<ac:link><ri:url ri:value="/docs/guide" />'
+      + '<ac:plain-text-link-body><![CDATA[the guide]]></ac:plain-text-link-body></ac:link>';
+    const STORAGE = `<p>See ${STORED_LINK} first.</p>`;
+
+    async function seedLinked(historicalHtml: string): Promise<number> {
+      await configureConfluence('OPS');
+      const pageId = await seedPage({
+        source: 'confluence',
+        confluenceId: 'restore-links',
+        spaceKey: 'OPS',
+        visibility: 'shared',
+        ownerId: null,
+        version: 3,
+        title: 'Live links title',
+        bodyHtml: '<p>See <a href="#confluence-url:%2Fdocs%2Fguide?body=plain" data-confluence-link="url">the guide</a> first.</p>',
+        bodyText: 'See the guide first.',
+      });
+      await query('UPDATE pages SET body_storage = $2, remote_version = 3 WHERE id = $1', [pageId, STORAGE]);
+      await seedVersion(pageId, 1, 'Links historical', historicalHtml, 'historical');
+      return pageId;
+    }
+
+    const restore = (pageId: number) => app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore?source=confluence`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    it('restores the link the current storage holds and writes a link it no longer holds as text', async () => {
+      const pageId = await seedLinked(
+        '<p>See <a href="#confluence-url:%2Fdocs%2Fguide?body=plain">the guide</a> first.</p>'
+        + '<p>Old <a href="#confluence-url:javascript%3Aalert%281%29?body=plain">legacy tool</a>.</p>',
+      );
+
+      const response = await restore(pageId);
+
+      expect(response.statusCode, response.body).toBe(200);
+      const puts = confluenceRequests.filter((request) => request.method === 'PUT');
+      expect(puts).toHaveLength(1);
+      const sent = puts[0]!.body!.body.storage.value;
+      expect(oracleUrlLinks(sent)).toEqual([
+        { value: '/docs/guide', link: {}, resource: {}, body: 'plain:the guide', text: 'the guide' },
+      ]);
+      expect(sent).toContain('<p>Old legacy tool.</p>');
+    });
+
+    it('refuses a version whose storage would carry a link past the check, before the intent and the PUT (W3)', async () => {
+      const pageId = await seedLinked('<p>historical</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>');
+      const before = await query('SELECT title, body_html, body_storage, version FROM pages WHERE id = $1', [pageId]);
+
+      const response = await restore(pageId);
+
+      expect(response.statusCode, response.body).toBe(422);
+      expect(response.json()).toMatchObject({ reason: 'unapproved-link' });
+      expect(confluenceRequests.filter((request) => request.method === 'PUT')).toEqual([]);
+      expect((await query('SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::integer[]', [pageId])).rowCount).toBe(0);
+      expect((await query('SELECT title, body_html, body_storage, version FROM pages WHERE id = $1', [pageId])).rows).toEqual(before.rows);
+    });
   });
 
   it('cancels a restore when its original actor is deactivated during the admission wait', async () => {

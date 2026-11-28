@@ -867,6 +867,68 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     });
   });
 
+  it('creates a Confluence page with no ri:url link that is not a web address: a new page has no stored origin (#1955)', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
+    upstreamPageIds.push('links-remote');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Created with links',
+        spaceKey: 'CONF',
+        bodyHtml: '<p>Odd <a href="#confluence-url:javascript%3Aalert%281%29?body=plain">click me</a>,'
+          + ' raw <ac:link><ri:url ri:value="/relative/a"></ri:url><ac:plain-text-link-body>docs</ac:plain-text-link-body></ac:link>,'
+          + ' web <a href="https://example.com/" class="#confluence-url:https%3A%2F%2Fexample.com%2F">example</a>,'
+          + ' space <a href="#confluence-space:OPS">OPS</a>.</p>',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    const [request] = createRequests();
+    expect(request!.body.body.storage.value).toBe(
+      '<p>Odd click me, raw docs,'
+      + ' web <ac:link><ri:url ri:value="https://example.com/"></ri:url><ac:plain-text-link-body><![CDATA[example]]></ac:plain-text-link-body></ac:link>,'
+      + ' space <ac:link><ri:space ri:space-key="OPS"></ri:space></ac:link>.</p>',
+    );
+  });
+
+  it('refuses a Confluence create whose storage would carry a link past the check, with no intent, request or row (#1955)', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
+    upstreamPageIds.push('never-created');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Refused create',
+        spaceKey: 'CONF',
+        bodyHtml: '<p>x</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(422);
+    // (The suite's own error handler answers with the message; app.test.ts pins the production body.)
+    expect(response.json<ErrorResponse>().error).toMatch(/^This page cannot be saved to Confluence: /);
+    expect(upstreamRequests).toEqual([]);
+    expect(await rowsByTitle('Refused create')).toEqual([]);
+    expect((await query('SELECT 1 FROM page_write_intents')).rowCount).toBe(0);
+    // The same body is stored as written on a standalone page: nothing is sent anywhere.
+    const local = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Local create',
+        source: 'standalone',
+        bodyHtml: '<p>x</p><style><ac:link><ri:url ri:value="javascript:alert(1)"></ri:url></ac:link></style>',
+      },
+    });
+    expect(local.statusCode, local.body).toBe(200);
+    expect(upstreamRequests).toEqual([]);
+  });
+
   it('treats missing integration settings as enabled but unconfigured', async () => {
     await grantSpace(currentUserId, 'CONF');
     const response = await app.inject({
