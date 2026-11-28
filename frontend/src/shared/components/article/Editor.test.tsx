@@ -1780,6 +1780,130 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
 
       expect(savedTaskIds(editor!)).toEqual(['42', null, '7']);
     });
+
+    // #1957: confluenceToHtml's output for nested tasks, byte for byte, pinned
+    // by the backend's content-converter.nested-tasks.test.ts (NESTED_TASK_LIST_HTML).
+    const NESTED_TASK_PAGE_HTML =
+      '<p>Release checklist</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="11">Release'
+      + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="12">Write notes '
+      + '<span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li>'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="13">Tag build<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="14">Push tag</li></ul></li></ul></li>'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="15">Announce</li></ul>';
+
+    /** Every task item: id, checked, depth (task lists around it) and own text. */
+    function savedTasks(editor: EditorType): Array<[string | null, string | null, number, string]> {
+      const saved = new DOMParser().parseFromString(editor.getHTML(), 'text/html');
+      return [...saved.querySelectorAll('li[data-type="taskItem"]')].map((li) => {
+        let depth = 0;
+        for (let el: Element | null = li; el; el = el.parentElement) {
+          if (el.matches('ul[data-type="taskList"]')) depth += 1;
+        }
+        const own = li.cloneNode(true) as Element;
+        for (const nested of own.querySelectorAll('ul, label, .confluence-toc')) nested.remove();
+        return [li.getAttribute('data-task-id'), li.getAttribute('data-checked'), depth, own.textContent ?? ''];
+      });
+    }
+
+    it('keeps nested tasks, their ids and a subtask macro at their depth through an unrelated edit (#1957)', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={NESTED_TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      act(() => {
+        editor!.chain().setTextSelection(1 + 'Release checklist'.length).insertContent(' (edited)').run();
+      });
+
+      expect(savedTasks(editor!)).toEqual([
+        ['11', 'false', 1, 'Release'],
+        ['12', 'true', 2, 'Write notes DONE'],
+        ['13', 'false', 2, 'Tag build'],
+        ['14', 'false', 3, 'Push tag'],
+        ['15', 'false', 1, 'Announce'],
+      ]);
+      const saved = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+      expect(saved.querySelector('p')?.textContent).toBe('Release checklist (edited)');
+      // The toc stays a macro, once, inside task 12's content.
+      expect([...saved.querySelectorAll('.confluence-toc')].map((toc) => toc.closest('li')?.getAttribute('data-task-id')))
+        .toEqual(['12']);
+    });
+
+    it('starts a new task without the id when Enter splits a subtask (#1957)', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={NESTED_TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      let end = -1;
+      editor!.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Push tag') end = pos + node.nodeSize;
+      });
+      act(() => {
+        editor!.chain().setTextSelection(end).splitListItem('taskItem').run();
+      });
+
+      expect(savedTasks(editor!).map(([id, , depth]) => [id, depth]))
+        .toEqual([['11', 1], ['12', 2], ['13', 2], ['14', 3], [null, 3], ['15', 1]]);
+    });
+
+    it('keeps the text and the block macro of a task that holds both (#1957)', async () => {
+      let editor: EditorType | null = null;
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">text '
+        + '<div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li></ul>';
+      render(<Editor content={html} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const saved = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+      expect(saved.querySelector('li[data-task-id="1"] > div > p')?.textContent).toBe('text');
+      expect(saved.querySelector('li[data-task-id="1"] > div > .confluence-toc')).not.toBeNull();
+    });
+
+    // #1957 M3: the backend's content-converter.nested-tasks.test.ts runs the
+    // same input through the collab schema and expects the same result.
+    const NESTED_CANARY_HTML = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">parent'
+      + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="2">safe '
+      + '<img src="https://example.com/a.png" onerror="alert(1)"><script>alert(2)</script>'
+      + '<a href="javascript:alert(3)">link</a> <span onmouseover="alert(4)">hover</span>'
+      + '<div class="confluence-toc" data-maxlevel="2" onclick="alert(5)">[Table of Contents]</div></li></ul></li></ul>';
+
+    it('keeps script and event-handler canaries out of a nested task, while its content and nesting stay (#1957)', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={NESTED_CANARY_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      const html = editor!.getHTML();
+      for (const canary of ['onerror', '<script', 'javascript:', 'onmouseover', 'onclick', 'alert(']) {
+        expect(html, canary).not.toContain(canary);
+      }
+      expect(savedTasks(editor!).map(([id, checked, depth]) => [id, checked, depth])).toEqual([['1', 'false', 1], ['2', 'true', 2]]);
+      const sub = new DOMParser().parseFromString(html, 'text/html').querySelector('li[data-task-id="2"]')!;
+      expect(sub.textContent).toContain('safe');
+      expect(sub.textContent).toContain('link');
+      expect(sub.textContent).toContain('hover');
+      expect(sub.querySelector('.confluence-toc')).not.toBeNull();
+    });
+
+    it('keeps 32 nested levels and every id, the nesting the converter writes at most (#1957)', async () => {
+      let html = '';
+      for (let level = 32; level >= 1; level -= 1) {
+        html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${level}">t${level} `
+          + `<div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div>${html}</li></ul>`;
+      }
+      let editor: EditorType | null = null;
+      render(<Editor content={html} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      expect(savedTasks(editor!).map(([id, , depth, text]) => [id, depth, text]))
+        .toEqual(Array.from({ length: 32 }, (_, index) => [String(index + 1), index + 1, `t${index + 1}`]));
+    });
   });
 });
 
@@ -1945,6 +2069,31 @@ describe('draft auto-save flush on unmount (#877)', () => {
         expect(editor!.getText()).not.toContain('/table');
       });
     });
+  });
+});
+
+describe('table cell alignment (#1956)', () => {
+  const ALIGNED = '<table><tbody><tr><th align="left">a</th><th align="center">b</th><th align="right">c</th><th>d</th></tr>'
+    + '<tr><td align="left">1</td><td style="text-align: center;">2</td><td align="right">3</td><td>4</td></tr></tbody></table>';
+
+  it('keeps cell alignment from the align attribute and from style, and serialises align="…" without a style', async () => {
+    let editor: EditorType | null = null;
+    render(<Editor content={ALIGNED} editable={true} onEditorReady={(e) => { editor = e; }} />);
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+    const doc = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+    expect([...doc.querySelectorAll('th')].map((cell) => cell.getAttribute('align'))).toEqual(['left', 'center', 'right', null]);
+    expect([...doc.querySelectorAll('td')].map((cell) => cell.getAttribute('align'))).toEqual(['left', 'center', 'right', null]);
+    expect(doc.querySelectorAll('th[style], td[style]')).toHaveLength(0);
+  });
+
+  it('renders the aligned cells with the attribute the stylesheet rules target', async () => {
+    const { container } = render(<Editor content={ALIGNED} editable={true} />);
+    await waitFor(() => {
+      expect(container.querySelector('th[align="center"]')).not.toBeNull();
+    });
+    expect(container.querySelector('td[align="right"]')).not.toBeNull();
   });
 });
 

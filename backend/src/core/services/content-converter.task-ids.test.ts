@@ -123,10 +123,12 @@ describe('content-converter: #1751 Confluence task ids survive write-back', () =
         + '</ac:task-body></ac:task></ac:task-list>',
       );
       const lis = new JSDOM(`<body>${html}</body>`).window.document.querySelectorAll('li[data-type="taskItem"]');
-      // The forward pass still hoists the subtask beside its parent (#1220 note);
-      // only the parent's own (absent) id is this test's concern.
-      expect([...lis].map((li) => [li.firstChild?.textContent, li.getAttribute('data-task-id')]))
-        .toEqual([['parent', null], ['subtask', '8']]);
+      // The subtask nests inside its parent, once (#1957); the parent's own
+      // (absent) id stays absent.
+      expect([...lis].map((li) => [li.firstChild?.textContent, li.getAttribute('data-task-id'), li.parentElement?.closest('li')?.getAttribute('data-checked') ?? null]))
+        .toEqual([['parent', null, null], ['subtask', '8', 'false']]);
+      expect(lis).toHaveLength(2);
+      expect(html).not.toContain('ac:task');
     });
   });
 
@@ -174,8 +176,8 @@ describe('content-converter: #1751 Confluence task ids survive write-back', () =
     });
 
     it('never keeps or mints an id that raw ac:task-id storage in the document uses', () => {
-      // A raw ac:task-list can reach body_html (the forward pass leaves a
-      // subtask nested in ac:task-body raw); its id is written back as is.
+      // A raw ac:task-list can reach body_html (a page synced before #1957
+      // kept a subtask nested in ac:task-body raw); its id is written back as is.
       const html =
         '<ul data-type="taskList">'
         + '<li data-type="taskItem" data-checked="false" data-task-id="5">parent'

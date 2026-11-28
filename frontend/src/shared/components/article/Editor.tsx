@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table';
 import { TaskList } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
@@ -50,6 +50,8 @@ import {
   isInConfluenceLayout,
   LAYOUT_PRESETS,
   ExtendedTable,
+  ConfluenceTableCell,
+  ConfluenceTableHeader,
   BlockShortcutsExtension,
   CommentMark,
   SafeHighlight,
@@ -848,8 +850,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       SafeHighlight.configure({ multicolor: true }),
       ExtendedTable.configure({ resizable: true }),
       TableRow,
-      TableCell,
-      TableHeader,
+      ConfluenceTableCell,
+      ConfluenceTableHeader,
       TaskList,
       ConfluenceTaskItem.configure({ nested: true }),
       MermaidBlock,

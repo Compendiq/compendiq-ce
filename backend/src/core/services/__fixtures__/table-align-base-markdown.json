@@ -1,0 +1,47 @@
+{
+ "_comment": "htmlToMarkdown / htmlToEmbeddingText outputs captured at origin/dev bff6d4ec9ec3ca08642e347d19eef51059a5a4bf in a clean checkout (#1956, decision D6). Never regenerate from a later converter.",
+ "tables": {
+  "editorAligned": {
+   "html": "<table style=\"min-width: 75px;\"><colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th colspan=\"1\" rowspan=\"1\" align=\"left\"><p>a</p></th><th colspan=\"1\" rowspan=\"1\" align=\"center\"><p>b|c</p></th><th colspan=\"1\" rowspan=\"1\" align=\"right\"><p>d</p></th></tr><tr><td colspan=\"1\" rowspan=\"1\" align=\"left\"><p>1</p></td><td colspan=\"1\" rowspan=\"1\" align=\"center\"><p>2</p></td><td colspan=\"1\" rowspan=\"1\" align=\"right\"><p>3</p></td></tr></tbody></table>",
+   "markdown": "<table style=\"min-width: 75px;\"><colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th colspan=\"1\" rowspan=\"1\" align=\"left\"><p>a</p></th><th colspan=\"1\" rowspan=\"1\" align=\"center\"><p>b|c</p></th><th colspan=\"1\" rowspan=\"1\" align=\"right\"><p>d</p></th></tr><tr><td colspan=\"1\" rowspan=\"1\" align=\"left\"><p>1</p></td><td colspan=\"1\" rowspan=\"1\" align=\"center\"><p>2</p></td><td colspan=\"1\" rowspan=\"1\" align=\"right\"><p>3</p></td></tr></tbody></table>",
+   "markdownLayoutFalse": "<table style=\"min-width: 75px;\"><colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th colspan=\"1\" rowspan=\"1\" align=\"left\"><p>a</p></th><th colspan=\"1\" rowspan=\"1\" align=\"center\"><p>b|c</p></th><th colspan=\"1\" rowspan=\"1\" align=\"right\"><p>d</p></th></tr><tr><td colspan=\"1\" rowspan=\"1\" align=\"left\"><p>1</p></td><td colspan=\"1\" rowspan=\"1\" align=\"center\"><p>2</p></td><td colspan=\"1\" rowspan=\"1\" align=\"right\"><p>3</p></td></tr></tbody></table>",
+   "improve": "<table style=\"min-width: 75px;\"><colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th colspan=\"1\" rowspan=\"1\" align=\"left\"><p>a</p></th><th colspan=\"1\" rowspan=\"1\" align=\"center\"><p>b|c</p></th><th colspan=\"1\" rowspan=\"1\" align=\"right\"><p>d</p></th></tr><tr><td colspan=\"1\" rowspan=\"1\" align=\"left\"><p>1</p></td><td colspan=\"1\" rowspan=\"1\" align=\"center\"><p>2</p></td><td colspan=\"1\" rowspan=\"1\" align=\"right\"><p>3</p></td></tr></tbody></table>",
+   "embedding": "<table style=\"min-width: 75px;\"><colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th colspan=\"1\" rowspan=\"1\" align=\"left\">a</th><th colspan=\"1\" rowspan=\"1\" align=\"center\">b|c</th><th colspan=\"1\" rowspan=\"1\" align=\"right\">d</th></tr><tr><td colspan=\"1\" rowspan=\"1\" align=\"left\">1</td><td colspan=\"1\" rowspan=\"1\" align=\"center\">2</td><td colspan=\"1\" rowspan=\"1\" align=\"right\">3</td></tr></tbody></table>"
+  },
+  "markedAligned": {
+   "html": "<table>\n<thead>\n<tr>\n<th align=\"left\">a</th>\n<th align=\"center\">b</th>\n<th align=\"right\">c</th>\n<th>d</th>\n</tr>\n</thead>\n<tbody><tr>\n<td align=\"left\">1</td>\n<td align=\"center\">2</td>\n<td align=\"right\">3</td>\n<td>4</td>\n</tr>\n</tbody></table>\n",
+   "markdown": "| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |",
+   "markdownLayoutFalse": "| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |",
+   "improve": "| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |",
+   "embedding": "| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |"
+  },
+  "theadPCells": {
+   "html": "<table><thead><tr><th align=\"center\"><p>a</p></th><th><p>b</p></th></tr></thead><tbody><tr><td><p>1</p></td><td><p>2</p></td></tr></tbody></table>",
+   "markdown": "| \na\n\n | \n\nb\n\n |\n| :-: | --- |\n| \n\n1\n\n | \n\n2\n\n |",
+   "markdownLayoutFalse": "| \na\n\n | \n\nb\n\n |\n| :-: | --- |\n| \n\n1\n\n | \n\n2\n\n |",
+   "improve": "| \na\n\n | \n\nb\n\n |\n| :-: | --- |\n| \n\n1\n\n | \n\n2\n\n |",
+   "embedding": "| a | b |\n| :-: | --- |\n| 1 | 2 |"
+  },
+  "confluenceStyled": {
+   "html": "<table class=\"wrapped\"><colgroup><col><col></colgroup><tbody><tr><th class=\"confluenceTh\" style=\"text-align: center;\" align=\"center\">H</th><th class=\"confluenceTh\">I</th></tr><tr><td class=\"confluenceTd\">x</td><td class=\"confluenceTd\">y</td></tr></tbody></table>",
+   "markdown": "<table class=\"wrapped\"><colgroup><col><col></colgroup><tbody><tr><th class=\"confluenceTh\" style=\"text-align: center;\" align=\"center\">H</th><th class=\"confluenceTh\">I</th></tr><tr><td class=\"confluenceTd\">x</td><td class=\"confluenceTd\">y</td></tr></tbody></table>",
+   "markdownLayoutFalse": "<table class=\"wrapped\"><colgroup><col><col></colgroup><tbody><tr><th class=\"confluenceTh\" style=\"text-align: center;\" align=\"center\">H</th><th class=\"confluenceTh\">I</th></tr><tr><td class=\"confluenceTd\">x</td><td class=\"confluenceTd\">y</td></tr></tbody></table>",
+   "improve": "<table class=\"wrapped\"><colgroup><col><col></colgroup><tbody><tr><th class=\"confluenceTh\" style=\"text-align: center;\" align=\"center\">H</th><th class=\"confluenceTh\">I</th></tr><tr><td class=\"confluenceTd\">x</td><td class=\"confluenceTd\">y</td></tr></tbody></table>",
+   "embedding": "<table class=\"wrapped\"><colgroup><col><col></colgroup><tbody><tr><th class=\"confluenceTh\" style=\"text-align: center;\" align=\"center\">H</th><th class=\"confluenceTh\">I</th></tr><tr><td class=\"confluenceTd\">x</td><td class=\"confluenceTd\">y</td></tr></tbody></table>"
+  },
+  "spanThead": {
+   "html": "<table><thead><tr><th colspan=\"2\">name</th></tr></thead><tbody><tr><td>a</td><td>b</td></tr></tbody></table>",
+   "markdown": "| name |\n| --- |\n| a | b |",
+   "markdownLayoutFalse": "| name |\n| --- |\n| a | b |",
+   "improve": "| name |\n| --- |\n| a | b |",
+   "embedding": "| name |\n| --- |\n| a | b |"
+  },
+  "plainTbodyTh": {
+   "html": "<table><tbody><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>",
+   "markdown": "| a | b |\n| --- | --- |\n| 1 | 2 |",
+   "markdownLayoutFalse": "| a | b |\n| --- | --- |\n| 1 | 2 |",
+   "improve": "| a | b |\n| --- | --- |\n| 1 | 2 |",
+   "embedding": "| a | b |\n| --- | --- |\n| 1 | 2 |"
+  }
+ }
+}
