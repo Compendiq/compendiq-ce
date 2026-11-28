@@ -24,6 +24,10 @@ import { query } from '../../core/db/postgres.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import { flushPageWriteInvalidations } from '../../core/services/page-write-invalidation.js';
+import {
+  ALL_STORAGE_DERIVATION_FEATURES,
+  encodeStorageDerivationFeatures,
+} from '../../core/services/storage-derivation.js';
 import { pagesVersionRoutes } from './pages-versions.js';
 
 const mockRequest = vi.mocked(request);
@@ -388,6 +392,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
         WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
       [pageId],
     );
+    // #1953: the restore records the storage-derivation features in force,
+    // and no key while none is registered.
+    const derivationFeatures = encodeStorageDerivationFeatures(ALL_STORAGE_DERIVATION_FEATURES);
     expect(intent.rows[0]).toEqual({
       status: 'completed',
       effect: {
@@ -399,6 +406,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
         intendedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         targetVersion: 2,
         targetSource: 'confluence',
+        ...(derivationFeatures ? { derivationFeatures } : {}),
       },
       remote_effect_started_at: expect.any(Date),
       remote_effects_completed_at: expect.any(Date),

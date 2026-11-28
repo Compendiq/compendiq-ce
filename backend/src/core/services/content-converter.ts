@@ -14,6 +14,11 @@ import {
   confluenceLinkElement,
   escapeConfluenceLinkAttributes,
 } from './confluence-link.js';
+import {
+  ALL_STORAGE_DERIVATION_FEATURES,
+  assertStorageDerivationFeatures,
+  type StorageDerivationFeatures,
+} from './storage-derivation.js';
 
 // SECURITY: All innerHTML usage below is in server-side JSDOM context (Node.js),
 // NOT browser DOM. JSDOM is used purely as an HTML parser/transformer for
@@ -303,9 +308,26 @@ interface ConfluenceConversionPass {
  * macro count and a malformed/unhandled shape is never silently discarded.
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
+  return confluenceToHtmlWith(storageXhtml, pageId, spaceKey, ALL_STORAGE_DERIVATION_FEATURES);
+}
+
+/**
+ * {@link confluenceToHtml} with a stated set of storage-derivation features
+ * (#1953): every forward conversion says which set it derives with. A
+ * write-back that converts stored storage itself ({@link storedTasks}) passes
+ * its own set, so a restore recovered with the features it was reserved with
+ * reads the stored tasks as it read them then.
+ */
+function confluenceToHtmlWith(
+  storageXhtml: string,
+  pageId: string | undefined,
+  spaceKey: string | undefined,
+  features: StorageDerivationFeatures,
+): string {
+  assertStorageDerivationFeatures(features);
   let input = storageXhtml;
   while (true) {
-    const pass = confluenceToHtmlPass(input, pageId, spaceKey);
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey, features);
     if (pass.macrosAfter === 0) return pass.html;
     if (pass.macrosAfter >= pass.macrosBefore) {
       throw new Error(
@@ -336,6 +358,13 @@ export interface HtmlToConfluenceOptions {
    * AI Improve apply never sets it.
    */
   legacyTasks?: boolean;
+  /**
+   * The storage-derivation features this write-back derives with (#1953;
+   * storage-derivation.ts). Only a version restore states them: the set its
+   * intent recorded, so its recovery writes what its reservation wrote. Every
+   * other writer omits the option and derives with every registered feature.
+   */
+  derivationFeatures?: StorageDerivationFeatures;
 }
 
 /**
@@ -366,14 +395,26 @@ interface StoredTasks {
 }
 
 /**
+ * The features a write-back derives with (#1953): the set its caller states,
+ * else every registered one.
+ */
+function writeBackFeatures(options: HtmlToConfluenceOptions): StorageDerivationFeatures {
+  if (options.derivationFeatures === undefined) return ALL_STORAGE_DERIVATION_FEATURES;
+  assertStorageDerivationFeatures(options.derivationFeatures);
+  return options.derivationFeatures;
+}
+
+/**
  * The tasks a storage body holds, as confluenceToHtml writes them: each id
  * once (its first task), in document order, with the task's own text (#1751).
+ * The conversion derives with the write-back's own `features` (#1953).
  */
-function storedTasks(storage: string | null | undefined): StoredTasks {
+function storedTasks(storage: string | null | undefined, features: StorageDerivationFeatures): StoredTasks {
   const tasks: Array<{ id: string; text: string }> = [];
   const textById = new Map<string, string>();
   if (storage) {
-    const doc = new JSDOM(`<body>${confluenceToHtml(storage)}</body>`, { contentType: 'text/html' }).window.document;
+    const html = confluenceToHtmlWith(storage, undefined, undefined, features);
+    const doc = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
     for (const li of doc.querySelectorAll('li[data-type="taskItem"][data-task-id]')) {
       const id = li.getAttribute('data-task-id')!;
       if (textById.has(id)) continue;
@@ -419,8 +460,9 @@ interface TaskIdAllocation {
 function allocateTaskIds(doc: Document, options: HtmlToConfluenceOptions): TaskIdAllocation {
   const taken = new Set(byTag(doc, 'ac:task-id').map((el) => (el.textContent ?? '').trim()));
   const items = [...doc.querySelectorAll('ul[data-type="taskList"] li[data-type="taskItem"]')];
+  const features = writeBackFeatures(options);
   let storedCache: StoredTasks | undefined;
-  const stored = (): StoredTasks => (storedCache ??= storedTasks(options.previousStorage));
+  const stored = (): StoredTasks => (storedCache ??= storedTasks(options.previousStorage, features));
   const texts = new Map<Element, string>();
   const textOf = (li: Element): string => {
     let text = texts.get(li);
@@ -549,17 +591,36 @@ function taskItemContent(li: Element): Element {
   return li;
 }
 
+/** A step inside the forward pass: the parsed storage and the features the pass derives with. */
+type ForwardDerivationStep = (doc: Document, features: StorageDerivationFeatures) => void;
+
+let forwardDerivationStepForTest: ForwardDerivationStep | undefined;
+
 /**
- * Run one static-snapshot conversion pass.
+ * Test seam (#1953). Runs `step` at the start of every forward pass, where a
+ * feature's gated step runs, with the set that pass derives with. No forward
+ * step is gated yet, so this is how a test sees which set reaches the pass a
+ * write-back runs on `previousStorage`. `undefined` removes the step.
+ */
+export function _setForwardDerivationStepForTest(step: ForwardDerivationStep | undefined): void {
+  forwardDerivationStepForTest = step;
+}
+
+/**
+ * Run one static-snapshot conversion pass. No step of it is gated on a
+ * storage-derivation feature yet; one that is reads `derivationHas` on this
+ * pass's set (#1953).
  */
 function confluenceToHtmlPass(
   storageXhtml: string,
-  pageId?: string,
-  spaceKey?: string,
+  pageId: string | undefined,
+  spaceKey: string | undefined,
+  features: StorageDerivationFeatures,
 ): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
+  forwardDerivationStepForTest?.(doc, features);
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
   const macrosBefore = countRawStructuredMacros(doc.body);
 

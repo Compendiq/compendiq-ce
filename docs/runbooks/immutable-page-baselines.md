@@ -1349,6 +1349,38 @@ New Version History restore intents also record the target snapshot's
 `source`. When inspecting history for an intent, match page ID, source, and
 version number. Legacy restore intents record only the target number.
 
+A restore intent also records the storage-derivation features its storage was
+derived with, as `derivationFeatures`: the registered names in ascending
+order, and no key while no feature is in force. Recovery derives the restored
+version's storage with exactly that record and compares it with
+`intendedStateDigest`; an intent without the key was reserved before the first
+feature and is derived with none. A value that is not such a list is
+`intent_recovery_metadata_invalid`. The digest covers the derived storage and
+the effective title, so `intent_restore_target_changed` reports a historical
+row that now derives different storage or another title; the row's id, title
+and HTML are compared before the provider PUT, not during recovery.
+
+`intent_restore_derivation_unsupported` means the intent names a feature the
+reconciling runtime does not register: a restore reserved by a newer release,
+reconciled after a rollback or by a pod that has not been upgraded. That
+runtime refuses **before it takes ownership**. The original runtime's fence,
+the page state and the administrator are checked as for every reconcile, and
+then nothing is written: the intent keeps its fenced `runtimeId`, gets no
+`recoveryStartedAt` and no recovery attempt, and Confluence is neither read
+nor written. Send the reconcile to a process of the release that reserved the
+intent. Route to it directly; a load-balanced retry may reach the old pod
+again and get the same answer.
+
+A release older than this refusal does not know the key. It claims the intent
+first and then answers `intent_recovery_metadata_invalid`, so the intent's
+`runtimeId` is now that process, with a `runtime_transfer` entry in its
+recovery history, and every other process answers
+`409 runtime_not_safely_fenced`. Read the new owner from
+`GET /api/admin/page-write-recovery`, retire it with *Runtime retirement and
+fencing* (quiesce that process, then fence it with its acknowledgment), and
+only then reconcile on a process of the reserving release. Never edit the
+intent row to undo the claim, and never reconcile around an unfenced owner.
+
 ### `remote_terminal_only`
 
 A fenced intent is not automatically an unknown remote outcome. The trusted

@@ -13,10 +13,19 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { isVersionPlaceholderTitle, livePageVersion, type PageVersionSource } from '../../../core/services/version-snapshot.js';
 import {
   PageWriteError,
+  registerPageWriteIntentPreflight,
   registerPageWriteIntentReconciler,
+  type PageWriteIntentPreflight,
   type PageWriteIntentReconciler,
   type PageWriteRecoveryIntent,
 } from '../../../core/services/page-write-admission.js';
+import {
+  decodeStorageDerivationFeatures,
+  encodeStorageDerivationFeatures,
+  NO_STORAGE_DERIVATION_FEATURES,
+  STORAGE_DERIVATION_EFFECT_KEY,
+  type StorageDerivationFeatures,
+} from '../../../core/services/storage-derivation.js';
 import { getClientForUser } from './sync-service.js';
 
 interface PagePutState {
@@ -36,6 +45,8 @@ type PublicationKindState =
       kind: 'page.version_restore';
       targetVersion: number;
       targetSource?: PageVersionSource;
+      /** The storage-derivation features the restore was reserved with (#1953). */
+      derivationFeatures: StorageDerivationFeatures;
     };
 
 export type ConfluencePagePutPublication = PublicationKindState & {
@@ -84,14 +95,40 @@ export function confluencePagePutDigest(state: PagePutState): string {
 }
 
 /**
+ * The storage a version restore sends to Confluence for the historical
+ * `targetHtml` (#1953). The route derives it to reserve the intent, and
+ * publication derives it again, in the request and in recovery, with the
+ * features the intent recorded: one function, so the two cannot drift.
+ * `stored` is the live page row; its tasks keep the ids Confluence has (#1751).
+ */
+export function deriveVersionRestoreStorage(
+  targetHtml: string,
+  stored: { body_storage: string | null | undefined; body_html: string | null | undefined },
+  features: StorageDerivationFeatures,
+): string {
+  return htmlToConfluence(targetHtml, {
+    previousStorage: stored.body_storage,
+    legacyTasks: hasOnlyUncarriedTasks(stored.body_html),
+    derivationFeatures: features,
+  });
+}
+
+/**
  * Build the durable descriptor shared by the ordinary completion and crash
  * recovery paths. Authored title/body are used only to derive the digest and
- * are deliberately absent from the persisted effect.
+ * are deliberately absent from the persisted effect. A restore records the
+ * names of the storage-derivation features its storage was derived with, and
+ * no key while none is in force (#1953).
  */
 export function describeConfluencePagePut(
   input: PagePutState & { actorId: string; expectedLocalVersion: number } & (
     Extract<PublicationKindState, { kind: 'page.ai_apply' }>
-    | { kind: 'page.version_restore'; targetVersion: number; targetSource: PageVersionSource }
+    | {
+        kind: 'page.version_restore';
+        targetVersion: number;
+        targetSource: PageVersionSource;
+        derivationFeatures: StorageDerivationFeatures;
+      }
   ),
 ): ConfluencePagePutPublication {
   const intendedStateDigest = confluencePagePutDigest(input);
@@ -119,12 +156,19 @@ export function describeConfluencePagePut(
       effect: { ...effectCommon, improvementId: input.improvementId },
     };
   }
+  const recordedFeatures = encodeStorageDerivationFeatures(input.derivationFeatures);
   return {
     ...common,
     kind: input.kind,
     targetVersion: input.targetVersion,
     targetSource: input.targetSource,
-    effect: { ...effectCommon, targetVersion: input.targetVersion, targetSource: input.targetSource },
+    derivationFeatures: input.derivationFeatures,
+    effect: {
+      ...effectCommon,
+      targetVersion: input.targetVersion,
+      targetSource: input.targetSource,
+      ...(recordedFeatures ? { [STORAGE_DERIVATION_EFFECT_KEY]: recordedFeatures } : {}),
+    },
   };
 }
 
@@ -186,20 +230,40 @@ function publicationFromRecoveryIntent(
   }
   const hasTargetSource = Object.hasOwn(effect, 'targetSource');
   const targetSource = effect.targetSource;
+  // #1953: an intent without the record was reserved before the first
+  // storage-derivation feature and is recovered with none, never with the
+  // features of this release.
+  const hasDerivationFeatures = Object.hasOwn(effect, STORAGE_DERIVATION_EFFECT_KEY);
+  const derivation = hasDerivationFeatures
+    ? decodeStorageDerivationFeatures(effect[STORAGE_DERIVATION_EFFECT_KEY])
+    : { ok: true as const, features: NO_STORAGE_DERIVATION_FEATURES };
   if (
     intent.kind === 'page.version_restore'
     && typeof effect.targetVersion === 'number'
-    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1 + Number(hasLocalVersion) + Number(hasTargetSource)
+    && Object.keys(effect).length === COMMON_EFFECT_KEYS.length + 1
+      + Number(hasLocalVersion) + Number(hasTargetSource) + Number(hasDerivationFeatures)
     && COMMON_EFFECT_KEYS.every((key) => Object.hasOwn(effect, key))
     && (hasTargetSource
       ? (targetSource === 'local' || targetSource === 'confluence')
       : effect.targetVersion !== expectedLocalVersion)
     && Number.isSafeInteger(effect.targetVersion)
     && effect.targetVersion > 0
+    && (derivation.ok || derivation.reason === 'unknown')
   ) {
+    if (!derivation.ok) {
+      // Reserved by a release that registers a feature this one does not.
+      // Its storage cannot be derived here; a runtime that knows the feature
+      // recovers it. The preflight below raises this before the claim.
+      throw new PageWriteError(
+        409,
+        'intent_restore_derivation_unsupported',
+        'The restore intent records a storage-derivation feature this runtime does not implement',
+      );
+    }
     return {
       ...common, kind: intent.kind, targetVersion: effect.targetVersion,
       ...(targetSource === 'confluence' || targetSource === 'local' ? { targetSource } : {}),
+      derivationFeatures: derivation.features,
     };
   }
   throw new PageWriteError(
@@ -327,10 +391,13 @@ export async function publishConfluencePagePut(
         `Historical version ${publication.targetVersion} is unavailable for local publication`,
       );
     }
-    const targetStorage = htmlToConfluence(target.body_html, {
-      previousStorage: page.body_storage,
-      legacyTasks: hasOnlyUncarriedTasks(page.body_html),
-    });
+    // The digest covers the storage derived from the historical row and the
+    // effective title, not the row itself: a row rewritten to other HTML that
+    // derives the same storage is accepted here (the write-back is not
+    // injective, e.g. it drops a generated figure index). The route compares
+    // the row's id, title and HTML before the provider PUT. The derivation
+    // uses the features the intent recorded, once (#1953).
+    const targetStorage = deriveVersionRestoreStorage(target.body_html, page, publication.derivationFeatures);
     const targetDigest = confluencePagePutDigest({
       pageId: publication.pageId,
       confluenceId: publication.confluenceId,
@@ -495,6 +562,22 @@ export async function publishConfluencePagePut(
   };
 }
 
+/**
+ * Refuse a restore whose recorded storage-derivation features this runtime
+ * does not register before recovery takes ownership of it (#1953): the intent
+ * keeps its fenced owner, so a runtime of the reserving release can still
+ * claim and settle it. This is the parse the reconciler repeats after the
+ * claim, and only this refusal is raised here; every other one keeps its
+ * place after the claim.
+ */
+const refuseUnsupportedRestoreDerivation: PageWriteIntentPreflight = (intent) => {
+  try {
+    publicationFromRecoveryIntent(intent);
+  } catch (error) {
+    if (error instanceof PageWriteError && error.reason === 'intent_restore_derivation_unsupported') throw error;
+  }
+};
+
 const reconcilePagePut: PageWriteIntentReconciler = async (dbClient, intent) => {
   const publication = publicationFromRecoveryIntent(intent);
   const confluence = await getClientForUser(publication.actorId, dbClient);
@@ -575,5 +658,6 @@ export function registerConfluencePagePutIntentReconcilers(): void {
   if (registered) return;
   registerPageWriteIntentReconciler('page.ai_apply', reconcilePagePut);
   registerPageWriteIntentReconciler('page.version_restore', reconcilePagePut);
+  registerPageWriteIntentPreflight('page.version_restore', refuseUnsupportedRestoreDerivation);
   registered = true;
 }
