@@ -250,7 +250,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         [userId, pageId, base.markdown],
       );
 
-      const response = await apply(pageId, base.markdown);
+      const response = await apply(pageId, base.markdown, { improvementId: improvement.rows[0]!.id });
 
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({ version: 6 });
