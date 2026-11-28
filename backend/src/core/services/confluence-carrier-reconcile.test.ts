@@ -382,32 +382,54 @@ describe('Y5 / Z1: sources are elements both readings agree on, over the whole b
     expect(result).toMatchObject({ html: F.markerSpelled.legacyHtml, report: { outcome: 'bound' } });
   });
 
-  it('the marked conversion differs from confluenceToHtml only by its marks', () => {
-    const storages = [
-      ...STORAGE_DERIVATION_BASE_CORPUS.flatMap((entry) => [entry.storage, entry.previousStorage ?? '']),
-      ...Object.values(XHTML).filter((value): value is string => typeof value === 'string'),
-      ...Object.values(F).map((fixture) => fixture.storage),
-    ].filter((storage) => storage !== '');
-    let compared = 0;
-    for (const storage of storages) {
+  // One test per storage (CI time limit): the same comparison as one loop over the corpus. Each case records
+  // whether it compared; the count test reads those records and computes any a filtered run skipped.
+  const MARKED_STORAGES: ReadonlyArray<readonly [string, string]> = [
+    ...STORAGE_DERIVATION_BASE_CORPUS.flatMap((entry) => [
+      [`base ${entry.name} storage`, entry.storage] as const,
+      [`base ${entry.name} previousStorage`, entry.previousStorage ?? ''] as const,
+    ]),
+    ...Object.entries(XHTML).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      .map(([name, value]) => [`xhtml ${name}`, value] as const),
+    ...Object.entries(F).map(([name, fixture]) => [`fixture ${name}`, fixture.storage] as const),
+  ].filter(([, storage]) => storage !== '');
+  const markedCompared = new Map<number, boolean>();
+  /** Compares the marked conversion of one storage with confluenceToHtml; false when either does not apply. */
+  function compareMarked(index: number): boolean {
+    const known = markedCompared.get(index);
+    if (known !== undefined) return known;
+    const storage = MARKED_STORAGES[index]![1];
+    const compared = ((): boolean => {
       const read = readConfluenceStorage(storage);
-      if (!read.ok) continue;
+      if (!read.ok) return false;
       let ordinary: string;
       try {
         ordinary = confluenceToHtml(storage);
       } catch {
-        continue;
+        return false;
       }
       const marked = confluenceToHtmlWithCarrierMarks(storage, undefined, undefined, {
         tree: read.tree,
         marker: MARKER,
         limits: { marks: 10_000, passes: 34, html: 4_194_304, work: 4 * storage.length + 1_000 },
       });
-      if (!marked.ok) continue;
+      if (!marked.ok) return false;
       expect(marked.html.replace(new RegExp(` ${MARKER}="[^"]*"`, 'g'), '')).toBe(ordinary);
-      compared += 1;
-    }
-    expect(compared).toBeGreaterThan(80);
+      return true;
+    })();
+    markedCompared.set(index, compared);
+    return compared;
+  }
+
+  it.each(MARKED_STORAGES.map(([name], index) => [name, index] as const))(
+    'the marked conversion differs from confluenceToHtml only by its marks: %s',
+    (_name, index) => {
+      compareMarked(index);
+    },
+  );
+
+  it('the marked conversion is compared with confluenceToHtml on more than 80 storages of the corpus', () => {
+    expect(MARKED_STORAGES.filter((_, index) => compareMarked(index)).length).toBeGreaterThan(80);
   });
 
   it('recovers nothing on a page whose self-closing title parameter swallowed the code body in the HTML reading', () => {
@@ -713,16 +735,15 @@ describe('macros', () => {
     expect(result.report.skipped['macro.status']).toEqual({ changed: 1 });
   });
 
-  it('preserves the count, order, position, class, text and structure of every pre', () => {
+  // One test per fixture (CI time limit): the same assertions as one loop over the corpus.
+  it.each(Object.entries(F))('preserves the count, order, position, class, text and structure of every pre: %s', (_name, fixture) => {
     const otherAttributes = (pre: Element) => [...pre.attributes]
       .filter((attr) => attr.name !== 'data-title' && attr.name !== 'data-macro-params')
       .map((attr) => [attr.name, attr.value]);
-    for (const fixture of Object.values(F)) {
-      const before = codeBlockElements(new JSDOM(fixture.legacyHtml).window.document.body);
-      const after = codeBlockElements(new JSDOM(reconcile(fixture).html).window.document.body);
-      expect(after.map((pre) => pre.innerHTML)).toEqual(before.map((pre) => pre.innerHTML));
-      expect(after.map(otherAttributes)).toEqual(before.map(otherAttributes));
-    }
+    const before = codeBlockElements(new JSDOM(fixture.legacyHtml).window.document.body);
+    const after = codeBlockElements(new JSDOM(reconcile(fixture).html).window.document.body);
+    expect(after.map((pre) => pre.innerHTML)).toEqual(before.map((pre) => pre.innerHTML));
+    expect(after.map(otherAttributes)).toEqual(before.map(otherAttributes));
   });
 });
 
@@ -1194,15 +1215,14 @@ describe('review r2', () => {
     expect(title(writeBack(html, F.pageLinkPercentTitle))).toBe('a%20b');
   });
 
-  it('CAR-9: the next stored row of every fixture recovers nothing (review r3 CAR-14: every fixture writes)', () => {
-    for (const [name, fixture] of Object.entries(F)) {
-      const first = reconcile(fixture);
-      const storage = writeBack(first.html, fixture);
-      for (const stored of [first.html, confluenceToHtml(storage)]) {
-        const next = reconcileConfluenceCarriers(stored, storage, stored, { marker: MARKER });
-        expect({ name, recovered: next.report.recovered }).toEqual({ name, recovered: {} });
-        expect(next.html).toBe(stored);
-      }
+  // One test per fixture (CI time limit): the same assertions as one loop over the corpus.
+  it.each(Object.entries(F))('CAR-9: the next stored row of %s recovers nothing (review r3 CAR-14: every fixture writes)', (name, fixture) => {
+    const first = reconcile(fixture);
+    const storage = writeBack(first.html, fixture);
+    for (const stored of [first.html, confluenceToHtml(storage)]) {
+      const next = reconcileConfluenceCarriers(stored, storage, stored, { marker: MARKER });
+      expect({ name, recovered: next.report.recovered }).toEqual({ name, recovered: {} });
+      expect(next.html).toBe(stored);
     }
   });
 
