@@ -333,7 +333,9 @@ task's content is read from, and whether or not an enclosing macro later
 keeps, flattens or drops it (comments and CDATA are text); write-back skips
 only the generated figure and table indexes it removes. `indexTaskLists` only
 places tasks. Write-back's decision (`writeBackProfile`) is shared by
-`assignTaskIds`, so every writer derives with the same profile. It may
+`assignTaskIds` and by the #1955 stored-link witness (D19), so every writer
+derives with the same profile and a page past the limit is judged against the
+links the pre-#1957 projection of its stored storage shows. It may
 overcount the output, never
 undercount it, and an overcounted page takes the pre-#1957 path (the bytes and
 ids of `bff6d4ec`); a task in a removed index can still get different ids from

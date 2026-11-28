@@ -398,7 +398,9 @@ any change to the existing conflict policy.
   and re-parses its body before its links are read, so a CR in a title is an
   LF in the carrier). So every writer checks at write time (owner decisions
   D19/D21, coordinator decision D20): it runs the forward pass itself over the
-  stored storage with a witness. The first pass marks each link start tag the
+  stored storage with the write-back's own profile (`writeBackProfile`:
+  without `nested-tasks` past 32 task-list levels, D13) and a witness. The
+  first pass marks each link start tag the
   storage reader found in the stored string with its index there (a random
   attribute name); the link loop marks each `<a>` it emits for a link of the
   five kinds with whether that carrier gives back the reader's XML target of

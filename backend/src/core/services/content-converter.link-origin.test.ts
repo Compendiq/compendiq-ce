@@ -8,11 +8,21 @@
  * independent XML reading of it (`__fixtures__/storage-oracle.ts`).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { _setForwardDerivationStepForTest, confluenceToHtml, htmlToConfluence } from './content-converter.js';
+import {
+  MAX_TASK_LIST_NESTING,
+  _confluenceToHtmlWithForTest,
+  _setForwardDerivationStepForTest,
+  confluenceToHtml,
+  htmlToConfluence,
+} from './content-converter.js';
 import { JSDOM } from 'jsdom';
 import { confluenceLinkAnchor, confluenceLinkCarrier, encodeConfluenceLinkValue } from './confluence-link.js';
 import { ConfluenceStorageRefusedError, STORAGE_READER_LIMITS } from './confluence-storage-reader.js';
-import { NO_STORAGE_DERIVATION_FEATURES } from './storage-derivation.js';
+import {
+  NO_STORAGE_DERIVATION_FEATURES,
+  STORAGE_DERIVATION_FEATURES,
+  type StorageDerivationFeatures,
+} from './storage-derivation.js';
 import { htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { logger } from '../utils/logger.js';
 import { oracleElements, oracleLocalNameCount, oracleReads, oracleUrlLinks } from './__fixtures__/storage-oracle.js';
@@ -937,5 +947,64 @@ describe('content-converter: #1955 ri:url links are judged on the storage that i
         + '<ac:plain-text-link-body><![CDATA[t]]></ac:plain-text-link-body></ac:link></p>');
       expect(htmlToConfluence(HOSTILE[5]!)).toBe('<p><ac:link><ri:space ri:space-key="OPS"></ri:space></ac:link></p>');
     });
+  });
+});
+
+// Integration review r1, I1 (#1957 x #1955): the D19 witness reads the stored page with the profile this write-back
+// derives with. A document whose task lists nest past MAX_TASK_LIST_NESTING is written without `nested-tasks`
+// (D13), so its stored links are the ones the pre-#1957 projection of the stored page shows, whatever the caller's set.
+describe('content-converter: the stored-link witness uses the write-back profile (I1)', () => {
+  const guide = '<ac:link><ri:blog-post ri:content-title="Guide" ri:space-key="OPS" /></ac:link>';
+  // Review r6, R26: HTML reads the first title, XML reads two attributes, so this stored link is unfaithful.
+  const folded = '<ac:link><ri:blog-post ri:content-title="Guide" ri:CONTENT-TITLE="Other" ri:space-key="OPS" /></ac:link>';
+  const guideHtml = confluenceToHtml(`<p>${guide}</p>`);
+  // The restore corpus shape `tasks-list-before-own-body`: task 1 holds a list placed before its own body. Without
+  // nesting the old loop gives task 1 the subtask's body (`n`) and hides its own; with nesting the list's task joins
+  // the outer list and task 1 shows its own body, the folded link. Shallow: two levels.
+  const shallowOrigin = '<ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+    + '<ac:task-list><ac:task><ac:task-id>2</ac:task-id><ac:task-status>complete</ac:task-status><ac:task-body>n</ac:task-body>'
+    + `</ac:task></ac:task-list><ac:task-body>${folded}</ac:task-body></ac:task></ac:task-list>`;
+  const ALL: StorageDerivationFeatures = new Set(STORAGE_DERIVATION_FEATURES);
+  const WITHOUT_NESTING: StorageDerivationFeatures = new Set(STORAGE_DERIVATION_FEATURES.filter((f) => f !== 'nested-tasks'));
+
+  /** `depth` editor task lists, each in the previous task's li, each task with a paragraph and its own id. */
+  const editorChain = (depth: number): string => {
+    let html = '';
+    for (let level = depth; level >= 1; level -= 1) {
+      html = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${100 + level}">`
+        + `<p>t${level}</p>${html}</li></ul>`;
+    }
+    return html;
+  };
+  const write = (depth: number, features: StorageDerivationFeatures, origin = shallowOrigin): string =>
+    refusal(`${guideHtml}${editorChain(depth)}`, { previousStorage: origin, derivationFeatures: features });
+
+  it('has an origin whose two projections differ in showing the stored link', () => {
+    expect(_confluenceToHtmlWithForTest(shallowOrigin, ALL)).toContain('#confluence-blog-post:Guide');
+    expect(_confluenceToHtmlWithForTest(shallowOrigin, WITHOUT_NESTING)).not.toContain('#confluence-blog-post:');
+  });
+
+  it('judges a document within the limit with the caller\'s set: nesting shows the stored link, so D19 refuses', () => {
+    expect(write(MAX_TASK_LIST_NESTING, ALL)).toBe('changed-link-target');
+    expect(write(MAX_TASK_LIST_NESTING, WITHOUT_NESTING)).toBe('written');
+  });
+
+  it('judges a document past the limit exactly as without nested-tasks, with the same bytes (D13)', () => {
+    expect(write(MAX_TASK_LIST_NESTING + 1, ALL)).toBe('written');
+    expect(write(MAX_TASK_LIST_NESTING + 1, WITHOUT_NESTING)).toBe('written');
+    const html = `${guideHtml}${editorChain(MAX_TASK_LIST_NESTING + 1)}`;
+    const withAll = htmlToConfluence(html, { previousStorage: shallowOrigin, derivationFeatures: ALL });
+    expect(withAll).toBe(htmlToConfluence(html, { previousStorage: shallowOrigin, derivationFeatures: WITHOUT_NESTING }));
+    expect(withAll.match(/<ac:task>/g)).toHaveLength(MAX_TASK_LIST_NESTING + 1);
+    expect(withAll).toContain('<ri:blog-post ri:content-title="Guide" ri:space-key="OPS"></ri:blog-post>');
+  });
+
+  it('still refuses past the limit for a stored link the pre-#1957 projection shows', () => {
+    const shownOrigin = `<p>${folded}</p>${shallowOrigin}`;
+    expect(_confluenceToHtmlWithForTest(shownOrigin, WITHOUT_NESTING)).toContain('#confluence-blog-post:Guide');
+    for (const features of [ALL, WITHOUT_NESTING]) {
+      expect(write(MAX_TASK_LIST_NESTING + 1, features, shownOrigin)).toBe('changed-link-target');
+      expect(write(MAX_TASK_LIST_NESTING, features, shownOrigin)).toBe('changed-link-target');
+    }
   });
 });

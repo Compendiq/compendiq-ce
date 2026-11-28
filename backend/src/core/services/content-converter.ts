@@ -2117,8 +2117,11 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     : 'a[href^="#confluence-"]';
   const linkOrigin = options.linkOrigin === undefined ? options.previousStorage : options.linkOrigin;
   // One forward pass over the stored storage, when something needs it: the D19 check and the D21 fallback's `shown`.
+  // It reads the stored page with this write-back's profile (`features`, writeBackProfile), as the task ids do: a
+  // document past MAX_TASK_LIST_NESTING is judged exactly as without `nested-tasks` (D13), so its links are the
+  // ones the pre-#1957 projection of the stored page shows (integration review r1, I1).
   let stored: StoredLinkWitness | undefined;
-  const storedLinks = (): StoredLinkWitness => (stored ??= witnessStoredLinks(linkOrigin!, writeBackFeatures(options)));
+  const storedLinks = (): StoredLinkWitness => (stored ??= witnessStoredLinks(linkOrigin!, features));
   /** The carriers of the outgoing links of the five #1955 kinds, checked at the end (D19). */
   const carriers: string[] = [];
   for (const a of doc.querySelectorAll(linkAnchors)) {
