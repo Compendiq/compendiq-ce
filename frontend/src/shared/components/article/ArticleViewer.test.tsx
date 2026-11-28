@@ -1062,6 +1062,89 @@ describe('ArticleViewer', () => {
       expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
         .toEqual(['42', '7']);
     });
+
+    it('keeps script and event-handler canaries out of a nested task in read mode and its copy (#1957)', async () => {
+      // The same input as Editor.test.tsx and the backend's content-converter.nested-tasks.test.ts (#1957 M3).
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">parent'
+        + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="2">safe '
+        + '<img src="https://example.com/a.png" onerror="alert(1)"><script>alert(2)</script>'
+        + '<a href="javascript:alert(3)">link</a> <span onmouseover="alert(4)">hover</span>'
+        + '<div class="confluence-toc" data-maxlevel="2" onclick="alert(5)">[Table of Contents]</div></li></ul></li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      for (const [where, rendered] of [['read view', view.innerHTML], ['copy', copied]] as const) {
+        for (const canary of ['onerror', '<script', 'javascript:', 'onmouseover', 'onclick', 'alert(']) {
+          expect(rendered, `${where}: ${canary}`).not.toContain(canary);
+        }
+      }
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
+        .toEqual(['1', '2']);
+      const sub = clipboard.querySelector('li[data-task-id="1"] li[data-task-id="2"]')!;
+      expect(sub.textContent).toContain('safe');
+      expect(sub.textContent).toContain('link');
+      expect(sub.textContent).toContain('hover');
+      expect(sub.querySelector('.confluence-toc')).not.toBeNull();
+    });
+
+    // #1957: a nested task list as confluenceToHtml writes it (the backend's
+    // NESTED_TASK_LIST_HTML): the subtask holds a block macro, the stock
+    // TaskItem rule took that macro for the whole parent task.
+    it('keeps nested tasks, their ids and a subtask macro at their depth in a copy out of the read view (#1957)', async () => {
+      const html =
+        '<p>Release checklist</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="11">Release'
+        + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="12">Write notes '
+        + '<span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="13">Tag build<ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="14">Push tag</li></ul></li></ul></li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="15">Announce</li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => {
+        let depth = 0;
+        for (let el: Element | null = li; el; el = el.parentElement) {
+          if (el.matches('ul[data-type="taskList"]')) depth += 1;
+        }
+        return [li.getAttribute('data-task-id'), li.getAttribute('data-checked'), depth];
+      })).toEqual([['11', 'false', 1], ['12', 'true', 2], ['13', 'false', 2], ['14', 'false', 3], ['15', 'false', 1]]);
+      expect([...clipboard.querySelectorAll('.confluence-toc')].map((toc) => toc.closest('li')?.getAttribute('data-task-id')))
+        .toEqual(['12']);
+      expect(clipboard.querySelector('li[data-task-id="11"] > div > p')?.textContent).toBe('Release');
+    });
   });
 
   describe('text color and highlight in read mode', () => {
@@ -1185,5 +1268,19 @@ describe('ArticleViewer: linked images (#1954)', () => {
     });
     expect(container.querySelector('.ProseMirror img')!.closest('a')).toBeNull();
     expect(container.querySelector('.ProseMirror')!.innerHTML).not.toMatch(/javascript:|data:text/i);
+  });
+});
+
+describe('ArticleViewer: table cell alignment (#1956)', () => {
+  it('keeps the alignment of header and body cells from the attribute and from a stored style', async () => {
+    const html = '<table><tbody><tr><th align="center">a</th><th>b</th></tr>'
+      + '<tr><td style="text-align: right;">1</td><td align="left">2</td></tr></tbody></table>';
+    const { container } = render(<ArticleViewer content={html} />);
+    await waitFor(() => {
+      expect(container.querySelector('th[align="center"]')).not.toBeNull();
+    });
+    expect([...container.querySelectorAll('th')].map((cell) => cell.getAttribute('align'))).toEqual(['center', null]);
+    expect([...container.querySelectorAll('td')].map((cell) => cell.getAttribute('align'))).toEqual(['right', 'left']);
+    expect(container.querySelectorAll('th[style], td[style]')).toHaveLength(0);
   });
 });
