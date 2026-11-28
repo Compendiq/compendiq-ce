@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -19,6 +19,7 @@ import {
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import { STORAGE_DERIVATION_BASE_CORPUS } from '../../core/services/__fixtures__/storage-derivation-base-corpus.js';
 import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
 import {
   freezePage,
@@ -670,6 +671,61 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
         expect(await storedPage(pageId)).toMatchObject({ body_html: draft, draft_body_html: null });
         expect(confluenceRequests).toEqual([]);
       });
+    });
+
+    // Review r2 B2: with stored tasks whose ids the two profiles give out
+    // differently (the restore corpus entry `tasks-list-before-own-body`) and a
+    // 33-level chain, draft publish must send what the pre-#1957 writer sent.
+    // Ids and wire bytes captured at bff6d4ec (`$EPIC/evidence/1957/capture-r2.mts.txt`).
+    it('publishes a corpus page with a 33-level chain with the task ids and bytes of before #1957 (#1957)', async () => {
+      const entry = STORAGE_DERIVATION_BASE_CORPUS.find((candidate) => candidate.name === 'tasks-list-before-own-body')!;
+      let chain = '';
+      for (let level = 33; level >= 1; level -= 1) {
+        chain = `<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="${100 + level}">`
+          + `<p>t${level}</p>${chain}</li></ul>`;
+      }
+      const pageId = await seedConfluencePage();
+      await query('UPDATE pages SET body_storage = $2, body_html = $3, draft_body_html = $4 WHERE id = $1', [
+        pageId, entry.previousStorage, entry.storedBodyHtml, `${entry.targetHtml}${chain}`,
+      ]);
+
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const baseIds = ['1', '134', ...Array.from({ length: 33 }, (_, index) => String(101 + index))];
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1])).toEqual(baseIds);
+      expect(createHash('sha256').update(sent).digest('hex'))
+        .toBe('5a68727a9b4e101795eecc0b0a722cea2f1ff4bc56a97ee32d3e597375023982');
+      const stored = await storedPage(pageId);
+      expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(baseIds);
+    });
+
+    it('publishes a draft whose tasks nest one level deeper than the 32-level limit as before #1957 (#1957)', async () => {
+      const pageId = await seedConfluencePage();
+      let storage = '';
+      let draft = '';
+      for (let level = 33; level >= 1; level -= 1) {
+        storage = `<ac:task-list><ac:task><ac:task-id>${level}</ac:task-id><ac:task-status>incomplete</ac:task-status>`
+          + `<ac:task-body>t${level}${storage}</ac:task-body></ac:task></ac:task-list>`;
+        draft = `<ul data-type="taskList"><li data-checked="false" data-task-id="${level}" data-type="taskItem">`
+          + `<label><input type="checkbox"><span></span></label><div><p>t${level}</p>${draft}</div></li></ul>`;
+      }
+      await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [
+        pageId, `<p>live storage</p>${storage}`, `<p>draft</p>${draft}`,
+      ]);
+
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(confluenceRequests).toHaveLength(1);
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]))
+        .toEqual(Array.from({ length: 33 }, (_, index) => String(index + 1)));
+      expect(sent.match(/<ac:task-list>/g)).toHaveLength(33);
+      const stored = await storedPage(pageId);
+      expect(stored.draft_body_html).toBeNull();
+      expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)]).toHaveLength(33);
     });
 
     describe('the order pairing of a page synced before ids were carried (#1751)', () => {

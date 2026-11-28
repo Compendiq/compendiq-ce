@@ -94,13 +94,14 @@ Custom turndown rules handle Confluence-specific macros:
 | Confluence macro                     | HTML form                                                    | Markdown form                 |
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
 | `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block; on Improve an annotated block carries `[[[CODE-META n=… title=… params=…]]]` on the line above its fence and gets the stored title and options back on Accept only when its language and code are unchanged; blocks that cannot travel are frozen (#1958, see "AI Improve code-block metadata") |
-| `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged |
+| `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751); a subtask's `ac:task-list` in its `ac:task-body` becomes a `ul` inside the parent's `li` within 32 levels; deeper pages convert as before (#1957) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged; nested tasks are flattened |
 | `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
-| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); `ri:user` is a mention; any other resource stays its text | `[text](href)` (the href is a valid link destination) |
+| `th` / `td` with `style="text-align: left\|center\|right;"` (#1956) | the same cell with `align="…"` appended (the stored `style` is kept); the editor schemas model it as the cell's `align` and render `align="…"` | the stock GFM rule's column markers (`:--` / `:-:` / `--:`, from the header row) on the Improve conversion, unchanged by #1956; the write-back turns `align` into `style="text-align: X;"` again (feature `cell-align`) |
+| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); `ri:user` is a mention; any other resource stays its text | `[text](href)` (the href is a valid link destination); an image body is `[![alt](src)](href)`, on Improve `[CQ_MEDIA_PLACEHOLDER_n](href)` with the image frozen (#1954); inline code is `` [`code`](href) ``; code holding a backtick is escaped link text only for callers outside AI Improve (`linkedCodeAsText`), while every Markdown an Improve prompt holds is as before #1954 (D24) |
 | `ac:link` (`ri:space` / `ri:blog-post` / `ri:shortcut` / `ri:content-entity` / `ri:url`) | `<a href="#confluence-space:<key>[?…]" data-confluence-link="space">` / `#confluence-blog-post:<title>[?…]` / `#confluence-shortcut:<key>[?…]` / `#confluence-content-entity:<id>[?…]` / `#confluence-url:<value>[?…]`; a `ri:url` whose value is a lowercase `http:`, `https:` or `mailto:` URL is `<a href="<value>" class="#confluence-url:<value>[?…]" data-confluence-link="url">` (#1955, below) | `[text](href)`; on Improve a `ri:url` link is `[text](#confluence-url:…)` |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
@@ -244,13 +245,35 @@ any change to the existing conflict policy.
   self-closing anchor link (`<ac:link ac:anchor="x" />`) is expanded like
   `ri:page`; one whose value holds `/` or `>` moves what it swallowed back
   out. Clicking these links in Compendiq does not navigate (non-goal).
-  Deferred, unchanged since before #1748 (the converters and Improve keep all
-  of these but the mention): in the editor, a link whose body is an image or
-  inline code is lost — the image is a block node, and StarterKit's Code mark
-  excludes every other mark — and a link whose text mixes inline code with
-  other text is split into two links around the code; on a collaborative
-  save, a line break, mention, status or emoticon inside a link is left out of
-  it, splitting the link around it (Yjs keeps marks on text only). A mention
+  A link whose body is an image (#1954) rides on the block image node: `href`,
+  and for a navigable `ri:url` the class carrier as `linkClass`, read from the
+  enclosing `<a>` under the Link mark's `isAllowedUri` (and
+  `isConfluenceUrlClassCarrierFor` for the class) and rendered back as that
+  wrapper; both are checked again at render, so a value a collaborator writes
+  into the Yjs image element never renders a link the parse would refuse. The
+  image still leaves its paragraph, so a body of several images, or images and
+  text, is written back as one link per piece; the write-back path and the
+  `ri:url` origin rule are #1955's, with no image branch. The editor, read mode
+  and the collab schema share one image schema, `data-confluence-*` markers
+  included. Inline code is `LinkableCode` in all three schemas (#1954): a Code
+  mark that excludes only itself, so the Link mark stays on code text and a
+  link whose text mixes code and prose is one link; its Yjs key stays `code`.
+  Code holding a backtick inside a link is escaped link text only in Markdown
+  that never reaches AI Improve (`linkedCodeAsText`); the Improve prompt, parent
+  and sub-pages, and its Accept are unchanged by #1954 (D24, parity with slice A
+  pinned), with slice A's limits: such a link can be lost, and a placeholder
+  spelling matching a real media entry is replaced (#723, pre-existing). A line break inside a
+  link survives a collaborative save: `yDocToHtml` gives a run of unmarked hard
+  breaks between two text nodes with equal Link marks (every attribute, a
+  missing one taking its schema default, an explicit null not) that mark
+  again, so the HTML has one `<a>` and write-back one `ac:link`; a break at
+  either end of a link body
+  stays outside it, and two separate same-target links around a break become
+  one after a collaborative session (documented limit). Deferred, unchanged
+  since before #1748 (the converters and Improve keep all of these but the
+  mention): on a collaborative save, a mention, status or emoticon inside a
+  link is left out of it, splitting the link around it (Yjs keeps marks on text
+  only). A mention
   inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
   replacing the whole outer link, text included, with the mention (#314);
   Confluence never writes that nesting.
@@ -406,7 +429,9 @@ any change to the existing conflict policy.
   and re-parses its body before its links are read, so a CR in a title is an
   LF in the carrier). So every writer checks at write time (owner decisions
   D19/D21, coordinator decision D20): it runs the forward pass itself over the
-  stored storage with a witness. The first pass marks each link start tag the
+  stored storage with the write-back's own profile (`writeBackProfile`:
+  without `nested-tasks` past 32 task-list levels, D13) and a witness. The
+  first pass marks each link start tag the
   storage reader found in the stored string with its index there (a random
   attribute name); the link loop marks each `<a>` it emits for a link of the
   five kinds with whether that carrier gives back the reader's XML target of
@@ -645,6 +670,61 @@ any change to the existing conflict policy.
   columns and unknown macros). The one exception is a duplicate sibling
   `ac:task` an earlier write-back already created: by then it is a real,
   well-formed task, indistinguishable from one the author typed, so it stays.
+- **A subtask nests inside its parent, once (#1957).** The forward pass used
+  the mirror image of the #1220 bug: it converted the outer `ac:task-list`
+  first and took every descendant `ac:task`, so a subtask was cloned raw into
+  its parent's body *and* listed beside it, and each level re-cloned the
+  levels below it (17 s at 100 levels).
+  `convertTaskLists` now indexes each element's nearest enclosing task list,
+  task and task body in one preorder pass; a list inside the body of a task of
+  its enclosing list is kept one level below and converted where it stands,
+  innermost first, and each task gets its `li` once in its final list, each
+  body node and `li` moving once, with the page detached from the document
+  (JSDOM walks the whole subtree of a node moved in a connected tree). A move
+  is one DOM call, not constant time: JSDOM still walks the moved node's
+  ancestors. Lists in a list but not in a task body stay flat in source order,
+  as before. Nesting applies only within `MAX_TASK_LIST_NESTING` = 32, decided
+  once per document, before anything is restructured, as a pure function of
+  the input, so a recorded restore derivation still reproduces its bytes. The
+  count is syntactic, by one walk of the tree the pass already parses (no
+  second parse, no string scan; `taskListNesting`): every task list present
+  in the input — editor `ul[data-type="taskList"]` and raw `ac:task-list`
+  alike, empty ones included — by element ancestry, whatever task owns it,
+  whichever body a task's content is read from, and whether or not an
+  enclosing macro later keeps, flattens or drops it; comments and CDATA are
+  text. Write-back skips only the generated figure and table indexes it
+  removes. `indexTaskLists` places tasks and plays no part in the decision. A
+  list placed directly in a list therefore counts toward the limit even though
+  it stays flat within it. It may overcount the output,
+  never undercount it; an overcounted page takes the pre-#1957 path, whose
+  bytes and task ids are those of `bff6d4ec`. Write-back's decision
+  (`writeBackProfile`) is shared by `assignTaskIds`, so draft publish,
+  collaborative Save, PUT and a direct `htmlToConfluence` derive a page with
+  the same profile; a task write-back drops (in a generated index) can still
+  get different ids from the two-step writers, which number it before the
+  index is removed, as before #1957. Deeper, the page converts exactly as
+  before #1957 on both passes (the
+  pre-#1957 forward loop; write-back reads the stored tasks with it too):
+  nothing is refused, sync, history, Save, draft publish and restore behave as
+  before, and such a page keeps the duplicated pre-#1957 shape — #1957 is not
+  fixed for it. The number comes from the reverse pass, whose per-level
+  re-parse makes it superlinear: with a status and a toc macro in every task
+  it writes 32 levels in about 0.2 s, 64 in 1.5 s and 100 in 5–10 s, while
+  both TipTap schemas and the collaborative document stay under 0.2 s at 100.
+  Known limit, inherited and unchanged: the JSDOM parse every conversion
+  already starts with costs more than linear time in the nesting depth (an
+  ancestor walk per inserted node), and the limit is decided on that parsed
+  tree, not before it.
+  The editor schemas read a task item's content the way write-back does
+  (`taskItemContent`): from TipTap's `label` + `div` only when the `li` is
+  exactly that, else from the `li`. TaskItem's stock `querySelector('div')`
+  took the first `div` at any depth, so a block macro in a task or subtask
+  replaced the whole task in the editor. The content is parsed as if its first
+  paragraph were already there, so a body that opens with a block stays in its
+  task behind an empty first paragraph instead of being pushed out of the
+  list. Rows synced before #1957 keep their duplicated `body_html` until the
+  next sync, and the restore derivation keeps the old loop for intents
+  reserved without the `nested-tasks` feature (#1953).
 - **A task keeps its Confluence id (#1751).** Confluence numbers a page's
   tasks and needs the numbers unique within the page: two tasks that share an
   `ac:task-id` check and uncheck together (Atlassian KB "Checking/unchecking
@@ -931,8 +1011,10 @@ split into consecutive runs: a task list holds task items only, and
 `htmlToConfluence` rebuilds `ac:task-list` from `li[data-type="taskItem"]`
 alone, so a plain item left inside one would vanish on write-back. A task item
 whose content holds a `<div>` stays a plain item with its `[x]` / `[ ]` kept
-as text, because TipTap's TaskItem parses its content from the first
-descendant `div` and would drop the rest. That covers raw HTML (`<div/>`
+as text. The rule dates from TipTap's stock TaskItem, which parsed its content
+from the first descendant `div` and dropped the rest; since #1957 both schemas
+read a task's content the way write-back does and keep such a block, and the
+fallback is unchanged only to keep this path's output stable. That covers raw HTML (`<div/>`
 included), a draw.io fence, and — on AI Improve Accept, which passes its
 protectMedia map as `protectedMedia` — a placeholder whose original HTML holds
 a div (a draw.io or mermaid diagram, a macro placeholder). Inline placeholders
@@ -946,9 +1028,30 @@ writes as `- [x]` / `- [ ]`) back as `ac:task-list`, mentions, status lozenges
 and Jira links inside its tasks included, instead of a bullet list with raw
 `<input>` elements in the stored body, and the retrieval-eval seeders store the
 same markup. The import sanitiser admits exactly `start` and `type`
-(`OrderedList`), `data-type` and `data-checked`, and `data-diagram-name`
-(draw.io, below), by name. `ALLOW_DATA_ATTR` stays `false`, so every other
+(`OrderedList`), `data-type` and `data-checked`, `data-diagram-name`
+(draw.io, below) and, on `th`/`td` only, `align` (GFM column alignment, below), by name.
+`ALLOW_DATA_ATTR` stays `false`, so every other
 `data-*` attribute is still stripped, and `<input>` is never admitted.
+
+**Table column alignment survives (#1956).** marked emits `align="left|center|right"` on
+every cell of an aligned GFM column. The sanitiser keeps it on `th`/`td` only (a post-pass
+after DOMPurify: `ALLOWED_ATTR` is global), lower case, with those three values; the schemas
+(`ConfluenceTableCell`/`ConfluenceTableHeader`) parse it, together with a stored inline
+`text-align` style, into the cell's `align` attribute and render it back as `align="…"`.
+Write-back (storage-derivation feature `cell-align`) writes `style="text-align: X;"` and
+`confluenceToHtml` appends `align` beside a plain stored style, so a Confluence cell
+round-trips byte for byte; a style that mentions `text-align` always decides and an
+ambiguous one (duplicate, quoted, custom property, upper-case property, a priority other
+than a lower-case `!important`, a bracket, brace or unbalanced parenthesis, over 1,024
+characters) means no alignment and is never rewritten. #1956 makes no change to the AI
+Improve chain (decision D15; pinned against the slice base for aligned and unaligned
+tables). Through AI Improve, alignment survives as far as the stock GFM table rule
+expresses it, i.e. per column from the header row; when the stock rule emits a GFM table, a
+body cell aligned differently from its column header takes the header's alignment on Accept
+(when it keeps the table as raw HTML, the cell keeps its own alignment on an unchanged
+echo); whatever the stock rule mangled before this change (a pipe inside a cell, a table
+inside a panel) it still mangles.
+Markdown → HTML → Markdown keeps the column alignment.
 
 **Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
 ` ```drawio ` fence into `div.confluence-drawio[data-diagram-name]`, and the

@@ -1,7 +1,12 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
-import { Table } from '@tiptap/extension-table';
+import { Table, TableCell, TableHeader } from '@tiptap/extension-table';
 import { Highlight } from '@tiptap/extension-highlight';
+import { Code } from '@tiptap/extension-code';
+import { Image, type ImageOptions } from '@tiptap/extension-image';
+import { isAllowedUri } from '@tiptap/extension-link';
 import { TaskItem } from '@tiptap/extension-list';
+import { DOMParser as ProseMirrorDOMParser, Fragment, type DOMOutputSpec, type Schema } from '@tiptap/pm/model';
+import { CONFLUENCE_LINK_LIMITS, isConfluenceUrlClassCarrierFor } from '@compendiq/contracts';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
@@ -1325,6 +1330,154 @@ export const UnknownMacro = Node.create({
 });
 
 /**
+ * Inline code that excludes only itself (#1954), in place of StarterKit's Code
+ * mark (which excludes every other mark): a Confluence link around inline code,
+ * or a link whose text mixes code and prose, stays one link; bold, italic and
+ * the other marks coexist with code too. Excluding itself keeps the collaborative
+ * documents' attribute key `code` (a mark that does not would be stored under a
+ * hashed key). The collab schema declares the same mark.
+ */
+export const LinkableCode = Code.extend({ excludes: 'code' });
+
+/**
+ * The Link mark's own default HTML attributes (`@tiptap/extension-link`), so an
+ * image link and a text link to one target render the same `<a>` start tag (#1954).
+ */
+const LINK_HTML_ATTRIBUTES: Record<string, string | null> = {
+  target: '_blank',
+  rel: 'noopener noreferrer nofollow',
+  class: null,
+};
+
+export interface ConfluenceImageOptions extends ImageOptions {
+  /** The attributes the wrapper `<a>` of a linked image gets besides `href` and `class` (#1954). */
+  linkHTMLAttributes: Record<string, string | null>;
+}
+
+/**
+ * An href a linked image keeps (#1954): non-empty, within the carrier cap, and
+ * allowed by the Link mark's own policy, as a text link's href is.
+ */
+function isImageLinkHref(href: unknown): href is string {
+  return typeof href === 'string'
+    && href !== ''
+    && href.length <= CONFLUENCE_LINK_LIMITS.href
+    && !!isAllowedUri(href);
+}
+
+/**
+ * The class a linked image keeps (#1954, contract X1): only #1955's carrier of
+ * the image's own navigable URL, by the same predicate the converter uses.
+ */
+function imageLinkClass(href: unknown, className: unknown): string | null {
+  return isImageLinkHref(href) && typeof className === 'string' && isConfluenceUrlClassCarrierFor(href, className)
+    ? className
+    : null;
+}
+
+/**
+ * The image node's schema, shared by the editor (which adds its node view) and
+ * read mode, so a copy out of either serializes the same image (#1954).
+ *
+ * - The `data-confluence-*` markers say which Confluence resource the image is
+ *   (attachment, its owner page, an external URL); write-back reads them.
+ * - A Confluence link whose body is an image wraps it in `<a>`. The block image
+ *   cannot carry the Link mark, so the link rides on the node as `href` (and,
+ *   for a navigable `ri:url`, its class carrier as `linkClass`), read from the
+ *   nearest enclosing `<a>` and rendered back as that wrapper. Both are checked
+ *   again at render, so a value written straight into a collaborative document
+ *   never renders a link the parse would have refused.
+ */
+export const ConfluenceImageSchema = Image.extend<ConfluenceImageOptions>({
+  addOptions() {
+    return {
+      ...this.parent!(),
+      linkHTMLAttributes: LINK_HTML_ATTRIBUTES,
+    };
+  },
+
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      'data-confluence-image-source': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-image-source'),
+        renderHTML: (attributes) => attributes['data-confluence-image-source']
+          ? { 'data-confluence-image-source': attributes['data-confluence-image-source'] }
+          : {},
+      },
+      'data-confluence-filename': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-filename'),
+        renderHTML: (attributes) => attributes['data-confluence-filename']
+          ? { 'data-confluence-filename': attributes['data-confluence-filename'] }
+          : {},
+      },
+      'data-confluence-owner-page-title': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-owner-page-title'),
+        renderHTML: (attributes) => attributes['data-confluence-owner-page-title']
+          ? { 'data-confluence-owner-page-title': attributes['data-confluence-owner-page-title'] }
+          : {},
+      },
+      'data-confluence-owner-space-key': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-owner-space-key'),
+        renderHTML: (attributes) => attributes['data-confluence-owner-space-key']
+          ? { 'data-confluence-owner-space-key': attributes['data-confluence-owner-space-key'] }
+          : {},
+      },
+      'data-confluence-url': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-url'),
+        renderHTML: (attributes) => attributes['data-confluence-url']
+          ? { 'data-confluence-url': attributes['data-confluence-url'] }
+          : {},
+      },
+      // Set by the HTML-paste handler (#683) when an inline `<img src=…>` in
+      // pasted HTML can't be auto-imported (relative path, fetch failure,
+      // unsupported type). The CSS placeholder targets this attribute to
+      // render the broken-image affordance instead of letting the browser
+      // show its native 404 icon.
+      'data-import-failed': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-import-failed'),
+        renderHTML: (attributes) => attributes['data-import-failed']
+          ? { 'data-import-failed': attributes['data-import-failed'] }
+          : {},
+      },
+      href: {
+        default: null,
+        parseHTML: (element) => {
+          const href = element.closest('a')?.getAttribute('href');
+          return isImageLinkHref(href) ? href : null;
+        },
+        renderHTML: () => ({}),
+      },
+      linkClass: {
+        default: null,
+        parseHTML: (element) => {
+          const anchor = element.closest('a');
+          return imageLinkClass(anchor?.getAttribute('href'), anchor?.getAttribute('class'));
+        },
+        renderHTML: () => ({}),
+      },
+    };
+  },
+
+  renderHTML({ node, HTMLAttributes }) {
+    const img: DOMOutputSpec = ['img', mergeAttributes(this.options.HTMLAttributes, HTMLAttributes)];
+    const href: unknown = node.attrs.href;
+    if (!isImageLinkHref(href)) return img;
+    return [
+      'a',
+      mergeAttributes(this.options.linkHTMLAttributes, { href, class: imageLinkClass(href, node.attrs.linkClass) }),
+      img,
+    ];
+  },
+});
+
+/**
  * Figure node — wraps an image + editable caption.
  * Renders as <figure class="figure-block">.
  * The content schema uses `image` which matches the TipTap Image extension node name.
@@ -1495,6 +1648,110 @@ export const ExtendedTable = Table.extend({
   },
 });
 
+// <table-cell-align:begin>
+// Table cell alignment (#1956). This block is byte-identical in backend collab-schema.ts, frontend
+// article-extensions.ts and backend content-converter.ts; collab-schema-parity.test.ts compares the text.
+// An inline style that mentions text-align decides; unless it is exactly one plain, lower-case
+// declaration the cell has no alignment. Without such a style the align attribute decides.
+const TABLE_CELL_ALIGNMENTS = ['left', 'center', 'right'] as const;
+type TableCellAlign = (typeof TABLE_CELL_ALIGNMENTS)[number];
+const TABLE_CELL_STYLE_MAX = 1024;
+function normalizeTableCellAlign(value: unknown): TableCellAlign | null {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return (TABLE_CELL_ALIGNMENTS as readonly string[]).includes(v) ? (v as TableCellAlign) : null;
+}
+/** null: the style does not mention text-align. 'other': it does, but not as one plain declaration. */
+function tableCellStyleAlign(style: string, cssTextAlign: string): TableCellAlign | 'other' | null {
+  if (style.length > TABLE_CELL_STYLE_MAX) return 'other';
+  const mentions = style.match(/text-align/gi);
+  if (!mentions) return null;
+  // A browser reads property names and priorities case-insensitively and the Node hosts disagree: only
+  // the exact lower-case property is read, and a `!` only as a lower-case `!important` ending its
+  // declaration (`!IMPORTANT`, `! important` are declined) before the CSSOM is asked.
+  if (mentions.length !== 1 || mentions[0] !== 'text-align' || /["'\\]|\/\*|--|url\(/i.test(style)) return 'other';
+  if (/!(?!important\s*(?:;|$))/.test(style)) return 'other';
+  // Brackets, braces or unbalanced parentheses make the hosts split the declarations differently.
+  let depth = 0;
+  for (const ch of style) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')' && --depth < 0) return 'other';
+  }
+  if (depth !== 0 || /[{}[\]]/.test(style)) return 'other';
+  return normalizeTableCellAlign(cssTextAlign) ?? 'other';
+}
+// <table-cell-align:end>
+
+// <table-cell-align-attribute:begin>
+function resolveTableCellAlign(style: string, cssTextAlign: string, alignAttr: string | null): TableCellAlign | null {
+  const fromStyle = tableCellStyleAlign(style, cssTextAlign);
+  return fromStyle === null ? normalizeTableCellAlign(alignAttr) : fromStyle === 'other' ? null : fromStyle;
+}
+const TABLE_CELL_ALIGN_ATTRIBUTE = {
+  default: null as TableCellAlign | null,
+  parseHTML: (element: HTMLElement) =>
+    resolveTableCellAlign(element.getAttribute('style') ?? '', element.style.textAlign, element.getAttribute('align')),
+  renderHTML: (attributes: { align?: unknown }) => {
+    const align = normalizeTableCellAlign(attributes.align);
+    return align ? { align } : {};
+  },
+};
+// <table-cell-align-attribute:end>
+
+/**
+ * TableCell / TableHeader with the alignment attribute #1956 decided: parsed from the inline
+ * style or the `align` attribute, rendered as `align="…"` (the attribute marked emits and
+ * turndown's GFM table rule reads). The Yjs attribute key `align` is the stock one. The same
+ * definition, extension names included, is in the backend collab schema (parity test).
+ */
+export const ConfluenceTableCell = TableCell.extend({
+  addAttributes() {
+    return { ...this.parent?.(), align: TABLE_CELL_ALIGN_ATTRIBUTE };
+  },
+});
+
+export const ConfluenceTableHeader = TableHeader.extend({
+  addAttributes() {
+    return { ...this.parent?.(), align: TABLE_CELL_ALIGN_ATTRIBUTE };
+  },
+});
+
+// <task-item-content:begin>
+/**
+ * The element a task item's content is parsed from (#1957): the rule
+ * write-back's taskItemContent (content-converter.ts) reads it with. TipTap's
+ * own `<li><label><input type="checkbox">…</label><div>…</div></li>` holds it
+ * in the div; any other li (Confluence sync, Markdown and Notion import) in
+ * itself. TaskItem's own rule took the first div at any depth, so a block
+ * macro in a subtask became the whole task.
+ */
+function taskItemContentElement(li: HTMLElement): HTMLElement {
+  const label = li.children[0];
+  const content = li.children[1];
+  return li.children.length === 2
+    && label?.tagName === 'LABEL'
+    && label.querySelector('input[type="checkbox"]') !== null
+    && content?.tagName === 'DIV'
+    ? (content as HTMLElement)
+    : li;
+}
+
+/**
+ * A task item's content, parsed as if its first paragraph were already there
+ * (#1957), so a body that opens with a block (a macro, a code block, a subtask
+ * list) stays in its task; the first paragraph TaskItem requires is added,
+ * empty, only then.
+ */
+function parseTaskItemContent(li: HTMLElement, schema: Schema): Fragment {
+  const taskItem = schema.nodes.taskItem!;
+  const paragraph = schema.nodes.paragraph!;
+  const content = ProseMirrorDOMParser.fromSchema(schema).parse(taskItemContentElement(li), {
+    topNode: taskItem.create(),
+    topMatch: taskItem.contentMatch.matchType(paragraph) ?? undefined,
+  }).content;
+  return content.firstChild?.type === paragraph ? content : Fragment.from(paragraph.create()).append(content);
+}
+// <task-item-content:end>
+
 /**
  * ConfluenceTaskItem — TaskItem plus the task's Confluence identity (#1751):
  * `ac:task-id` rides in `data-task-id`, so a save writes the same id back
@@ -1514,6 +1771,13 @@ export const ConfluenceTaskItem = TaskItem.extend({
           attributes.taskId ? { 'data-task-id': attributes.taskId } : {},
       },
     };
+  },
+  parseHTML() {
+    return [{
+      tag: 'li[data-type="taskItem"]',
+      priority: 51,
+      getContent: (li, schema) => parseTaskItemContent(li as HTMLElement, schema),
+    }];
   },
 });
 

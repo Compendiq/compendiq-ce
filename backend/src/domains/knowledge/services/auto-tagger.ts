@@ -78,7 +78,7 @@ export async function autoTagContent(
     throw new ArticleStageRefusedError();
   }
   // Convert HTML to markdown if needed
-  let text = options.isHtml ? htmlToMarkdown(content) : content;
+  let text = options.isHtml ? htmlToMarkdown(content, { linkedCodeAsText: true }) : content;
 
   // Truncate to avoid excessive LLM input (first 5000 chars should be enough for classification)
   if (text.length > 5000) {

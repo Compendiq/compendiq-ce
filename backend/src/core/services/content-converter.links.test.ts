@@ -155,14 +155,14 @@ describe('content-converter: #1748 Confluence links survive write-back', () => {
       );
     });
 
-    it('loses an image-bodied link in the editor, as before #1748: the image is a block node (deferred, decisions.md item 9)', () => {
-      // Pins today's editor behaviour (orchestrator decision on critique C2):
-      // the converters keep the link (test above), the editor schema lifts the
-      // block image out of the paragraph and the link is gone.
+    it('keeps an image-bodied link through the collab schema: one ac:link around the block image (#1954)', () => {
+      // The image is still a block node, so it leaves the paragraph as before;
+      // the link now rides on the image node (`href`) and comes back around it.
       const storage = '<p>See <ac:link><ri:page ri:content-title="Shared Assets" />'
         + '<ac:link-body><ac:image><ri:attachment ri:filename="thumbnail.png" /></ac:image></ac:link-body></ac:link> here.</p>';
       expect(htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55'))))).toBe(
-        '<p>See</p><ac:image><ri:attachment ri:filename="thumbnail.png"></ri:attachment></ac:image><p> here.</p>',
+        '<p>See</p><ac:link><ri:page ri:content-title="Shared Assets"></ri:page><ac:link-body><ac:image>'
+        + '<ri:attachment ri:filename="thumbnail.png"></ri:attachment></ac:image></ac:link-body></ac:link><p> here.</p>',
       );
     });
 
@@ -328,19 +328,18 @@ describe('content-converter: #1748 Confluence links survive write-back', () => {
       expect(htmlToConfluence(yDocToHtml(doc))).toBe(PAGE_OUT.replace('<p>Intro</p>', '<p>Intro (edited)</p>'));
     });
 
-    it('loses a link whose text is inline code and splits one around inline code or a line break, as before #1748 (deferred, decisions.md item 12)', () => {
-      // Pins today's editor behaviour (orchestrator decision on review r1 F1.1):
-      // the converters keep these links, but StarterKit's Code mark excludes
-      // every other mark, so the Link mark leaves inline code, and Yjs keeps
-      // marks on text only, so a line break splits the link in two.
+    it('keeps a link whose text is inline code, mixes code and text, or holds a line break as one link (#1954)', () => {
+      // The Code mark excludes only itself, so the Link mark stays on inline
+      // code; Yjs keeps marks on text only, and yDocToHtml gives the line break
+      // between two pieces of one link that link again.
       const save = (body: string): string => htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(
         `<p>See <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>${body}</ac:link-body></ac:link> here.</p>`,
       ))));
-      const plain = (text: string): string => '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>'
-        + `<ac:plain-text-link-body><![CDATA[${text}]]></ac:plain-text-link-body></ac:link>`;
-      expect(save('<code>deploy()</code>')).toBe('<p>See <code>deploy()</code> here.</p>');
-      expect(save('run <code>deploy()</code> now')).toBe(`<p>See ${plain('run ')}<code>deploy()</code>${plain(' now')} here.</p>`);
-      expect(save('line one<br />line two')).toBe(`<p>See ${plain('line one')}<br />${plain('line two')} here.</p>`);
+      const page = '<ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>';
+      expect(save('<code>deploy()</code>')).toBe(`<p>See <ac:link>${page}<ac:link-body><code>deploy()</code></ac:link-body></ac:link> here.</p>`);
+      expect(save('run <code>deploy()</code> now'))
+        .toBe(`<p>See <ac:link>${page}<ac:link-body>run <code>deploy()</code> now</ac:link-body></ac:link> here.</p>`);
+      expect(save('line one<br />line two')).toBe(`<p>See <ac:link>${page}<ac:link-body>line one<br />line two</ac:link-body></ac:link> here.</p>`);
     });
   });
 

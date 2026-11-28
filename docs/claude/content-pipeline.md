@@ -51,14 +51,43 @@ a script. The analytics renderer stays separate.
 that href alone. Parse and build it only through `core/services/confluence-link.ts`
 (the converter, `link-extractor.ts` and the baseline manifest do); keep reading
 the pre-#1748 shape, the title or filename as written, as the fallback to the
-encoded reading. Deferred, unchanged by #1748 (the converters and Improve keep
-these links): the editor loses a link whose body is an image (a block node, so
-a save lifts it out of the paragraph) or inline code (StarterKit's Code mark
-excludes every other mark, so the Link mark leaves it; a fix changes the Code
-mark contract in both schemas), splits a link whose text mixes inline code with
-other text into two links around the code, and on a collaborative save splits a
-link around a line break (Yjs keeps marks on text only). Pinned by
-`content-converter.links.test.ts`.
+encoded reading. A link whose body is an image is an `href` on the block image
+node (#1954), and for a navigable `ri:url` its class carrier as `linkClass`,
+admitted only by `isConfluenceUrlClassCarrierFor`: `body_html` keeps
+`<a href><img></a>`, the editor, read mode and the collab schema share one image
+schema (its `data-confluence-*` markers included, so a copy out of read mode keeps
+the image's resource), and both attributes are checked again at render. The
+image still leaves its paragraph, so a link body holding several images, or images
+and text, becomes one link per piece; read mode follows an image's link instead of
+zooming it. Inline code is `LinkableCode` in all three schemas, a Code mark that
+excludes only itself (#1954), so a link whose body is or mixes inline code stays one
+link and code takes bold, italic and the other marks (its Yjs key stays `code`; a mark
+excluding nothing would be stored under a hashed key). Its Markdown is
+`` [`code`](href) `` / `` [run `code` now](href) ``. Code inside a link that holds a
+backtick cannot be a code span in a link label (marked 15), so `htmlToMarkdown` with
+`linkedCodeAsText` writes it as link text with every ASCII punctuation character
+backslash-escaped, each white-space boundary written once. Only callers whose Markdown
+never reaches an AI Improve prompt opt in: quality score, auto-tagging, version-compare
+summaries, diagram context. Everything an Improve prompt holds (the page itself with
+layout tokens, its sub-pages and extracted documents without options) is unchanged by
+#1954 (D24): the parent's Markdown, a sub-page's Markdown, the assembled prompt and the
+applied HTML of an Accept are exactly slice A's, pinned against captures at `42e07553`
+(`__fixtures__/improve-parity-1954-a.ts`). Improve keeps slice A's limits for linked
+code: the chain can lose such a link (a code span holding a backtick inside a link
+label comes back as literal Markdown in a paragraph), and a media-placeholder spelling
+that matches a real media entry of the page is replaced by `restoreMedia`, as in any
+text (#723; recorded limit). A line break inside a link survives a
+collaborative save (#1954): Yjs keeps marks on text only, so `yDocToHtml` gives a
+run of unmarked line breaks between two text pieces with the same Link mark (every
+attribute equal once the schema default fills a missing one; an explicit null is not
+the default) that mark again, and write-back writes one `ac:link`; links with a
+different href, class, title, target or rel are never joined. Limits: a break at the start or
+end of a link body leaves the link, and two separate links to the same target
+around a break cannot be told apart after a collaborative session and become one
+(the converter and an ordinary editor Save keep them apart). Deferred, unchanged
+by #1748: on a collaborative save a mention, status or emoticon inside a link
+still splits it. Pinned by `content-converter.links.test.ts` and
+`content-converter.link-bodies.test.ts`.
 
 **Five more link kinds, and one rule for `ri:url` (#1955).** `ri:space`,
 `ri:blog-post`, `ri:shortcut`, `ri:content-entity` and `ri:url` links are
@@ -313,6 +342,56 @@ transaction that also sets `confluenceTaskIds`. The task body is TaskItem's
 content `div`, never its checkbox `<label>`. AI Improve carries no ids (turndown
 writes `- [ ]`) and never pairs: only tasks with unchanged text get theirs back
 on apply.
+
+**A subtask nests inside its parent task (#1957).** An `ac:task-list` inside an
+`ac:task-body` becomes a `ul[data-type="taskList"]` inside the parent's `li`,
+once, with every `data-task-id` and status at its depth, and `htmlToConfluence`
+writes it back byte for byte. `convertTaskLists` indexes the page in one
+preorder pass and gives each task its `li` once in its final list, each body
+node and `li` moving once (no re-parse, no clone beside the parent; a move is
+one DOM call, not constant time, since JSDOM walks the moved node's
+ancestors). A task list that is not in a task body (placed directly in a list,
+in a wrapper, or in a task but outside its body) is not Confluence's nesting
+and stays flat in source order, exactly as before. Nesting applies only within
+`MAX_TASK_LIST_NESTING` (32) levels, decided once per document before anything
+is restructured, by one walk of the tree the pass already parses
+(`taskListNesting`). The count is syntactic: every task list present in the
+input — editor `ul[data-type="taskList"]` and raw `ac:task-list` alike, empty
+ones included — by element ancestry, whatever task owns it, whichever body a
+task's content is read from, and whether or not an enclosing macro later
+keeps, flattens or drops it (comments and CDATA are text); write-back skips
+only the generated figure and table indexes it removes. `indexTaskLists` only
+places tasks. Write-back's decision (`writeBackProfile`) is shared by
+`assignTaskIds` and by the #1955 stored-link witness (D19), so every writer
+derives with the same profile and a page past the limit is judged against the
+links the pre-#1957 projection of its stored storage shows. It may
+overcount the output, never
+undercount it, and an overcounted page takes the pre-#1957 path (the bytes and
+ids of `bff6d4ec`); a task in a removed index can still get different ids from
+the two-step writers, as before #1957. A page
+nested deeper converts exactly as before #1957 on both passes — the pre-#1957
+forward loop and write-back's pre-#1957 read of the stored tasks — so nothing is
+refused, but such a page keeps the duplicated pre-#1957 shape: the defect is
+not fixed for it. The bound is the reverse pass, which re-serialises once per
+level (about 0.2 s at 32 levels, 1.5 s at 64, 5–10 s at 100 with a macro in
+every task); both schemas stay fast far beyond. Known limit, inherited and
+unchanged: the JSDOM parse every conversion already starts with costs more
+than linear time in the nesting depth (its per-insert ancestor walk), and the
+decision is taken on that parsed tree, not before it.
+Both TipTap schemas parse a task item's content from TipTap's
+`label` + `div` only when the `li` has exactly that shape (write-back's
+`taskItemContent` rule; the `task-item-content` blocks of `collab-schema.ts`
+and `article-extensions.ts` are identical, pinned by
+`collab-schema-parity.test.ts`), else from the `li` itself: TaskItem's stock
+rule took the first `div` at any depth, so a block macro in a task (or in a
+subtask) became the whole task. A body that opens with a block gets the empty
+first paragraph TaskItem requires. Pages synced before #1957 keep their
+duplicated `body_html` until the next sync re-derives it (no migration); a save
+before then writes that shape back, and storage an earlier save already
+polluted keeps its duplicate task. The restore derivation registers
+`nested-tasks`: without it `storedTasks` converts with the pre-#1957 loop,
+verbatim. AI Improve still flattens nested tasks (pre-existing; only unchanged
+tasks keep their ids).
 
 **What write-back derives from a stored `body_html` is versioned by named
 features (#1953).** A version restore records only a digest of the storage it
@@ -575,10 +654,13 @@ plain items into runs (ordered plain runs keep `start`), for every caller —
 AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
 draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
 which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
-text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+text. That rule was introduced while TipTap's stock TaskItem parsed only the
+first descendant `div`; since #1957 both schemas keep a block in a task, and the
+fallback stays only so this path's output does not change in that slice. Mentions,
 status lozenges, Jira links and images are inline and keep their tasks. The
-import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
-`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked`,
+`data-diagram-name` (#1754) and, on `th`/`td` only, `align` (#1956) by name:
+never `ALLOW_DATA_ATTR: true`, never `<input>`.
 
 `data-diagram-name` is admitted by name and as URI-safe, so a
 ` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
@@ -589,6 +671,46 @@ control character, one that marked reads as a closing fence (three backticks, th
 or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
 `data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
 the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
+
+**Table column alignment (#1956).** `tableCell` and `tableHeader` carry an `align`
+attribute (`left|center|right`, none by default) in both TipTap schemas
+(`ConfluenceTableCell` / `ConfluenceTableHeader`; the Yjs key is the stock `align`, so
+existing rooms load unchanged). It is read from the cell's inline style or its `align`
+attribute and rendered as `align="…"`, which `index.css` applies on `th` too (the prose
+`th` rule would otherwise win). **One precedence everywhere:** an inline `style` that
+mentions `text-align` decides, and unless it is exactly one plain lower-case declaration
+(no quotes, escapes, `url(`, comments or custom properties, no duplicate, at most 1,024
+characters) the cell has no alignment; without such a style `align` decides. The reading
+is one text (`// <table-cell-align:begin>`) in `collab-schema.ts`, `article-extensions.ts`
+and `content-converter.ts`, compared by `collab-schema-parity.test.ts`; a browser reads
+property names and priorities case-insensitively and the Node hosts do not, so the block
+declines an upper-case property, any `!` other than a lower-case `!important` ending its
+declaration (`!IMPORTANT`, `! important`), a bracket or brace, and unbalanced parentheses
+(`color: rgb(1; text-align: center` reads `center` in happy-dom only). The vectors every host is tested with are one
+fixture (`__fixtures__/table-cell-align-vectors.json`: converter, collaborative schema,
+frontend schema, and Chromium in `e2e/table-cell-align.spec.ts`). The
+import sanitiser admits `align` by a post-pass (`ALLOWED_ATTR` is global, and a DOMPurify
+hook would sit on the singleton the Notion converter shares) on `th`/`td` with one of the
+three values, written lower case; `style` stays stripped on import. Write-back (feature
+`cell-align`, above) removes `align` from every cell and writes
+`style="text-align: X;"`; a style that already mentions `text-align` is kept byte for
+byte, a style without it only gets the declaration appended, and nothing is rewritten.
+`confluenceToHtml` appends `align="X"` next to a plain `text-align` style and leaves the
+style alone, so `htmlToConfluence(confluenceToHtml(x))` is `x`. **AI Improve (decision
+D15):** #1956 makes no change to the Improve chain (`protectMedia`, `htmlToMarkdown`,
+`markdownToHtml`, `restoreMedia` and the Accept drop guard are the slice-base code for
+tables, aligned or not; no table becomes a media token), pinned byte for byte, Markdown
+and applied HTML, against the slice base for aligned and unaligned inputs
+(`__fixtures__/table-align-improve-base.json`); a suggestion generated before the change
+applies exactly as before. **Known limits:** through AI Improve, alignment survives as far
+as the stock GFM table rule expresses it, i.e. per column from the header row; when the
+stock rule emits a GFM table, a body cell aligned differently from its column header takes
+the header's alignment on Accept (when it keeps the table as raw HTML, e.g. an editor table
+with a `colgroup`, the cell keeps its own alignment on an unchanged echo);
+whatever the stock rule mangled before this change (a pipe inside a cell, a table inside a
+panel) it still mangles. Every other `htmlToMarkdown` caller (embedding text, tagging,
+chat context, sub-page context) is byte-identical to before; they keep stock turndown's
+output for `<p>`-celled tables (pre-existing, D6).
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →

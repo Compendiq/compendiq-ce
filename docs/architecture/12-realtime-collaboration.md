@@ -653,6 +653,37 @@ every 2 s and that column cannot tell. Best effort as above: a refusal logs
 Save takes the ids back from `body_storage` while the tasks' text is
 unchanged.
 
+**Link bodies (#1954).** The image node carries the link of a Confluence link
+whose body is an image as two optional Yjs attributes of the `image` element,
+`href` and `linkClass` (the class carrier of a navigable `ri:url`); `yDocToHtml`
+renders them as the wrapper `<a>` only when they pass the Link mark's
+`isAllowedUri` and `isConfluenceUrlClassCarrierFor` again, so a value a client
+writes into the element directly never renders a link the parse would refuse.
+A document persisted before #1954 has neither attribute and loads unchanged:
+`collab-schema.pre-1954-snapshot.test.ts` loads a `Y.encodeStateAsUpdate`
+captured with the schema of `bff6d4ec` (`__fixtures__/collab-pre-1954.ts`) and
+compares its HTML with the HTML that schema produced. A room seeded before
+#1954 has already lost such a link inside its document (and its persist wrote
+`body_html` without it); the link comes back when the page is re-derived from
+Confluence (Re-sync or Pull), not by a backfill. A browser still running the
+previous bundle does not know the attributes and drops them from an image it
+edits. Inline code is a Code mark that excludes only itself (slice B), so a
+link stays on code text; y-prosemirror still stores it under the key `code` (a
+mark that excluded nothing would be stored under a hashed key `code--…`), and
+an old room's code runs read back unchanged. A line break inside a link is a
+`hardBreak` element, and y-prosemirror keeps no mark on an element, so the
+link survives in the document only on the text around the break.
+`yDocToHtml` therefore gives every run of unmarked hard breaks between two
+text nodes with the same Link mark (every attribute equal as the schema
+creates the mark: a missing attribute takes its default, an explicit null
+stays null) that mark again
+before it serialises: the 2 s snapshot, the Save snapshot and everything
+downstream see one `<a>`, and write-back one `ac:link`. A room persisted
+before #1954 gets its split links joined the same way on its next
+serialisation; nothing in the Yjs document changes. A break at either end of a
+link stays outside it, and two separate same-target links around a break
+cannot be told apart in Yjs and become one (documented limit).
+
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with
 `collabExtensions()`, persist, keep the doc in the in-memory room.

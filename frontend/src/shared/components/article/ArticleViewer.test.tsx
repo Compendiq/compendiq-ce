@@ -1062,6 +1062,89 @@ describe('ArticleViewer', () => {
       expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
         .toEqual(['42', '7']);
     });
+
+    it('keeps script and event-handler canaries out of a nested task in read mode and its copy (#1957)', async () => {
+      // The same input as Editor.test.tsx and the backend's content-converter.nested-tasks.test.ts (#1957 M3).
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="1">parent'
+        + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="2">safe '
+        + '<img src="https://example.com/a.png" onerror="alert(1)"><script>alert(2)</script>'
+        + '<a href="javascript:alert(3)">link</a> <span onmouseover="alert(4)">hover</span>'
+        + '<div class="confluence-toc" data-maxlevel="2" onclick="alert(5)">[Table of Contents]</div></li></ul></li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      for (const [where, rendered] of [['read view', view.innerHTML], ['copy', copied]] as const) {
+        for (const canary of ['onerror', '<script', 'javascript:', 'onmouseover', 'onclick', 'alert(']) {
+          expect(rendered, `${where}: ${canary}`).not.toContain(canary);
+        }
+      }
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
+        .toEqual(['1', '2']);
+      const sub = clipboard.querySelector('li[data-task-id="1"] li[data-task-id="2"]')!;
+      expect(sub.textContent).toContain('safe');
+      expect(sub.textContent).toContain('link');
+      expect(sub.textContent).toContain('hover');
+      expect(sub.querySelector('.confluence-toc')).not.toBeNull();
+    });
+
+    // #1957: a nested task list as confluenceToHtml writes it (the backend's
+    // NESTED_TASK_LIST_HTML): the subtask holds a block macro, the stock
+    // TaskItem rule took that macro for the whole parent task.
+    it('keeps nested tasks, their ids and a subtask macro at their depth in a copy out of the read view (#1957)', async () => {
+      const html =
+        '<p>Release checklist</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false" data-task-id="11">Release'
+        + '<ul data-type="taskList"><li data-type="taskItem" data-checked="true" data-task-id="12">Write notes '
+        + '<span class="confluence-status" data-color="green">DONE</span><div class="confluence-toc" data-maxlevel="2">[Table of Contents]</div></li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="13">Tag build<ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="14">Push tag</li></ul></li></ul></li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="15">Announce</li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => {
+        let depth = 0;
+        for (let el: Element | null = li; el; el = el.parentElement) {
+          if (el.matches('ul[data-type="taskList"]')) depth += 1;
+        }
+        return [li.getAttribute('data-task-id'), li.getAttribute('data-checked'), depth];
+      })).toEqual([['11', 'false', 1], ['12', 'true', 2], ['13', 'false', 2], ['14', 'false', 3], ['15', 'false', 1]]);
+      expect([...clipboard.querySelectorAll('.confluence-toc')].map((toc) => toc.closest('li')?.getAttribute('data-task-id')))
+        .toEqual(['12']);
+      expect(clipboard.querySelector('li[data-task-id="11"] > div > p')?.textContent).toBe('Release');
+    });
   });
 
   describe('text color and highlight in read mode', () => {
@@ -1128,5 +1211,106 @@ describe('ArticleViewer: Confluence emoticons (#1750)', () => {
         [{ 'ac:name': 'tick' }, '✅'],
         [{ 'ac:name': 'laugh', 'ac:emoji-shortname': ':grinning:', 'ac:emoji-id': '1f600', 'ac:emoji-fallback': '😀' }, '😀'],
       ]);
+  });
+});
+
+// #1954: read mode renders a linked image inside its link, like a text link, and
+// uses the editor's image schema, so a copy out of it keeps the image's markers.
+describe('ArticleViewer: linked images (#1954)', () => {
+  const IMG = '<img src="https://example.com/img.png" alt="Pic" data-confluence-image-source="external-url"'
+    + ' data-confluence-url="https://cdn.example.com/x.png">';
+
+  it('renders a linked image inside its link and does not also zoom it; an unlinked image still zooms', async () => {
+    const onImageClick = vi.fn();
+    const html = `<p><a href="#confluence-page:Runbook" data-confluence-link="page">${IMG}</a></p>`
+      + '<p><img src="https://example.com/other.png" alt="Other"></p>';
+    const { container } = render(<ArticleViewer content={html} onImageClick={onImageClick} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('img[alt="Other"]')?.style.cursor).toBe('zoom-in');
+    });
+    const linked = container.querySelector('img[alt="Pic"]') as HTMLImageElement;
+    const anchor = linked.closest('a')!;
+    expect(anchor.getAttribute('href')).toBe('#confluence-page:Runbook');
+    expect(anchor.getAttribute('target')).toBe('_blank');
+    expect(anchor.getAttribute('rel')).toBe('noreferrer');
+    expect(linked.style.cursor).toBe('');
+    fireEvent.click(linked);
+    expect(onImageClick).not.toHaveBeenCalled();
+    // The markers are kept in read mode too.
+    expect(linked.getAttribute('data-confluence-url')).toBe('https://cdn.example.com/x.png');
+  });
+
+  it('keeps the class carrier of a web link around an image, and only that class', async () => {
+    const carrier = '#confluence-url:https%3A%2F%2Fexample.com%2Fz?body=rich';
+    const html = `<p><a href="https://example.com/z" class="${carrier}">${IMG}</a></p>`
+      + `<p><a href="https://example.com/y" class="${carrier}">${IMG.replace('Pic', 'Mismatch')}</a></p>`;
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.ProseMirror img')).toHaveLength(2);
+    });
+    expect(container.querySelector('img[alt="Pic"]')!.closest('a')!.getAttribute('class')).toBe(carrier);
+    const mismatch = container.querySelector('img[alt="Mismatch"]')!.closest('a')!;
+    expect(mismatch.getAttribute('href')).toBe('https://example.com/y');
+    expect(mismatch.hasAttribute('class')).toBe(false);
+  });
+
+  it.each([
+    ['a script address', 'javascript:alert(1)'],
+    ['a data URI', 'data:text/html,x'],
+    ['an obfuscated script address', 'java&#9;script:alert(1)'],
+  ])('renders no link around an image whose link is %s', async (_case, href) => {
+    const { container } = render(<ArticleViewer content={`<p><a href="${href}">${IMG}</a></p>`} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.ProseMirror img')).toBeTruthy();
+    });
+    expect(container.querySelector('.ProseMirror img')!.closest('a')).toBeNull();
+    expect(container.querySelector('.ProseMirror')!.innerHTML).not.toMatch(/javascript:|data:text/i);
+  });
+});
+
+// #1954: read mode's inline code excludes only itself, so a link around code is one link.
+describe('ArticleViewer: links around inline code (#1954)', () => {
+  it('renders a code-bodied and a mixed link as one link each, around their code', async () => {
+    const html = '<p>Call <a href="#confluence-page:Runbook" data-confluence-link="page"><code>deploy()</code></a> first.</p>'
+      + '<p>Then <a href="#confluence-page:Runbook" data-confluence-link="page">run <code>deploy()</code> now</a>.</p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.ProseMirror a')).toHaveLength(2);
+    });
+    const anchors = [...container.querySelectorAll('.ProseMirror a')];
+    expect(anchors.map((a) => [a.getAttribute('href'), a.textContent, a.querySelector('code')?.textContent])).toEqual([
+      ['#confluence-page:Runbook', 'deploy()', 'deploy()'],
+      ['#confluence-page:Runbook', 'run deploy() now', 'deploy()'],
+    ]);
+  });
+
+  it('mounts inline code that excludes only itself, as the editor and the collab schema do', async () => {
+    const { container } = render(<ArticleViewer content="<p>x</p>" />);
+    await waitFor(() => {
+      expect(container.querySelector('.ProseMirror')).toBeTruthy();
+    });
+    const view = container.querySelector('.ProseMirror') as HTMLElement & { editor: TipTapEditor };
+    const { code, link } = view.editor.schema.marks;
+    expect(code!.spec.excludes).toBe('code');
+    expect(code!.excludes(code!)).toBe(true);
+    expect(code!.excludes(link!)).toBe(false);
+  });
+});
+
+describe('ArticleViewer: table cell alignment (#1956)', () => {
+  it('keeps the alignment of header and body cells from the attribute and from a stored style', async () => {
+    const html = '<table><tbody><tr><th align="center">a</th><th>b</th></tr>'
+      + '<tr><td style="text-align: right;">1</td><td align="left">2</td></tr></tbody></table>';
+    const { container } = render(<ArticleViewer content={html} />);
+    await waitFor(() => {
+      expect(container.querySelector('th[align="center"]')).not.toBeNull();
+    });
+    expect([...container.querySelectorAll('th')].map((cell) => cell.getAttribute('align'))).toEqual(['center', null]);
+    expect([...container.querySelectorAll('td')].map((cell) => cell.getAttribute('align'))).toEqual(['right', 'left']);
+    expect(container.querySelectorAll('th[style], td[style]')).toHaveLength(0);
   });
 });

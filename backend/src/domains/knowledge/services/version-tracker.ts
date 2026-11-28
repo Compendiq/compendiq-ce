@@ -379,8 +379,8 @@ export async function getSemanticDiff(
   const { bodyHtml: body2 } = version2;
 
   // Convert to markdown for LLM consumption
-  const text1 = body1 ? htmlToMarkdown(body1) : (version1.bodyText ?? '');
-  const text2 = body2 ? htmlToMarkdown(body2) : (version2.bodyText ?? '');
+  const text1 = body1 ? htmlToMarkdown(body1, { linkedCodeAsText: true }) : (version1.bodyText ?? '');
+  const text2 = body2 ? htmlToMarkdown(body2, { linkedCodeAsText: true }) : (version2.bodyText ?? '');
 
   // Truncate to prevent excessive LLM input
   const maxLen = 8000;
