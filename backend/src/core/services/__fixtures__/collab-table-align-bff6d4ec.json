@@ -1,0 +1,117 @@
+{
+  "description": "#1956 review T6: a collaborative-room update written by the pre-change schema (stock TipTap tableCell/tableHeader). Loaded by collab-schema-parity.test.ts without running the old encoder.",
+  "provenance": {
+    "commit": "bff6d4ec9ec3ca08642e347d19eef51059a5a4bf",
+    "source": "backend/src/core/services/collab-schema.ts and confluence-task-id.ts at that commit (git show), run with tsx",
+    "call": "Y.encodeStateAsUpdate(htmlToYDoc(input))",
+    "capturedAt": "2026-11-26",
+    "node": "v26.13.1",
+    "packages": {
+      "yjs": "13.6.32",
+      "@tiptap/core": "3.30.5",
+      "@tiptap/extension-table": "3.30.5",
+      "@tiptap/html": "3.30.5",
+      "@tiptap/y-tiptap": "3.0.9"
+    }
+  },
+  "input": "<table><tbody><tr><th style=\"text-align: center\">a</th><th>b</th></tr><tr><td align=\"right\">1</td><td>2</td></tr></tbody></table>",
+  "update": "AR7+zNrECwAHAQdkZWZhdWx0AwV0YWJsZQcA/szaxAsAAwh0YWJsZVJvdwcA/szaxAsBAwt0YWJsZUhlYWRlcgcA/szaxAsCAwlwYXJhZ3JhcGgHAP7M2sQLAwYEAP7M2sQLBAFhKAD+zNrECwIHY29sc3BhbgF9ASgA/szaxAsCB3Jvd3NwYW4BfQEoAP7M2sQLAgVhbGlnbgF3BmNlbnRlcof+zNrECwIDC3RhYmxlSGVhZGVyBwD+zNrECwkDCXBhcmFncmFwaAcA/szaxAsKBgQA/szaxAsLAWIoAP7M2sQLCQdjb2xzcGFuAX0BKAD+zNrECwkHcm93c3BhbgF9AYf+zNrECwEDCHRhYmxlUm93BwD+zNrECw8DCXRhYmxlQ2VsbAcA/szaxAsQAwlwYXJhZ3JhcGgHAP7M2sQLEQYEAP7M2sQLEgExKAD+zNrECxAHY29sc3BhbgF9ASgA/szaxAsQB3Jvd3NwYW4BfQEoAP7M2sQLEAVhbGlnbgF3BXJpZ2h0h/7M2sQLEAMJdGFibGVDZWxsBwD+zNrECxcDCXBhcmFncmFwaAcA/szaxAsYBgQA/szaxAsZATIoAP7M2sQLFwdjb2xzcGFuAX0BKAD+zNrECxcHcm93c3BhbgF9ASgA/szaxAsAC2RhdGEtbGF5b3V0AXcHZGVmYXVsdAA=",
+  "prosemirrorJson": {
+    "type": "doc",
+    "content": [
+      {
+        "type": "table",
+        "attrs": {
+          "data-layout": "default"
+        },
+        "content": [
+          {
+            "type": "tableRow",
+            "content": [
+              {
+                "type": "tableHeader",
+                "attrs": {
+                  "colspan": 1,
+                  "rowspan": 1,
+                  "align": "center"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "a"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "tableHeader",
+                "attrs": {
+                  "colspan": 1,
+                  "rowspan": 1
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "b"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "tableRow",
+            "content": [
+              {
+                "type": "tableCell",
+                "attrs": {
+                  "colspan": 1,
+                  "rowspan": 1,
+                  "align": "right"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "1"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "tableCell",
+                "attrs": {
+                  "colspan": 1,
+                  "rowspan": 1
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "2"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "renderedHtml": "<table style=\"min-width: 50px;\"><colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th colspan=\"1\" rowspan=\"1\" style=\"text-align: center;\"><p>a</p></th><th colspan=\"1\" rowspan=\"1\"><p>b</p></th></tr><tr><td colspan=\"1\" rowspan=\"1\" style=\"text-align: right;\"><p>1</p></td><td colspan=\"1\" rowspan=\"1\"><p>2</p></td></tr></tbody></table>"
+}

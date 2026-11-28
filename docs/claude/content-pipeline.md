@@ -362,8 +362,9 @@ draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
 which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
 text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
 status lozenges, Jira links and images are inline and keep their tasks. The
-import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
-`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked`,
+`data-diagram-name` (#1754) and, on `th`/`td` only, `align` (#1956) by name:
+never `ALLOW_DATA_ATTR: true`, never `<input>`.
 
 `data-diagram-name` is admitted by name and as URI-safe, so a
 ` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
@@ -374,6 +375,46 @@ control character, one that marked reads as a closing fence (three backticks, th
 or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
 `data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
 the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
+
+**Table column alignment (#1956).** `tableCell` and `tableHeader` carry an `align`
+attribute (`left|center|right`, none by default) in both TipTap schemas
+(`ConfluenceTableCell` / `ConfluenceTableHeader`; the Yjs key is the stock `align`, so
+existing rooms load unchanged). It is read from the cell's inline style or its `align`
+attribute and rendered as `align="…"`, which `index.css` applies on `th` too (the prose
+`th` rule would otherwise win). **One precedence everywhere:** an inline `style` that
+mentions `text-align` decides, and unless it is exactly one plain lower-case declaration
+(no quotes, escapes, `url(`, comments or custom properties, no duplicate, at most 1,024
+characters) the cell has no alignment; without such a style `align` decides. The reading
+is one text (`// <table-cell-align:begin>`) in `collab-schema.ts`, `article-extensions.ts`
+and `content-converter.ts`, compared by `collab-schema-parity.test.ts`; a browser reads
+property names and priorities case-insensitively and the Node hosts do not, so the block
+declines an upper-case property, any `!` other than a lower-case `!important` ending its
+declaration (`!IMPORTANT`, `! important`), a bracket or brace, and unbalanced parentheses
+(`color: rgb(1; text-align: center` reads `center` in happy-dom only). The vectors every host is tested with are one
+fixture (`__fixtures__/table-cell-align-vectors.json`: converter, collaborative schema,
+frontend schema, and Chromium in `e2e/table-cell-align.spec.ts`). The
+import sanitiser admits `align` by a post-pass (`ALLOWED_ATTR` is global, and a DOMPurify
+hook would sit on the singleton the Notion converter shares) on `th`/`td` with one of the
+three values, written lower case; `style` stays stripped on import. Write-back (feature
+`cell-align`, above) removes `align` from every cell and writes
+`style="text-align: X;"`; a style that already mentions `text-align` is kept byte for
+byte, a style without it only gets the declaration appended, and nothing is rewritten.
+`confluenceToHtml` appends `align="X"` next to a plain `text-align` style and leaves the
+style alone, so `htmlToConfluence(confluenceToHtml(x))` is `x`. **AI Improve (decision
+D15):** #1956 makes no change to the Improve chain (`protectMedia`, `htmlToMarkdown`,
+`markdownToHtml`, `restoreMedia` and the Accept drop guard are the slice-base code for
+tables, aligned or not; no table becomes a media token), pinned byte for byte, Markdown
+and applied HTML, against the slice base for aligned and unaligned inputs
+(`__fixtures__/table-align-improve-base.json`); a suggestion generated before the change
+applies exactly as before. **Known limits:** through AI Improve, alignment survives as far
+as the stock GFM table rule expresses it, i.e. per column from the header row; when the
+stock rule emits a GFM table, a body cell aligned differently from its column header takes
+the header's alignment on Accept (when it keeps the table as raw HTML, e.g. an editor table
+with a `colgroup`, the cell keeps its own alignment on an unchanged echo);
+whatever the stock rule mangled before this change (a pipe inside a cell, a table inside a
+panel) it still mangles. Every other `htmlToMarkdown` caller (embedding text, tagging,
+chat context, sub-page context) is byte-identical to before; they keep stock turndown's
+output for `<p>`-celled tables (pre-existing, D6).
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
