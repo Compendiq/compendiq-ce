@@ -14,14 +14,19 @@ import { JSDOM } from 'jsdom';
 import * as Y from 'yjs';
 import { generateHTML, generateJSON } from '@tiptap/html';
 import {
+  assertCodeMacroStorage,
+  beginCodeMetaAccept,
   confluenceToHtml,
   extractLayoutSkeleton,
+  finalizeCodeMetadata,
   htmlToConfluence,
   htmlToMarkdown,
   markdownToHtml,
   protectMedia,
-  restoreMedia,
+  readCodeMacroInventory,
+  replayProtectedMedia,
 } from './content-converter.js';
+import { oracleCodeMacros, oracleCodeMacroVerdict } from './__fixtures__/code-macro-oracle.js';
 import { collabExtensions, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 import { CODE_BLOCK_TITLED_PAGE } from './__fixtures__/confluence-xhtml.js';
 
@@ -276,16 +281,36 @@ describe('content-converter: #1749 dedicated macro parameters survive write-back
   });
 
   describe('AI Improve round trip', () => {
-    it('keeps the toc and status parameters and the code language', async () => {
-      // The Improve apply exactly (llm-conversations.ts:454-488): protect → markdown → rebuild → restore.
-      const { html: protectedHtml, media } = protectMedia(confluenceToHtml(PAGE));
-      const layoutSkeleton = extractLayoutSkeleton(protectedHtml);
-      const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
-      const xhtml = htmlToConfluence(restoreMedia(await markdownToHtml(markdown, { layoutSkeleton }), media));
+    it('keeps the toc and status parameters and the code macro\'s title and options (#1958)', async () => {
+      // The Improve apply exactly (llm-conversations.ts): protect → markdown → rebuild → replay → finalize.
+      const protectedBody = protectMedia(confluenceToHtml(PAGE));
+      const layoutSkeleton = extractLayoutSkeleton(protectedBody.html);
+      const markdown = htmlToMarkdown(protectedBody.html, { layoutTokens: true });
+      const codeMeta = beginCodeMetaAccept(protectedBody);
+      const rebuilt = await markdownToHtml(markdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
+      const finalized = finalizeCodeMetadata(replayProtectedMedia(rebuilt, codeMeta).html, codeMeta);
+      const xhtml = htmlToConfluence(finalized.html);
       expect(macroParams(xhtml, 'toc')).toEqual([TOC_FIXTURE_PARAMS]);
       expect(macroParams(xhtml, 'status')).toEqual([STATUS_FIXTURE_PARAMS]);
-      // <pre> extras (title, linenumbers, collapse) are out of scope here (#1749 PR); only the language is pinned.
-      expect(macroParams(xhtml, 'code')[0]).toContainEqual(['language', 'c#']);
+      expect(macroParams(xhtml, 'code')).toEqual([macroParams(htmlToConfluence(PAGE_HTML), 'code')[0]]);
+      expect(macroParams(xhtml, 'code')[0]).toContainEqual(['title', 'Startup.cs']);
+      expect(macroParams(xhtml, 'code')[0]).toContainEqual(['linenumbers', 'true']);
+      // #1958 r1 CM-8: the storage judgement and the independent oracle agree on this result.
+      assertCodeMacroStorage(xhtml, finalized.allowance);
+      expect(oracleCodeMacroVerdict(xhtml, htmlToConfluence(finalized.allowance.units.join('\n')))).toBe('pass');
+    });
+
+    it('reads every code macro of this file\'s fixtures as the independent oracle does (#1958 r1 CM-8)', () => {
+      const mermaid = '<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">mermaid</ac:parameter>'
+        + '<ac:parameter ac:name="title">Flow</ac:parameter><ac:parameter ac:name="linenumbers">true</ac:parameter>'
+        + '<ac:plain-text-body><![CDATA[graph TD\n  A --> B]]></ac:plain-text-body></ac:structured-macro>';
+      for (const storage of [CODE_MACRO, PAGE, CODE_BLOCK_TITLED_PAGE, mermaid]) {
+        for (const written of [storage, htmlToConfluence(confluenceToHtml(storage)), htmlToConfluence(PAGE_HTML)]) {
+          const oracle = oracleCodeMacros(written);
+          expect(oracle.ok, written).toBe(true);
+          if (oracle.ok) expect(readCodeMacroInventory(written), written).toEqual({ records: oracle.records, bareKeys: oracle.bareKeys });
+        }
+      }
     });
   });
 });

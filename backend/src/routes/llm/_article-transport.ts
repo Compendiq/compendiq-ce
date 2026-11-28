@@ -74,7 +74,7 @@ export async function directArticleTransport(
 export async function assembleDirectArticleContext(
   userId: string, pageId: string | undefined, content: string,
   includeSubPages: boolean | undefined, config: ProviderConfig, usecase: string, model: string,
-  opts?: { protectMedia?: boolean; layoutTokens?: boolean; operation?: AiOperationContext },
+  opts?: { protectMedia?: boolean; layoutTokens?: boolean; codeNonce?: string; operation?: AiOperationContext },
 ) {
   const { stage, parentRef } = await captureRoot(userId, pageId, config, usecase, opts?.operation);
   await authorizeArticleDispatch(config, stage.provenance, userId, usecase, stage.context, model, true);

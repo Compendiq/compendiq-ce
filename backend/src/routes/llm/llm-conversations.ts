@@ -12,7 +12,24 @@ import {
   type TitleSource,
   UpdateConversationSchema,
 } from '@compendiq/contracts';
-import { htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
+import {
+  assertCodeMacroStorage,
+  assertLocalCodeMacroProjections,
+  convertImproveOutput,
+  htmlToConfluence,
+  htmlToText,
+  ImproveCodePlacementError,
+  IMPROVE_CODE_NONCE_PATTERN,
+  ImproveSuggestionUnboundError,
+  IMPROVE_CODE_META_PROTOCOL,
+  ImproveReplayBudgetError,
+  ImproveReplayError,
+  ImproveSuggestionFormatError,
+  LayoutRecoveryError,
+  type ConvertedImproveOutput,
+  type ImproveSuggestionProvenance,
+} from '../../core/services/content-converter.js';
+import { ConfluenceStorageRefusedError } from '../../core/services/confluence-storage-reader.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
@@ -296,7 +313,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
   // POST /api/llm/improvements/apply - apply accepted improvement to a page + sync to Confluence
   fastify.post('/llm/improvements/apply', async (request) => {
     const body = ApplyImprovementRequestSchema.parse(request.body);
-    const { pageId, improvedMarkdown, version, title } = body;
+    const { pageId, improvedMarkdown, version, title, improvementId: selectedImprovementId } = body;
     const userId = request.userId;
 
     // Resolve page by internal id or Confluence id. Both are numeric strings,
@@ -413,6 +430,44 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     if (writeStaysLocal && !(await canWritePageLocally(existingPage.id))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    // #1958 (review r1 CM-2, r2 CM2-3; the #1955 R4/W3 rule): before the
+    // stored body supplies any evidence (media, skeleton, code metadata; from
+    // #1953-2 on, recovery evidence and witnesses), the remote exit runs the
+    // write-state authorization the page writers use (pages-crud.ts
+    // `loadAuthorizedContentWriteState`): one transaction client, the page row
+    // locked and reloaded, the active actor, the current space and page
+    // authority read without the RBAC caches, and the content and lifecycle
+    // revisions of the row this request read. The admitted transaction's
+    // final fence before dispatch stays.
+    if (!writeStaysLocal) {
+      await withPageWriteTransaction([], async (client) => {
+        const actor = await client.query('SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL', [userId]);
+        if (actor.rowCount !== 1) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+        }
+        const locked = await client.query<{ spaceKey: string | null; contentRevision: string; lifecycleRevision: string }>(
+          `SELECT space_key AS "spaceKey", content_revision::text AS "contentRevision",
+                  lifecycle_revision::text AS "lifecycleRevision"
+             FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+          [existingPage.id],
+        );
+        const current = locked.rows[0];
+        if (!current) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+        const accessibleSpaces = await getUserAccessibleSpaces(userId, client);
+        if (!current.spaceKey || !accessibleSpaces.includes(current.spaceKey)) {
+          throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+        }
+        if (!(await userCanAccessPage(userId, existingPage.id, client))) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+        }
+        if (current.lifecycleRevision !== existingPage.lifecycleRevision) {
+          throw new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after the content was read');
+        }
+        if (current.contentRevision !== existingPage.contentRevision) {
+          throw new PageWriteError(409, 'stale_content_revision', 'The page content changed after the content was read');
+        }
+      });
+    }
 
     await rejectIfLiveCollabRoom(
       existingPage.id,
@@ -422,59 +477,75 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
-    // The public apply request predates improvement ids. Bind its status side
-    // effect now, before conversion/remote latency can make a newer unrelated
-    // improvement look like the row this request accepted. An exact content
-    // match preserves direct/manual Apply calls, which have no history row.
-    const linkedImprovement = await query<{ id: string }>(
-      `SELECT id
+    // #1958 (coordinator decision D27): the request names the improvement the
+    // user selected. Its provenance and its `applied` status are bound to that
+    // row only, once it is the caller's, for this page and completed; the text
+    // is never matched against stored rows. No id, or a row that fails these
+    // checks (a manual Apply, an older client), is new input: the #1958 path
+    // with exact-grammar carriers only, refused when the page has protected
+    // code blocks (no nonce can place them, D28), and no row changes status.
+    // Bound now, before conversion or remote latency.
+    const linkedRow = selectedImprovementId === undefined ? undefined : (await query<{
+      id: string; improveProtocol: number | null; codeNonce: string | null;
+    }>(
+      `SELECT id, improve_protocol AS "improveProtocol", improve_code_nonce AS "codeNonce"
          FROM llm_improvements
-        WHERE user_id = $1
-          AND page_id = $2
-          AND status IN ('streaming', 'completed')
-          AND improved_content = $3
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1`,
-      [userId, existingPage.id, improvedMarkdown.slice(0, 50000)],
-    );
-    const improvementId = linkedImprovement.rows[0]?.id ?? null;
+        WHERE id = $1
+          AND user_id = $2
+          AND page_id = $3
+          AND status = 'completed'`,
+      [selectedImprovementId, userId, existingPage.id],
+    )).rows[0];
+    const improvementId = linkedRow?.id ?? null;
+    const provenance: ImproveSuggestionProvenance = !linkedRow ? 'unmatched'
+      : linkedRow.improveProtocol === IMPROVE_CODE_META_PROTOCOL ? 'code-meta' : 'legacy';
+    // D28: only a #1958 row's own nonce places a protected code block; every other spelling is text.
+    const codeNonce = provenance === 'code-meta' && linkedRow?.codeNonce && IMPROVE_CODE_NONCE_PATTERN.test(linkedRow.codeNonce)
+      ? linkedRow.codeNonce : undefined;
 
     if (version !== undefined && version < currentVersion) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
     }
 
-    // #723: re-derive the same media tokens from the page's CURRENT body_html
-    // (deterministic, document order) and re-inject originals verbatim so AI
-    // Improve can never strip images/draw.io.
-    //
-    // The Improve-time token set (derived from the editor `content`) and this
-    // Accept-time token set (derived from `body_html`) are decoupled, so they
-    // can diverge — the LLM may also drop tokens entirely. The drop-guard below
-    // is the backstop: any media original not present after restoreMedia
-    // (including the worst case where restoreMedia was a complete no-op because
-    // no tokens survived) is re-appended, so media is never silently lost.
-    const { html: protectedCurrentHtml, media } = protectMedia(existingPage.body_html ?? '');
+    // A #1958 refusal: nothing is reserved, dispatched or stored. Remote
+    // authority was established before any evidence was read (above).
+    const refuseImproveResult = (error: unknown): never => {
+      const reason = error instanceof ConfluenceStorageRefusedError ? error.reason
+        : error instanceof ImproveReplayBudgetError ? 'replay-budget'
+          : error instanceof ImproveReplayError ? 'replay-integrity'
+            : error instanceof ImproveSuggestionFormatError ? 'suggestion-format'
+              : error instanceof ImproveSuggestionUnboundError ? 'suggestion-unbound'
+                : error instanceof ImproveCodePlacementError ? 'code-placement' : null;
+      if (reason === null) throw error;
+      fastify.log.warn(
+        { pageId: existingPage.id, reason, provenance, exit: writeStaysLocal ? 'local' : 'remote' },
+        '#1958: AI Improve result refused before write',
+      );
+      if (error instanceof ConfluenceStorageRefusedError) throw error;
+      throw fastify.httpErrors.unprocessableEntity((error as Error).message);
+    };
 
-    // #781: derive the expected layout-token skeleton and let markdownToHtml
-    // align the LLM's — possibly mangled — boundary tokens against it. When the
-    // layout is unrecoverable (e.g. the model merged two cells' prose or
-    // dropped every token), the apply is REJECTED with a 422 instead of
-    // silently flattening the page and pushing the flattened body back to
-    // Confluence.
-    //
-    // The source is `protectedCurrentHtml`, NOT `body_html`: whatever
-    // protectMedia froze emits no boundary tokens, so a skeleton derived from
-    // the raw document would expect tokens the markdown cannot carry and
-    // rebuild a duplicate macro around the frozen subtree. Deterministic either
-    // way — same re-derivation idea as the media tokens above — but only the
-    // protected form agrees with what the model was shown. Pinned by
-    // apply-improvement-media.test.ts.
-    const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
-    let bodyHtml: string;
+    // The conversion half of the Accept (#1958 `convertImproveOutput`; the
+    // Improve generator caches only output it accepts):
+    // - #723: the media tokens are re-derived from the page's CURRENT
+    //   body_html (deterministic, document order) and the originals re-injected
+    //   verbatim, so AI Improve can never strip images/draw.io. The Improve-time
+    //   token set (from the editor `content`) and this one can diverge, and the
+    //   LLM may drop tokens: a medium with no placement it can take is appended
+    //   once; a code-carrying original without exactly one is refused (422),
+    //   never duplicated.
+    // - #781: the layout skeleton is derived from the PROTECTED body (whatever
+    //   protectMedia froze emits no boundary tokens) and markdownToHtml aligns
+    //   the LLM's boundary tokens against it; an unrecoverable layout is
+    //   rejected with 422 instead of flattening the page.
+    // - #1752: `protectedMedia` names the tokens the replay turns back into
+    //   block HTML, so a task item holding one stays a plain item.
+    // - #1958: code-block title and options travel as CODE-META echo tokens
+    //   and are re-attached from this stored body only on exact identity; a
+    //   pre-#1958 suggestion for a page with annotated code is refused first.
+    let finalized: ConvertedImproveOutput;
     try {
-      // #1752: `protectedMedia` names the tokens restoreMedia turns back into
-      // block HTML below, so a task item holding one stays a plain item.
-      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: media });
+      finalized = await convertImproveOutput(existingPage.body_html ?? '', improvedMarkdown, { provenance, codeNonce });
     } catch (err) {
       if (err instanceof LayoutRecoveryError) {
         fastify.log.warn(
@@ -487,18 +558,25 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
           "The AI response lost this page's structure (columns or collapsible sections) and it could not be recovered, so the change was not applied. The page is unchanged — run AI Improve again, or edit the page manually.",
         );
       }
-      throw err;
+      return refuseImproveResult(err);
     }
-    bodyHtml = restoreMedia(bodyHtml, media);
-    const dropped = media.filter((m) => !bodyHtml.includes(m.html));
-    if (dropped.length > 0) {
-      bodyHtml += dropped.map((m) => m.html).join('\n');
+    if (finalized.dropped > 0) {
       fastify.log.warn(
-        { pageId, dropped: dropped.length, total: media.length },
+        { pageId, dropped: finalized.dropped, total: finalized.entries },
         '#723: re-appended media dropped during AI Improve',
       );
     }
-    const bodyText = htmlToText(bodyHtml);
+    const bodyHtml = finalized.html;
+    const { report } = finalized;
+    if (Object.values(report).some((count) => count > 0)) {
+      const lossy = report.screened + report.stripped + report.forged + report.twins + report.appended > 0;
+      fastify.log[lossy ? 'warn' : 'info'](
+        { pageId: existingPage.id, codeMeta: report },
+        '#1958: AI Improve code-block metadata',
+      );
+    }
+    // Review r9 CM9-2: the bound-nonce check already projected this exact HTML; a changed body is projected anew.
+    const bodyText = finalized.text !== undefined && bodyHtml === finalized.html ? finalized.text : htmlToText(bodyHtml);
 
     const cache = new RedisCache(fastify.redis);
     let newVersion: number;
@@ -506,6 +584,13 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // #1623 — a standalone page and a synced page while Confluence is off use
     // the same local-only fenced transaction. No upstream call is made.
     if (writeStaysLocal) {
+      // #1958 (X2, Q8 as ruled): the stored HTML's publication projections
+      // are read and judged before the write, whatever they spell.
+      try {
+        assertLocalCodeMacroProjections(bodyHtml, finalized.allowance, { body_storage: existingPage.bodyStorage });
+      } catch (error) {
+        return refuseImproveResult(error);
+      }
       newVersion = await withPageWriteTransaction([existingPage.id], async (client) => {
         const fresh = await client.query<PageRow>(
           `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
@@ -521,7 +606,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         if (actor.rowCount !== 1 || !(await canWritePageLocally(existingPage.id, client))) {
           throw fastify.httpErrors.notFound('Page not found');
         }
-        if (page.version !== currentVersion || page.body_html !== existingPage.body_html) {
+        // #1958: the stored storage the projections were judged with is evidence too.
+        if (
+          page.version !== currentVersion ||
+          page.body_html !== existingPage.body_html ||
+          page.bodyStorage !== existingPage.bodyStorage
+        ) {
           throw fastify.httpErrors.conflict(
             'Page has been modified since you loaded it. Please refresh and try again.',
           );
@@ -573,6 +663,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
       const confluenceId = existingPage.confluence_id;
       const storageBody = htmlToConfluence(bodyHtml, { previousStorage: existingPage.bodyStorage });
+      // #1958: the exact string updatePage receives, after #1955's link stage.
+      try {
+        assertCodeMacroStorage(storageBody, finalized.allowance, { previousStorage: existingPage.bodyStorage });
+      } catch (error) {
+        return refuseImproveResult(error);
+      }
       const remoteVersion = existingPage.remote_version ?? currentVersion;
       const publication = describeConfluencePagePut({
         kind: 'page.ai_apply',

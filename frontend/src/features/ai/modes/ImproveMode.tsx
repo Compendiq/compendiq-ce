@@ -67,6 +67,8 @@ export function ImproveDiffView() {
           improvedMarkdown,
           version: page.version,
           title: page.title,
+          // #1958: the server binds provenance and `applied` to this row only.
+          ...(improvementId ? { improvementId } : {}),
         }),
       });
       toast.success('Page updated and synced to Confluence');

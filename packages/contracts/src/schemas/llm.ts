@@ -263,6 +263,13 @@ export const ApplyImprovementRequestSchema = z.object({
   improvedMarkdown: z.string().min(1),
   version: z.number().int().positive().optional(),
   title: z.string().optional(),
+  /**
+   * #1958 (D27): the stored improvement the user selected. The server binds
+   * the suggestion's provenance and its `applied` status to this row only,
+   * after checking owner, page and status; without it (a manual Apply or an
+   * older client) the text is treated as new input and no row changes.
+   */
+  improvementId: z.string().uuid().optional(),
 });
 
 /**

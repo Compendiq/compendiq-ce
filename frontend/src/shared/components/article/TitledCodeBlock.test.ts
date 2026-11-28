@@ -152,3 +152,28 @@ describe('TitledCodeBlock language class through the real extension (#1749)', ()
     },
   );
 });
+
+describe('TitledCodeBlock and the AI Improve Accept shape (#1958)', () => {
+  // Exactly what the Improve Accept stores for a block whose CODE-META token was
+  // bound: the stored title and options on <pre>, the stored code unchanged.
+  it('keeps title and options of the accepted block through the real extension', () => {
+    const html =
+      '<pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;}">'
+      + '<code class="language-js">const a = 1;</code></pre>';
+    const editor = new Editor({
+      extensions: [StarterKit.configure({ codeBlock: false }), TitledCodeBlock.configure({ lowlight })],
+      content: html,
+    });
+    try {
+      expect(editor.state.doc.firstChild?.attrs).toMatchObject({
+        language: 'js', title: 'Startup.cs', macroParams: '{"linenumbers":"true"}',
+      });
+      const pre = new DOMParser().parseFromString(editor.getHTML(), 'text/html').querySelector('pre');
+      expect(pre?.getAttribute('data-title')).toBe('Startup.cs');
+      expect(JSON.parse(pre?.getAttribute('data-macro-params') ?? 'null')).toEqual({ linenumbers: 'true' });
+      expect(pre?.querySelector('code')?.textContent).toBe('const a = 1;');
+    } finally {
+      editor.destroy();
+    }
+  });
+});

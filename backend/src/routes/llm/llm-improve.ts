@@ -1,8 +1,9 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { assembleDirectArticleContext } from './_article-transport.js';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import {
-  SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION, contentToText,
+  SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION, CODE_META_PRESERVATION_INSTRUCTION, contentToText,
   type ChatContentPart, type ChatMessage,
 } from '../../domains/llm/services/prompts.js';
 import { resolveDirectArticleChat } from './_article-resolution.js';
@@ -17,7 +18,9 @@ import { ConversationTurnAiProvenanceSchema, ImproveRequestSchema, ImprovementId
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
-import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
+import {
+  canAcceptImproveOutput, hasRecoverableLayoutTokens, IMPROVE_CODE_META_PROTOCOL, IMPROVE_CONVERTER_VERSION,
+} from '../../core/services/content-converter.js';
 import {
   resolveReadablePageRef,
   resolveSystemPrompt,
@@ -62,10 +65,18 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // #765: layoutTokens applies only to the main-page conversion — the
     // sub-page branch inside assembleContextIfNeeded never emits tokens.
     const { config: chatConfig, model: resolvedModel, operation } = await resolveDirectArticleChat(userId, body.pageId);
+    // #1958 (D28): this generation's code nonce. Protected code blocks are
+    // written as CQ_CODE_PLACEHOLDER_<nonce>_<N> (and a code-carrying macro as
+    // CQ_MEDIA_PLACEHOLDER_<nonce>_<N>); the row below stores it, and Apply
+    // places them only at tokens spelled with the bound row's nonce.
+    const codeNonce = randomBytes(8).toString('hex');
     const { markdown, multiPageSuffix, transportContext } = await assembleDirectArticleContext(
       userId, body.pageId, content, includeSubPages, chatConfig, 'chat', resolvedModel,
-      { protectMedia: true, layoutTokens: true, operation },
+      { protectMedia: true, layoutTokens: true, codeNonce, operation },
     );
+    // The nonce appears in the prompt only when the page has protected code: such a prompt is unique to this
+    // generation, so its output is never cached (no later request could be served it).
+    const carriesCodeNonce = markdown.includes(codeNonce);
 
     // Sanitize before sending to LLM. The two flags below are `let` because
     // the web-search block further down folds its own sanitizer detections
@@ -166,9 +177,15 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // #765: when the markdown carries layout boundary tokens or media
     // placeholders, instruct the model to keep them verbatim. (Deterministic
     // per content, so it composes safely with the cache key below.)
-    const inputHasLayoutTokens = /\[\[\[/.test(markdown);
+    // #1958: CODE-META echo tokens are not layout tokens: they get their own
+    // instruction, and a page whose only `[[[` is one keeps the layout
+    // instruction, the cache rule and `layoutTokensLost` it had before.
+    const inputHasLayoutTokens = /\[\[\[(?!CODE-META[ \]])/.test(markdown);
     if (inputHasLayoutTokens || /CQ\\?_MEDIA\\?_PLACEHOLDER/.test(markdown)) {
       systemPrompt += `\n\n${STRUCTURE_PRESERVATION_INSTRUCTION}`;
+    }
+    if (/\[\[\[CODE-META[ \]]|CQ\\?_(?:CODE|MACRO)\\?_PLACEHOLDER/.test(markdown)) {
+      systemPrompt += `\n\n${CODE_META_PRESERVATION_INSTRUCTION}`;
     }
     if (sanitizedInstruction) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
@@ -199,8 +216,13 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       finalImproveText = `[Attached Image]\n\n${improveContent}`;
     }
 
-    // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalImproveText, chatConfig.providerId, { thinking: body.thinking, imageHash });
+    // Check LLM cache with stampede protection. #1958 (r6 CM6-2, D28): the key
+    // also names the exact source HTML and the Accept's converter version, so
+    // an entry another source or release made is never found.
+    const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalImproveText, chatConfig.providerId, {
+      thinking: body.thinking, imageHash,
+      variant: `improve-accept:${IMPROVE_CONVERTER_VERSION}:${createHash('sha256').update(content).digest('hex')}`,
+    });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       // #282: the hit is re-admitted under the provenance it was RECORDED
@@ -211,16 +233,22 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       const replayed = await replayDirectOutput(cached, {
         transport: chatConfig, transportContext, userId, usecase: 'chat', model: resolvedModel,
       });
-      // Echo back the markdown the model was given (#704) so the frontend can
-      // diff like-for-like (original markdown vs improved markdown) instead of
-      // comparing formatting-stripped bodyText against the markdown output.
-      // layoutTokensLost: lossy responses are no longer cached, but entries
-      // written before that guard may still be live for one cache TTL.
-      sendCachedSSE(reply, replayed, {
-        originalMarkdown: markdown,
-        layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(replayed),
-      });
-      return;
+      // #1958 (r6 CM6-2): an admitted hit is served only when this page's
+      // Accept would take it; otherwise the provider is asked anew below. An
+      // authorization refusal above stays a refusal.
+      if (await canAcceptImproveOutput(content, replayed, codeNonce)) {
+        // Echo back the markdown the model was given (#704) so the frontend can
+        // diff like-for-like (original markdown vs improved markdown) instead of
+        // comparing formatting-stripped bodyText against the markdown output.
+        // layoutTokensLost: lossy responses are no longer cached, but entries
+        // written before that guard may still be live for one cache TTL.
+        sendCachedSSE(reply, replayed, {
+          originalMarkdown: markdown,
+          layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(replayed),
+        });
+        return;
+      }
+      logger.info({ pageId: body.pageId }, '#1958: cached Improve output the Accept would refuse; regenerating');
     }
 
     // Pre-insert improvement record so we have the row to update after
@@ -232,10 +260,15 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     if (body.pageId) {
       const page = await resolveReadablePageRef(userId, body.pageId);
       if (page) {
+        // #1958 (D26, D28): the Markdown above came from this release's
+        // converter (CODE-META lines, nonce-bound CQ_CODE_PLACEHOLDER
+        // tokens); Apply classifies the suggestion by these columns, never by
+        // its text.
         const insertResult = await query<{ id: string }>(
-          `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
-           VALUES ($1, $2, $3, $4, $5, '', 'streaming') RETURNING id`,
-          [userId, page.id, type, resolvedModel, content.slice(0, 10000)],
+          `INSERT INTO llm_improvements
+             (user_id, page_id, improvement_type, model, original_content, improved_content, status, improve_protocol, improve_code_nonce)
+           VALUES ($1, $2, $3, $4, $5, '', 'streaming', $6, $7) RETURNING id`,
+          [userId, page.id, type, resolvedModel, content.slice(0, 10000), IMPROVE_CODE_META_PROTOCOL, codeNonce],
         );
         improvementId = insertResult.rows[0]?.id;
       }
@@ -288,8 +321,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         },
         // Never cache a response that lost the layout tokens: the apply will
         // 422 with "run AI Improve again", and a cached token-less response
-        // would replay on every retry until the TTL expires.
-        shouldCache: (out) => !inputHasLayoutTokens || hasRecoverableLayoutTokens(out),
+        // would replay on every retry until the TTL expires. #1958 (r5
+        // CM5-2): nor any response the Accept would refuse, decided by the
+        // conversion the Apply route runs (canAcceptImproveOutput), so running
+        // AI Improve again reaches the provider instead of the cache.
+        shouldCache: async (out) => !carriesCodeNonce
+          && (!inputHasLayoutTokens || hasRecoverableLayoutTokens(out)) && await canAcceptImproveOutput(content, out, codeNonce),
         // Authoritative token-loss verdict for the frontend's pre-Accept
         // warning — its own `[[[` heuristic cannot recognize mangled-but-
         // recoverable token spellings.

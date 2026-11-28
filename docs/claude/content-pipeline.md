@@ -438,14 +438,77 @@ an attribute the frontend declares; the frontend declarations are pinned by
 Editor.test.tsx, ArticleViewer.test.tsx and MermaidBlockExtension.test.tsx. The
 reverse pass skips a carried copy of a canonical name. The code language is the
 whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
-TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
-code language, but not a code block's `data-title`/`data-macro-params`. Only
+TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters, the
+code language and, since #1958, a code block's `data-title`/`data-macro-params`
+(below). Only
 `body_html` converted after #1749 holds the carriers: a page synced earlier gets
 them when its body is next re-derived from Confluence (an upstream change, or
 a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
 or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
 `POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
 unchanged pages). A save before that still drops them.
+
+**AI Improve keeps code-block title and options (#1958).** With `layoutTokens`
+an annotated `pre` that can travel (one `code` child without elements, not in
+a table cell, not draw.io, non-blank, bounded valid metadata, a lossless
+projection) is written as its fence with `[[[CODE-META n=<ordinal> title=…
+params=…]]]` on the line directly above (also when it opens a panel or task
+item, the whole block then stays inside it: continuation lines indented, every
+panel line quoted); every other annotated block is frozen by `protectMedia` (as are token
+blocks past 1,000) as a `CQ_CODE_PLACEHOLDER_<nonce>_<N>` code entry (a media
+entry holding annotated code is `CQ_MACRO_PLACEHOLDER_<nonce>_<N>`: no token may
+be a prefix of another; on the #1958 path `locateMediaTokens` and the task-item
+pattern end a token before a run of complete tokens or a non-identifier (one
+memoized pass per run, `currentTokenEnds`, never a lookahead that rescans the
+run: r9 CM9-1), while the D26 base path and every other caller keep the legacy
+`(?![0-9])` end, `MediaTokenGrammar`, reviews r7 CM7-1, r8 CM8-1/CM8-2). **Media
+tokens and ordinals stay exactly those of the release before #1958**; never put
+frozen code into the `CQ_MEDIA_PLACEHOLDER` ordinal space. On Accept the
+remote exit first authorizes the actor and the page in one transaction that
+locks the row, fences its content/lifecycle revisions (409) and reads spaces
+and access uncached (403/404); then the route runs
+`convertImproveOutput(body, md, { provenance, codeNonce })` (protectMedia →
+`beginCodeMetaAccept(…, { provenance })` → `markdownToHtml(…, { codeMeta })` →
+`replayProtectedMedia(html, codeMeta)` → `finalizeCodeMetadata`) → (local)
+`assertLocalCodeMacroProjections` or (remote) `htmlToConfluence` +
+`assertCodeMacroStorage`. Metadata returns only to a fence whose language and
+exact lexer text equal the pre-Improve block's, in per-key groups equal element
+for element; the stored values are written, never the echoed ones. Two blocks
+that end with the same language and code keep metadata only when all carry
+identical metadata (R1). The written storage (standalone: both publication
+projections, read whatever they spell) is read as XML: every code macro must be
+the writer's exact shape and accounted for by the page, else 422
+`unapproved-code-macro` (or the read reason) before any intent or write.
+Model-written code markup that is not a fence or a plain `pre` is refused (R2;
+`data-macro-name="code"` counts only on a placeholder the writer names a macro
+from). A replayed original must come back exactly (only CR → LF in its code
+text is allowed). A placeholder spelled in `pre`/`code`, or a protected one
+inside a longer identifier, stays text; a code-carrying original without
+exactly one viable placement refuses the Accept (422), never appended or
+copied. **Provenance decides the path, never the text (D26, D27, D28):** the
+Improve generator writes `llm_improvements.improve_protocol = 1`
+(`IMPROVE_CODE_META_PROTOCOL`) and `improve_code_nonce` (64 random bits per
+suggestion; migration 161) on its row; the Apply request carries the selected
+`improvementId`, and the route binds provenance, the nonce and the `applied`
+status to that row only (owner, page, `completed`). Never match the text
+against stored rows, and never add an "authored literal" rule: only a token
+spelled with the bound nonce places a protected block, so whatever the page
+spells itself is text. Protocol 1 → the #1958 path; no bound nonce on a page
+with protected code → 422 (`ImproveSuggestionUnboundError`); a result whose HTML or
+`htmlToText` still holds the bound nonce contiguously → 422 (r7 CM7-2, r8 CM8-3; Apply reuses that checked
+`text` as `body_text`, r9 CM9-2); no bound row
+otherwise → the #1958 path (no status change); a row without a protocol →
+422 on a page with any annotated code, else the pre-#1958 replay byte for byte
+(`restoreMedia` + `includes` guard, no CODE-META analysis) with the trust
+boundary kept. The generator caches only output `canAcceptImproveOutput`
+(that same conversion plus both storage judges) accepts, under a key that also
+names the source HTML's digest and `IMPROVE_CONVERTER_VERSION`, re-checks a
+hit with it before serving, and never caches a prompt that carries a nonce.
+Bump `IMPROVE_CONVERTER_VERSION` whenever what the Accept takes changes.
+Details, bounds and limits: `docs/architecture/11-content-pipeline.md`
+"AI Improve code-block metadata". #1953-2 consumes `witnesses`,
+`codeBlockElements` and `admitLegacyCodeMetadata` (once per allowance) after
+the remote authorization point.
 
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without

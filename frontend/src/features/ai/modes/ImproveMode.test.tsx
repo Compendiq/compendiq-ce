@@ -460,7 +460,7 @@ describe('ImproveMode', () => {
       expect(calls.indexOf(READMIT_PATH)).toBeGreaterThanOrEqual(0);
       expect(calls.indexOf(READMIT_PATH)).toBeLessThan(calls.indexOf('/llm/improvements/apply'));
       expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.objectContaining({
-        body: JSON.stringify({ pageId: 'page-1', improvedMarkdown: IMPROVED, version: 1, title: 'Test Page' }),
+        body: JSON.stringify({ pageId: 'page-1', improvedMarkdown: IMPROVED, version: 1, title: 'Test Page', improvementId: IMPROVEMENT_ID }),
       }));
     });
 

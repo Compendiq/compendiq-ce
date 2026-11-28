@@ -45,15 +45,19 @@ export function buildLlmCacheKey(
   systemPrompt: string,
   userContent: string,
   provider?: string,
-  options?: { thinking?: boolean; imageHash?: string },
+  options?: { thinking?: boolean; imageHash?: string; variant?: string },
 ): string {
   const providerSuffix = provider ? `provider:${provider}` : '';
   const thinkingSuffix = options?.thinking ? 'think:1' : '';
   // #1154: without this, two different images sharing a prompt collide and
   // the second caller is served the first image's answer.
   const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
+  // #1958 (review r6 CM6-2): a caller-named discriminator beyond the prompt,
+  // e.g. Improve's source digest and converter version. Absent, the key is
+  // what it always was.
+  const variant = options?.variant ? [`variant:${options.variant}`] : [];
   return KEY_PREFIX + hashLlmInputs(
-    model, systemPrompt, userContent, providerSuffix, thinkingSuffix, imageSuffix,
+    model, systemPrompt, userContent, providerSuffix, thinkingSuffix, imageSuffix, ...variant,
   );
 }
 

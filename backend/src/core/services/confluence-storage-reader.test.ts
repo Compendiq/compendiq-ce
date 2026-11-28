@@ -423,7 +423,11 @@ describe('confluence-storage-reader: the acceptance corpus (#1955)', () => {
 
 describe('ConfluenceStorageRefusedError (#1955)', () => {
   it('carries a 422, its reason and a message that names no content', () => {
-    for (const refusal of ['not-well-formed', 'too-large', 'too-deep', 'too-many-nodes', 'unapproved-link', 'changed-link-target'] as const) {
+    const refusals = [
+      'not-well-formed', 'too-large', 'too-deep', 'too-many-nodes', 'unapproved-link', 'changed-link-target',
+      'unapproved-code-macro',
+    ] as const;
+    for (const refusal of refusals) {
       const error = new ConfluenceStorageRefusedError(refusal);
       expect(error).toBeInstanceOf(Error);
       expect(error.name).toBe('ConfluenceStorageRefusedError');

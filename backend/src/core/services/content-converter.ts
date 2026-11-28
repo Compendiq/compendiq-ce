@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { JSDOM, type VirtualConsole } from 'jsdom';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
-import { Marked } from 'marked';
+import { Marked, Renderer, type Token, type Tokens } from 'marked';
 import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
 import he from 'he';
 import {
@@ -28,8 +28,14 @@ import {
 import {
   ConfluenceStorageRefusedError,
   isStorageLimitStop,
+  isStorageName,
+  readConfluenceStorage,
+  resemblesStorageName,
+  STORAGE_READER_LIMITS,
   type StorageElement,
+  type StorageReaderLimits,
   type StorageReadFailure,
+  type StorageTree,
 } from './confluence-storage-reader.js';
 import {
   ALL_STORAGE_DERIVATION_FEATURES,
@@ -2557,9 +2563,113 @@ function emoticonWriteBack(span: Element): Node {
   return emoticon;
 }
 
-export interface ProtectedMedia { token: string; html: string; }
+export interface ProtectedMedia {
+  token: string;
+  html: string;
+  /** #1958: the entry's subtree (root included) holds a `pre` with `data-title` or `data-macro-params`. */
+  code?: true;
+  /**
+   * #1958 (review r1 CM-3): the original with every CR / CR LF in the text of
+   * its `code` elements written as LF, when that differs from `html`. One HTML
+   * parse of a spliced original reads them so; this is the only difference a
+   * replayed original may show.
+   */
+  lineEndForm?: string;
+}
+
+/** What {@link protectMedia} returns. */
+export interface ProtectedBody {
+  /** The body with every protected node replaced by its token. */
+  html: string;
+  /** `CQ_MEDIA_PLACEHOLDER_<N>` entries: the same tokens and ordinals as before #1958. */
+  media: ProtectedMedia[];
+  /** #1958: frozen annotated code blocks, `CQ_CODE_PLACEHOLDER_<N>`, their own ordinal space. */
+  frozenCode: ProtectedMedia[];
+  /** #1958: the stored body holds a `pre` with `data-title` or `data-macro-params` anywhere. */
+  carried: boolean;
+}
 
 const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
+/** #1958: frozen annotated code blocks; never in the media ordinal space. */
+const CODE_TOKEN_PREFIX = 'CQ_CODE_PLACEHOLDER_';
+/**
+ * #1958 (D28, review r7 CM7-1): a media entry that holds annotated code, spelled with the generation's nonce as
+ * `CQ_MACRO_PLACEHOLDER_<nonce>_<N>` at its media ordinal: a prefix of no other token, nor any other token of it.
+ */
+const MACRO_TOKEN_PREFIX = 'CQ_MACRO_PLACEHOLDER_';
+/**
+ * Which grammar ends a token spelling. `legacy` is the matcher of the release before #1958 (`(?![0-9])`), kept
+ * byte for byte wherever that release's tokens are read: #1955's general locator and restoreMedia, and the D26
+ * base path of a pre-#1958 suggestion (review r8 CM8-1). `current` is the #1958 path's (review r7 CM7-1, r8
+ * CM8-2): a token ends where no identifier character and no escaped `\_` follows, or where a run of complete
+ * tokens (prefix, optional 16-hex nonce, ordinal) so ended begins, so no token matches the start of a longer one
+ * and `…_0CQ_MEDIA_PLACEHOLDER_COUNT` is not a token followed by a token. Review r9 CM9-1: the current grammar is
+ * decided by tokenMatches (currentTokenEnds), not by a lookahead that rescans the rest of a run at every token.
+ */
+export type MediaTokenGrammar = 'legacy' | 'current';
+const TOKEN_SEP = '(?:_|\\\\_)';
+/** One complete token, read at one offset (sticky) by currentTokenEnds. */
+const COMPLETE_TOKEN_AT = new RegExp(
+  `CQ${TOKEN_SEP}(?:MEDIA|CODE|MACRO)${TOKEN_SEP}PLACEHOLDER${TOKEN_SEP}(?:[0-9a-f]{16}${TOKEN_SEP})?[0-9]+`,
+  'y',
+);
+const IDENTIFIER_CHAR = /[0-9A-Za-z_]/;
+
+/**
+ * The pattern source matching `spellings` (raw, escaped here) under `grammar`. Legacy: each spelling followed by
+ * `(?![0-9])`, in the given order, as the release before #1958 wrote it. Current: the bare spellings, longest first
+ * (a spelling that is a prefix of another ends inside it, on an ordinal digit, so it never ends a token there);
+ * tokenMatches keeps the matches that end a token.
+ */
+function tokenSpellingPattern(spellings: readonly string[], grammar: MediaTokenGrammar): string {
+  if (grammar === 'legacy') return spellings.map((spelling) => `${escapeRegExp(spelling)}(?![0-9])`).join('|');
+  return [...spellings].sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
+}
+
+/**
+ * Review r9 CM9-1: under the current grammar, does a token spelling ending at offset `end` of `text` end a token?
+ * It does where no identifier character and no `\_` follows, or where a complete token begins whose own end does.
+ * Every offset of a chain is decided once and remembered, and each step consumes one complete token, so a run of
+ * n adjacent tokens costs O(n) work however many of its tokens are asked about. A complete token is read
+ * greedily: a shorter reading (fewer ordinal digits, no nonce) always ends before a digit, a hex letter or `_`.
+ */
+function currentTokenEnds(text: string): (end: number) => boolean {
+  const decided = new Map<number, boolean>();
+  return (end) => {
+    const chain: number[] = [];
+    let at = end;
+    let verdict: boolean;
+    for (;;) {
+      const known = decided.get(at);
+      if (known !== undefined) {
+        verdict = known;
+        break;
+      }
+      chain.push(at);
+      if (!IDENTIFIER_CHAR.test(text.charAt(at)) && !text.startsWith('\\_', at)) {
+        verdict = true;
+        break;
+      }
+      COMPLETE_TOKEN_AT.lastIndex = at;
+      if (COMPLETE_TOKEN_AT.exec(text) === null) {
+        verdict = false;
+        break;
+      }
+      at = COMPLETE_TOKEN_AT.lastIndex;
+    }
+    for (const offset of chain) decided.set(offset, verdict);
+    return verdict;
+  };
+}
+
+/** The matches of `pattern` (global, from tokenSpellingPattern) in `text` that end a token under `grammar`. */
+function tokenMatches(text: string, pattern: RegExp, grammar: MediaTokenGrammar): RegExpExecArray[] {
+  const matches = [...text.matchAll(pattern)];
+  if (grammar === 'legacy' || matches.length === 0) return matches;
+  const ends = currentTokenEnds(text);
+  return matches.filter((match) => ends(match.index + match[0].length));
+}
+
 // #765: legacy section/column wrappers are NO LONGER opaque-protected here
 // (with one exception — see below). #723 froze them whole (token swap), which
 // preserved them but made the prose inside uneditable by the LLM. They now
@@ -2887,8 +2997,25 @@ function isMacroParamsObject(raw: string): boolean {
  * HTML→Markdown→HTML round-trip used by AI Improve. Document order makes the
  * tokens deterministic, so the same source HTML re-protected at Accept time
  * yields the same tokens — no need to persist the map.
+ *
+ * #1958: an annotated code block that cannot travel as a CODE-META token
+ * (classifyCodeBlock `frozen`), and every token block past the first
+ * CODE_META_TOKENS_MAX, is frozen too, in its OWN token namespace
+ * (`frozenCode`): the media entries, their tokens and their ordinals are
+ * exactly what the release before #1958 wrote, so a suggestion it generated
+ * names the same media (review r1 CM-1). A frozen block holding a media node
+ * is not frozen (its media keeps its ordinal). A frozen entry's token is
+ * `CQ_CODE_PLACEHOLDER_<codeNonce>_<N>` (coordinator decision D28): the
+ * nonce is made per generated suggestion and stored on its row, so only a
+ * suggestion of that generation can spell it; text the page writes itself,
+ * or another generation's token, is plain text. Without a nonce the token is
+ * `CQ_CODE_PLACEHOLDER_<N>`, which the Accept never places (it refuses a
+ * page with frozen code when no row binds a nonce). Two facts are reported,
+ * each read from this DOM: an entry's `code` (its subtree holds an
+ * annotated `pre`) and `carried` (the stored body holds an annotated `pre`
+ * anywhere, before any replacement).
  */
-export function protectMedia(html: string): { html: string; media: ProtectedMedia[] } {
+export function protectMedia(html: string, options: { codeNonce?: string } = {}): ProtectedBody {
   const dom = new JSDOM(`<body>${html}</body>`);
   const doc = dom.window.document;
   const media: ProtectedMedia[] = [];
@@ -2926,12 +3053,33 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
       if (hasFrozenExpandAncestor(n)) return false;
       return true;
     });
+  const carried = doc.body.querySelector(ANNOTATED_CODE_BLOCK_SELECTOR) !== null;
+  const frozen = carried ? frozenCodeBlocks(doc.body, nodes) : [];
+  // D28: an entry that holds annotated code (a code-carrying macro wrapper) is as mandatory as a frozen block, so
+  // with a nonce it is spelled `CQ_MACRO_PLACEHOLDER_<nonce>_<N>` at its media ordinal (r7 CM7-1: a prefix that no
+  // ordinary `CQ_MEDIA_PLACEHOLDER_<N>` shares); every other medium keeps the plain token.
+  const nonced = (prefix: string): string => (options.codeNonce === undefined ? prefix : `${prefix}${options.codeNonce}_`);
   for (const node of nodes) {
-    const token = `${MEDIA_TOKEN_PREFIX}${media.length}`;
-    media.push({ token, html: (node as Element).outerHTML });
+    const code = carried && holdsAnnotatedCodeBlock(node as Element);
+    const token = code && options.codeNonce !== undefined ? `${nonced(MACRO_TOKEN_PREFIX)}${media.length}` : `${MEDIA_TOKEN_PREFIX}${media.length}`;
+    const entry: ProtectedMedia = { token, html: (node as Element).outerHTML };
+    if (code) {
+      entry.code = true;
+      const lineEnds = codeTextLineEndForm(node as Element);
+      if (lineEnds !== null) entry.lineEndForm = lineEnds;
+    }
+    media.push(entry);
     node.replaceWith(doc.createTextNode(` ${token} `));
   }
-  return { html: doc.body.innerHTML, media };
+  const codePrefix = nonced(CODE_TOKEN_PREFIX);
+  const frozenCode: ProtectedMedia[] = frozen.map((pre, index) => {
+    const entry: ProtectedMedia = { token: `${codePrefix}${index}`, html: pre.outerHTML, code: true };
+    const lineEnds = codeTextLineEndForm(pre);
+    if (lineEnds !== null) entry.lineEndForm = lineEnds;
+    pre.replaceWith(doc.createTextNode(` ${entry.token} `));
+    return entry;
+  });
+  return { html: doc.body.innerHTML, media, frozenCode, carried };
 }
 
 function escapeRegExp(s: string): string {
@@ -3099,18 +3247,19 @@ function countWithin(offsets: readonly number[], start: number, end: number): nu
  * code sample or a discarded container without parsing the string a second
  * way.
  */
-export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]): MediaTokenPlacement[] {
+export function locateMediaTokens(
+  html: string,
+  media: readonly ProtectedMedia[],
+  grammar: MediaTokenGrammar = 'legacy',
+): MediaTokenPlacement[] {
   const tokenOf = new Map<string, string>();
-  const alternatives: string[] = [];
   for (const { token } of media) {
-    for (const spelling of [token, token.replace(/_/g, '\\_')]) {
-      tokenOf.set(spelling, token);
-      // The bare form ends on a non-digit so token N never matches token N0…N9.
-      alternatives.push(`${escapeRegExp(spelling)}(?![0-9])`);
-    }
+    for (const spelling of [token, token.replace(/_/g, '\\_')]) tokenOf.set(spelling, token);
   }
-  if (alternatives.length === 0 || !new RegExp(alternatives.join('|')).test(html)) return [];
-  const spellings = new RegExp(alternatives.join('|'), 'g');
+  // Token N never matches N0…N9; under the current grammar (#1958 path) not `N_…`, `Nabc` or a longer identifier.
+  const pattern = tokenOf.size > 0 ? tokenSpellingPattern([...tokenOf.keys()], grammar) : '';
+  if (pattern === '' || !new RegExp(pattern).test(html)) return [];
+  const spellings = new RegExp(pattern, 'g');
 
   const placements: MediaTokenPlacement[] = [];
   const root = parseFragment(html, { sourceCodeLocationInfo: true });
@@ -3176,7 +3325,7 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
         });
         continue;
       }
-      for (const match of source.matchAll(spellings)) {
+      for (const match of tokenMatches(source, spellings, grammar)) {
         const start = location.startOffset + match.index;
         placements.push({ token: tokenOf.get(match[0])!, start, end: start + match[0].length, wrapped: false, context: own });
       }
@@ -3204,8 +3353,9 @@ export function locateMediaTokens(html: string, media: readonly ProtectedMedia[]
  *   already-injected media is never re-scanned, so an earlier entry whose
  *   original HTML literally contains a *later* token (e.g. in an `alt` /
  *   `data-diagram-name`) cannot be corrupted by a subsequent replacement.
- * - `<p>TOKEN</p>` is consumed with its paragraph. A `(?![0-9])` boundary on
- *   the bare form stops `..._1` from matching the prefix of `..._10`.
+ * - `<p>TOKEN</p>` is consumed with its paragraph. The legacy token end
+ *   (`(?![0-9])`, MediaTokenGrammar) on the bare form stops `..._1` from
+ *   matching the prefix of `..._10`.
  */
 export function restoreMedia(
   html: string,
@@ -3216,15 +3366,1621 @@ export function restoreMedia(
   const placements = locateMediaTokens(html, media);
   if (placements.length === 0) return html;
   const originals = new Map(media.map((entry) => [entry.token, entry.html] as const));
+  return splicePlacements(html, placements, (placement) =>
+    (options.accept && !options.accept(placement) ? null : originals.get(placement.token)!));
+}
+
+/**
+ * The one splice of located media tokens (#1955 restoreMedia, #1958 replay):
+ * placements in source order, each replaced by what `replacementOf` returns
+ * (null keeps the spelling as written). One pass over the original string, so
+ * inserted HTML is never rescanned and `$` sequences stay verbatim.
+ */
+export function splicePlacements(
+  html: string,
+  placements: readonly MediaTokenPlacement[],
+  replacementOf: (placement: MediaTokenPlacement, index: number) => string | null,
+): string {
   const parts: string[] = [];
   let at = 0;
-  for (const placement of placements) {
-    if (placement.start < at || (options.accept && !options.accept(placement))) continue;
-    parts.push(html.slice(at, placement.start), originals.get(placement.token)!);
+  for (let index = 0; index < placements.length; index += 1) {
+    const placement = placements[index]!;
+    if (placement.start < at) continue;
+    const replacement = replacementOf(placement, index);
+    if (replacement === null) continue;
+    parts.push(html.slice(at, placement.start), replacement);
     at = placement.end;
   }
   parts.push(html.slice(at));
   return parts.join('');
+}
+
+// ---------------------------------------------------------------------------
+// #1958: code-block title and options through AI Improve.
+//
+// Markdown has no carrier for a code macro's `title` and other parameters
+// (`data-title` / `data-macro-params` on the <pre>). On the Improve path
+// (`layoutTokens`) an annotated block that can travel is written as a fence
+// with one echo token on the line directly above it:
+//
+//   [[[CODE-META n=0 title=Startup.cs params=%7B%22linenumbers%22...]]]
+//   ```csharp
+//   ...
+//   ```
+//
+// On Accept the token is bound to the pre-Improve body only on exact identity
+// (language + the exact text the fence lexes to, in equal per-key groups); a
+// bound block gets the STORED values back, never the echoed ones. Annotated
+// blocks that cannot travel are frozen as media entries. The HTML stage
+// (finalizeCodeMetadata) is not the authority: the written storage (or, for a
+// standalone page, its publication projections) is read as XML and every code
+// macro must be in the writer's shape and accounted for by the page, else the
+// Accept is refused before any effect.
+// ---------------------------------------------------------------------------
+
+export const CODE_META_TITLE_MAX = 1024;
+export const CODE_META_VALUE_MAX = 1024;
+export const CODE_META_KEY_MAX = 64;
+export const CODE_META_PARAMS_MAX_ENTRIES = 16;
+/** UTF-8 bytes of the `data-macro-params` JSON, checked before it is parsed. */
+export const CODE_META_PARAMS_MAX_BYTES = 4096;
+/** UTF-16 units of a token's attributes (`n=… title=… params=…`). */
+export const CODE_META_ATTRS_MAX = 16_384;
+/** Token blocks per page; the rest are frozen. */
+export const CODE_META_TOKENS_MAX = 1000;
+/** Replay budget: FACTOR × the page's frozen HTML + SLACK UTF-16 units. */
+export const MEDIA_REPLAY_FACTOR = 2;
+export const MEDIA_REPLAY_SLACK = 65_536;
+/** Work units of one storage judgement (elements, attributes, compared characters). */
+export const CODE_MACRO_WORK = 8_000_000;
+
+const ANNOTATED_CODE_BLOCK_SELECTOR = 'pre[data-title], pre[data-macro-params]';
+const CODE_META_PARAM_KEY = new RegExp(`^[A-Za-z][A-Za-z0-9_.-]{0,${CODE_META_KEY_MAX - 1}}$`);
+const PLACEHOLDER_SPELLING = /CQ(?:_|\\_)(?:MEDIA|CODE|MACRO)(?:_|\\_)PLACEHOLDER/;
+const CODE_META_ATTRS = /^n=(0|[1-9]\d{0,2})(?: title=([A-Za-z0-9%-]*))?(?: params=([A-Za-z0-9%-]*))?$/;
+const CODE_META_TOKEN_LINE = /^\[\[\[CODE-META ([^\]\n]*)\]\]\]$/;
+const CODE_META_MARKDOWN_HINT = /\[\[\[[ \t]*\/?[ \t]*CODE[-_ ]?META/i;
+
+/** The emitted Markdown starts with a CODE-META line (only the Improve conversion writes one unescaped). */
+function startsWithCodeMeta(markdown: string): boolean {
+  return markdown.startsWith('[[[CODE-META ');
+}
+const FENCE_MARKER = 'data-cq-code-fence';
+const REPLAY_MARKER = 'data-cq-code-replay';
+const ELEMENT_NODE = 1;
+
+/**
+ * `data-macro-params` of a code block, validated both ways (#1958, issue
+ * criterion 3): a plain JSON object of at most CODE_META_PARAMS_MAX_ENTRIES
+ * own keys (`^[A-Za-z][A-Za-z0-9_.-]{0,63}$`, never `constructor` or
+ * `prototype`), every value a string of at most CODE_META_VALUE_MAX characters
+ * that XML can hold, the whole at most CODE_META_PARAMS_MAX_BYTES UTF-8 bytes.
+ * Anything else is null.
+ */
+export function parseCodeMacroParams(raw: string): Record<string, string> | null {
+  if (raw.length > CODE_META_PARAMS_MAX_BYTES || Buffer.byteLength(raw, 'utf8') > CODE_META_PARAMS_MAX_BYTES) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const entries = Object.entries(parsed);
+  if (entries.length > CODE_META_PARAMS_MAX_ENTRIES) return null;
+  for (const [key, value] of entries) {
+    if (!CODE_META_PARAM_KEY.test(key) || key === 'constructor' || key === 'prototype') return null;
+    if (typeof value !== 'string' || value.length > CODE_META_VALUE_MAX || XML_FORBIDDEN_CHAR.test(value)) return null;
+  }
+  return parsed as Record<string, string>;
+}
+
+/** A code block title the token may carry: at most CODE_META_TITLE_MAX characters XML can hold. */
+export function isCodeMetaTitle(title: string): boolean {
+  return title.length <= CODE_META_TITLE_MAX && !XML_FORBIDDEN_CHAR.test(title);
+}
+
+/** The one canonical token attribute string: `n=<ordinal>[ title=…][ params=…]`. */
+export function encodeCodeMetaAttrs(n: number, title: string | null, params: string | null): string {
+  let attrs = `n=${n}`;
+  if (title !== null) attrs += ` title=${encodeTokenValue(title)}`;
+  if (params !== null) attrs += ` params=${encodeTokenValue(params)}`;
+  return attrs;
+}
+
+/** Decodes a token value only when it is the canonical encoding of what it decodes to. */
+function decodeCanonicalTokenValue(encoded: string): string | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+  return encodeTokenValue(decoded) === encoded ? decoded : null;
+}
+
+export interface CodeMetaAttrs {
+  readonly n: number;
+  readonly title: string | null;
+  readonly params: string | null;
+}
+
+/** The strict inverse of {@link encodeCodeMetaAttrs}; null for anything it would not write. */
+export function parseCodeMetaAttrs(attrs: string): CodeMetaAttrs | null {
+  if (attrs.length > CODE_META_ATTRS_MAX) return null;
+  const match = CODE_META_ATTRS.exec(attrs);
+  if (!match) return null;
+  const title = match[2] === undefined ? null : decodeCanonicalTokenValue(match[2]);
+  const params = match[3] === undefined ? null : decodeCanonicalTokenValue(match[3]);
+  if ((match[2] !== undefined && title === null) || (match[3] !== undefined && params === null)) return null;
+  return { n: Number(match[1]), title, params };
+}
+
+/** Turndown's fenced-code algorithm (`codeBlockStyle: 'fenced'`), shared by the emitter and the projection. */
+function fenceFor(code: string, language: string): string {
+  let size = 3;
+  for (const match of code.matchAll(/^`{3,}/gm)) {
+    if (match[0].length >= size) size = match[0].length + 1;
+  }
+  const fence = '`'.repeat(size);
+  return `${fence}${language}\n${code.replace(/\n$/, '')}\n${fence}`;
+}
+
+/** The exact text the Markdown lexer gives a fence: identity on both sides is this text, never rendered bytes. */
+export type LexerCodeText = string & { readonly __lexerCodeText: unique symbol };
+
+/** Echo side: the lexer's own text of a fenced code token. */
+export function lexerCodeTextOf(token: Tokens.Code): LexerCodeText {
+  return token.text as LexerCodeText;
+}
+
+/** One block's identity: its language and its lexer text. */
+export function codeBlockIdentityKey(language: string, text: LexerCodeText): string {
+  return `${language}\u0000${text}`;
+}
+
+/** The first word of a fence's info string, as marked writes it into the class. */
+function fenceLanguage(lang: string | undefined): string {
+  return /^\S*/.exec(lang ?? '')?.[0] ?? '';
+}
+
+/**
+ * Source side: what the fence of a stored block lexes to, with the Marked
+ * configuration of markdownToHtml. Null when the text holds a CR or the fence
+ * does not lex to exactly one fenced code token of that language (lossy).
+ */
+export function projectSourceCodeText(raw: string, language: string): LexerCodeText | null {
+  if (raw.includes('\r')) return null;
+  const blocks = EDITOR_MARKED.lexer(fenceFor(raw, language)).filter((token) => token.type !== 'space');
+  const token = blocks.length === 1 ? blocks[0]! : null;
+  if (token?.type !== 'code' || token.codeBlockStyle === 'indented') return null;
+  if (fenceLanguage(token.lang as string | undefined) !== language) return null;
+  return lexerCodeTextOf(token as Tokens.Code);
+}
+
+/** The `code` element a `pre` holds as its only child node, itself without element children; else null. */
+function onlyCodeChild(pre: Element): Element | null {
+  if (pre.childNodes.length !== 1) return null;
+  const code = pre.firstChild as Element | null;
+  if (!code || code.nodeType !== ELEMENT_NODE || code.nodeName !== 'CODE') return null;
+  for (let index = 0; index < code.childNodes.length; index += 1) {
+    if (code.childNodes[index]!.nodeType === ELEMENT_NODE) return null;
+  }
+  return code;
+}
+
+function codeLanguageOf(code: Element): string {
+  return (code.getAttribute('class') ?? '').match(CODE_LANGUAGE_CLASS)?.[1] ?? '';
+}
+
+/**
+ * The `pre` elements of `root` that stand inside a `td` / `th`, in one
+ * iterative walk (works on JSDOM and on turndown's DOM).
+ */
+function preInTableCells(root: Node): Set<Node> {
+  const inCell = new Set<Node>();
+  const pending: Array<{ node: Node; cell: boolean }> = [{ node: root, cell: false }];
+  while (pending.length > 0) {
+    const { node, cell } = pending.pop()!;
+    if (cell && node.nodeName === 'PRE') inCell.add(node);
+    const below = cell || node.nodeName === 'TD' || node.nodeName === 'TH';
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === ELEMENT_NODE) pending.push({ node: child, cell: below });
+    }
+  }
+  return inCell;
+}
+
+function isAnnotatedCodeBlock(pre: Element): boolean {
+  return pre.hasAttribute('data-title') || pre.hasAttribute('data-macro-params');
+}
+
+/**
+ * #1958: how an Improve carries a `pre`. `plain`: no metadata, turndown's own
+ * fence. `token`: annotated and representable: one `code` child without
+ * element children, outside a table cell, not draw.io, non-blank code, title
+ * and options within the bounds, no placeholder spelling, a lossless
+ * projection. `frozen`: annotated otherwise (travels as a media entry).
+ * Works on JSDOM and on turndown's own DOM.
+ */
+function classifyCodeBlock(
+  pre: Element,
+  inCell: ReadonlySet<Node>,
+  projections?: Map<Element, LexerCodeText>,
+): 'plain' | 'token' | 'frozen' {
+  const title = pre.getAttribute('data-title');
+  const params = pre.getAttribute('data-macro-params');
+  if (title === null && params === null) return 'plain';
+  const code = onlyCodeChild(pre);
+  if (!code || inCell.has(pre)) return 'frozen';
+  const language = codeLanguageOf(code);
+  const text = code.textContent ?? '';
+  if (language === 'drawio' || /^\s*$/.test(text) || PLACEHOLDER_SPELLING.test(text)) return 'frozen';
+  if (title !== null && (!isCodeMetaTitle(title) || PLACEHOLDER_SPELLING.test(title))) return 'frozen';
+  if (params !== null && (parseCodeMacroParams(params) === null || PLACEHOLDER_SPELLING.test(params))) return 'frozen';
+  if (encodeCodeMetaAttrs(CODE_META_TOKENS_MAX - 1, title, params).length > CODE_META_ATTRS_MAX) return 'frozen';
+  const projected = projectSourceCodeText(text, language);
+  if (projected === null) return 'frozen';
+  projections?.set(pre, projected);
+  return 'token';
+}
+
+/** The `token` blocks of a (protected) DOM in document order, at most CODE_META_TOKENS_MAX: ordinal = index. */
+function codeMetaTokenBlocks(
+  root: Node & { querySelectorAll(selector: string): ArrayLike<Element> },
+  projections?: Map<Element, LexerCodeText>,
+): Element[] {
+  const blocks: Element[] = [];
+  const pres = root.querySelectorAll('pre');
+  const inCell = pres.length > 0 ? preInTableCells(root) : new Set<Node>();
+  for (let index = 0; index < pres.length && blocks.length < CODE_META_TOKENS_MAX; index += 1) {
+    if (classifyCodeBlock(pres[index]!, inCell, projections) === 'token') blocks.push(pres[index]!);
+  }
+  return blocks;
+}
+
+/**
+ * protectMedia's code freeze, in one walk in document order: every `frozen`
+ * block, and every `token` block past the first CODE_META_TOKENS_MAX. A block
+ * inside a media node travels with it; a block holding a media node is not
+ * frozen, so that node keeps the media ordinal it had before #1958.
+ */
+function frozenCodeBlocks(body: Element, media: readonly Element[]): Element[] {
+  const mediaNodes = new Set<Element>(media);
+  const holdsMedia = new Set<Element>();
+  for (const node of media) {
+    for (let el = node.parentElement; el && !holdsMedia.has(el); el = el.parentElement) holdsMedia.add(el);
+  }
+  const inCell = preInTableCells(body);
+  const frozen: Element[] = [];
+  let tokens = 0;
+  const pending: Array<{ el: Element; skip: boolean }> = [{ el: body, skip: false }];
+  while (pending.length > 0) {
+    const { el, skip } = pending.pop()!;
+    let below = skip || mediaNodes.has(el);
+    if (!below && el.tagName === 'PRE') {
+      const kind = classifyCodeBlock(el, inCell);
+      if (kind === 'token') tokens += 1;
+      if ((kind === 'frozen' || (kind === 'token' && tokens > CODE_META_TOKENS_MAX)) && !holdsMedia.has(el)) {
+        frozen.push(el);
+        below = true;
+      }
+    }
+    for (let child = el.lastElementChild; child; child = child.previousElementSibling) {
+      pending.push({ el: child, skip: below });
+    }
+  }
+  return frozen;
+}
+
+function holdsAnnotatedCodeBlock(el: Element): boolean {
+  return el.matches(ANNOTATED_CODE_BLOCK_SELECTOR) || el.querySelector(ANNOTATED_CODE_BLOCK_SELECTOR) !== null;
+}
+
+/**
+ * `el`'s outerHTML with CR / CR LF in the text of its `code` elements as LF;
+ * null when that changes nothing. One walk of the copy (review r2 CM2-8): a
+ * text node is normalised when it has a `code` ancestor, each node once.
+ */
+function codeTextLineEndForm(el: Element): string | null {
+  if (!el.outerHTML.includes('\r')) return null;
+  const copy = el.cloneNode(true) as Element;
+  let changed = false;
+  const pending: Array<{ node: Node; insideCode: boolean }> = [{ node: copy, insideCode: false }];
+  while (pending.length > 0) {
+    const { node, insideCode } = pending.pop()!;
+    if (insideCode && node.nodeType === 3 && node.nodeValue?.includes('\r')) {
+      node.nodeValue = node.nodeValue.replace(/\r\n?/g, '\n');
+      changed = true;
+    }
+    const below = insideCode || node.nodeName === 'CODE';
+    for (let child = node.firstChild; child; child = child.nextSibling) pending.push({ node: child, insideCode: below });
+  }
+  return changed ? copy.outerHTML : null;
+}
+
+/** `llm_improvements.improve_code_nonce`: 64 random bits, lowercase hex (D28). */
+export const IMPROVE_CODE_NONCE_PATTERN = /^[0-9a-f]{16}$/;
+
+/** One `pre` of the pre-Improve (protected) body whose only child is `code`, in document order. */
+export interface CodeMetaSkeletonBlock {
+  /** {@link codeBlockIdentityKey}, or a key nothing matches when the projection is lossy. */
+  readonly key: string;
+  /** The stored code text, as the DOM holds it. */
+  readonly original: string;
+  readonly language: string;
+  /** The block's token ordinal; null for a plain block. */
+  readonly token: number | null;
+  readonly title: string | null;
+  readonly params: string | null;
+}
+
+/**
+ * Every `pre` of `protectedHtml` whose only child is `code` (draw.io fences
+ * excluded), with its identity key. Empty, without any projection, when the
+ * body has no token block.
+ */
+export function extractCodeMetaSkeleton(protectedHtml: string): CodeMetaSkeletonBlock[] {
+  if (!/<pre[\s>]/i.test(protectedHtml)) return [];
+  const doc = new JSDOM(`<body>${protectedHtml}</body>`).window.document;
+  const projections = new Map<Element, LexerCodeText>();
+  const tokens = codeMetaTokenBlocks(doc.body, projections);
+  if (tokens.length === 0) return [];
+  const ordinal = new Map(tokens.map((pre, n) => [pre, n] as const));
+  const blocks: CodeMetaSkeletonBlock[] = [];
+  for (const pre of doc.body.querySelectorAll('pre')) {
+    if (pre.childNodes.length !== 1 || pre.firstChild?.nodeName !== 'CODE') continue;
+    const code = pre.firstChild as Element;
+    const language = codeLanguageOf(code);
+    if (language === 'drawio') continue;
+    const original = code.textContent ?? '';
+    const n = ordinal.get(pre) ?? null;
+    const projected = projections.get(pre) ?? projectSourceCodeText(original, language);
+    blocks.push({
+      key: projected === null ? `\u0001${blocks.length}` : codeBlockIdentityKey(language, projected),
+      original,
+      language,
+      token: n,
+      title: n === null ? null : pre.getAttribute('data-title'),
+      params: n === null ? null : pre.getAttribute('data-macro-params'),
+    });
+  }
+  return blocks;
+}
+
+/** What markdownToHtml recorded for one fenced code token of the echo (draw.io and indented code excluded). */
+export interface CodeMetaFence {
+  /** The lexer's text: the witness of an unchanged plain fence. */
+  readonly text: LexerCodeText;
+  readonly language: string;
+  /** The skeleton block it is bound to, or null. */
+  readonly bound: number | null;
+  /** The class marked writes on its `code`, or null. */
+  readonly className: string | null;
+}
+
+/** Counts only (#1958 log): never content. */
+export interface CodeMetaReport {
+  bound: number;
+  orphan: number;
+  malformed: number;
+  invalid: number;
+  duplicate: number;
+  mismatch: number;
+  debris: number;
+  stripped: number;
+  forged: number;
+  twins: number;
+  appended: number;
+  screened: number;
+  literal: number;
+}
+
+/** Route-local state of one Accept; never serialised, logged or stored. */
+export interface CodeMetaAccept {
+  /** The stored body holds an annotated `pre` anywhere (#1953 admits nothing then). */
+  readonly carried: boolean;
+  readonly witnesses: boolean;
+  readonly skeleton: readonly CodeMetaSkeletonBlock[];
+  /** 128 random bits, created at Accept, after the model's text exists. */
+  readonly nonce: string;
+  /** The media entries, then the frozen code entries (`CQ_CODE_PLACEHOLDER_<N>`); replay indexes this list. */
+  readonly entries: readonly ProtectedMedia[];
+  /** How many of `entries` are frozen code entries (at the end). */
+  readonly frozenCode: number;
+  /**
+   * D26 item 2, fixed at the start of the Accept from the suggestion's provenance: `meta`, the #1958 path (a row
+   * the #1958 generator wrote, or Markdown no stored row matches); `base`, the Accept of the release before #1958
+   * for a pre-#1958 row on a page without annotated code.
+   */
+  readonly mode: 'meta' | 'base';
+  /** Filled by markdownToHtml, in document order. */
+  readonly fences: CodeMetaFence[];
+  /** Entry indices of the code-carrying originals inserted with a marker. */
+  readonly replayed: Set<number>;
+  readonly report: CodeMetaReport;
+}
+
+/** `llm_improvements.improve_protocol` the #1958 generator writes on every row it stores (migration 161). */
+export const IMPROVE_CODE_META_PROTOCOL = 1;
+
+/**
+ * #1958 (review r6 CM6-2, D28): the version of the Improve Accept's conversion
+ * (`convertImproveOutput`), part of the Improve cache key with the source
+ * HTML's digest, so an entry another release's converter admitted is never
+ * served. Change it whenever what the Accept takes changes.
+ */
+export const IMPROVE_CONVERTER_VERSION = '1958-r8';
+
+/**
+ * Where an applied suggestion comes from (D26 item 2), decided by the route
+ * from the stored row its exact text matches, never from the text itself:
+ * `code-meta`, a row with {@link IMPROVE_CODE_META_PROTOCOL}; `legacy`, a row
+ * written before #1958 (no protocol); `unmatched`, no row (a direct or
+ * user-edited Apply).
+ */
+export type ImproveSuggestionProvenance = 'code-meta' | 'legacy' | 'unmatched';
+
+/**
+ * Starts one Accept's code-metadata state from protectMedia's whole return
+ * value. `witnesses` asks finalizeCodeMetadata for the lexer text of every
+ * unchanged plain fence (#1953). `provenance` (default `unmatched`) fixes the
+ * mode; a `legacy` suggestion for a page holding annotated code throws
+ * ImproveSuggestionFormatError before anything is parsed (D26 item 2(b)).
+ */
+export function beginCodeMetaAccept(
+  protectedBody: ProtectedBody,
+  options: { witnesses?: boolean; provenance?: ImproveSuggestionProvenance } = {},
+): CodeMetaAccept {
+  const legacy = options.provenance === 'legacy';
+  if (legacy && (protectedBody.carried || protectedBody.frozenCode.length > 0)) throw new ImproveSuggestionFormatError();
+  return {
+    carried: protectedBody.carried,
+    witnesses: options.witnesses === true,
+    skeleton: extractCodeMetaSkeleton(protectedBody.html),
+    nonce: randomBytes(16).toString('hex'),
+    entries: [...protectedBody.media, ...protectedBody.frozenCode],
+    frozenCode: protectedBody.frozenCode.length,
+    mode: legacy ? 'base' : 'meta',
+    fences: [],
+    replayed: new Set(),
+    report: {
+      bound: 0, orphan: 0, malformed: 0, invalid: 0, duplicate: 0, mismatch: 0, debris: 0,
+      stripped: 0, forged: 0, twins: 0, appended: 0, screened: 0, literal: 0,
+    },
+  };
+}
+
+function needsCodeMetaAnalysis(accept: CodeMetaAccept, markdown: string): boolean {
+  return accept.witnesses || accept.skeleton.some((block) => block.token !== null) || CODE_META_MARKDOWN_HINT.test(markdown);
+}
+
+const CODE_RENDERER = new Renderer();
+
+/** marked's escaping of code text (`escape(text, true)`). */
+function escapeCodeText(text: string): string {
+  return text.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
+}
+
+/** marked's own `<pre><code…>` opening for a fence of `lang`, with the marker on the `pre`. */
+function markedFenceOpen(lang: string | undefined, marker: string): string {
+  const empty = CODE_RENDERER.code({ type: 'code', raw: '', text: '', lang, escaped: false } as Tokens.Code);
+  const open = empty.slice(0, empty.indexOf('>', '<pre><code'.length) + 1);
+  return open.replace('<pre>', `<pre ${FENCE_MARKER}="${marker}">`);
+}
+
+interface EchoToken {
+  readonly attrs: CodeMetaAttrs | null;
+  adjacent: boolean;
+}
+
+const CODE_META_INLINE_LOOKALIKE = /\[\[\[[ \t]*\/?[ \t]*CODE[-_ ]?META\b[^\]\n]*\]\]\]/gi;
+
+/**
+ * A token spelling inside a line of prose, a heading or a table cell (a
+ * panel's `**INFO**: ` prefix, a model that merged lines or made the token a
+ * heading) binds nothing and is removed, so no token text reaches the page.
+ * An escaped spelling the page writes itself is an escape token, never one
+ * text run, and stays; a code span is not a text token and stays too.
+ */
+function stripInlineCodeMetaLookalikes(inline: Token[] | undefined, report: CodeMetaReport): void {
+  for (const token of inline ?? []) {
+    if (token.type === 'text') {
+      const text = token as Tokens.Text;
+      const found = text.text.match(CODE_META_INLINE_LOOKALIKE)?.length ?? 0;
+      if (found > 0) {
+        report.debris += found;
+        text.text = text.text.replace(CODE_META_INLINE_LOOKALIKE, '');
+        text.raw = text.raw.replace(CODE_META_INLINE_LOOKALIKE, '');
+      }
+    }
+    if ('tokens' in token && Array.isArray(token.tokens)) stripInlineCodeMetaLookalikes(token.tokens as Token[], report);
+  }
+}
+
+/**
+ * #1958 (review r2 CM2-5): how many token spellings `text` holds when it holds
+ * nothing else but white space; 0 otherwise. Each run is matched on its own
+ * (`[^\]\n]*` never crosses a `]`), so prose between two runs is never taken
+ * for one long token.
+ */
+function debrisOnlyRuns(text: string): number {
+  const runs = text.match(CODE_META_INLINE_LOOKALIKE)?.length ?? 0;
+  return runs > 0 && text.replace(CODE_META_INLINE_LOOKALIKE, '').trim() === '' ? runs : 0;
+}
+
+/**
+ * #1958: the echo analysis on marked's lexer tokens (after layout recovery):
+ * standalone tokens, adjacency, validity, duplicates (G0), equal per-key
+ * groups (G1–G3); bound fences render the stored text (G4) with a marker;
+ * token and lookalike lines are removed. Fills `accept.fences`. Linear in the
+ * number of tokens (review r1 CM-6): positions are recorded once, groups are
+ * appended to, and each token list is filtered once. With `full` false (the
+ * base path of D25 1(b)) no token is read, removed or bound: fences are only
+ * recorded (and marked for witnesses), so the rendered bytes are marked's own.
+ */
+function analyseCodeMetaEcho(tokens: Token[], accept: CodeMetaAccept, full: boolean): void {
+  const report = accept.report;
+  const echo = new Map<Token, EchoToken>();
+  const removals = new Map<Token[], Set<Token>>();
+  const remove = (array: Token[], token: Token): void => {
+    const set = removals.get(array);
+    if (set) set.add(token);
+    else removals.set(array, new Set([token]));
+  };
+  const fences: Array<{ array: Token[]; at: number; token: Tokens.Code; key: string; language: string; meta: EchoToken | null }> = [];
+  const walk = (array: Token[]): void => {
+    for (let index = 0; index < array.length; index += 1) {
+      const token = array[index]!;
+      if (!full && (token.type === 'paragraph' || token.type === 'text' || token.type === 'heading' || token.type === 'table')) {
+        continue;
+      }
+      if (token.type === 'paragraph' || token.type === 'text') {
+        const line = (token as Tokens.Paragraph).text;
+        const match = CODE_META_TOKEN_LINE.exec(line);
+        if (match) {
+          echo.set(token, { attrs: parseCodeMetaAttrs(match[1]!), adjacent: false });
+          remove(array, token);
+        } else if (debrisOnlyRuns(line) > 0) {
+          report.debris += debrisOnlyRuns(line);
+          remove(array, token);
+        } else if (line.includes('[[[')) {
+          stripInlineCodeMetaLookalikes((token as Tokens.Paragraph).tokens, report);
+        }
+        continue;
+      }
+      if (token.type === 'heading') {
+        // CM-7: a heading never carries metadata; a token made a heading is debris.
+        const heading = token as Tokens.Heading;
+        if (debrisOnlyRuns(heading.text) > 0) {
+          report.debris += debrisOnlyRuns(heading.text);
+          remove(array, token);
+        } else if (heading.text.includes('[[[')) {
+          stripInlineCodeMetaLookalikes(heading.tokens, report);
+        }
+        continue;
+      }
+      if (token.type === 'table') {
+        const table = token as Tokens.Table;
+        for (const cell of table.header) stripInlineCodeMetaLookalikes(cell.tokens, report);
+        for (const row of table.rows) for (const cell of row) stripInlineCodeMetaLookalikes(cell.tokens, report);
+        continue;
+      }
+      if (token.type === 'code' && (token as Tokens.Code).codeBlockStyle !== 'indented') {
+        const code = token as Tokens.Code;
+        const language = fenceLanguage(code.lang);
+        if (language === 'drawio') continue;
+        const meta = index > 0 ? echo.get(array[index - 1]!) ?? null : null;
+        if (meta) meta.adjacent = true;
+        fences.push({ array, at: index, token: code, key: codeBlockIdentityKey(language, lexerCodeTextOf(code)), language, meta });
+        continue;
+      }
+      if (token.type === 'blockquote') walk((token as Tokens.Blockquote).tokens);
+      else if (token.type === 'list') for (const item of (token as Tokens.List).items) walk(item.tokens);
+    }
+  };
+  walk(tokens);
+
+  // G0 and validity: canonical, bounded, and naming a token block with identical stored values.
+  const ordinalCount = new Map<number, number>();
+  for (const { attrs } of echo.values()) if (attrs) ordinalCount.set(attrs.n, (ordinalCount.get(attrs.n) ?? 0) + 1);
+  const blockOf = new Map<number, number>();
+  accept.skeleton.forEach((block, index) => {
+    if (block.token !== null) blockOf.set(block.token, index);
+  });
+  const validOrdinal = (meta: EchoToken | null): number | null => {
+    const attrs = meta?.attrs;
+    if (!attrs || (ordinalCount.get(attrs.n) ?? 0) > 1) return null;
+    if (attrs.title !== null && !isCodeMetaTitle(attrs.title)) return null;
+    if (attrs.params !== null && parseCodeMacroParams(attrs.params) === null) return null;
+    const index = blockOf.get(attrs.n);
+    const block = index === undefined ? undefined : accept.skeleton[index];
+    if (!block || block.title !== attrs.title || block.params !== attrs.params) return null;
+    return attrs.n;
+  };
+  for (const meta of echo.values()) {
+    if (!meta.adjacent) report.orphan += 1;
+    else if (!meta.attrs) report.malformed += 1;
+    else if ((ordinalCount.get(meta.attrs.n) ?? 0) > 1) report.duplicate += 1;
+    else if (validOrdinal(meta) === null) report.invalid += 1;
+  }
+
+  // G1–G3: a group of equal fences takes its tokens only when it equals the skeleton's group element for element.
+  const appendTo = <V>(groups: Map<string, V[]>, key: string, value: V): void => {
+    const group = groups.get(key);
+    if (group) group.push(value);
+    else groups.set(key, [value]);
+  };
+  const expected = new Map<string, Array<number | null>>();
+  for (const block of accept.skeleton) appendTo(expected, block.key, block.token);
+  const echoed = new Map<string, Array<number | null>>();
+  const ordinals = fences.map((fence) => validOrdinal(fence.meta));
+  fences.forEach((fence, index) => appendTo(echoed, fence.key, ordinals[index]!));
+  const settled = new Set<string>();
+  for (const [key, got] of echoed) {
+    const want = expected.get(key) ?? [];
+    if (want.length === got.length && want.every((value, index) => value === got[index])) settled.add(key);
+    else report.mismatch += got.filter((value) => value !== null).length;
+  }
+
+  fences.forEach((fence, index) => {
+    const n = settled.has(fence.key) ? ordinals[index]! : null;
+    const bound = n === null ? null : blockOf.get(n)!;
+    const className = fence.language === '' ? null : `language-${fence.language}`;
+    const j = accept.fences.push({ text: lexerCodeTextOf(fence.token), language: fence.language, bound, className }) - 1;
+    const marker = `${accept.nonce}-${j}`;
+    let html: string | null = null;
+    if (bound !== null) {
+      html = `${markedFenceOpen(fence.token.lang, marker)}${escapeCodeText(accept.skeleton[bound]!.original)}</code></pre>\n`;
+    } else if (accept.witnesses) {
+      html = CODE_RENDERER.code(fence.token).replace('<pre>', `<pre ${FENCE_MARKER}="${marker}">`);
+    }
+    if (html === null) return;
+    // Token lists are not changed before this point, so the recorded position still names the fence.
+    fence.array[fence.at] = { type: 'html', block: true, pre: false, raw: fence.token.raw, text: html } as Tokens.HTML;
+  });
+  for (const [array, removed] of removals) {
+    let kept = 0;
+    for (const token of array) if (!removed.has(token)) array[kept++] = token;
+    array.length = kept;
+  }
+}
+
+/** An element of a placement's context chain, or of an element's ancestor chain. */
+interface ContextElement {
+  readonly tagName: string;
+  readonly attributes: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+}
+
+function attributeOf(el: ContextElement, name: string): string | null {
+  return el.attributes.find((attribute) => attribute.name === name)?.value ?? null;
+}
+
+function hasClass(el: ContextElement, ...names: string[]): boolean {
+  const classes = (attributeOf(el, 'class') ?? '').split(/\s+/);
+  return names.some((name) => classes.includes(name));
+}
+
+const DROPPING_DIV_CLASSES = [
+  'figure-index', 'table-index', 'confluence-toc', 'confluence-children-macro', 'confluence-attachments-macro',
+  'confluence-labels-macro', 'confluence-include-macro',
+];
+const DROPPING_SPAN_CLASSES = ['confluence-jira-issue', 'confluence-user-mention', 'confluence-status', 'confluence-emoticon'];
+
+/** One element (with its parent) is a container whose children htmlToConfluence removes or flattens. */
+function isDroppingElement(el: ContextElement, parent: ContextElement | undefined): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'summary' || tag === 'template' || hasClass(el, 'confluence-drawio')) return true;
+  if (tag === 'div' && hasClass(el, ...DROPPING_DIV_CLASSES)) return true;
+  if (tag === 'span' && hasClass(el, ...DROPPING_SPAN_CLASSES)) return true;
+  return tag === 'li' && attributeOf(el, 'data-type') !== 'taskItem'
+    && parent?.tagName.toLowerCase() === 'ul' && attributeOf(parent, 'data-type') === 'taskList';
+}
+
+/**
+ * #1958: does the chain (innermost first) hold a container whose children
+ * htmlToConfluence removes or flattens? Index blocks, atomic macro
+ * placeholders, draw.io, a summary, a template, and a plain item of a task
+ * list (only task items are rebuilt).
+ */
+export function isDroppingContext(chain: Iterable<ContextElement>): boolean {
+  const elements = [...chain];
+  return elements.some((el, index) => isDroppingElement(el, elements[index + 1]));
+}
+
+/** Where a code-carrying original may be spliced and still parse as one subtree in place. */
+const CODE_REPLAY_CONTEXT: Readonly<Record<string, true>> = {
+  p: true, div: true, li: true, ul: true, ol: true, blockquote: true, table: true, thead: true, tbody: true,
+  tfoot: true, tr: true, td: true, th: true, details: true, section: true, article: true, span: true,
+  h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
+};
+
+interface ContextFlags {
+  /** The chain holds `pre` or `code`. */
+  readonly code: boolean;
+  readonly dropping: boolean;
+  /** The chain holds an element outside CODE_REPLAY_CONTEXT. */
+  readonly unsafe: boolean;
+}
+
+const TOP_CONTEXT: ContextFlags = { code: false, dropping: false, unsafe: false };
+
+/**
+ * The screens of a placement's context chain, each element computed once
+ * (review r1 CM-6): flags are inherited from the parent, so the work is
+ * linear in the number of distinct context elements, not placements × depth.
+ */
+function contextFlags(context: MediaTokenContext | null, cache: Map<MediaTokenContext, ContextFlags>): ContextFlags {
+  if (!context) return TOP_CONTEXT;
+  const missing: MediaTokenContext[] = [];
+  let base = TOP_CONTEXT;
+  for (let el: MediaTokenContext | null = context; el; el = el.parent) {
+    const known = cache.get(el);
+    if (known) {
+      base = known;
+      break;
+    }
+    missing.push(el);
+  }
+  for (let index = missing.length - 1; index >= 0; index -= 1) {
+    const el = missing[index]!;
+    base = {
+      code: base.code || el.tagName === 'pre' || el.tagName === 'code',
+      dropping: base.dropping || isDroppingElement(el, el.parent ?? undefined),
+      unsafe: base.unsafe || CODE_REPLAY_CONTEXT[el.tagName] !== true,
+    };
+    cache.set(el, base);
+  }
+  return base;
+}
+
+/** The replay plan exceeded its budget: nothing was built (#1958). */
+export class ImproveReplayBudgetError extends Error {
+  constructor() {
+    super('The AI response repeats this page\'s protected content too often to be applied. The page is unchanged — run AI Improve again.');
+    this.name = 'ImproveReplayBudgetError';
+  }
+}
+
+/** A protected original did not come back intact (#1958): the Accept is refused, never downgraded. */
+export class ImproveReplayError extends Error {
+  constructor() {
+    super('The AI response could not be applied without changing protected content on this page. The page is unchanged — run AI Improve again.');
+    this.name = 'ImproveReplayError';
+  }
+}
+
+/**
+ * #1958 (coordinator decision D26 item 2(b)): the suggestion is bound to a
+ * stored Improve row written before #1958 (no `improve_protocol`), and the
+ * page holds annotated code. That release wrote such blocks as editable
+ * Markdown without their title and options, so the suggestion cannot be
+ * applied without losing them or duplicating a frozen block. Refused before
+ * anything is built or written.
+ */
+export class ImproveSuggestionFormatError extends Error {
+  constructor() {
+    super('This AI suggestion was made before an update and cannot keep the code block titles and options of this page. The page is unchanged — run AI Improve again.');
+    this.name = 'ImproveSuggestionFormatError';
+  }
+}
+
+/**
+ * #1958 (D26 item 3): on the #1958 path a frozen or code-carrying original has
+ * no single placement it can take: the suggestion dropped, repeated or moved
+ * its placeholder into code or a context that cannot hold a block.
+ * Appending it could duplicate the block, so the Accept is refused instead.
+ */
+export class ImproveCodePlacementError extends Error {
+  constructor() {
+    super('This AI suggestion dropped, repeated or moved a protected code block of this page, so it cannot be applied without losing or duplicating it. The page is unchanged — run AI Improve again, or edit the page directly.');
+    this.name = 'ImproveCodePlacementError';
+  }
+}
+
+/**
+ * #1958 (coordinator decision D28): the page has frozen code blocks and the
+ * Apply names no stored #1958 suggestion with its code nonce (manual or edited
+ * Markdown, an older client): no placeholder in it can be told for one of
+ * this page's frozen blocks. Refused before parsing.
+ */
+export class ImproveSuggestionUnboundError extends Error {
+  constructor() {
+    super('This text is not an AI Improve suggestion stored for this page, so the protected code blocks of this page cannot be placed. The page is unchanged — run AI Improve again and apply its result.');
+    this.name = 'ImproveSuggestionUnboundError';
+  }
+}
+
+/** A frozen code token's spelling inside a longer identifier (`…_0_COUNT`, `xCQ_CODE_PLACEHOLDER_…`): plain text. */
+function isIdentifierPart(html: string, placement: MediaTokenPlacement): boolean {
+  if (placement.wrapped) return false;
+  return /[A-Za-z0-9_]/.test(html[placement.start - 1] ?? '')
+    || /[A-Za-z0-9_]/.test(html[placement.end] ?? '') || html.startsWith('\\_', placement.end);
+}
+
+/**
+ * #1958: re-inject protected media and frozen code blocks, by the mode
+ * beginCodeMetaAccept took from the suggestion's provenance (D26 item 2).
+ *
+ * `base` (a pre-#1958 row on a page without annotated code): what the
+ * release before #1958 wrote, restoreMedia at every placement and the
+ * `includes` drop guard. Such a page has no code-carrying entry.
+ *
+ * `meta` (a #1958 row): one locator pass; every placement screened before
+ * counting: a spelling in `pre`/`code`, or of a frozen code token inside a
+ * longer identifier, stays as written; one in a container the reverse pass drops, or
+ * a code-carrying entry's one in a context that does not keep a block intact,
+ * is removed. An entry without code goes to every viable placement and is
+ * appended once when it has none; a code-carrying entry needs exactly one
+ * viable placement, where it goes marked, else ImproveCodePlacementError
+ * (D26 item 3: refusal, never a duplicate). Media entries keep the tokens and
+ * ordinals of the release before #1958; frozen code entries have their own.
+ *
+ * Both: the work is charged against the budget before anything is built (on
+ * `base` an upper bound: every placement plus every entry without one), then
+ * one splice.
+ */
+export function replayProtectedMedia(
+  html: string,
+  codeMeta: CodeMetaAccept,
+  options: { replayBudget?: number } = {},
+): { html: string; dropped: number } {
+  const entries = codeMeta.entries;
+  if (entries.length === 0) return { html, dropped: 0 };
+  // Review r8 CM8-1: the D26 base path reads the tokens as the release before #1958 did.
+  const placements = locateMediaTokens(html, entries, codeMeta.mode === 'base' ? 'legacy' : 'current');
+  const entryOf = new Map(entries.map((entry, index) => [entry.token, index] as const));
+  const budget = options.replayBudget
+    ?? MEDIA_REPLAY_FACTOR * entries.reduce((sum, entry) => sum + entry.html.length, 0) + MEDIA_REPLAY_SLACK;
+  const report = codeMeta.report;
+  if (codeMeta.mode === 'base') {
+    const placed = new Set(placements.map((placement) => entryOf.get(placement.token)!));
+    const cost = placements.reduce((sum, placement) => sum + entries[entryOf.get(placement.token)!]!.html.length, 0)
+      + entries.reduce((sum, entry, k) => sum + (placed.has(k) ? 0 : entry.html.length + 1), 0);
+    if (cost > budget) throw new ImproveReplayBudgetError();
+    const spliced = splicePlacements(html, placements, (placement) => entries[entryOf.get(placement.token)!]!.html);
+    const appended = entries.filter((entry) => !spliced.includes(entry.html));
+    report.appended += appended.length;
+    return {
+      html: appended.length > 0 ? spliced + appended.map((entry) => entry.html).join('\n') : spliced,
+      dropped: appended.length,
+    };
+  }
+  const cache = new Map<MediaTokenContext, ContextFlags>();
+  const verdicts = placements.map((placement): 'keep' | 'remove' | 'viable' => {
+    const k = entryOf.get(placement.token)!;
+    const entry = entries[k]!;
+    const flags = contextFlags(placement.context, cache);
+    if (flags.code) return 'keep';
+    if (entry.code && isIdentifierPart(html, placement)) return 'keep';
+    if (flags.dropping) return 'remove';
+    if (entry.code && flags.unsafe) return 'remove';
+    return 'viable';
+  });
+  const viable = entries.map(() => 0);
+  placements.forEach((placement, index) => {
+    if (verdicts[index] === 'viable') viable[entryOf.get(placement.token)!]! += 1;
+  });
+  if (entries.some((entry, k) => entry.code && viable[k] !== 1)) throw new ImproveCodePlacementError();
+  const markerText = (k: number): string => ` ${REPLAY_MARKER}="${codeMeta.nonce}-${k}"`;
+  const lengthOf = (k: number): number => entries[k]!.html.length + (entries[k]!.code ? markerText(k).length : 0);
+  const appended = entries.flatMap((_entry, k) => (viable[k] === 0 ? [k] : []));
+
+  // Budget from the plan's lengths alone (marker text included), before any replacement string is built.
+  let cost = appended.reduce((sum, k) => sum + lengthOf(k) + 1, 0);
+  placements.forEach((placement, index) => {
+    if (verdicts[index] === 'viable') cost += lengthOf(entryOf.get(placement.token)!);
+  });
+  if (cost > budget) throw new ImproveReplayBudgetError();
+
+  const marked = entries.map((entry, k) => {
+    if (!entry.code) return entry.html;
+    const at = entry.html.search(/[\s/>]/);
+    return `${entry.html.slice(0, at)}${markerText(k)}${entry.html.slice(at)}`;
+  });
+  report.screened += verdicts.filter((verdict) => verdict === 'remove').length;
+  report.literal += verdicts.filter((verdict) => verdict === 'keep').length;
+  report.appended += appended.length;
+  entries.forEach((entry, k) => {
+    if (entry.code) codeMeta.replayed.add(k);
+  });
+  const spliced = splicePlacements(html, placements, (placement, index) => {
+    if (verdicts[index] === 'keep') return null;
+    if (verdicts[index] === 'remove') return '';
+    return marked[entryOf.get(placement.token)!]!;
+  });
+  return {
+    html: appended.length > 0 ? spliced + appended.map((k) => marked[k]!).join('\n') : spliced,
+    dropped: appended.length,
+  };
+}
+
+/** Every `pre` with a direct `code` child, in document order: the ordinals of witnesses and #1953 ops. */
+export function codeBlockElements(root: ParentNode): Element[] {
+  return Array.from(root.querySelectorAll('pre')).filter((pre) =>
+    Array.from(pre.children).some((child) => child.tagName === 'CODE'));
+}
+
+/**
+ * The key a `pre` has as an effective code block (what htmlToConfluence turns
+ * into a code macro: a `pre` with a descendant `code`): the language the
+ * writer emits (the class, else a carried `language` parameter) and the code
+ * text with XML line ends.
+ */
+function effectiveCodeBlockKey(pre: Element, code: Element): string {
+  let language = (code.className.match(CODE_LANGUAGE_CLASS) ?? [])[1] ?? '';
+  if (!language) {
+    try {
+      const carried: unknown = JSON.parse(pre.getAttribute('data-macro-params') ?? '');
+      if (carried && typeof carried === 'object' && 'language' in carried && typeof carried.language === 'string') {
+        language = carried.language;
+      }
+    } catch {
+      // No carried language.
+    }
+  }
+  return JSON.stringify([language, (code.textContent ?? '').replace(/\r\n?/g, '\n')]);
+}
+
+/** Facts of one HTML document, each read in a single walk (review r1 CM-6). */
+interface DomFacts {
+  /** Elements under a `div.figure-index` / `div.table-index` (htmlToConfluence removes those). */
+  readonly inIndex: ReadonlySet<Element>;
+  /** Elements that are, or stand under, a container htmlToConfluence drops or flattens. */
+  readonly dropping: ReadonlySet<Element>;
+  /** Elements that are, or stand under, a verified replayed original. */
+  readonly trusted: ReadonlySet<Element>;
+}
+
+/** {@link isDroppingElement} on a DOM element. */
+function isDroppingDomElement(el: Element): boolean {
+  const tag = el.tagName;
+  if (tag === 'SUMMARY' || tag === 'TEMPLATE' || el.classList.contains('confluence-drawio')) return true;
+  if (tag === 'DIV' && DROPPING_DIV_CLASSES.some((name) => el.classList.contains(name))) return true;
+  if (tag === 'SPAN' && DROPPING_SPAN_CLASSES.some((name) => el.classList.contains(name))) return true;
+  const parent = el.parentElement;
+  return tag === 'LI' && el.getAttribute('data-type') !== 'taskItem'
+    && parent?.tagName === 'UL' && parent.getAttribute('data-type') === 'taskList';
+}
+
+function domFacts(body: Element, roots: ReadonlySet<Element>): DomFacts {
+  const inIndex = new Set<Element>();
+  const dropping = new Set<Element>();
+  const trusted = new Set<Element>();
+  const pending: Array<{ el: Element; index: boolean; drop: boolean; trust: boolean }> = [];
+  for (let child = body.lastElementChild; child; child = child.previousElementSibling) {
+    pending.push({ el: child, index: false, drop: false, trust: false });
+  }
+  while (pending.length > 0) {
+    const { el, index, drop, trust } = pending.pop()!;
+    if (index) inIndex.add(el);
+    const ownDrop = drop || isDroppingDomElement(el);
+    const ownTrust = trust || roots.has(el);
+    if (ownDrop) dropping.add(el);
+    if (ownTrust) trusted.add(el);
+    const below = index || (el.tagName === 'DIV' && (el.classList.contains('figure-index') || el.classList.contains('table-index')));
+    for (let child = el.lastElementChild; child; child = child.previousElementSibling) {
+      pending.push({ el: child, index: below, drop: ownDrop, trust: ownTrust });
+    }
+  }
+  return { inIndex, dropping, trusted };
+}
+
+/** Every effective code block outside the index blocks htmlToConfluence removes, with its key. */
+function effectiveCodeBlocks(body: Element, facts: DomFacts): Array<{ pre: Element; key: string }> {
+  const blocks: Array<{ pre: Element; key: string }> = [];
+  for (const pre of body.querySelectorAll('pre')) {
+    const code = pre.querySelector('code');
+    if (!code || facts.inIndex.has(pre)) continue;
+    blocks.push({ pre, key: effectiveCodeBlockKey(pre, code) });
+  }
+  return blocks;
+}
+
+/**
+ * The placeholders whose `data-macro-name` htmlToConfluence writes as the
+ * macro's `ac:name`: panels, expands, children, unknown and include macros.
+ * A `data-macro-name` on any other element is an inert annotation (review r1
+ * CM-5): the writer reads nothing from it.
+ */
+const NAMED_MACRO_PLACEHOLDER_SELECTOR = [
+  '.panel-info', '.panel-warning', '.panel-note', '.panel-tip', 'details',
+  'div.confluence-children-macro', 'div.confluence-macro-unknown', 'div.confluence-include-macro',
+].join(', ');
+
+/**
+ * Y2: model-owned markup that names a code macro outside a fence or a plain
+ * `pre`: a placeholder the writer turns into a macro named by its
+ * `data-macro-name` with the value `code`, or raw macro markup
+ * (`*:structured-macro` / `*:macro`) with a name-like attribute `code`.
+ */
+function isCodeNamedMarkup(el: Element): boolean {
+  const name = el.getAttribute('data-macro-name');
+  if (name !== null && name.trim().toLowerCase() === 'code' && el.matches(NAMED_MACRO_PLACEHOLDER_SELECTOR)) return true;
+  const tag = el.tagName.toLowerCase();
+  const local = tag.slice(tag.lastIndexOf(':') + 1);
+  if (local !== 'structured-macro' && local !== 'macro') return false;
+  return Array.from(el.attributes).some((attribute) =>
+    attribute.name.slice(attribute.name.lastIndexOf(':') + 1).toLowerCase() === 'name'
+    && attribute.value.trim().toLowerCase() === 'code');
+}
+
+function parseBody(html: string): Document {
+  return new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+}
+
+/** The element's outerHTML with one attribute left out, the element itself untouched. */
+function outerHtmlWithout(el: Element, attribute: string): string {
+  const copy = el.cloneNode(true) as Element;
+  copy.removeAttribute(attribute);
+  return copy.outerHTML;
+}
+
+/** Elements carrying `attribute="<nonce>-<i>"` exactly once, by `i`, for the indices `known` accepts. */
+function authenticMarkers(doc: Document, attribute: string, nonce: string, known: (index: number) => boolean): Map<number, Element> {
+  const pattern = new RegExp(`^${nonce}-(0|[1-9]\\d*)$`);
+  const byValue = new Map<string, Element[]>();
+  for (const el of doc.body.querySelectorAll(`[${attribute}]`)) {
+    const value = el.getAttribute(attribute)!;
+    const elements = byValue.get(value);
+    if (elements) elements.push(el);
+    else byValue.set(value, [el]);
+  }
+  const authentic = new Map<number, Element>();
+  for (const [value, elements] of byValue) {
+    const match = pattern.exec(value);
+    if (match && elements.length === 1 && known(Number(match[1]))) authentic.set(Number(match[1]), elements[0]!);
+  }
+  return authentic;
+}
+
+/** One effective code block of the returned HTML, by ordinal of {@link codeBlockElements}. */
+interface CodeBlockRecord {
+  readonly key: string;
+  readonly witness: LexerCodeText | null;
+  readonly annotated: boolean;
+  readonly className: string | null;
+  readonly text: string;
+}
+
+/**
+ * What the storage judgement may approve (#1958, design §3.5.1): the trusted
+ * units (bound blocks, verified code-carrying originals, from #1953-2 on the
+ * admitted legacy blocks) and the facts #1953's admission needs. Opaque.
+ */
+export interface CodeMacroAllowance {
+  readonly carried: boolean;
+  readonly units: readonly string[];
+  readonly blocks: readonly CodeBlockRecord[];
+}
+
+interface CodeMacroAllowanceState extends CodeMacroAllowance {
+  readonly units: string[];
+  readonly keyCount: ReadonlyMap<string, number>;
+  readonly references: Map<string, CodeMacroInventory>;
+  /** admitLegacyCodeMetadata ran on this allowance. */
+  admitted: boolean;
+}
+
+function allowanceState(allowance: CodeMacroAllowance): CodeMacroAllowanceState {
+  return allowance as CodeMacroAllowanceState;
+}
+
+/** What {@link convertImproveOutput} returns: the finalized Accept and how many media were re-appended. */
+export interface ConvertedImproveOutput extends FinalizedCodeMetadata {
+  readonly dropped: number;
+  readonly entries: number;
+  /**
+   * Review r9 CM9-2: `htmlToText(html)` when the bound-nonce check computed it (a code nonce was given), so the
+   * Apply route publishes it without parsing the same HTML again. A caller that changes `html` derives its own.
+   */
+  readonly text?: string;
+}
+
+/**
+ * #1958 (review r5 CM5-2, D28): the conversion half of an Improve Accept, from
+ * the page's body and the model's Markdown to the finalized HTML, shared by the
+ * Apply route and by the Improve generator's cache rule, so an output the
+ * Accept refuses is never cached: protectMedia(codeNonce) → layout skeleton →
+ * beginCodeMetaAccept(provenance) → markdownToHtml → replayProtectedMedia →
+ * finalizeCodeMetadata. `codeNonce` is the bound row's
+ * `improve_code_nonce`: the code-carrying originals are placed only at
+ * tokens spelled with it. A page with code-carrying originals and no nonce
+ * refuses (ImproveSuggestionUnboundError). Throws what those throw
+ * (LayoutRecoveryError, ImproveSuggestionFormatError,
+ * ImproveSuggestionUnboundError, ImproveCodePlacementError,
+ * ImproveReplayError, ImproveReplayBudgetError,
+ * ConfluenceStorageRefusedError). The storage judges of the two exits run
+ * after it, on the page state of the exit. Reviews r7 CM7-2 / r8 CM8-3: a
+ * result whose final HTML or its text projection (`htmlToText`, the page's
+ * `body_text`) holds this generation's nonce as one contiguous string (a
+ * placeholder the model quoted, in code, in an attribute, or split by inline
+ * markup) is refused too (ImproveCodePlacementError). Narrower than "never
+ * reaches a later prompt": a rendering that joins text the two projections
+ * keep apart (block boundaries, entities in another renderer) can still
+ * reconstruct it; the nonce is no secret. A foreign nonce is page text.
+ */
+export async function convertImproveOutput(
+  bodyHtml: string,
+  improvedMarkdown: string,
+  options: { provenance?: ImproveSuggestionProvenance; witnesses?: boolean; codeNonce?: string } = {},
+): Promise<ConvertedImproveOutput> {
+  const protectedBody = protectMedia(bodyHtml, { codeNonce: options.codeNonce });
+  const layoutSkeleton = extractLayoutSkeleton(protectedBody.html);
+  const codeMeta = beginCodeMetaAccept(protectedBody, options);
+  if (options.codeNonce === undefined && codeMeta.entries.some((entry) => entry.code)) throw new ImproveSuggestionUnboundError();
+  const html = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: protectedBody.media, codeMeta });
+  const replay = replayProtectedMedia(html, codeMeta);
+  const finalized = finalizeCodeMetadata(replay.html, codeMeta);
+  const nonce = options.codeNonce;
+  if (nonce === undefined) return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length };
+  if (finalized.html.includes(nonce)) throw new ImproveCodePlacementError();
+  const text = htmlToText(finalized.html);
+  if (text.includes(nonce)) throw new ImproveCodePlacementError();
+  return { ...finalized, dropped: replay.dropped, entries: codeMeta.entries.length, text };
+}
+
+/**
+ * #1958 (reviews r5 CM5-2, r6 CM6-2): would an Accept of `improvedMarkdown`
+ * for a page with body `bodyHtml`, as the #1958 suggestion generated with
+ * `codeNonce`, succeed? The Improve generator caches only such an output, and
+ * re-checks a cache hit against the requesting page before serving it. It runs
+ * {@link convertImproveOutput}, the function the Apply route runs, then both
+ * exits' storage judges on the result without a stored storage (remote: the
+ * string htmlToConfluence writes; local: both publication projections). Any
+ * refusal, or any error, answers false. What the page's state at Apply time
+ * adds (a changed body, its stored storage, #1955 link origins, R3) is not
+ * foreseen.
+ */
+export async function canAcceptImproveOutput(bodyHtml: string, improvedMarkdown: string, codeNonce?: string): Promise<boolean> {
+  try {
+    const converted = await convertImproveOutput(bodyHtml, improvedMarkdown, { provenance: 'code-meta', codeNonce });
+    assertCodeMacroStorage(htmlToConfluence(converted.html), converted.allowance);
+    assertLocalCodeMacroProjections(converted.html, converted.allowance, { body_storage: null });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** What {@link finalizeCodeMetadata} returns. */
+export interface FinalizedCodeMetadata {
+  /** The HTML to store or convert, markers removed. */
+  readonly html: string;
+  /** One entry per {@link codeBlockElements} element of `html`; empty unless witnesses were asked for. */
+  readonly witnesses: ReadonlyArray<LexerCodeText | null>;
+  readonly allowance: CodeMacroAllowance;
+  readonly report: CodeMetaReport;
+}
+
+/**
+ * #1958 HTML stage, after media replay: authenticate markers, verify replayed
+ * originals, strip metadata from every model-owned `pre`, bind verified
+ * fences to their stored values, apply the twin rule, then read every fact
+ * from the document the returned string parses to and remove the markers.
+ * Throws ImproveReplayError (an original not intact), or
+ * ConfluenceStorageRefusedError('unapproved-code-macro') for model-owned
+ * markup naming a code macro, before any of it reaches a writer.
+ */
+export function finalizeCodeMetadata(html: string, codeMeta: CodeMetaAccept): FinalizedCodeMetadata {
+  const report = codeMeta.report;
+  const { nonce, fences, skeleton } = codeMeta;
+  let doc = parseBody(html);
+
+  // 1–2. Authentic markers; every marked original verified before anything changes: exactly as written,
+  // or with nothing but the CR / CR LF of its code text read as LF (review r1 CM-3). Anything else refuses.
+  const fenceMarkers = authenticMarkers(doc, FENCE_MARKER, nonce, (j) => j < fences.length);
+  const replayMarkers = authenticMarkers(doc, REPLAY_MARKER, nonce, (k) => codeMeta.replayed.has(k));
+  for (const k of codeMeta.replayed) {
+    const root = replayMarkers.get(k);
+    const entry = codeMeta.entries[k]!;
+    const marked = root ? outerHtmlWithout(root, REPLAY_MARKER) : null;
+    if (marked === null || (marked !== entry.html && marked !== entry.lineEndForm)) throw new ImproveReplayError();
+  }
+  const trusted = new Set(replayMarkers.values());
+  const facts = domFacts(doc.body, trusted);
+  const fenceElements = new Set(fenceMarkers.values());
+  const authentic = (el: Element, name: string): boolean =>
+    (name === FENCE_MARKER && fenceElements.has(el)) || (name === REPLAY_MARKER && trusted.has(el));
+
+  // Y2, then 3: model-owned markup.
+  let changed = false;
+  for (const el of doc.body.querySelectorAll('*')) {
+    if (facts.trusted.has(el)) continue;
+    if (isCodeNamedMarkup(el)) throw new ConfluenceStorageRefusedError('unapproved-code-macro');
+    for (const { name } of Array.from(el.attributes)) {
+      if (name.startsWith('data-cq-') && !authentic(el, name)) {
+        el.removeAttribute(name);
+        report.forged += 1;
+        changed = true;
+      }
+    }
+    if (el.tagName === 'PRE' && isAnnotatedCodeBlock(el)) {
+      el.removeAttribute('data-title');
+      el.removeAttribute('data-macro-params');
+      report.stripped += 1;
+      changed = true;
+    }
+  }
+
+  // 4. Bind: the marked fence still in the exact shape marked rendered, outside every dropping container.
+  const boundFences = new Map<number, Element>();
+  for (const [j, pre] of fenceMarkers) {
+    const fence = fences[j]!;
+    if (fence.bound === null) continue;
+    const block = skeleton[fence.bound]!;
+    const code = onlyCodeChild(pre);
+    if (pre.attributes.length !== 1 || !code || code.getAttribute('class') !== fence.className
+      || code.attributes.length !== (fence.className === null ? 0 : 1) || code.textContent !== block.original
+      || facts.dropping.has(pre)) continue;
+    if (block.title !== null) pre.setAttribute('data-title', block.title);
+    if (block.params !== null) pre.setAttribute('data-macro-params', block.params);
+    boundFences.set(j, pre);
+    report.bound += 1;
+    changed = true;
+  }
+
+  // 5. Twin rule: equal effective blocks keep metadata only when all carry identical metadata.
+  const groups = new Map<string, Element[]>();
+  for (const { pre, key } of effectiveCodeBlocks(doc.body, facts)) {
+    const members = groups.get(key);
+    if (members) members.push(pre);
+    else groups.set(key, [pre]);
+  }
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const metadata = (pre: Element): string => JSON.stringify([pre.getAttribute('data-title'), pre.getAttribute('data-macro-params')]);
+    const first = metadata(members[0]!);
+    if (members.every((pre) => metadata(pre) === first)) continue;
+    for (const pre of members) {
+      if (!isAnnotatedCodeBlock(pre)) continue;
+      pre.removeAttribute('data-title');
+      pre.removeAttribute('data-macro-params');
+      report.twins += 1;
+      changed = true;
+    }
+  }
+  for (const [j, pre] of boundFences) if (!isAnnotatedCodeBlock(pre)) boundFences.delete(j);
+  // Y3: what each trusted root must read after the intentional changes above.
+  const expectedRoots = new Map([...replayMarkers].map(([k, root]) => [k, outerHtmlWithout(root, REPLAY_MARKER)] as const));
+
+  // 6. One re-serialisation; every fact below is read from the document the returned string parses to.
+  let out = html;
+  let finalFences = fenceMarkers;
+  let finalRoots = replayMarkers;
+  if (changed) {
+    out = doc.body.innerHTML;
+    doc = parseBody(out);
+    finalFences = authenticMarkers(doc, FENCE_MARKER, nonce, (j) => fenceMarkers.has(j));
+    finalRoots = authenticMarkers(doc, REPLAY_MARKER, nonce, (k) => replayMarkers.has(k));
+    if (finalFences.size !== fenceMarkers.size || finalRoots.size !== replayMarkers.size) throw new ImproveReplayError();
+    for (const [k, root] of finalRoots) {
+      if (outerHtmlWithout(root, REPLAY_MARKER) !== expectedRoots.get(k)) throw new ImproveReplayError();
+    }
+    for (const j of boundFences.keys()) {
+      const pre = finalFences.get(j)!;
+      if (!onlyCodeChild(pre) || !isAnnotatedCodeBlock(pre)) throw new ImproveReplayError();
+    }
+  }
+
+  // 7. Facts, then the markers' exact text removed in one pass.
+  const roots = new Set(finalRoots.values());
+  const finalFacts = changed ? domFacts(doc.body, roots) : facts;
+  const boundElements = new Set([...boundFences.keys()].map((j) => finalFences.get(j)!));
+  const witnessOf = new Map<Element, LexerCodeText>();
+  for (const [j, pre] of finalFences) {
+    const fence = fences[j]!;
+    const code = onlyCodeChild(pre);
+    if (fence.bound !== null || pre.attributes.length !== 1 || !code || finalFacts.trusted.has(pre)
+      || code.getAttribute('class') !== fence.className || code.attributes.length !== (fence.className === null ? 0 : 1)
+      || code.textContent !== `${fence.text.replace(/\n$/, '')}\n`
+      || finalFacts.dropping.has(pre)) continue;
+    witnessOf.set(pre, fence.text);
+  }
+  const keyCount = new Map<string, number>();
+  for (const { key } of effectiveCodeBlocks(doc.body, finalFacts)) keyCount.set(key, (keyCount.get(key) ?? 0) + 1);
+  const blocks = codeBlockElements(doc.body).map((pre): CodeBlockRecord => {
+    const code = pre.querySelector('code')!;
+    return {
+      key: effectiveCodeBlockKey(pre, code),
+      witness: codeMeta.witnesses ? witnessOf.get(pre) ?? null : null,
+      annotated: isAnnotatedCodeBlock(pre),
+      className: code.getAttribute('class'),
+      text: code.textContent ?? '',
+    };
+  });
+  const units = [
+    ...[...boundElements].map((pre) => outerHtmlWithout(pre, FENCE_MARKER)),
+    ...[...roots].map((root) => outerHtmlWithout(root, REPLAY_MARKER)),
+  ];
+  out = removeMarkerTexts(out, nonce, [
+    ...[...finalFences.keys()].map((j) => ` ${FENCE_MARKER}="${nonce}-${j}"`),
+    ...[...finalRoots.keys()].map((k) => ` ${REPLAY_MARKER}="${nonce}-${k}"`),
+  ]);
+  const allowance: CodeMacroAllowanceState = {
+    carried: codeMeta.carried, units, blocks, keyCount, references: new Map(), admitted: false,
+  };
+  return { html: out, witnesses: codeMeta.witnesses ? blocks.map((block) => block.witness) : [], allowance, report };
+}
+
+/**
+ * Removes each of `texts` (authentic marker attributes, values `[0-9a-f-]`)
+ * from `html` in one pass; each must occur exactly once (review r1 CM-6:
+ * not one split and join of the whole string per marker).
+ */
+function removeMarkerTexts(html: string, nonce: string, texts: readonly string[]): string {
+  if (texts.length === 0) return html;
+  const seen = new Map<string, number>(texts.map((text) => [text, 0] as const));
+  const out = html.replace(new RegExp(` (?:${FENCE_MARKER}|${REPLAY_MARKER})="${nonce}-\\d+"`, 'g'), (text) => {
+    const count = seen.get(text);
+    if (count === undefined) return text;
+    seen.set(text, count + 1);
+    return '';
+  });
+  for (const count of seen.values()) if (count !== 1) throw new ImproveReplayError();
+  return out;
+}
+
+/** One #1953 legacy operation: metadata for the block at `ordinal` of {@link codeBlockElements}. */
+export interface LegacyCodeMetadataOp {
+  ordinal: number;
+  title: string | null;
+  macroParams: string | null;
+}
+
+/**
+ * #1953-2's third source of code metadata (design §4). An op is admitted only
+ * when the page is not carried; its ordinal is a safe in-range integer no
+ * earlier op named; `title` and `macroParams` are each a string or null, not
+ * both null; the block has a witness (an unchanged plain fence), was not
+ * annotated, and no other effective code block has its key. The admitted
+ * unit is built from this block's record and the op's values. Returns the
+ * number admitted; the storage judgement then accounts for exactly these.
+ */
+export function admitLegacyCodeMetadata(allowance: CodeMacroAllowance, ops: ReadonlyArray<LegacyCodeMetadataOp>): number {
+  const state = allowanceState(allowance);
+  // Once per finalized allowance (review r1): a second call would admit against units it already changed.
+  if (state.admitted) throw new Error('admitLegacyCodeMetadata: already called for this allowance');
+  state.admitted = true;
+  if (state.carried) return 0;
+  const named = new Set<number>();
+  let admitted = 0;
+  const doc = parseBody('');
+  for (const op of ops) {
+    if (!Number.isSafeInteger(op.ordinal) || op.ordinal < 0 || op.ordinal >= state.blocks.length) continue;
+    if (named.has(op.ordinal)) continue;
+    named.add(op.ordinal);
+    const { title, macroParams } = op;
+    if (!(typeof title === 'string' || title === null) || !(typeof macroParams === 'string' || macroParams === null)) continue;
+    if (title === null && macroParams === null) continue;
+    const block = state.blocks[op.ordinal]!;
+    if (block.witness === null || block.annotated || (state.keyCount.get(block.key) ?? 0) !== 1) continue;
+    const pre = doc.createElement('pre');
+    if (title !== null) pre.setAttribute('data-title', title);
+    if (macroParams !== null) pre.setAttribute('data-macro-params', macroParams);
+    const code = doc.createElement('code');
+    if (block.className !== null) code.setAttribute('class', block.className);
+    code.textContent = block.text;
+    pre.appendChild(code);
+    state.units.push(pre.outerHTML);
+    admitted += 1;
+  }
+  return admitted;
+}
+
+// --- storage stage -----------------------------------------------------------
+
+/** Elements whose content an HTML consumer keeps as text or inert: a code macro there is never the writer's. */
+const STORAGE_INERT_LOCALS = [
+  'style', 'script', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext', 'textarea', 'title', 'template',
+];
+
+/**
+ * Y1: a sound over-approximation of "this string may hold a start tag whose
+ * local name is `macro` or `structured-macro`", with no assumption about the
+ * prefix (any run of characters an XML name may hold, non-ASCII included).
+ */
+const CODE_MACRO_START_TAG = /<[^<> \t\r\n/]*macro[ \t\r\n\f/>]/i;
+
+interface CodeMacroInventory {
+  /** The record of every annotated canonical code macro, sorted: [parameters, body] as JSON. */
+  readonly records: readonly string[];
+  /** The keys of those records. */
+  readonly recordKeys: ReadonlySet<string>;
+  readonly bareKeys: readonly string[];
+}
+
+function refuseCodeMacro(): never {
+  throw new ConfluenceStorageRefusedError('unapproved-code-macro');
+}
+
+/**
+ * One bounded walk of a storage reading (design §3.5.1): every element that
+ * resembles a code macro must be the writer's exact canonical shape in the
+ * Confluence namespace outside every inert context; all macros with one key
+ * (language, body) must carry identical records, bare and annotated being
+ * different (Y1). Every element, attribute and compared character is charged
+ * to `work` first. Throws the refusal.
+ */
+function inventoryCodeMacros(tree: StorageTree, work: number): CodeMacroInventory {
+  let budget = work;
+  const charge = (units: number): void => {
+    budget -= units;
+    if (budget < 0) refuseCodeMacro();
+  };
+  const textOnly = (el: StorageElement): string | null => {
+    let text = '';
+    for (const child of el.children) {
+      if (typeof child !== 'string') return null;
+      charge(child.length);
+      text += child;
+    }
+    return text;
+  };
+  // Review r1 CM-6: an element costs its local name and every attribute's local name and value, which the
+  // candidate test lower-cases, trims and compares, before any of that is inspected.
+  const chargeElement = (el: StorageElement): void => {
+    let units = 1 + el.local.length;
+    for (const attribute of el.attributes) units += 1 + attribute.local.length + attribute.value.length;
+    charge(units);
+  };
+  const records: string[] = [];
+  const recordKeys = new Set<string>();
+  const bareKeys: string[] = [];
+  const recordByKey = new Map<string, string>();
+  const pending: Array<{ el: StorageElement; inert: boolean }> = [{ el: tree.root, inert: false }];
+  while (pending.length > 0) {
+    const { el, inert } = pending.pop()!;
+    chargeElement(el);
+    const isRoot = el === tree.root;
+    const candidate = !isRoot
+      && (resemblesStorageName(el, 'structured-macro') || resemblesStorageName(el, 'macro'))
+      && el.attributes.some((attribute) =>
+        resemblesStorageName(attribute, 'name') && attribute.value.trim().toLowerCase() === 'code');
+    if (candidate) {
+      const name = el.attributes[0];
+      if (inert || !isStorageName(el, 'ac', 'structured-macro') || el.attributes.length !== 1
+        || !isStorageName(name!, 'ac', 'name') || name!.value !== 'code') refuseCodeMacro();
+      const parameters: Array<[string, string]> = [];
+      let body: string | null = null;
+      for (const child of el.children) {
+        if (typeof child === 'string' || body !== null) refuseCodeMacro();
+        chargeElement(child);
+        const text = textOnly(child);
+        if (text === null) refuseCodeMacro();
+        if (isStorageName(child, 'ac', 'parameter') && child.attributes.length === 1
+          && isStorageName(child.attributes[0]!, 'ac', 'name')) {
+          parameters.push([child.attributes[0]!.value, text]);
+        } else if (isStorageName(child, 'ac', 'plain-text-body') && child.attributes.length === 0) {
+          body = text;
+        } else {
+          refuseCodeMacro();
+        }
+      }
+      if (body === null) refuseCodeMacro();
+      const key = JSON.stringify([parameters.find(([parameter]) => parameter === 'language')?.[1] ?? '', body]);
+      const record = JSON.stringify([parameters, body]);
+      // The record and its key are built from charged text; comparing them costs their length once more.
+      charge(record.length + key.length);
+      const prior = recordByKey.get(key);
+      if (prior !== undefined && prior !== record) refuseCodeMacro();
+      recordByKey.set(key, record);
+      const bare = parameters.length === 0 || (parameters.length === 1 && parameters[0]![0] === 'language');
+      if (bare) {
+        bareKeys.push(key);
+      } else {
+        records.push(record);
+        recordKeys.add(key);
+      }
+      // A canonical code macro holds only text below its children.
+      continue;
+    }
+    const below = inert || (!isRoot && STORAGE_INERT_LOCALS.some((local) => resemblesStorageName(el, local)));
+    for (let index = el.children.length - 1; index >= 0; index -= 1) {
+      const child = el.children[index]!;
+      if (typeof child !== 'string') pending.push({ el: child, inert: below });
+    }
+  }
+  return { records: records.sort(), recordKeys, bareKeys };
+}
+
+/**
+ * The storage judgement's own reading of `storage` (review r1 CM-8: the
+ * differential against the independent XML oracle compares this record for
+ * record). `records`: every annotated canonical code macro as
+ * `[[[name, text]…], body]` JSON, sorted; `bareKeys`: `[language, body]` JSON
+ * of every bare one, in document order. Throws the refusal the judgement
+ * would throw (read failure or `unapproved-code-macro`). Reads only.
+ */
+export function readCodeMacroInventory(storage: string, work: number = CODE_MACRO_WORK): { records: string[]; bareKeys: string[] } {
+  const read = readConfluenceStorage(storage);
+  if (!read.ok) throw new ConfluenceStorageRefusedError(read.reason);
+  const inventory = inventoryCodeMacros(read.tree, work);
+  return { records: [...inventory.records], bareKeys: [...inventory.bareKeys] };
+}
+
+const EMPTY_CODE_MACRO_INVENTORY: CodeMacroInventory = { records: [], recordKeys: new Set(), bareKeys: [] };
+
+/** What the trusted units carry, converted with the same writer options and read by the same reader; cached per options. */
+function referenceInventory(allowance: CodeMacroAllowance, options: HtmlToConfluenceOptions): CodeMacroInventory {
+  const state = allowanceState(allowance);
+  if (state.units.length === 0) return EMPTY_CODE_MACRO_INVENTORY;
+  const cacheKey = JSON.stringify([
+    state.units.length, options.previousStorage, options.linkOrigin === undefined ? '\u0000' : options.linkOrigin,
+    options.legacyTasks === true, options.derivationFeatures ? [...options.derivationFeatures].sort() : null,
+  ]);
+  const cached = state.references.get(cacheKey);
+  if (cached) return cached;
+  const read = readConfluenceStorage(htmlToConfluence(state.units.join('\n'), options));
+  if (!read.ok) refuseCodeMacro();
+  const inventory = inventoryCodeMacros(read.tree, CODE_MACRO_WORK);
+  state.references.set(cacheKey, inventory);
+  return inventory;
+}
+
+/**
+ * #1958 storage rule on one reading (design §3.5.1, Y1): (i) every code macro
+ * candidate canonical, one record per key; (ii) the multiset of annotated
+ * records equals the one the trusted units yield under the same writer
+ * options; (iii) no bare macro shares the key of an approved record. Throws
+ * ConfluenceStorageRefusedError('unapproved-code-macro').
+ */
+export function judgeCodeMacros(
+  tree: StorageTree,
+  allowance: CodeMacroAllowance,
+  options: HtmlToConfluenceOptions = {},
+  work: number = CODE_MACRO_WORK,
+): void {
+  const written = inventoryCodeMacros(tree, work);
+  const reference = referenceInventory(allowance, options);
+  if (written.records.length !== reference.records.length
+    || written.records.some((record, index) => record !== reference.records[index])) refuseCodeMacro();
+  if (written.bareKeys.some((key) => reference.recordKeys.has(key))) refuseCodeMacro();
+}
+
+/**
+ * Remote exit: judges the exact storage `updatePage` receives, after
+ * htmlToConfluence (its link stage included) and before the intent. A string
+ * that cannot hold a macro start tag in any reading is not read: it passes
+ * exactly when the units carry no record. Otherwise a read failure refuses.
+ */
+export function assertCodeMacroStorage(
+  storage: string,
+  allowance: CodeMacroAllowance,
+  options: HtmlToConfluenceOptions = {},
+): void {
+  if (!CODE_MACRO_START_TAG.test(storage)) {
+    if (referenceInventory(allowance, options).records.length > 0) refuseCodeMacro();
+    return;
+  }
+  const read = readConfluenceStorage(storage);
+  if (!read.ok) throw new ConfluenceStorageRefusedError(read.reason);
+  judgeCodeMacros(read.tree, allowance, options);
+}
+
+/**
+ * Local (standalone) exit, before the write transaction (X2, Q8 as ruled): no
+ * fast path. P1 is the stored HTML converted as a version restore converts
+ * it; P2 the HTML after the one re-serialisation relocation applies before
+ * converting without stored storage. P2 is skipped only when both its input
+ * and its options equal P1's. Every read failure, conversion refusal and rule
+ * violation refuses.
+ */
+export function assertLocalCodeMacroProjections(
+  html: string,
+  allowance: CodeMacroAllowance,
+  row: { body_storage: string | null },
+  limits: StorageReaderLimits = STORAGE_READER_LIMITS,
+): void {
+  const judge = (storage: string, options: HtmlToConfluenceOptions): void => {
+    const read = readConfluenceStorage(storage, limits);
+    if (!read.ok) throw new ConfluenceStorageRefusedError(read.reason);
+    judgeCodeMacros(read.tree, allowance, options);
+  };
+  const p1Options: HtmlToConfluenceOptions = { previousStorage: row.body_storage };
+  judge(htmlToConfluence(html, p1Options), p1Options);
+  const reserialised = parseBody(html).body.innerHTML;
+  if (reserialised !== html || row.body_storage !== null) judge(htmlToConfluence(reserialised), {});
 }
 
 export interface HtmlToMarkdownOptions {
@@ -3297,7 +5053,15 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     filter: (node) => node.nodeName === 'LI' && node.getAttribute('data-type') === 'taskItem',
     replacement: (content, node) => {
       const checked = (node as HTMLElement).getAttribute('data-checked') === 'true';
-      return `${checked ? '- [x]' : '- [ ]'} ${content.trim()}\n`;
+      const body = content.trim();
+      // #1958 (review r1 CM-4, r2 CM2-4): an item that opens with a CODE-META line keeps its whole body inside
+      // the item: the token stays on the marker line and every following line is indented to the item's content
+      // column, so the fence (and what follows it) stays in this task item, directly below its token. Every other
+      // item is written exactly as before.
+      if (startsWithCodeMeta(body)) {
+        return `${checked ? '- [x]' : '- [ ]'} ${body.replace(/\n(?!\n)/g, '\n  ')}\n`;
+      }
+      return `${checked ? '- [x]' : '- [ ]'} ${body}\n`;
     },
   });
 
@@ -3319,6 +5083,34 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
   }
 
   if (layoutTokens) {
+    // #1958: an annotated code block that can travel (classifyCodeBlock
+    // `token`) is written as its fence with the CODE-META echo token on the
+    // line directly above it. `n` is the block's index among the token blocks
+    // of this DOM in document order, the list the Accept's skeleton reads too;
+    // nothing counts emissions. Plain blocks keep turndown's own rule.
+    let codeMetaOrdinals: Map<Node, number> | null = null;
+    const codeMetaOrdinal = (node: Node): number | undefined => {
+      if (!codeMetaOrdinals) {
+        let root: Node = node;
+        while (root.parentNode) root = root.parentNode;
+        // turndown's own DOM (domino): a document node with querySelectorAll.
+        const blocks = codeMetaTokenBlocks(root as Node & { querySelectorAll(selector: string): ArrayLike<Element> });
+        codeMetaOrdinals = new Map(blocks.map((pre, n) => [pre as Node, n] as const));
+      }
+      return codeMetaOrdinals.get(node);
+    };
+    turndownService.addRule('codeBlockMeta', {
+      filter: (node) => node.nodeName === 'PRE' && isAnnotatedCodeBlock(node) && codeMetaOrdinal(node) !== undefined,
+      replacement: (_content, node) => {
+        const pre = node as Element;
+        const code = pre.firstChild as Element;
+        const attrs = encodeCodeMetaAttrs(
+          codeMetaOrdinal(pre)!, pre.getAttribute('data-title'), pre.getAttribute('data-macro-params'),
+        );
+        return `\n\n[[[CODE-META ${attrs}]]]\n${fenceFor(code.textContent ?? '', codeLanguageOf(code))}\n\n`;
+      },
+    });
+
     // #1955: Markdown keeps only a link's destination, so a navigable ri:url
     // (a real href with its carrier in the class) writes the carrier there
     // and markdownToHtml restores the pair (materializeConfluenceUrlLinks).
@@ -3462,7 +5254,13 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     },
     replacement: (content, node) => {
       const type = (node as HTMLElement).className.replace('panel-', '').toUpperCase();
-      return `\n> **${type}**: ${content.trim()}\n\n`;
+      const body = content.trim();
+      // #1958 (review r1 CM-4, r2 CM2-4): a panel that opens with a CODE-META line quotes every line of its body,
+      // so the token and its fence stay inside the quote the panel becomes; every other panel is unchanged.
+      if (startsWithCodeMeta(body)) {
+        return `\n> **${type}**:\n>\n${body.split('\n').map((line) => (line === '' ? '>' : `> ${line}`)).join('\n')}\n\n`;
+      }
+      return `\n> **${type}**: ${body}\n\n`;
     },
   });
 
@@ -4563,32 +6361,37 @@ const DIV_START_TAG = /<div[\s/>]/i;
 /**
  * #1752: either spelling (turndown escapes `_`) of every protectMedia token
  * whose original HTML holds a `<div>` — the tokens the caller's restoreMedia
- * turns back into a div. `_1` never matches `_10`. Null when there are none,
- * or when nothing will restore the tokens (no media given).
+ * turns back into a div, read by the replay's grammar (tokenMatches,
+ * MediaTokenGrammar; `_1` never matches `_10`). Null when there are none, or
+ * when nothing will restore the tokens (no media given).
  */
-function blockMediaTokenPattern(media: readonly ProtectedMedia[] | undefined): RegExp | null {
+function blockMediaTokenTest(
+  media: readonly ProtectedMedia[] | undefined,
+  grammar: MediaTokenGrammar,
+): ((body: string) => boolean) | null {
   const spellings = (media ?? [])
     .filter((entry) => DIV_START_TAG.test(entry.html))
-    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
-    .map(escapeRegExp);
-  return spellings.length > 0 ? new RegExp(`(?:${spellings.join('|')})(?![0-9])`) : null;
+    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')]);
+  if (spellings.length === 0) return null;
+  const pattern = new RegExp(tokenSpellingPattern(spellings, grammar), 'g');
+  return (body) => tokenMatches(body, pattern, grammar).length > 0;
 }
 
 /**
  * #1752: does this rendered task-item body hold a `<div>`, or something that
  * becomes one — a draw.io fence (markdownToHtml turns it into
  * `div.confluence-drawio` after parsing) or a block-media token
- * (blockMediaTokenPattern)? Such a task item stays a plain item. The rule
+ * (blockMediaTokenTest)? Such a task item stays a plain item. The rule
  * dates from TipTap's stock TaskItem, which parsed its content from the first
  * descendant `div` and dropped the rest; since #1957 both schemas keep a block
  * in a task (`task-item-content`), and the fallback is kept unchanged so this
  * path's output does not change. Inline placeholders (image, mention, status,
  * Jira) hold no div, so their task items stay tasks.
  */
-function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): boolean {
+function breaksTaskItemParse(body: string, holdsBlockMediaToken: ((body: string) => boolean) | null): boolean {
   return DIV_START_TAG.test(body)
     || body.includes('<code class="language-drawio">')
-    || (blockMediaToken !== null && blockMediaToken.test(body));
+    || (holdsBlockMediaToken !== null && holdsBlockMediaToken(body));
 }
 
 /**
@@ -4616,14 +6419,14 @@ function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): bool
  * once. A list without a task item returns `false`: marked's own rendering,
  * byte for byte.
  */
-function createEditorMarked(blockMediaToken: RegExp | null): Marked {
+function createEditorMarked(holdsBlockMediaToken: ((body: string) => boolean) | null): Marked {
   return new Marked({
     renderer: {
       list(token) {
         if (!token.items.some((item) => item.task)) return false;
         const items = token.items.map((item) => {
           const body = this.parser.parse(item.tokens, item.loose);
-          if (item.task && !breaksTaskItemParse(body, blockMediaToken)) {
+          if (item.task && !breaksTaskItemParse(body, holdsBlockMediaToken)) {
             return {
               task: true,
               html: `<li data-type="taskItem" data-checked="${item.checked ? 'true' : 'false'}">${body}</li>\n`,
@@ -4677,6 +6480,14 @@ export interface MarkdownToHtmlOptions {
    * plain text, because nothing restores them (import, eval seeders).
    */
   protectedMedia?: readonly ProtectedMedia[];
+  /**
+   * #1958: the Accept's code-metadata state (beginCodeMetaAccept). When the
+   * page has a token block, witnesses are asked for, or the Markdown holds a
+   * CODE-META lookalike, the echo is analysed on the lexer tokens: bound
+   * fences render the stored code with a marker, token lines are removed, and
+   * `codeMeta.fences` is filled. Otherwise the parse is unchanged.
+   */
+  codeMeta?: CodeMetaAccept;
 }
 
 /**
@@ -4733,9 +6544,19 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
-  const blockMediaToken = blockMediaTokenPattern(options?.protectedMedia);
-  const parser = blockMediaToken ? createEditorMarked(blockMediaToken) : EDITOR_MARKED;
-  let html = await parser.parse(normalized) as string;
+  const codeMeta = options?.codeMeta;
+  // Review r8 CM8-1: the #1958 path's grammar only there; the base path and every other caller keep the legacy one.
+  const holdsBlockMediaToken = blockMediaTokenTest(options?.protectedMedia, codeMeta?.mode === 'meta' ? 'current' : 'legacy');
+  const parser = holdsBlockMediaToken ? createEditorMarked(holdsBlockMediaToken) : EDITOR_MARKED;
+  let html: string;
+  if (codeMeta && needsCodeMetaAnalysis(codeMeta, markdown)) {
+    const tokens = parser.lexer(normalized);
+    // D26: the #1958 analysis runs in full on the #1958 path; on the base path only fences are recorded (#1953).
+    analyseCodeMetaEcho(tokens, codeMeta, codeMeta.mode === 'meta');
+    html = parser.parser(tokens);
+  } else {
+    html = await parser.parse(normalized) as string;
+  }
 
   // Older authored fences contain just a name; exported wrappers also carry
   // their source and preview attributes in a single JSON line.
