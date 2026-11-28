@@ -3240,6 +3240,44 @@ export interface HtmlToMarkdownOptions {
    * page's output and build layout that never existed on the parent.
    */
   layoutTokens?: boolean;
+  /**
+   * #1954: write inline code that a link holds and that itself holds a
+   * backtick as escaped link text (escapeLinkedCodeText). Opt-in, set only by
+   * callers whose Markdown never reaches an AI Improve prompt (quality score,
+   * auto-tagging, version-compare summaries, diagram context). Extracted
+   * document text is not one of them: it can be Improve reference material.
+   * Everything that can feed Improve (the page itself and its sub-page
+   * context, built by assembleContextIfNeeded / assembleSubPageContext) keeps
+   * the Markdown it had before #1954 (D24).
+   */
+  linkedCodeAsText?: boolean;
+}
+
+/**
+ * #1954: the Markdown of inline code that a link holds and that itself holds a
+ * backtick. marked's link label admits only a code span without a backtick
+ * (`[^`]*`), so `[``a`b``](href)` is not read as a link and its destination
+ * would show as text. The code is written as link text instead: line breaks
+ * become spaces (as turndown's code rule does) and every ASCII punctuation
+ * character, CommonMark's backslash-escapable set, is escaped, so no raw HTML,
+ * entity, emphasis, autolink, image or nested link can form from it. The link
+ * and the characters are kept; the code formatting is not.
+ *
+ * Turndown puts the node's flanking white space around the replacement, so the
+ * text is trimmed here and each boundary is written once.
+ *
+ * Only with `linkedCodeAsText` (D24): every Markdown that reaches an AI Improve
+ * prompt, parent or sub-page, writes such code exactly as before #1954.
+ */
+function escapeLinkedCodeText(text: string): string {
+  return text.trim().replace(/\r\n|\r|\n/g, ' ').replace(/[!-/:-@[-`{-~]/g, '\\$&');
+}
+
+/** #1954: inline code that a link holds and that itself holds a backtick (escapeLinkedCodeText). */
+function isLinkedBacktickCode(node: Node): boolean {
+  if (node.nodeName !== 'CODE') return false;
+  const element = node as Element;
+  return !element.closest('pre') && element.closest('a[href]') !== null && (element.textContent ?? '').includes('`');
 }
 
 /**
@@ -3271,6 +3309,14 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
       return title ? `[STATUS: ${title}]` : '';
     },
   });
+
+  // #1954: inline code inside a link that holds a backtick (escapeLinkedCodeText); never for an Improve prompt (D24).
+  if (options?.linkedCodeAsText === true) {
+    turndownService.addRule('linkedCodeWithBacktick', {
+      filter: (node) => isLinkedBacktickCode(node),
+      replacement: (_content, node) => escapeLinkedCodeText((node as HTMLElement).textContent ?? ''),
+    });
+  }
 
   if (layoutTokens) {
     // #1955: Markdown keeps only a link's destination, so a navigable ri:url

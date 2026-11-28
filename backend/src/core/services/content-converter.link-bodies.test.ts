@@ -20,6 +20,7 @@ import {
   protectMedia,
   restoreMedia,
 } from './content-converter.js';
+import { IMPROVE_PARITY_AT_A, IMPROVE_PARITY_STORAGE } from './__fixtures__/improve-parity-1954-a.js';
 
 /** What a collaborative Save writes: the room's HTML, written back with the stored storage as origin. */
 function save(storage: string): string {
@@ -37,7 +38,7 @@ function edit(storage: string): string {
 async function improveAccept(html: string, storage: string): Promise<{ markdown: string; html: string; storage: string }> {
   const { html: protectedHtml, media } = protectMedia(html);
   const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
-  const back = restoreMedia(await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedHtml) }), media);
+  const back = restoreMedia(await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media }), media);
   return { markdown, html: back, storage: htmlToConfluence(back, { previousStorage: storage }) };
 }
 
@@ -222,6 +223,124 @@ describe('content-converter: a Confluence link whose body is an image (#1954)', 
         + '<br /><ac:link><ri:page ri:content-title="Runbook"></ri:page><ac:plain-text-link-body><![CDATA[line two]]></ac:plain-text-link-body></ac:link></p>'],
     ])('%s', (_case, bodyHtml, storage) => {
       expect(htmlToConfluence(bodyHtml)).toBe(storage);
+    });
+  });
+});
+
+describe('content-converter: a Confluence link whose body is inline code (#1954)', () => {
+  const PAGE = '<ri:page ri:content-title="Runbook" ri:space-key="OPS" />';
+  const PAGE_OUT = '<ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>';
+  const WEB = '<ri:url ri:value="https://example.com/z" />';
+  const WEB_OUT = '<ri:url ri:value="https://example.com/z"></ri:url>';
+  const storageOf = (resource: string, body: string): string =>
+    `<p>See <ac:link>${resource}<ac:link-body>${body}</ac:link-body></ac:link> here.</p>`;
+
+  describe('one link through a collaborative Save and an editor Save', () => {
+    it.each([
+      ['inline code', '<code>deploy()</code>'],
+      ['code and text', 'run <code>deploy()</code> now'],
+      ['bold code', '<strong><code>deploy()</code></strong> now'],
+      ['two code spans', '<code>a</code> and <code>b</code>'],
+    ])('%s', (_case, body) => {
+      for (const [resource, resourceOut] of [[PAGE, PAGE_OUT], [WEB, WEB_OUT]]) {
+        const storage = storageOf(resource!, body);
+        const written = `<p>See <ac:link>${resourceOut}<ac:link-body>${body}</ac:link-body></ac:link> here.</p>`;
+        expect(save(storage)).toBe(written);
+        expect(edit(storage)).toBe(written);
+      }
+    });
+  });
+
+  describe('Markdown and AI Improve', () => {
+    it('writes a linked code span as [`code`](href) and a mixed one as [text `code` text](href); marked reads them back', async () => {
+      const code = confluenceToHtml(storageOf(PAGE, '<code>deploy()</code>'));
+      const mixed = confluenceToHtml(storageOf(PAGE, 'run <code>deploy()</code> now'));
+      expect(htmlToMarkdown(code)).toBe('See [`deploy()`](#confluence-page:Runbook?ri:space-key=OPS) here.');
+      expect(htmlToMarkdown(mixed)).toBe('See [run `deploy()` now](#confluence-page:Runbook?ri:space-key=OPS) here.');
+      expect(await markdownToHtml(htmlToMarkdown(mixed)))
+        .toBe('<p>See <a href="#confluence-page:Runbook?ri:space-key=OPS">run <code>deploy()</code> now</a> here.</p>\n');
+    });
+
+    it.each([
+      ['a page link', PAGE, PAGE_OUT],
+      ['a web ri:url link (class carrier)', WEB, WEB_OUT],
+    ])('keeps a code-bodied and a mixed-body link of %s through the Improve chain', async (_case, resource, resourceOut) => {
+      for (const body of ['<code>deploy()</code>', 'run <code>deploy()</code> now']) {
+        const storage = storageOf(resource, body);
+        const result = await improveAccept(yDocToHtml(htmlToYDoc(confluenceToHtml(storage, '55'))), storage);
+        expect(result.storage).toBe(`<p>See <ac:link>${resourceOut}<ac:link-body>${body}</ac:link-body></ac:link> here.</p>\n`);
+      }
+    });
+
+    // Review B2: literal code characters stay data. marked 15 cannot read a code span holding a backtick inside a
+    // link label, so the Markdown of callers outside AI Improve (`linkedCodeAsText`, D24) writes such code as escaped
+    // link text.
+    const HOSTILE = [
+      'a`b <em>literal</em>',
+      'x` &amp; &#60;tag&#62; &lt;b&gt;',
+      '`[x](javascript:alert(1))` ![i](http://e/x.png)',
+      '``~~s~~ **b** _i_ ==h== https://e.com www.e.com a@b.com <https://x>',
+      'tick` \\` back\\slash | pipe # h > q - 1. n',
+      'CQ_MEDIA_PLACEHOLDER_0 `',
+      '<script>alert(1)</script>`',
+      '`]](#confluence-page:Evil)[',
+    ];
+    const escapeHtml = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    it.each([
+      ['a page link', '#confluence-page:Runbook'],
+      ['a web link', 'https://example.com/z'],
+    ])('writes linked code holding a backtick as escaped link text in plain Markdown, in %s: the text, the destination and nothing else', async (_case, href) => {
+      for (const text of HOSTILE) {
+        const markdown = htmlToMarkdown(`<p>See <a href="${href}"><code>${escapeHtml(text)}</code></a> here.</p>`, { linkedCodeAsText: true });
+        const doc = new JSDOM(await markdownToHtml(markdown)).window.document;
+        expect([...doc.body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase())).toEqual(['p', 'a']);
+        const anchor = doc.querySelector('a')!;
+        expect(anchor.textContent).toBe(text);
+        expect(anchor.getAttribute('href')).toBe(href);
+        expect(anchor.getAttributeNames()).toEqual(['href']);
+        expect(doc.body.textContent!.trim()).toBe(`See ${text} here.`);
+      }
+    });
+
+    it('keeps markup-looking code without a backtick as one code element with its text', async () => {
+      for (const text of ['<em>x</em>', '&amp;', '[a](b)', 'CQ_MEDIA_PLACEHOLDER_0']) {
+        const markdown = htmlToMarkdown(`<p><a href="#confluence-page:Runbook"><code>${escapeHtml(text)}</code></a></p>`, { linkedCodeAsText: true });
+        const doc = new JSDOM(await markdownToHtml(markdown)).window.document;
+        expect([...doc.body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase())).toEqual(['p', 'a', 'code']);
+        expect(doc.querySelector('code')!.textContent).toBe(text);
+      }
+    });
+
+    it('writes each white-space boundary of linked code holding a backtick once in plain Markdown', () => {
+      const md = (html: string): string => htmlToMarkdown(html, { linkedCodeAsText: true });
+      expect(md('<p><a href="#confluence-page:R">pkg.<code> a`b </code>()</a></p>')).toBe('[pkg. a\\`b ()](#confluence-page:R)');
+      expect(md('<p><a href="#confluence-page:R">pkg.<code>a`b\u00a0</code>()</a></p>')).toBe('[pkg.a\\`b\u00a0()](#confluence-page:R)');
+    });
+
+    it('takes only the characters of linked code holding a backtick in plain Markdown, never its attributes or inner markup', async () => {
+      const html = '<p><a href="#confluence-page:Runbook"><code data-note="from-storage">a`<u>b</u></code></a></p>';
+      const back = new JSDOM(await markdownToHtml(htmlToMarkdown(html, { linkedCodeAsText: true }))).window.document;
+      expect(back.querySelector('a')!.outerHTML).toBe('<a href="#confluence-page:Runbook">a`b</a>');
+    });
+
+    // Coordinator decision D24 (C4 by parity): slice B changes nothing in what reaches an AI Improve prompt or its
+    // Accept. For linked code with and without a backtick, with a media-placeholder spelling, in a table, with NBSP
+    // at its edges, in a page link and a class-carried web link, with and without a real image, the parent's
+    // Improve Markdown, the applied HTML and the plain Markdown of a sub-page are exactly slice A's (captured at
+    // 42e07553; provenance in __fixtures__/improve-parity-1954-a.ts). Slice A's limits stay: the chain can lose such a
+    // link, and a placeholder spelling that matches a real media entry is replaced (#723).
+    it.each(Object.keys(IMPROVE_PARITY_AT_A))('runs the Improve chain exactly as slice A for %s', async (name) => {
+      const expected = IMPROVE_PARITY_AT_A[name]!;
+      const html = confluenceToHtml(IMPROVE_PARITY_STORAGE[name]!, '55');
+      expect(html).toBe(expected.html);
+      const { html: protectedHtml, media } = protectMedia(html);
+      const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      expect(markdown).toBe(expected.markdown);
+      const back = await markdownToHtml(markdown, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media });
+      expect(restoreMedia(back, media)).toBe(expected.applied);
+      // A sub-page's Markdown in the same prompt (assembleSubPageContext converts it without options).
+      expect(htmlToMarkdown(html)).toBe(expected.plain);
     });
   });
 });

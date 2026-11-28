@@ -59,13 +59,26 @@ schema (its `data-confluence-*` markers included, so a copy out of read mode kee
 the image's resource), and both attributes are checked again at render. The
 image still leaves its paragraph, so a link body holding several images, or images
 and text, becomes one link per piece; read mode follows an image's link instead of
-zooming it. Deferred, unchanged by #1748 (the converters and Improve keep
-these links): the editor loses a link whose body is
-inline code (StarterKit's Code mark
-excludes every other mark, so the Link mark leaves it; a fix changes the Code
-mark contract in both schemas), splits a link whose text mixes inline code with
-other text into two links around the code, and on a collaborative save splits a
-link around a line break (Yjs keeps marks on text only). Pinned by
+zooming it. Inline code is `LinkableCode` in all three schemas, a Code mark that
+excludes only itself (#1954), so a link whose body is or mixes inline code stays one
+link and code takes bold, italic and the other marks (its Yjs key stays `code`; a mark
+excluding nothing would be stored under a hashed key). Its Markdown is
+`` [`code`](href) `` / `` [run `code` now](href) ``. Code inside a link that holds a
+backtick cannot be a code span in a link label (marked 15), so `htmlToMarkdown` with
+`linkedCodeAsText` writes it as link text with every ASCII punctuation character
+backslash-escaped, each white-space boundary written once. Only callers whose Markdown
+never reaches an AI Improve prompt opt in: quality score, auto-tagging, version-compare
+summaries, diagram context. Everything an Improve prompt holds (the page itself with
+layout tokens, its sub-pages and extracted documents without options) is unchanged by
+#1954 (D24): the parent's Markdown, a sub-page's Markdown, the assembled prompt and the
+applied HTML of an Accept are exactly slice A's, pinned against captures at `42e07553`
+(`__fixtures__/improve-parity-1954-a.ts`). Improve keeps slice A's limits for linked
+code: the chain can lose such a link (a code span holding a backtick inside a link
+label comes back as literal Markdown in a paragraph), and a media-placeholder spelling
+that matches a real media entry of the page is replaced by `restoreMedia`, as in any
+text (#723; recorded limit). Deferred, unchanged by #1748 (the converters
+and Improve keep these links): on a collaborative save a link is split around a
+line break (Yjs keeps marks on text only). Pinned by
 `content-converter.links.test.ts`.
 
 **Five more link kinds, and one rule for `ri:url` (#1955).** `ri:space`,

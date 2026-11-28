@@ -296,6 +296,15 @@ describe('collab schema parity (#1445)', () => {
     expect(viewer).not.toMatch(/\bImage\.configure\(/);
   });
 
+  it('gives inline code an exclusion of only itself in the collab schema, so it keeps the Yjs key "code" (#1954)', () => {
+    // A link sits on code text; a code mark that excluded nothing would be stored under a hashed Yjs key. The
+    // editor's and read mode's mounted schemas are checked the same way in Editor.test.tsx / ArticleViewer.test.tsx.
+    const code = getCollabSchema().marks.code!;
+    expect(code.spec.excludes).toBe('code');
+    expect(code.excludes(code)).toBe(true);
+    expect(code.excludes(getCollabSchema().marks.link!)).toBe(false);
+  });
+
   it('round-trips golden HTML including draw.io and comment (structure, not bytes)', () => {
     for (const fixture of GOLDEN) {
       const doc = htmlToYDoc(fixture.html);

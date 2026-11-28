@@ -535,6 +535,53 @@ describe('Editor', () => {
     });
   });
 
+  // #1954: inline code excludes only itself, so a link stays on code text and code takes other marks.
+  describe('links around inline code (#1954)', () => {
+    async function mounted(content: string): Promise<EditorType> {
+      let editor: EditorType | null = null;
+      render(<Editor content={content} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it('mounts inline code that excludes only itself, as the collab schema does', async () => {
+      const editor = await mounted('<p>x</p>');
+      const { code, link, bold } = editor.schema.marks;
+      expect(code!.spec.excludes).toBe('code');
+      expect(code!.excludes(code!)).toBe(true);
+      expect(code!.excludes(link!)).toBe(false);
+      expect(code!.excludes(bold!)).toBe(false);
+    });
+
+    it('keeps a link on inline code and on mixed code text as one <a> each', async () => {
+      const editor = await mounted(
+        '<p>Call <a href="#confluence-page:Runbook" data-confluence-link="page"><code>deploy()</code></a> first.</p>'
+        + '<p>Then <a href="#confluence-page:Runbook" data-confluence-link="page">run <code>deploy()</code> now</a>.</p>',
+      );
+      expect(editor.getHTML()).toBe(
+        '<p>Call <a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook"><code>deploy()</code></a> first.</p>'
+        + '<p>Then <a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook">run <code>deploy()</code> now</a>.</p>',
+      );
+    });
+
+    it('applies bold to inline code, and inline code to linked text, without losing either mark', async () => {
+      const editor = await mounted('<p><code>bold me</code> and <a href="#confluence-page:Runbook">code me</a></p>');
+      act(() => {
+        editor.chain().setTextSelection({ from: 1, to: 1 + 'bold me'.length }).toggleBold().run();
+      });
+      const linkStart = 1 + 'bold me and '.length;
+      act(() => {
+        editor.chain().setTextSelection({ from: linkStart, to: linkStart + 'code me'.length }).toggleCode().run();
+      });
+      expect(editor.getHTML()).toBe(
+        '<p><strong><code>bold me</code></strong> and '
+        + '<a target="_blank" rel="noopener noreferrer nofollow" href="#confluence-page:Runbook"><code>code me</code></a></p>',
+      );
+    });
+  });
+
   // #1750: PAGE_HTML is confluenceToHtml's output for the backend fixture, byte
   // for byte, pinned by content-converter.emoticons.test.ts.
   describe('Confluence emoticons (#1750)', () => {

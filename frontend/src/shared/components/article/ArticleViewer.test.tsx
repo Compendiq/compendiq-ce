@@ -1271,6 +1271,36 @@ describe('ArticleViewer: linked images (#1954)', () => {
   });
 });
 
+// #1954: read mode's inline code excludes only itself, so a link around code is one link.
+describe('ArticleViewer: links around inline code (#1954)', () => {
+  it('renders a code-bodied and a mixed link as one link each, around their code', async () => {
+    const html = '<p>Call <a href="#confluence-page:Runbook" data-confluence-link="page"><code>deploy()</code></a> first.</p>'
+      + '<p>Then <a href="#confluence-page:Runbook" data-confluence-link="page">run <code>deploy()</code> now</a>.</p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.ProseMirror a')).toHaveLength(2);
+    });
+    const anchors = [...container.querySelectorAll('.ProseMirror a')];
+    expect(anchors.map((a) => [a.getAttribute('href'), a.textContent, a.querySelector('code')?.textContent])).toEqual([
+      ['#confluence-page:Runbook', 'deploy()', 'deploy()'],
+      ['#confluence-page:Runbook', 'run deploy() now', 'deploy()'],
+    ]);
+  });
+
+  it('mounts inline code that excludes only itself, as the editor and the collab schema do', async () => {
+    const { container } = render(<ArticleViewer content="<p>x</p>" />);
+    await waitFor(() => {
+      expect(container.querySelector('.ProseMirror')).toBeTruthy();
+    });
+    const view = container.querySelector('.ProseMirror') as HTMLElement & { editor: TipTapEditor };
+    const { code, link } = view.editor.schema.marks;
+    expect(code!.spec.excludes).toBe('code');
+    expect(code!.excludes(code!)).toBe(true);
+    expect(code!.excludes(link!)).toBe(false);
+  });
+});
+
 describe('ArticleViewer: table cell alignment (#1956)', () => {
   it('keeps the alignment of header and body cells from the attribute and from a stored style', async () => {
     const html = '<table><tbody><tr><th align="center">a</th><th>b</th></tr>'

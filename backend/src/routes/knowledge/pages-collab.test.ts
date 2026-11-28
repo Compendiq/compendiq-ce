@@ -3146,22 +3146,26 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     });
   });
 
-  describe('links whose body is an image on a collaborative Save (#1954)', () => {
+  describe('link bodies on a collaborative Save (#1954)', () => {
     const image = (filename: string): string => `<ac:image><ri:attachment ri:filename="${filename}" /></ac:image>`;
     const imageOut = (filename: string): string => `<ac:image><ri:attachment ri:filename="${filename}"></ri:attachment></ac:image>`;
-    const STORAGE = '<p>Intro</p>'
-      + `<p><ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>${image('page.png')}</ac:link-body></ac:link></p>`
-      + `<p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3)}</p>`
-      + `<p><ac:link><ri:url ri:value="/docs/guide" /><ac:link-body>${image('relative.png')}</ac:link-body></ac:link></p>`
-      + `<p>${'More unrelated prose between the two links. '.repeat(3)}</p>`
-      + `<p><ac:link><ri:url ri:value="https://example.com/doc" /><ac:link-body>${image('web.png')}</ac:link-body></ac:link></p>`;
+    const FILLER = `<p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3)}</p>`;
+    const FILLER_OUT = FILLER.replace(' </p>', '</p>');
 
-    it('writes every image-bodied link as one ac:link around its image, and the same bytes on a second Save', async () => {
-      const { token, userId } = await createUser(`collab_imglink_${pageIdEntropy()}`);
-      const spaceKey = `IL${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+    interface LinkBodyRoom {
+      ws: WebSocket;
+      storages: string[];
+      save: (label: string) => Promise<{ statusCode: number; body: string }>;
+      room: () => string;
+    }
+
+    /** A Confluence page with `storage`, a writable collaborative editor in its room, and Confluence for consecutive Saves. */
+    async function openRoom(storage: string): Promise<LinkBodyRoom> {
+      const { token, userId } = await createUser(`collab_linkbody_${pageIdEntropy()}`);
+      const spaceKey = `LB${pageIdEntropy().slice(0, 6).toUpperCase()}`;
       const confluenceId = `cf-${pageIdEntropy()}`;
-      const pageId = await insertConfluencePage({ spaceKey, confluenceId, version: 4, bodyHtml: confluenceToHtml(STORAGE, '55') });
-      await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, STORAGE]);
+      const pageId = await insertConfluencePage({ spaceKey, confluenceId, version: 4, bodyHtml: confluenceToHtml(storage, '55') });
+      await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, storage]);
       await grantSpaceRead(userId, spaceKey);
       await seedConfluenceCredentials(userId);
       await enableCollabFlag();
@@ -3179,13 +3183,13 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
         id: confluenceId, title: 'Conf page', status: 'current', type: 'page',
         version: { number: remoteVersion, when: '2026-11-12T00:00:00Z' },
       }) as never);
-      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage, version) => {
-        storages.push(storage);
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, written, version) => {
+        storages.push(written);
         remoteVersion = version + 1;
         return {
           id: confluenceId, title, status: 'current', type: 'page',
           version: { number: remoteVersion, when: '2026-11-12T00:00:01Z' },
-          body: { storage: { value: storage } },
+          body: { storage: { value: written } },
         } as never;
       });
       const save = (label: string) => app.inject({
@@ -3194,26 +3198,52 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
         headers: { authorization: `Bearer ${token}` },
         payload: commitPayload(ws, label, Y.snapshot(doc)),
       });
+      const room = () => yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc);
+      return { ws, storages, save, room };
+    }
 
-      // The room holds each image on its node with its link: one wrapper per image, the carrier of the web link in `class`.
-      const room = yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc);
-      expect(room).toContain('href="#confluence-page:Runbook?ri:space-key=OPS"><img src="/api/attachments/55/page.png"');
-      expect(room).toContain('class="#confluence-url:https%3A%2F%2Fexample.com%2Fdoc?body=rich" href="https://example.com/doc"><img');
-
-      const first = await save('Save 1');
+    /** Two Saves of the unchanged room: the first sends `expected`, the second the same bytes. */
+    async function expectTwoSaves(editor: LinkBodyRoom, expected: string): Promise<void> {
+      const first = await editor.save('Save 1');
       expect(first.statusCode, first.body).toBe(200);
-      expect(storages[0]).toBe(
+      expect(editor.storages[0]).toBe(expected);
+      const second = await editor.save('Save 2');
+      expect(second.statusCode, second.body).toBe(200);
+      expect(editor.storages[1]).toBe(editor.storages[0]);
+      editor.ws.close();
+    }
+
+    it('writes every image-bodied link as one ac:link around its image, and the same bytes on a second Save', async () => {
+      const storage = '<p>Intro</p>'
+        + `<p><ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>${image('page.png')}</ac:link-body></ac:link></p>`
+        + FILLER
+        + `<p><ac:link><ri:url ri:value="/docs/guide" /><ac:link-body>${image('relative.png')}</ac:link-body></ac:link></p>`
+        + `<p>${'More unrelated prose between the two links. '.repeat(3)}</p>`
+        + `<p><ac:link><ri:url ri:value="https://example.com/doc" /><ac:link-body>${image('web.png')}</ac:link-body></ac:link></p>`;
+      const editor = await openRoom(storage);
+      // The room holds each image on its node with its link: one wrapper per image, the carrier of the web link in `class`.
+      expect(editor.room()).toContain('href="#confluence-page:Runbook?ri:space-key=OPS"><img src="/api/attachments/55/page.png"');
+      expect(editor.room()).toContain('class="#confluence-url:https%3A%2F%2Fexample.com%2Fdoc?body=rich" href="https://example.com/doc"><img');
+
+      await expectTwoSaves(editor,
         '<p>Intro</p><p></p>'
         + `<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page><ac:link-body>${imageOut('page.png')}</ac:link-body></ac:link>`
-        + `<p>${'Unrelated prose that keeps the paragraphs apart. '.repeat(3).trimEnd()}</p><p></p>`
+        + `${FILLER_OUT}<p></p>`
         + `<ac:link><ri:url ri:value="/docs/guide"></ri:url><ac:link-body>${imageOut('relative.png')}</ac:link-body></ac:link>`
         + `<p>${'More unrelated prose between the two links. '.repeat(3).trimEnd()}</p><p></p>`
-        + `<ac:link><ri:url ri:value="https://example.com/doc"></ri:url><ac:link-body>${imageOut('web.png')}</ac:link-body></ac:link>`,
-      );
-      const second = await save('Save 2');
-      expect(second.statusCode, second.body).toBe(200);
-      expect(storages[1]).toBe(storages[0]);
-      ws.close();
+        + `<ac:link><ri:url ri:value="https://example.com/doc"></ri:url><ac:link-body>${imageOut('web.png')}</ac:link-body></ac:link>`);
+    });
+
+    it('writes a code-bodied and a mixed code-and-text link as one ac:link each, and the same bytes on a second Save', async () => {
+      const code = '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body><code>deploy()</code></ac:link-body></ac:link>';
+      const mixed = '<ac:link><ri:url ri:value="/docs/guide" /><ac:link-body>run <code>deploy()</code> now</ac:link-body></ac:link>';
+      const editor = await openRoom(`<p>Call ${code} first.</p>${FILLER}<p>Then ${mixed}.</p>`);
+      expect(editor.room()).toContain('<code>deploy()</code></a> first.</p>');
+
+      await expectTwoSaves(editor,
+        '<p>Call <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page><ac:link-body><code>deploy()</code></ac:link-body></ac:link> first.</p>'
+        + FILLER_OUT
+        + '<p>Then <ac:link><ri:url ri:value="/docs/guide"></ri:url><ac:link-body>run <code>deploy()</code> now</ac:link-body></ac:link>.</p>');
     });
   });
 
